@@ -237,7 +237,7 @@ impl Tool for LspTool {
         let uri = path_to_uri(&abs).map_err(|e| ToolError::InvalidArgs {
             message: format!("lsp: cannot convert path to URI: {e}"),
         })?;
-        let pinned = crate::safe_file::open_document(&abs)
+        let pinned = zhuye_tools::sandbox::open_readonly(&abs)
             .map_err(|error| ToolError::Io(error.to_string()))?;
         let file = tokio::fs::File::from_std(
             pinned

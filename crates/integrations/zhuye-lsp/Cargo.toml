@@ -23,9 +23,6 @@ parking_lot      = { workspace = true }
 globset          = { workspace = true }
 url              = { workspace = true }
 
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1", features = ["fs"] }
-
 [dev-dependencies]
 tempfile = "3"
 

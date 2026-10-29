@@ -206,7 +206,7 @@ mod tests {
         std::fs::write(workspace.path().join("dir/doc.rs"), "inside").unwrap();
         std::fs::write(outside.path().join("doc.rs"), "outside").unwrap();
         let path = workspace.path().join("dir/doc.rs").canonicalize().unwrap();
-        let pinned = crate::safe_file::open_document(&path).unwrap();
+        let pinned = zhuye_tools::sandbox::open_readonly(&path).unwrap();
         std::fs::rename(workspace.path().join("dir"), workspace.path().join("old")).unwrap();
         symlink(outside.path(), workspace.path().join("dir")).unwrap();
 

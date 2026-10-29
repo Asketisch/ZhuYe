@@ -2,13 +2,12 @@
 //!
 //! 详见 `docs/tools-and-hooks.md §2.2`。
 
-use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::sandbox::resolve_sandbox_path;
+use crate::sandbox::{open_readonly, resolve_sandbox_path};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// 二进制检测嗅探字节上限。
@@ -32,6 +31,21 @@ const MAX_LINE_INDEX: usize = usize::MAX / 2;
 /// "显示多少行"、不限制"读入多少字节" —— 一个 10GB 文本文件会直接把
 /// 进程 OOM。超过上限时给出可操作错误(引导用 grep + offset 分段)。
 const MAX_READ_BYTES: u64 = 32 * 1024 * 1024;
+
+fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, ToolError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(ToolError::InvalidArgs {
+            message: format!(
+                "文件过大(超过 {limit} 字节上限):请用 grep 定位,再用 offset/limit 分段读"
+            ),
+        });
+    }
+    Ok(bytes)
+}
 
 pub struct ReadTool;
 
@@ -88,7 +102,8 @@ impl Tool for ReadTool {
 
         // 二进制嗅探。
         let mut sniff = vec![0u8; BINARY_SNIFF_BYTES];
-        let mut f = fs::File::open(&abs)?;
+        let mut pinned = open_readonly(&abs)?;
+        let f = &mut pinned.file;
         let n = f.read(&mut sniff)?;
         if sniff[..n].contains(&0u8) {
             return Ok(ToolOutput {
@@ -100,14 +115,11 @@ impl Tool for ReadTool {
                 elapsed_ms: 0,
             });
         }
-        drop(f);
-
         // 0.9:读入前先查文件大小,避免把超大文件整体读进内存。
         // 原来的 `fs::read_to_string` 无上限,一个 10GB 文本文件直接 OOM;
         // 而 TRUNCATION_THRESHOLD(2000 行)限制的是"显示",不是"读入"。
-        if let Ok(meta) = fs::metadata(&abs)
-            && meta.len() > MAX_READ_BYTES
-        {
+        let meta = f.metadata()?;
+        if meta.len() > MAX_READ_BYTES {
             return Err(ToolError::InvalidArgs {
                 message: format!(
                     "文件过大({} 字节 > {} 字节上限):请用 grep 定位,再用 offset/limit 分段读",
@@ -117,8 +129,16 @@ impl Tool for ReadTool {
             });
         }
 
+        f.seek(SeekFrom::Start(0))?;
+        let bytes = read_bounded(f, MAX_READ_BYTES)?;
+        let mtime_ms = f
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
         let raw =
-            fs::read_to_string(&abs).map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
+            String::from_utf8(bytes).map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
         let lines: Vec<&str> = raw.lines().collect();
         let total = lines.len();
         // 0.9:`checked_add` 双保险 —— 即使上面的钳制被绕过也不会回绕。
@@ -157,11 +177,7 @@ impl Tool for ReadTool {
             metadata: serde_json::json!({
                 "path": abs.to_string_lossy(),
                 "path_str": path_str,
-                "mtime_ms": std::fs::metadata(&abs)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as u64),
+                "mtime_ms": mtime_ms,
                 "total_lines": total,
                 "shown_lines": slice.len(),
                 "truncated": slice.len() > TRUNCATION_THRESHOLD,
@@ -177,6 +193,17 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn bounded_read_rejects_growth_past_the_limit() {
+        let mut over_limit = std::io::repeat(b'x').take(9);
+        assert!(matches!(
+            read_bounded(&mut over_limit, 8),
+            Err(ToolError::InvalidArgs { .. })
+        ));
+        let mut at_limit = std::io::repeat(b'x').take(8);
+        assert_eq!(read_bounded(&mut at_limit, 8).unwrap(), b"xxxxxxxx");
+    }
 
     fn make_ctx(workspace: &std::path::Path) -> ToolContext {
         ToolContext::for_workspace(workspace)
