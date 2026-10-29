@@ -237,8 +237,16 @@ impl Tool for LspTool {
         let uri = path_to_uri(&abs).map_err(|e| ToolError::InvalidArgs {
             message: format!("lsp: cannot convert path to URI: {e}"),
         })?;
+        let pinned = crate::safe_file::open_document(&abs)
+            .map_err(|error| ToolError::Io(error.to_string()))?;
+        let file = tokio::fs::File::from_std(
+            pinned
+                .file
+                .try_clone()
+                .map_err(|error| ToolError::Io(error.to_string()))?,
+        );
         client
-            .ensure_open(&abs, &uri, &route.language_id)
+            .ensure_open_file(file, &uri, &route.language_id)
             .await
             .map_err(|e| match e {
                 crate::error::LspError::Spawn(io) => ToolError::Io(io.to_string()),
@@ -258,6 +266,8 @@ impl Tool for LspTool {
             parsed.include_declaration,
         )
         .await;
+        // Windows 必须保持目录句柄到 LSP 请求结束，防止路径被替换。
+        drop(pinned);
         // 6. 包成 ToolOutput。
         match result {
             Ok(value) => Ok(ToolOutput {

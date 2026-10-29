@@ -41,6 +41,7 @@ pub mod error;
 pub mod manager;
 pub mod matching;
 pub mod methods;
+mod safe_file;
 pub mod tool;
 pub mod transport;
 
