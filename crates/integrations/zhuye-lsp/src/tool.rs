@@ -72,7 +72,7 @@ impl LspTool {
     /// 已存在的部分必须先解析符号链接；不存在的尾部按路径组件规整。
     fn resolve_path(workspace: &std::path::Path, file_path: &str) -> Result<PathBuf, ToolError> {
         let p = std::path::Path::new(file_path);
-        let abs = if p.is_absolute() {
+        let mut abs = if p.is_absolute() {
             p.to_path_buf()
         } else {
             workspace.join(p)
@@ -80,7 +80,7 @@ impl LspTool {
         let root = workspace
             .canonicalize()
             .map_err(|e| ToolError::Io(e.to_string()))?;
-        let mut ancestor = abs.as_path();
+        let mut ancestor = abs.clone();
         loop {
             match ancestor.canonicalize() {
                 Ok(resolved) => {
@@ -88,18 +88,26 @@ impl LspTool {
                         return Err(ToolError::PathEscape { path: abs });
                     }
                     let tail = abs
-                        .strip_prefix(ancestor)
+                        .strip_prefix(&ancestor)
                         .map_err(|e| ToolError::Io(e.to_string()))?;
+                    let has_parent = tail
+                        .components()
+                        .any(|part| part == std::path::Component::ParentDir);
                     let candidate = normalize_path(&resolved.join(tail));
-                    return if candidate.starts_with(&root) {
-                        Ok(candidate)
-                    } else {
-                        Err(ToolError::PathEscape { path: abs })
-                    };
+                    if !candidate.starts_with(&root) {
+                        return Err(ToolError::PathEscape { path: abs });
+                    }
+                    if has_parent {
+                        // 规整可能暴露新的符号链接，必须重新检查所有已有祖先。
+                        abs = candidate;
+                        ancestor = abs.clone();
+                        continue;
+                    }
+                    return Ok(candidate);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     // 悬空链接可能将来指向外部，不能按普通缺失路径放行。
-                    match std::fs::symlink_metadata(ancestor) {
+                    match std::fs::symlink_metadata(&ancestor) {
                         Ok(metadata) if metadata.file_type().is_symlink() => {
                             return Err(ToolError::PathEscape { path: abs });
                         }
@@ -109,7 +117,8 @@ impl LspTool {
                     }
                     ancestor = ancestor
                         .parent()
-                        .ok_or_else(|| ToolError::PathEscape { path: abs.clone() })?;
+                        .ok_or_else(|| ToolError::PathEscape { path: abs.clone() })?
+                        .to_path_buf();
                 }
                 Err(error) => return Err(ToolError::Io(error.to_string())),
             }
@@ -444,7 +453,11 @@ mod tests {
         let outside = TempDir::new().unwrap();
         std::fs::write(outside.path().join("secret.rs"), "secret").unwrap();
         symlink(outside.path(), workspace.path().join("link")).unwrap();
-        for path in ["link/secret.rs", "link/missing.rs"] {
+        for path in [
+            "link/secret.rs",
+            "link/missing.rs",
+            "absent/../link/secret.rs",
+        ] {
             assert!(
                 matches!(
                     LspTool::resolve_path(workspace.path(), path),
@@ -462,6 +475,10 @@ mod tests {
             LspTool::resolve_path(workspace.path(), "dangling/file.rs"),
             Err(ToolError::PathEscape { .. })
         ));
+        assert!(matches!(
+            LspTool::resolve_path(workspace.path(), "absent/../dangling/file.rs"),
+            Err(ToolError::PathEscape { .. })
+        ));
         std::fs::create_dir(workspace.path().join("inside")).unwrap();
         symlink(
             workspace.path().join("inside"),
@@ -476,6 +493,10 @@ mod tests {
                 .canonicalize()
                 .unwrap()
                 .join("inside/missing.rs")
+        );
+        assert_eq!(
+            LspTool::resolve_path(workspace.path(), "absent/../local/missing.rs").unwrap(),
+            local
         );
     }
 
