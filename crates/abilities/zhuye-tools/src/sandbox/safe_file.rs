@@ -1,17 +1,20 @@
-//! 固定 LSP 文档句柄，避免校验后路径替换改变读取目标。
+//! 固定已验证的文件句柄，避免校验后路径替换改变读取目标。
 
 use std::fs::File;
 use std::io;
 use std::path::Path;
 
-pub(crate) struct PinnedDocument {
-    pub(crate) file: File,
+/// 只读文件及其关联的目录保护句柄；使用期间必须持有整个对象。
+pub struct PinnedFile {
+    /// 已打开的普通文件；复制句柄时仍需保留此对象。
+    pub file: File,
     // Windows 目录句柄不共享删除权限，须持有到请求结束。
     _directories: Vec<File>,
 }
 
 #[cfg(unix)]
-pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
+/// 打开已经通过工作区边界校验的绝对路径，并拒绝沿途符号链接。
+pub fn open_readonly(path: &Path) -> io::Result<PinnedFile> {
     use rustix::fs::{self, Mode, OFlags};
     use std::path::Component;
 
@@ -19,13 +22,13 @@ pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
     if parts.next() != Some(Component::RootDir) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "document path must be absolute",
+            "file path must be absolute",
         ));
     }
     let parts: Vec<_> = parts.collect();
     let (last, parents) = parts
         .split_last()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "document path has no file"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file path has no file"))?;
     let flags = OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let flags = flags | OFlags::PATH;
@@ -44,7 +47,7 @@ pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
         let Component::Normal(name) = part else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "document path is not normalized",
+                "file path is not normalized",
             ));
         };
         dir = File::from(fs::openat(&dir, *name, flags, Mode::empty())?);
@@ -52,7 +55,7 @@ pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
     let Component::Normal(name) = last else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "document path has no file",
+            "file path has no file",
         ));
     };
     let file = File::from(fs::openat(
@@ -64,17 +67,18 @@ pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
     if !file.metadata()?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "document is not a regular file",
+            "file is not a regular file",
         ));
     }
-    Ok(PinnedDocument {
+    Ok(PinnedFile {
         file,
         _directories: Vec::new(),
     })
 }
 
 #[cfg(windows)]
-pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
+/// 打开已经通过工作区边界校验的绝对路径，并固定目录和拒绝重解析点。
+pub fn open_readonly(path: &Path) -> io::Result<PinnedFile> {
     use std::fs::OpenOptions;
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
@@ -85,12 +89,12 @@ pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
     if !path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "document path must be absolute",
+            "file path must be absolute",
         ));
     }
     let parent = path
         .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "document has no parent"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file has no parent"))?;
     let mut dirs = Vec::new();
     for ancestor in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
         let dir = OpenOptions::new()
@@ -102,7 +106,7 @@ pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
         if !meta.is_dir() || meta.file_attributes() & REPARSE_POINT != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "document directory is a reparse point",
+                "file directory is a reparse point",
             ));
         }
         dirs.push(dir);
@@ -116,20 +120,21 @@ pub(crate) fn open_document(path: &Path) -> io::Result<PinnedDocument> {
     if !meta.is_file() || meta.file_attributes() & REPARSE_POINT != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "document is not a regular file",
+            "file is not a regular file",
         ));
     }
-    Ok(PinnedDocument {
+    Ok(PinnedFile {
         file,
         _directories: dirs,
     })
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn open_document(_path: &Path) -> io::Result<PinnedDocument> {
+/// 不支持安全文件句柄的平台拒绝访问。
+pub fn open_readonly(_path: &Path) -> io::Result<PinnedFile> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "secure document opening is unavailable",
+        "secure file opening is unavailable",
     ))
 }
 
@@ -147,10 +152,10 @@ mod tests {
         std::fs::write(workspace.path().join("dir/doc.rs"), "inside").unwrap();
         std::fs::write(outside.path().join("doc.rs"), "outside").unwrap();
         let path = workspace.path().join("dir/doc.rs").canonicalize().unwrap();
-        let mut pinned = open_document(&path).unwrap();
+        let mut pinned = open_readonly(&path).unwrap();
         std::fs::rename(workspace.path().join("dir"), workspace.path().join("old")).unwrap();
         symlink(outside.path(), workspace.path().join("dir")).unwrap();
-        assert!(open_document(&path).is_err());
+        assert!(open_readonly(&path).is_err());
         let mut text = String::new();
         pinned.file.read_to_string(&mut text).unwrap();
         assert_eq!(text, "inside");
@@ -164,7 +169,7 @@ mod tests {
         let link = root.path().join("link.rs");
         symlink(&target, &link).unwrap();
         let parent = root.path().canonicalize().unwrap();
-        assert!(open_document(&parent.join("link.rs")).is_err());
+        assert!(open_readonly(&parent.join("link.rs")).is_err());
     }
 
     #[test]
@@ -182,7 +187,7 @@ mod tests {
         std::fs::write(dir.join("file.rs"), "content").unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o111)).unwrap();
         let path = dir.join("file.rs").canonicalize().unwrap();
-        let result = open_document(&path);
+        let result = open_readonly(&path);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut document = result.unwrap();
         let mut text = String::new();

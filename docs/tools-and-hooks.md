@@ -236,7 +236,7 @@ workspace-write 默认)/ Linux Landlock(路径白名单)。bash 工具的
 `sandbox` 参数启用;策略与权限模式正交(见 §6)。网络隔离目前仅
 `web_fetch` 层实施(SSRF 防护:私有网段 / 逐跳 redirect 校验)。
 
-LSP 工具同步文档时通过固定文件句柄读取，并拒绝路径替换造成的符号链接越界。
+`read` 与 LSP 工具同步文档时通过固定文件句柄读取，并拒绝路径替换造成的符号链接越界；`read` 在读取时也执行字节上限。
 这不限制 LSP server 子进程自行访问文件；server 的运行环境和权限应按其来源配置。
 
 ### §8.2 Linux Landlock 的 handled 位集合(0.1)
