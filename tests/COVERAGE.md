@@ -34,7 +34,7 @@
 | 技能面(内置包开关 / 文件 skill 激活) | SK1–SK3 | integrations | — | ✅ | — |
 | 远程工具(注册/往返/失败/超时) | T3–T4、X4 | serve_ops | K3、K8 | ✅ | — |
 | 审批交互(approve / deny / bubble / shell 规则) | T5–T7 | integrations | — | ✅ | — |
-| LSP 路径校验 | — | — | — | `zhuye-lsp` 单测：工作区内路径、越界路径、连续父目录以及指向外部或悬空的符号链接 | — |
+| LSP 路径校验 | — | — | — | `zhuye-lsp` 单测：工作区内路径、越界路径、连续父目录，以及归一化前后指向外部或悬空的符号链接 | — |
 | 会话状态 Op(19 Op) | A1–A12 | serve_ops | K4、K9 | ✅ | — |
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R5 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
