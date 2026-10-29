@@ -385,7 +385,7 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
             Component::CurDir => {}
             Component::ParentDir => {
                 // 如果栈顶是 normal 组件就弹出;否则保留 `..`。
-                if !parts.is_empty() {
+                if parts.last().is_some_and(|part| part != "..") {
                     parts.pop();
                 } else if !absolute {
                     parts.push("..".into());
@@ -413,6 +413,18 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn normalize_preserves_unmatched_parent_components() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("../../file.rs")),
+            std::path::Path::new("../../file.rs")
+        );
+        assert_eq!(
+            normalize_path(std::path::Path::new("../dir/../file.rs")),
+            std::path::Path::new("../file.rs")
+        );
+    }
 
     #[test]
     fn resolve_path_absolute_outside_workspace_errors() {
