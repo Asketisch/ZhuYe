@@ -4883,6 +4883,7 @@ dependencies = [
  "globset",
  "lsp-types",
  "parking_lot",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

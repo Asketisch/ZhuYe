@@ -25,6 +25,7 @@ use lsp_types::{
     DidChangeTextDocumentParams, TextDocumentContentChangeEvent, TextDocumentItem, Uri,
 };
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 
 use crate::client::LspClientInner;
 use crate::error::LspError;
@@ -51,22 +52,32 @@ impl LspClientInner {
     /// 错误路径:`fs::read_to_string` 失败 → `LspError::Io`;`didOpen`
     /// 失败 → `LspError::Call`。
     pub async fn ensure_open(&self, path: &Path, uri: &Uri, lang_id: &str) -> Result<(), LspError> {
+        let file = fs::File::open(path).await.map_err(LspError::Spawn)?;
+        self.ensure_open_file(file, uri, lang_id).await
+    }
+
+    pub(crate) async fn ensure_open_file(
+        &self,
+        mut file: fs::File,
+        uri: &Uri,
+        lang_id: &str,
+    ) -> Result<(), LspError> {
         // 快路径:已 open 且 mtime 未变 → 直接返回(短锁拷贝,不跨 await)。
         let synced_mtime: Option<std::time::SystemTime> =
             self.docs.read().get(uri).and_then(|st| st.synced_mtime);
         if let Some(recorded) = synced_mtime {
-            let mtime = fs::metadata(path)
-                .await
-                .ok()
-                .and_then(|m| m.modified().ok());
+            let mtime = file.metadata().await.ok().and_then(|m| m.modified().ok());
             if mtime == Some(recorded) {
                 return Ok(());
             }
         }
         // 读盘。文件不存在(中间被删除)按 IO 错误处理,call 路径会传 ToolError::Io。
-        let meta = fs::metadata(path).await.map_err(LspError::Spawn)?;
+        let meta = file.metadata().await.map_err(LspError::Spawn)?;
         let mtime = meta.modified().ok();
-        let text = fs::read_to_string(path).await.map_err(LspError::Spawn)?;
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .await
+            .map_err(LspError::Spawn)?;
         // 已 open 但磁盘已变 → didChange 全量同步;首次 → didOpen。
         // (先在短语句里 clone 状态,guard 不能活到 await。)
         let existing: Option<DocumentState> = self.docs.read().get(uri).cloned();
@@ -183,6 +194,41 @@ mod tests {
         let inner = make_inner();
         inner.close_all().await;
         assert!(inner.docs.read().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pinned_file_sync_does_not_follow_replaced_directory() {
+        use std::os::unix::fs::symlink;
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join("dir")).unwrap();
+        std::fs::write(workspace.path().join("dir/doc.rs"), "inside").unwrap();
+        std::fs::write(outside.path().join("doc.rs"), "outside").unwrap();
+        let path = workspace.path().join("dir/doc.rs").canonicalize().unwrap();
+        let pinned = crate::safe_file::open_document(&path).unwrap();
+        std::fs::rename(workspace.path().join("dir"), workspace.path().join("old")).unwrap();
+        symlink(outside.path(), workspace.path().join("dir")).unwrap();
+
+        let (peer, mut receiver) = crate::transport::LspPeer::recording_stub_for_tests();
+        let mut inner = make_inner();
+        inner.peer = Arc::new(peer);
+        let uri: Uri = url::Url::from_file_path(&path)
+            .unwrap()
+            .as_str()
+            .parse()
+            .unwrap();
+        inner
+            .ensure_open_file(
+                fs::File::from_std(pinned.file.try_clone().unwrap()),
+                &uri,
+                "rust",
+            )
+            .await
+            .unwrap();
+        let msg = receiver.recv().await.unwrap();
+        assert_eq!(msg.params.unwrap()["textDocument"]["text"], "inside");
+        assert_eq!(inner.docs.read()[&uri].text, "inside");
     }
 
     #[test]
