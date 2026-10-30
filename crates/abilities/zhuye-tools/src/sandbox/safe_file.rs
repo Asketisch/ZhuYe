@@ -13,6 +13,25 @@ pub struct PinnedFile {
 }
 
 #[cfg(unix)]
+pub(super) fn directory_flags() -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    let flags = OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let flags = flags | OFlags::PATH;
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    // Darwin O_SEARCH = O_EXEC | O_DIRECTORY；只需要搜索权限，不要求目录可列举。
+    let flags = flags | OFlags::from_bits_retain(0x4000_0000);
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios"
+    )))]
+    let flags = flags | OFlags::RDONLY;
+    flags
+}
+
+#[cfg(unix)]
 /// 打开已经通过工作区边界校验的绝对路径，并拒绝沿途符号链接。
 pub fn open_readonly(path: &Path) -> io::Result<PinnedFile> {
     use rustix::fs::{self, Mode, OFlags};
@@ -29,19 +48,7 @@ pub fn open_readonly(path: &Path) -> io::Result<PinnedFile> {
     let (last, parents) = parts
         .split_last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file path has no file"))?;
-    let flags = OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let flags = flags | OFlags::PATH;
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    // Darwin O_SEARCH = O_EXEC | O_DIRECTORY；只需要搜索权限，不要求目录可列举。
-    let flags = flags | OFlags::from_bits_retain(0x4000_0000);
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios"
-    )))]
-    let flags = flags | OFlags::RDONLY;
+    let flags = directory_flags();
     let mut dir = File::from(fs::open("/", flags, Mode::empty())?);
     for part in parents {
         let Component::Normal(name) = part else {

@@ -5246,6 +5246,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zhuye-bm25",
  "zhuye-hooks",
  "zhuye-permissions",
