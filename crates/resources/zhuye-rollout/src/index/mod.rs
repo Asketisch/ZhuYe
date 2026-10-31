@@ -611,10 +611,7 @@ pub fn rename_session(base: &Path, id: ThreadId, new_name: &str) -> std::io::Res
             "rename: new name cannot be empty",
         ));
     }
-    let names_dir = base.join("_names");
-    std::fs::create_dir_all(&names_dir)?;
-    let path = names_dir.join(format!("{id}.name"));
-    std::fs::write(path, new_name.as_bytes())
+    write_session_sidecar(base, id, "name", new_name.as_bytes())
 }
 
 /// 读取 `id` 的已命名 session 名。`None` = 未命名(无 .name 文件);
@@ -622,11 +619,114 @@ pub fn rename_session(base: &Path, id: ThreadId, new_name: &str) -> std::io::Res
 /// `\n`,但 `read_to_string` 也不会;trim 是 defense-in-depth)。
 pub fn read_session_name(base: &Path, id: ThreadId) -> std::io::Result<Option<String>> {
     let path = base.join("_names").join(format!("{id}.name"));
+    reject_sidecar_link(&path)?;
     match std::fs::read_to_string(&path) {
         Ok(s) => Ok(Some(s.trim().to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// 写 `_names`/`_titles` sidecar。目录和目标都不得是符号链接；Unix 用
+/// 目录句柄 + `O_NOFOLLOW` 临时文件 + inode 校验，消除桌面端预检后的
+/// TOCTOU 窗口。
+pub fn write_session_sidecar(
+    base: &Path,
+    id: ThreadId,
+    kind: &str,
+    content: &[u8],
+) -> std::io::Result<()> {
+    let sidecar_dir = base.join(format!("_{kind}s"));
+    match std::fs::symlink_metadata(&sidecar_dir) {
+        Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "session sidecar directory is not a plain directory",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&sidecar_dir)?;
+        }
+        Err(error) => return Err(error),
+    }
+
+    #[cfg(unix)]
+    {
+        use rustix::fs::{self, AtFlags, Mode, OFlags};
+        use std::ffi::OsString;
+        use std::io::Write;
+
+        let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+        let dir = std::fs::File::from(fs::open(&sidecar_dir, dir_flags, Mode::empty())?);
+        let target = OsString::from(format!("{id}.{kind}"));
+        let temp = format!(".zhuye-{}.tmp", uuid::Uuid::new_v4());
+        let temp_flags =
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+        let mut file = std::fs::File::from(fs::openat(
+            &dir,
+            temp.as_str(),
+            temp_flags,
+            Mode::from_raw_mode(0o666),
+        )?);
+        let identity = fs::fstat(&file)?;
+        let result = (|| {
+            file.write_all(content)?;
+            file.sync_all()?;
+            let entry = fs::statat(&dir, temp.as_str(), AtFlags::SYMLINK_NOFOLLOW)?;
+            if entry.st_dev != identity.st_dev || entry.st_ino != identity.st_ino {
+                return Err(std::io::Error::other("sidecar temporary file was replaced"));
+            }
+            fs::renameat(&dir, temp.as_str(), &dir, &target).map_err(std::io::Error::other)
+        })();
+        if result.is_err() {
+            let _ = fs::unlinkat(&dir, temp.as_str(), AtFlags::empty());
+        }
+        result
+    }
+
+    #[cfg(not(unix))]
+    {
+        let path = sidecar_dir.join(format!("{id}.{kind}"));
+        if std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "session sidecar path is a symlink",
+            ));
+        }
+        std::fs::write(path, content)
+    }
+}
+
+fn reject_sidecar_link(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        match std::fs::symlink_metadata(parent) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "session sidecar directory is a symlink",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "session sidecar path is a symlink",
+        ));
+    }
+    Ok(())
 }
 
 /// 把 `RolloutRecord::Fork` 写到 `parent_id` 对应 session 的 JSONL 末尾,
