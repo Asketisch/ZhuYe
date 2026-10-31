@@ -1,6 +1,5 @@
 //! `notebook_edit` — Jupyter `.ipynb` cell 级别编辑工具。
 
-use std::fs;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -8,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zhuye_protocol::PermissionMode;
 
-use crate::sandbox::resolve_sandbox_path;
+use crate::sandbox::{PinnedWrite, open_readonly, resolve_sandbox_path};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// Notebook cell 类型(简化)。
@@ -112,8 +111,14 @@ fn load_notebook(
     path_str: &str,
 ) -> Result<(Notebook, std::path::PathBuf), ToolError> {
     let abs = resolve_sandbox_path(workspace, Path::new(path_str))?;
-    let raw =
-        fs::read_to_string(&abs).map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
+    let mut pinned =
+        open_readonly(&abs).map_err(|e| ToolError::Io(format!("open {path_str}: {e}")))?;
+    let mut raw = String::new();
+    use std::io::Read;
+    pinned
+        .file
+        .read_to_string(&mut raw)
+        .map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
     let nb: Notebook = serde_json::from_str(&raw).map_err(|e| ToolError::InvalidArgs {
         message: format!("invalid notebook JSON: {e}"),
     })?;
@@ -123,7 +128,11 @@ fn load_notebook(
 fn save_notebook(path: &Path, nb: &Notebook) -> Result<(), ToolError> {
     let j = serde_json::to_string_pretty(nb)
         .map_err(|e| ToolError::Execution(format!("serialize notebook: {e}")))?;
-    fs::write(path, j).map_err(|e| ToolError::Io(format!("write {}: {e}", path.display())))
+    let target = PinnedWrite::prepare(path)
+        .map_err(|e| ToolError::Io(format!("prepare {}: {e}", path.display())))?;
+    target
+        .replace(j.as_bytes())
+        .map_err(|e| ToolError::Io(format!("write {}: {e}", path.display())))
 }
 
 #[async_trait]
