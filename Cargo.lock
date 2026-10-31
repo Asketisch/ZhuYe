@@ -5083,6 +5083,7 @@ dependencies = [
  "chrono",
  "filetime",
  "parking_lot",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
