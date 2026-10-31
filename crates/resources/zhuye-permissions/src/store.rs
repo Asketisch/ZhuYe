@@ -13,10 +13,10 @@
 //! action = "deny"                      # 动作:allow / deny / ask
 //! ```
 //!
-//! v1.x 简化:无 lock / 并发写。如果并发 TUI + CLI 同时 add,最后写者
-//! 覆盖(同 `zhuye-rollout::path` 风格)。`add` 内部 read-modify-write
-//! 保证已有 rules 不丢。
+//! v1.2：`add` / `remove` 使用同目录 lock 文件的跨进程排他锁包裹
+//! read-modify-write，GUI 与 CLI 并发追加不会互相覆盖。
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -244,6 +244,22 @@ impl FilePermissionStore {
         }
         Ok(())
     }
+
+    /// 跨进程互斥锁。`permissions.toml` 可能同时被 GUI 与 CLI 修改；
+    /// read-modify-write 必须在锁内完成，否则并发追加会互相覆盖。
+    fn write_lock(&self) -> Result<File, PermissionsError> {
+        let parent = self.path.parent().ok_or(PermissionsError::NoHome)?;
+        std::fs::create_dir_all(parent)?;
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(parent.join("permissions.toml.lock"))?;
+        use fs2::FileExt;
+        file.lock_exclusive()?;
+        Ok(file)
+    }
 }
 
 #[async_trait::async_trait]
@@ -253,6 +269,7 @@ impl PermissionStore for FilePermissionStore {
     }
 
     async fn add(&self, rule: PermissionRule) -> Result<(), PermissionsError> {
+        let _lock = self.write_lock()?;
         let mut file = self.read()?;
         // "first match wins" + 用户 add 顺序隐式定 precedence → 不去重
         // 同名(tool 一致 + action 不同也算合法,后写的在尾部不影响 evaluate)。
@@ -265,6 +282,7 @@ impl PermissionStore for FilePermissionStore {
     }
 
     async fn remove(&self, tool: &str) -> Result<(), PermissionsError> {
+        let _lock = self.write_lock()?;
         let mut file = self.read()?;
         let before = file.rules.len();
         file.rules.retain(|r| r.tool != tool);

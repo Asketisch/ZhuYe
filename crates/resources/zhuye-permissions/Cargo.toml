@@ -16,6 +16,7 @@ thiserror          = { workspace = true }
 tracing            = { workspace = true }
 parking_lot        = { workspace = true }
 globset            = { workspace = true }
+fs2                = "0.4"
 
 [dev-dependencies]
 tokio    = { workspace = true }
