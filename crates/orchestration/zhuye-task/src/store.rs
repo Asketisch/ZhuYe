@@ -1,9 +1,9 @@
 //! `TaskStore` trait + `InMemoryTaskStore` + `FileTaskStore`。
 //!
 //! 持久化后端抽象,与 `zhuye-memory::MemoryStore` 同构(一个 trait +
-//! 一个 in-memory + 一个 file-backed 实现)。Phase 0 落地的最小可用版本;
-//! 跨进程文件锁用 per-list `tokio::sync::Mutex`(进程内序列化),跨进程
-//! 互斥留给后续 phase 加 `fs2` advisory lock。
+//! 一个 in-memory + 一个 file-backed 实现)。写入在进程内由 per-list
+//! `tokio::sync::Mutex` 串行化,跨进程用 per-list `.lock` 文件上的
+//! `fs2` advisory lock 互斥(GUI 与 CLI 同时分配 ID 时后到者等待)。
 //!
 //! 路径布局:
 //! ```text
@@ -23,6 +23,7 @@
 //!   按 id 升序返回(失败的文件跳过 + `tracing::warn`)。
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -211,6 +212,7 @@ impl FileTaskStore {
             Err(_) => 0,
         }
     }
+
 }
 
 #[async_trait]
@@ -223,6 +225,12 @@ impl TaskStore for FileTaskStore {
         let lock = self.lock_for(list).await;
         let _guard = lock.lock().await;
         let list_dir = self.dir_for(list);
+        // 锁获取可能等待其他进程,放进 spawn_blocking 避免阻塞 worker;
+        // File 存活期间 flock 保持有效,drop 时解锁。
+        let lock_dir = list_dir.clone();
+        let _file_lock = tokio::task::spawn_blocking(move || lock_file_blocking(&lock_dir))
+            .await
+            .map_err(|e| TaskError::Invalid(format!("join error: {e}")))??;
         // 同步 I/O 放进 spawn_blocking 避免阻塞 tokio runtime。
         let dir = list_dir.clone();
         let task_for_write = task.clone();
@@ -231,8 +239,7 @@ impl TaskStore for FileTaskStore {
                 .await
                 .map_err(|e| TaskError::Invalid(format!("join error: {e}")))?;
         result?;
-        // 同步提升高水位文件,避免 `next_id` 在外部直接写文件后读到
-        // 过期的 max id。`next_id` 与 `save` 共用 list-level 锁,无竞态。
+        // 同步提升高水位文件。跨进程锁保证外部 writer 不会读到过期值。
         let cur = self.read_hwm(&list_dir);
         if task.id > cur {
             let dir = list_dir.clone();
@@ -300,6 +307,10 @@ impl TaskStore for FileTaskStore {
         let lock = self.lock_for(list).await;
         let _guard = lock.lock().await;
         let list_dir = self.dir_for(list);
+        let lock_dir = list_dir.clone();
+        let _file_lock = tokio::task::spawn_blocking(move || lock_file_blocking(&lock_dir))
+            .await
+            .map_err(|e| TaskError::Invalid(format!("join error: {e}")))??;
         let cur = self.read_hwm(&list_dir);
         let next = cur + 1;
         let dir = list_dir.clone();
@@ -310,6 +321,22 @@ impl TaskStore for FileTaskStore {
         result?;
         Ok(next)
     }
+}
+
+/// 跨进程互斥锁。任务创建必须保证 `next_id`、`save` 和高水位更新
+/// 属于同一段临界区；进程内 mutex 不能阻止 GUI 与 CLI 同时分配 ID。
+/// 阻塞调用,应在 `spawn_blocking` 中执行。
+fn lock_file_blocking(list_dir: &Path) -> Result<File, TaskError> {
+    std::fs::create_dir_all(list_dir)?;
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(list_dir.join(".lock"))?;
+    use fs2::FileExt;
+    file.lock_exclusive()?;
+    Ok(file)
 }
 
 fn write_task_blocking(dir: &Path, task: &Task) -> Result<(), TaskError> {
@@ -456,6 +483,18 @@ mod tests {
         // 新建 store 读同一目录,高水位应恢复为 2。
         let s2 = FileTaskStore::new(dir.path());
         assert_eq!(s2.next_id(&"L".into()).await.unwrap(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_store_next_id_concurrent_stores_do_not_duplicate() {
+        let dir = TempDir::new().unwrap();
+        let s1 = Arc::new(FileTaskStore::new(dir.path()));
+        let s2 = Arc::new(FileTaskStore::new(dir.path()));
+        let list: ListId = "L".into();
+        let (a, b) = tokio::join!(s1.next_id(&list), s2.next_id(&list));
+        let mut ids = [a.unwrap(), b.unwrap()];
+        ids.sort();
+        assert_eq!(ids, [1, 2]);
     }
 
     #[tokio::test]
