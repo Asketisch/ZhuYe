@@ -640,3 +640,25 @@ async fn claim_next_available_isolated_per_list() {
     let claimed = m.claim_next_available(&"L2".into(), "w@x").await.unwrap();
     assert!(claimed.is_none(), "L2 空 list 不该拿到 L1 的任务");
 }
+
+#[tokio::test]
+async fn list_ids_cannot_escape_task_storage() {
+    let m = mgr();
+    for raw in ["../outside", "/etc", "a\\b", "a/b", "", "."] {
+        let list = raw.to_string();
+        assert!(
+            m.create_task(
+                &list,
+                "s".into(),
+                "d".into(),
+                None,
+                None,
+                serde_json::json!({})
+            )
+            .await
+            .is_err(),
+            "list '{raw}' must be rejected"
+        );
+        assert!(m.list_tasks(&list, false).await.is_err());
+    }
+}
