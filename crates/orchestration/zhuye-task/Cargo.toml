@@ -12,6 +12,7 @@ zhuye-tools    = { workspace = true }
 zhuye-subagent = { workspace = true }
 zhuye-config   = { workspace = true }
 zhuye-prompt   = { workspace = true }
+fs2                = "0.4"
 async-trait        = { workspace = true }
 parking_lot        = { workspace = true }
 serde              = { workspace = true }
