@@ -76,6 +76,12 @@ export interface ZhuyeAgentOptions {
    * 未提供时维持旧行为(透传宿主 stderr)。
    */
   onStderr?: (chunk: Buffer) => void;
+  /**
+   * 显式启用的插件 id 列表(如 `['harness-import@inline']`)。传入时以
+   * `--plugin <id>` 传给 serve,**覆盖** config 的
+   * `[plugins].enabled_plugins`;缺省 / 空数组 = 维持配置驱动。
+   */
+  plugins?: string[];
 }
 
 interface SpawnOptions {
@@ -83,6 +89,14 @@ interface SpawnOptions {
   args: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * 把 `plugins` 选项展开为 serve 的 `--plugin` 旗标序列(每个 id 一对);
+ * 空 / 缺省返回 `['serve']`(配置驱动)。纯函数,便于单测断言 argv。
+ */
+export function serveArgs(plugins?: string[]): string[] {
+  return ['serve', ...(plugins ?? []).flatMap((p) => ['--plugin', p])];
 }
 
 /** serve 子进程的句柄(spawn 后管理 stdout 行 / 待处理 future)。 */
@@ -129,7 +143,7 @@ export class ZhuyeAgent {
         process.env[ZHUYE_BIN_ENV] ??
         resolveBundledBinary() ??
         DEFAULT_BIN,
-      args: ['serve'],
+      args: serveArgs(options.plugins),
       cwd: options.cwd,
       env,
     };

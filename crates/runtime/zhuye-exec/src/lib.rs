@@ -197,6 +197,9 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         plan_mode: args.plan_mode,
         // exec 保持既有行为:未配置 [hooks] = 全部启用(仅 serve 收紧)。
         hooks_explicit_only: false,
+        // exec 无 --plugin 旗标:保持 config 驱动(显式插件加载是
+        // SDK 嵌入(serve)场景的能力)。
+        plugins: None,
     };
     let common = headless::bootstrap_common(&hargs).await?;
     let resume_thread_id_str = headless::resolve_resume_thread_id(

@@ -24,8 +24,8 @@
 // 运行:tests/run_all.sh sdk-ts,或
 //   ZHUYE_BIN=... node --test tests/sdk-ts/real-bin.test.mjs
 
-import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -292,6 +292,55 @@ describe('TS SDK 绑定层 × 真二进制', () => {
       const event = await agent.nextGlobalEvent({ timeoutMs: 5000 });
       assert.equal(event.id, '');
       assert.equal(event.msg.type, 'permission_mode_changed');
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('K10: plugins 选项显式加载插件并上报 plugin_loaded', async () => {
+    // `plugins: ['demo@inline']` 经 --plugin 传给 serve(覆盖 config,
+    // 而非配置驱动);启动时上报 plugin_loaded 全局事件。
+    // 依据:crates/runtime/zhuye-exec/src/headless.rs resolve_enabled_plugins、
+    // sdks/typescript/src/agent.ts serveArgs。
+    const pluginDir = join(ROOT, 'plugins', 'plugin-demo');
+    if (!existsSync(pluginDir)) {
+      // 仓库不完整时跳过(node:test 无原生 skip,以断言占位)。
+      assert.ok(true, 'plugins/plugin-demo 不存在,跳过');
+      return;
+    }
+    // 先把 demo 插件装入隔离 HOME(等价 zhuye plugin install)。
+    const install = spawnSync(ZHUYE_BIN, [
+      'plugin',
+      'install',
+      pluginDir,
+      '--scope',
+      'user',
+    ]);
+    assert.equal(
+      install.status,
+      0,
+      `plugin install 失败:${install.stderr?.toString()}`
+    );
+
+    const agent = await ZhuyeAgent.spawn({
+      ...makeOptions(),
+      plugins: ['demo@inline'],
+    });
+    try {
+      // plugin_loaded 在 bootstrap 期发出,轮询全局队列(上限 ~15s)。
+      let loaded = null;
+      for (let i = 0; i < 15 && loaded === null; i++) {
+        const ev = await agent
+          .nextGlobalEvent({ timeoutMs: 1000 })
+          .catch(() => null);
+        if (ev && ev.msg.type === 'plugin_loaded') loaded = ev.msg;
+      }
+      assert.ok(loaded, '未收到 plugin_loaded 全局事件');
+      assert.equal(loaded.plugin, 'demo@inline', `插件 id 不符:${JSON.stringify(loaded)}`);
+      assert.ok(
+        (loaded.command_count ?? 0) >= 1,
+        `应有 demo:hello 命令:${JSON.stringify(loaded)}`
+      );
     } finally {
       await agent.close();
     }

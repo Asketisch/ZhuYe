@@ -119,6 +119,8 @@ jobs:
       - run: pip install pytest
       - name: build zhuye binary (release)
         run: cargo build --release -p zhuye-cli
+      - name: build zhuye-import (会话导入用例需要)
+        run: cargo build --release -p zhuye-import
       - name: build mock MCP server (审批用例需要)
         run: cargo build -p zhuye-mcp
       - run: npm ci

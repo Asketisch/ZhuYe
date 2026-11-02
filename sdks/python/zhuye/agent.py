@@ -70,6 +70,10 @@ class ZhuyeAgentOptions:
     cwd: Optional[Path] = None
     env: Optional[dict[str, str]] = None
     handshake_timeout_secs: float = DEFAULT_HANDSHAKE_TIMEOUT
+    # 显式启用的插件 id 列表(如 ["harness-import@inline"])。传入时以
+    # `--plugin <id>` 传给 serve,**覆盖** config 的
+    # [plugins].enabled_plugins;None / 空 = 维持配置驱动。
+    plugins: Optional[list[str]] = None
     # 子进程 stderr 转发开关。None(默认)= 维持旧行为(透传宿主
     # stderr);设为 Callable[[bytes], None] 时每个原始块交给回调
     # (落文件 / 送日志系统 / 过滤降噪);设为 "" 或 False 时完全静默,
@@ -82,6 +86,18 @@ class ZhuyeAgentOptions:
 class _RegisteredTool:
     spec: RemoteToolSpec
     handler: ToolHandler
+
+
+def _serve_args(options: "ZhuyeAgentOptions") -> list[str]:
+    """构造 `zhuye serve` 子命令 argv(`serve` + 显式插件旗标)。
+
+    `options.plugins` 每个 id 展开为一对 `--plugin <id>`;空 / None =
+    纯 `serve`(配置驱动)。纯函数,便于单测断言 argv 映射。
+    """
+    args = ["serve"]
+    for pid in options.plugins or []:
+        args += ["--plugin", str(pid)]
+    return args
 
 
 def _text_output(text: str, *, is_error: bool = False) -> ToolOutput:
@@ -181,7 +197,7 @@ class ZhuyeAgent:
         # `readline()` 文本逐行读取。`bufsize=0` 会让 stdout 退化为
         # raw `FileIO` —— 没有 `readline`,文本 JSONL 处理就崩。
         proc = subprocess.Popen(
-            [bin_path, "serve"],
+            [bin_path, *_serve_args(options)],
             cwd=options.cwd,
             env=env,
             stdin=subprocess.PIPE,

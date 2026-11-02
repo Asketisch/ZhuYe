@@ -66,3 +66,22 @@ describe('resolveBundledBinary 回退', () => {
     expect(bin.startsWith(dir)).toBe(true);
   });
 });
+
+describe('serveArgs 插件旗标映射', () => {
+  it('缺省 / 空列表 = 纯 serve(配置驱动)', async () => {
+    const { serveArgs } = await import('../src/agent.js');
+    expect(serveArgs()).toEqual(['serve']);
+    expect(serveArgs([])).toEqual(['serve']);
+  });
+
+  it('每个插件 id 展开为一对 --plugin <id>,顺序保持', async () => {
+    const { serveArgs } = await import('../src/agent.js');
+    expect(serveArgs(['harness-import@inline', 'demo@inline'])).toEqual([
+      'serve',
+      '--plugin',
+      'harness-import@inline',
+      '--plugin',
+      'demo@inline',
+    ]);
+  });
+});
