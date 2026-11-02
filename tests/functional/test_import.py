@@ -635,3 +635,75 @@ def test_I11b_批量失败退出码非零(sandbox: Sandbox) -> None:
     proc2 = run_import(sandbox, str(bad), str(good))
     assert proc2.returncode == 0, proc2.stdout
     assert "failed" in proc2.stdout and "imported" in proc2.stdout, proc2.stdout
+
+
+def test_I12_KMS插件全链路_MCP工具读写(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """install + serve --plugin → mock 模型调用
+    mcp__plugin:kms@inline:kms__kms_save_page / kms_get_page → 落盘到
+    `~/.zhuye/kms/`。与 I7(harness-import)同范式的第二个二进制插件。
+
+    依据:crates/abilities/zhuye-kms(KnowledgeManager)+
+    crates/abilities/zhuye-kms/src/bin/zhuye-kms-server.rs(MCP server)+
+    plugins/kms/。
+    """
+    kms_bin = Path(ZHUYE_BIN).parent / "zhuye-kms-server"
+    if not kms_bin.is_file():
+        pytest.skip(f"zhuye-kms-server 二进制不存在:{kms_bin}(先 ./scripts/build_kms_plugin.sh)")
+    plugin_dir = REPO_ROOT / "plugins" / "kms"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/kms 不存在")
+    bin_dir = plugin_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shutil.copy2(kms_bin, bin_dir / "zhuye-kms-server")
+
+    inst = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert inst.returncode == 0, inst.stderr + inst.stdout
+
+    tool_create = "mcp__plugin:kms@inline:kms__kms_create_wiki"
+    tool_save = "mcp__plugin:kms@inline:kms__kms_save_page"
+    tool_get = "mcp__plugin:kms@inline:kms__kms_get_page"
+    script = mock_script([
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_create,
+            "args": {"name": "deploy", "description": "发布运维"},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_save,
+            "args": {"wiki": "deploy", "page": "runbook",
+                     "content": "# 发布流程\n先跑 functional 套件", "tags": ["ops"]},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_get,
+            "args": {"wiki": "deploy", "page": "runbook"},
+        }),
+        '{"type":"text","text":"已记录"}',
+    ])
+    s = serve_session(args=["--plugin", "kms@inline"], env=sandbox.mock_env(script))
+    events = s.submit({"type": "user_input", "items": [{"type": "text", "text": "记一下发布流程"}]})
+    types = [e["msg"]["type"] for e in events]
+    assert "turn_complete" in types, types
+
+    # 1) save 工具成功。
+    ends = [e for e in events if e["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == 3, f"应有三个 tool_call_end:{types}"
+    assert ends[0]["msg"]["is_error"] is False, f"create 失败:{ends[0]['msg']}"
+    assert ends[1]["msg"]["is_error"] is False, f"save 失败:{ends[1]['msg']}"
+    save_text = "".join(
+        c.get("text", "") for c in ends[1]["msg"]["output"]["content"] if isinstance(c, dict)
+    )
+    assert "runbook" in save_text, save_text
+
+    # 2) get 工具读回原文(落盘到 ~/.zhuye/kms/)。
+    assert ends[2]["msg"]["is_error"] is False, f"get 失败:{ends[2]['msg']}"
+    get_text = "".join(
+        c.get("text", "") for c in ends[2]["msg"]["output"]["content"] if isinstance(c, dict)
+    )
+    assert "先跑 functional 套件" in get_text, get_text
+
+    # 3) 磁盘上有真实文件(不经 server 视角,直接验证存储)。
+    page = sandbox.home / ".zhuye/kms/deploy/pages/runbook.md"
+    assert page.exists(), f"页面未落盘:{page}"
+    assert "发布流程" in page.read_text()
