@@ -1,0 +1,16 @@
+# Computer Use 插件 —— 屏幕截取 + 鼠标键盘输入(MCP 工具,宿主 Prompt 审批)。
+#
+# 使用前必须先构建二进制(装插件 = 授权任意代码执行;本插件二进制可
+# 操作屏幕与输入设备,请仅在信任的环境安装):
+#   ./scripts/build_computer_use_plugin.sh        # 默认开 real feature(xcap/enigo)
+#   zhuye plugin install plugins/computer-use --scope user
+#   zhuye plugin enable computer-use@inline
+#
+# macOS 首次使用需授予「屏幕录制」与「辅助功能」权限;未授权时工具
+# 返回 Unavailable(isError),不 panic。
+name = "computer-use"
+version = "0.1.0"
+description = "Computer Use:截屏 / 鼠标点击 / 键盘输入 / 滚轮(xcap + enigo;缺权限或 headless 时优雅降级)"
+keywords = ["computer-use", "screenshot", "automation"]
+commands = "./commands"
+mcp_servers = "./.mcp.json"

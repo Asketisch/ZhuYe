@@ -40,6 +40,7 @@
 | 持久化(rollout / 截断 / 索引 / 标题 / 导出 / cron store) | P1–P8 | cli_deep(session) | — | ✅ | P1–P2 |
 | 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | KMS 知识库插件(install → serve --plugin → MCP 读写 → 磁盘落盘) | I12 | —(独立二进制 `zhuye-kms-server`) | — | ✅(zhuye-kms 28 例) | — |
+| Computer Use 插件(headless 降级 Unavailable 不 panic / 会话存活;真机截屏走 real feature 手动验) | I13 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
 | 编排(子代理/讨论/任务/团队/squad 委派/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅(squad / actor 22 例) | — |
 | CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
@@ -357,11 +358,11 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `functional/test_skills.py` | 3 条(SK1–SK3) |
 | `functional/test_recovery.py` | 11 条(R5 + X6) |
 | `functional/test_persistence.py` | 11 条(P1–P8) |
-| `functional/test_import.py` | 15 条(I1–I12) |
+| `functional/test_import.py` | 16 条(I1–I13) |
 | `functional/test_orchestration.py` | 5 条(O5) |
 | `functional/test_cli.py` | 7 条(C1–C7) |
 | `functional/test_bugfixes.py` | 12 条(缺陷修复回归) |
-| **能力覆盖层合计** | **99 条** |
+| **能力覆盖层合计** | **100 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |

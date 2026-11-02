@@ -707,3 +707,54 @@ def test_I12_KMS插件全链路_MCP工具读写(sandbox: Sandbox, mock_script, s
     page = sandbox.home / ".zhuye/kms/deploy/pages/runbook.md"
     assert page.exists(), f"页面未落盘:{page}"
     assert "发布流程" in page.read_text()
+
+
+def test_I13_computer_use插件_降级不panic(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """computer-use 插件(headless 构建无 real feature)→ 工具调用返回
+    Unavailable(isError 文案),**不 panic**、会话存活。
+
+    依据:crates/integrations/zhuye-computer-use/src/backend.rs(优雅降级)
+    + plugins/computer-use/。CI 无屏幕,真机路径(manual):构建 real feature
+    后本地验证截屏。
+    """
+    cu_bin = Path(ZHUYE_BIN).parent / "zhuye-computer-use-server"
+    if not cu_bin.is_file():
+        pytest.skip(f"zhuye-computer-use-server 二进制不存在:{cu_bin}")
+    plugin_dir = REPO_ROOT / "plugins" / "computer-use"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/computer-use 不存在")
+    bin_dir = plugin_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shutil.copy2(cu_bin, bin_dir / "zhuye-computer-use-server")
+
+    inst = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert inst.returncode == 0, inst.stderr + inst.stdout
+
+    tool = "mcp__plugin:computer-use@inline:computer__computer_screenshot"
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": tool, "args": {}}),
+        '{"type":"text","text":"done"}',
+    ])
+    s = serve_session(args=["--plugin", "computer-use@inline"], env=sandbox.mock_env(script))
+    events = s.submit({"type": "user_input", "items": [{"type": "text", "text": "截个屏"}]})
+    types = [e["msg"]["type"] for e in events]
+    assert "turn_complete" in types, types
+
+    end = next(e for e in events if e["msg"]["type"] == "tool_call_end")
+    # headless 二进制(无 real feature)→ isError + Unavailable 文案,
+    # 而非 crash / 工具不存在。
+    out_text = "".join(
+        c.get("text", "") for c in end["msg"]["output"]["content"] if isinstance(c, dict)
+    )
+    if end["msg"]["is_error"]:
+        assert "不可用" in out_text or "Unavailable" in out_text or "rebuild" in out_text, (
+            f"降级文案异常:{out_text}"
+        )
+    else:
+        # 真机(real feature 构建且授权)→ 成功元信息。
+        assert "screenshot captured" in out_text, out_text
+
+    # 会话存活:turn 正常收尾(terminal 是 turn_complete,submission_closed
+    # 是 wire 收尾标记,不算 turn 事件)。
+    turn_types = [t for t in types if t != "submission_closed"]
+    assert turn_types[-1] == "turn_complete", types

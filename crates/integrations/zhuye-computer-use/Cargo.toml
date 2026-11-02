@@ -1,0 +1,31 @@
+[package]
+name = "zhuye-computer-use"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: Computer Use 抽象层(截屏 / 鼠标 / 键盘;plugins/computer-use 的能力本体)"
+
+[dependencies]
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+zhuye-config       = { workspace = true }
+
+# 平台重依赖做成 feature(默认关)—— workspace check / CI 不拉 GUI 栈;
+# `real` feature(enable)才引入 xcap/enigo,构建插件二进制时开。
+xcap = { version = "0.9", optional = true }
+enigo = { version = "0.6", optional = true }
+image = { version = "0.25", optional = true }
+
+[features]
+default = []
+# 真实后端(截屏 + 输入)。
+real = ["dep:xcap", "dep:enigo", "dep:image"]
+
+[[bin]]
+name = "zhuye-computer-use-server"
+path = "src/bin/zhuye-computer-use-server.rs"
+
+[dev-dependencies]
+tempfile = "3"
