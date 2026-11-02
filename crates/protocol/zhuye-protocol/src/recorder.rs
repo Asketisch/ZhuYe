@@ -58,8 +58,10 @@ pub struct SessionInfo {
     pub message_count: usize,
     /// v1.x:会话标题(从首条 User 消息预览生成,见
     /// [`derive_title`])。`None` = 无首条 user 文本(空会话 / 旧文件)。
-    /// 用户 `/rename` 的自定义名优先级更高(TUI 层先读 .name 文件再回退
-    /// 本字段)。`#[serde(default)]` 保证旧 JSONL / 旧 reader 反序列化不破。
+    /// 用户 `/rename` 的自定义名优先级更高 —— 展示标题请用
+    /// `zhuye_rollout::index::resolve_display_title`(框架侧统一合并
+    /// `_names/<id>.name` 与本字段,客户端不再各自实现)。
+    /// `#[serde(default)]` 保证旧 JSONL / 旧 reader 反序列化不破。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// v1.x: 整 session 累计 input tokens(聚合自 `RolloutRecord::TokenCount`)。
