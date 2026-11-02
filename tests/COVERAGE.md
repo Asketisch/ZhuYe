@@ -38,7 +38,7 @@
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R5 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
 | 持久化(rollout / 截断 / 索引) | P1–P5 | cli_deep(session) | — | ✅ | P1–P2 |
-| 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I8 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
+| 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
 | 编排(子代理/讨论/任务/团队/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅ | — |
 | CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
@@ -144,7 +144,18 @@ rewind 物理截断(记录减少 + `.rewind-<ts>.bak` 备份)/ `zhuye session ls
   `mcp__plugin:harness-import@inline:importer__import_session` → 工具
   成功、会话落盘、`turn_complete`;
 - **I8 可续跑**:`exec --resume <导入id>` 续跑追加同一文件,且文件内全部
-  `session_meta.session_id` 一致(resume 回填 session_id 的回归断言)。
+  `session_meta.session_id` 一致(resume 回填 session_id 的回归断言);
+- **I9 三个 CLI 开关端到端**:`--include-thinking`(thinking 折叠为
+  `<thinking>` 文本 / 默认丢弃)、`--keep-injected`(Codex 注入行与
+  developer 行默认过滤 / 开启后**前置到真实 user 所在轮**而非独立成轮
+  —— 回归:修复前注入各自开轮,产生只有 user 无 assistant 的孤立消息)、
+  `--include-sidechain`(Claude 子代理行默认跳过 / 开启后成轮);
+- **I10 `--all` discover**:claude-code(`~/.claude/projects/*`)与
+  codex(`~/.codex/sessions/**` 递归)目录扫描各自导入成功,重复 `--all`
+  全部 skipped 且退出码 0;
+- **I11 MCP 与批量语义**:直连 `zhuye-import mcp` 调 `list_importable`
+  成功返回来源清单;全失败 → 退出码 1,部分失败 → 退出码 0 且 failed
+  行可见(批量语义)。
 
 ### O 组 编排(`test_orchestration.py`)
 子代理 `call_explorer`(子代理执行 → 回执进历史)/ 讨论编排(transcript +
@@ -332,11 +343,11 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `functional/test_skills.py` | 3 条(SK1–SK3) |
 | `functional/test_recovery.py` | 11 条(R5 + X6) |
 | `functional/test_persistence.py` | 8 条(P1–P5) |
-| `functional/test_import.py` | 8 条(I1–I8) |
+| `functional/test_import.py` | 14 条(I1–I11) |
 | `functional/test_orchestration.py` | 5 条(O5) |
 | `functional/test_cli.py` | 6 条(C6) |
 | `functional/test_bugfixes.py` | 12 条(缺陷修复回归) |
-| **能力覆盖层合计** | **86 条** |
+| **能力覆盖层合计** | **92 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |

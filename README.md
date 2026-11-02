@@ -136,6 +136,8 @@ Python 包在 [`sdks/python`](sdks/python)（仅标准库），TypeScript 包在
 
 参数细节看 `zhuye <命令> --help`。会话续跑用 `zhuye exec --resume`，按序号（`-r 2`）或完整 UUID 均可。
 
+另有一个独立二进制 **`zhuye-import`**：把 Claude Code / Codex / ZCode 的历史会话导入为烛夜会话（导入后 `zhuye session ls` 可见、`exec --resume` 可续跑）。它也是插件 [`plugins/harness-import`](plugins/harness-import/) 的能力核心 —— 装插件后在对话里 `/harness-import <路径>` 即可用；SDK 用户默认不装、零依赖。详见 [`plugins/harness-import/README.md`](plugins/harness-import/README.md)。
+
 ## 配置要点
 
 配置在 `~/.zhuye/config.toml`（`ZHUYE_HOME` 可整体挪走）：
@@ -191,6 +193,7 @@ max_tokens = 4096                             # 可选：默认输出上限
 | [`docs/tools-and-hooks.md`](docs/tools-and-hooks.md) | 内置工具与 hooks |
 | [`docs/plugins.md`](docs/plugins.md) | 插件开发：manifest、capability、marketplace |
 | [`docs/plugin-usage.md`](docs/plugin-usage.md) | 插件使用与运维：CLI 命令、安装启用、排障 |
+| [`plugins/`](plugins/) | 仓库自带插件：`harness-import` 导入外部 Harness 历史会话（Claude Code / Codex / ZCode） |
 | [`docs/PLAN_MODE.md`](docs/PLAN_MODE.md) | Plan mode |
 | [`docs/sanitize.md`](docs/sanitize.md) | 输出净化 |
 | [`docs/FREE_MODEL_PRACTICE.md`](docs/FREE_MODEL_PRACTICE.md) | 免费模型实跑实践 |
