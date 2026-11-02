@@ -383,25 +383,28 @@ mod tests {
     async fn non_utf8_output_does_not_break_pump() {
         let dir = tempfile::tempdir().unwrap();
         let pool = ShellSessions::new();
-        // 非法 UTF-8 字节 + 后续正常行:容错解码不能让 reader 提前退出。
+        // 非法 UTF-8 字节(POSIX 八进制转义)+ 后续正常行:容错解码不能让
+        // reader 提前退出。增量累积(read_delta 消费游标)。
         let session = pool
             .run(
                 vec![
                     "sh".into(),
                     "-c".into(),
-                    "printf 'bad\\xff\\xfe bytes\\n'; echo after-binary".into(),
+                    "printf 'bad\\377\\376 bytes\\n'; echo after-binary".into(),
                 ],
                 dir.path(),
                 true,
             )
             .unwrap();
+        let mut all_stdout = String::new();
         for _ in 0..60 {
             let (delta, exited) = session.read_delta();
-            if exited && delta.stdout.contains("after-binary") {
+            all_stdout.push_str(&delta.stdout);
+            if exited && all_stdout.contains("after-binary") {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        panic!("非 UTF-8 输出后 pump 应继续工作");
+        panic!("非 UTF-8 输出后 pump 应继续工作(累积:{all_stdout})");
     }
 }
