@@ -358,10 +358,10 @@ def rollout_records(home: Path) -> list[dict[str, Any]]:
 def rollout_thread_id(home: Path) -> str:
     """从**文件名**取 thread id。
 
-    关键:`session_configured.session_id` 与会话文件名里的 thread id
-    **不是同一个** —— exec/serve 路径没有注入 `with_session_id`,core 用
-    `cfg.session_id.unwrap_or_default()`,而 `ThreadId::default()` 是新的
-    随机 uuid。`--resume` 的参数必须用文件名的 id。
+    `bootstrap_resumed` 现已回填 `with_session_id`(resume 历史 reliably
+    进上下文),`session_configured.session_id` 与文件名 id 在 resume 路径
+    已一致;新会话路径两者仍是不同 id(exec/serve 首轮各自分配)。此 helper
+    一律以文件名 id 为准 —— 它是 reader 按 id 定位文件的依据。
     """
     files = rollout_files(home)
     if not files:
