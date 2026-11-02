@@ -1,7 +1,7 @@
 //! 库门面 M4 依赖接线。
 //!
-//! 把 `zhuye-exec::bootstrap_m4` 的核心逻辑下沉一份到库 crate,
-//! 让 `ZhuyeBuilder::with_defaults()` 在不依赖 `zhuye-exec` 私有
+//! 把 `zhuye-exec::bootstrap_m4` 的核心逻辑下沉一份到库 crate,让
+//! `ZhuyeBuilder::build()` / `build_async()` 在不依赖 `zhuye-exec` 私有
 //! helper 的情况下,也能拿到一份完整的 M4 依赖(compactor / memory /
 //! skills / prompt builder / agent def / recorder / note store / file
 //! recovery / subagent registry)。
@@ -191,7 +191,6 @@ pub fn build_default_m4_with_prompts(
 
 /// 在无法走完整 bootstrap(没有 LLM provider、纯单测场景)时,
 /// 返回一份不带 compactor / 不带 LLM summarizer 的最小 M4Deps。
-/// 用于 `with_defaults` 内部"软退化"路径。
 #[allow(dead_code)]
 pub fn build_minimal_m4(agent_name: &str) -> M4Deps {
     default_m4_deps(agent_name)
