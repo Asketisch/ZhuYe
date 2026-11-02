@@ -7034,6 +7034,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zhuye-git-tools"
+version = "0.1.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zhuye-git",
+]
+
+[[package]]
 name = "zhuye-goal"
 version = "0.1.8"
 dependencies = [

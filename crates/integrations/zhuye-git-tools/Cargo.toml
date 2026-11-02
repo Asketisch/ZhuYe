@@ -1,0 +1,18 @@
+[package]
+name = "zhuye-git-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: git 工作流 MCP server(分支/PR 探测 + checkpoint;plugins/git-tools 的能力本体)"
+
+[dependencies]
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+zhuye-git          = { workspace = true }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[bin]]
+name = "zhuye-git-tools-server"
+path = "src/bin/zhuye-git-tools-server.rs"

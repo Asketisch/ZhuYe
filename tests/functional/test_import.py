@@ -828,3 +828,89 @@ def _text_of(msg: dict) -> str:
     return "".join(
         c.get("text", "") for c in msg.get("output", {}).get("content", []) if isinstance(c, dict)
     )
+
+
+def test_I15_git_tools插件_探测与checkpoint(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """git-tools 插件:install → serve --plugin → `git_branch_summary`
+    (真 git 仓库:分支名 + 无 PR)→ `git_checkpoint_create` → tag 落盘
+    (`git tag` 可见 zhuye-cp/*)。
+
+    依据:crates/resources/zhuye-git(branch 探测 + checkpoint)+
+    crates/integrations/zhuye-git-tools + plugins/git-tools/。
+    """
+    gt_bin = Path(ZHUYE_BIN).parent / "zhuye-git-tools-server"
+    if not gt_bin.is_file():
+        pytest.skip(f"zhuye-git-tools-server 二进制不存在:{gt_bin}")
+    plugin_dir = REPO_ROOT / "plugins" / "git-tools"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/git-tools 不存在")
+    bin_dir = plugin_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shutil.copy2(gt_bin, bin_dir / "zhuye-git-tools-server")
+    hook_bin = Path(ZHUYE_BIN).parent / "zhuye-cp-hook"
+    if hook_bin.is_file():
+        shutil.copy2(hook_bin, bin_dir / "zhuye-cp-hook")
+
+    # 真 git 仓库(git 缺失则整测跳过)。
+    import subprocess
+    repo = sandbox.cwd / "repo"
+    repo.mkdir(exist_ok=True)
+    git = lambda *a, **kw: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True, **kw)
+    if git("init", "-q").returncode != 0:
+        pytest.skip("git 不可用")
+    git("config", "user.email", "t@zhuye.local")
+    git("config", "user.name", "zhuye-test")
+    (repo / "a.txt").write_text("v1\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "init")
+
+    inst = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert inst.returncode == 0, inst.stderr + inst.stdout
+
+    tool_summary = "mcp__plugin:git-tools@inline:git__git_branch_summary"
+    tool_cp = "mcp__plugin:git-tools@inline:git__git_checkpoint_create"
+    script = mock_script([
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_summary,
+            "args": {"cwd": str(repo)},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_cp,
+            "args": {"cwd": str(repo), "label": "I15 snapshot"},
+        }),
+        '{"type":"text","text":"done"}',
+    ])
+    s = serve_session(args=["--plugin", "git-tools@inline"], env=sandbox.mock_env(script))
+    events = s.submit({"type": "user_input", "items": [{"type": "text", "text": "看看仓库"}]})
+    types = [e["msg"]["type"] for e in events]
+    assert "turn_complete" in [t for t in types if t != "submission_closed"], types
+
+    ends = [e for e in events if e["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == 2, f"应有二个 tool_call_end:{types}"
+    # 1) 探测:分支名(master/main)+ 无 PR。
+    assert ends[0]["msg"]["is_error"] is False, f"summary 失败:{ends[0]['msg']}"
+    summary = _text_of(ends[0]["msg"])
+    assert "branch: " in summary, summary
+    assert "open PR:" in summary, summary
+    # 2) checkpoint:无改动 → no-changes(初始提交后工作区干净)。
+    assert ends[1]["msg"]["is_error"] is False, f"checkpoint 失败:{ends[1]['msg']}"
+    cp_text = _text_of(ends[1]["msg"])
+    assert "no-changes" in cp_text or "checkpoint" in cp_text, cp_text
+
+    # 3) checkpoint 的落盘验证:写点改动 → 让 server 直接建快照 → tag 存在。
+    (repo / "b.txt").write_text("v2\n")
+    req1 = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    req2 = json.dumps({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "git_checkpoint_create",
+                   "arguments": {"cwd": str(repo), "label": "I15"}},
+    })
+    cp2 = subprocess.run(
+        [str(gt_bin)], input=req1 + "\n" + req2 + "\n",
+        capture_output=True, text=True, timeout=30,
+    )
+    assert '"isError":false' in cp2.stdout, cp2.stdout + cp2.stderr
+    tags = git("tag", "--list").stdout
+    assert "zhuye-cp/" in tags, f"checkpoint tag 未打:{tags}"
