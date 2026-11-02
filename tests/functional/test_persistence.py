@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 from typing import Any
@@ -232,3 +233,54 @@ def test_P6_标题精化_block数组与自定义名合并(serve_session, mock_sc
     assert title_lines == ["Title:   我的会话"], (
         f"自定义名应优先于派生标题,实际={title_lines!r}"
     )
+
+
+def test_P7_导出稿含Usage段与模型级拆分(serve_session, mock_script, sandbox) -> None:
+    """`zhuye session export` 输出完整转写稿:对话内容 + 文末 Usage 段
+    (per-model 表 / token 总量),不再走 4000 字符截断的 Pill 预览版。
+
+    依据:crates/resources/zhuye-rollout/src/export.rs
+    `render_transcript` / `render_usage_section`(收编自 ReflectDesktop)。
+    """
+    require_binary()
+    # mock 两轮:第一轮普通文本,第二轮触发一次 bash 工具调用(带 token_count)。
+    script = mock_script([
+        '{"type":"text","text":"第一轮回复"}',
+        '{"type":"tool_call","name":"bash","arguments":{"command":"echo hi"}}',
+        '{"type":"text","text":"工具已完成"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "第一轮"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+    time.sleep(0.8)
+    files = rollout_files(sandbox.home)
+    assert files, "无会话文件"
+    records = [json.loads(line) for f in files for line in f.read_text().splitlines() if line.strip()]
+    thread_id = None
+    for r in records:
+        if r.get("type") == "session_meta":
+            thread_id = r["session_id"]
+    assert thread_id, "无 session_meta"
+
+    proc = run_cli(sandbox, "session", "export", thread_id, env={"ZHUYE_MODEL": "mock"}, timeout=30)
+    assert proc.returncode == 0, f"session export 退出码={proc.returncode}:{proc.stderr}"
+    out = proc.stdout
+    # 1) 对话转写稿:轮次标题 + 角色标记。
+    assert "## Turn" in out and "**user**" in out and "**agent**" in out, (
+        f"缺对话转写稿:\n{out[:800]!r}"
+    )
+    # 2) Usage 段:总量行 + per-model 表(字段级)。
+    assert "## Usage" in out, f"缺 Usage 段:\n{out[:800]!r}"
+    assert "- tokens:" in out and "in /" in out, f"缺 token 总量行:\n{out[:800]!r}"
+    assert "### Per model" in out, f"缺 per-model 表:\n{out[:800]!r}"
+    # 3) 导出稿不被 4000 字符上限截断(长会话仍完整)。
+    assert "[truncated" not in out, "导出稿不应带 Pill 预览版的截断注脚"
+    # 4) --out 落盘:文件内容与 stdout 一致,且是原子写的完整文件。
+    dest = sandbox.cwd / "export.md"
+    proc = run_cli(sandbox, "session", "export", thread_id, "--out", str(dest),
+                   env={"ZHUYE_MODEL": "mock"}, timeout=30)
+    assert proc.returncode == 0, f"session export --out 退出码={proc.returncode}:{proc.stderr}"
+    assert dest.exists(), "导出文件未生成"
+    assert "## Usage" in dest.read_text(), "落盘稿缺 Usage 段"

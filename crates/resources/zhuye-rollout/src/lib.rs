@@ -29,7 +29,10 @@ pub mod search;
 pub mod types;
 pub mod writer;
 
-pub use export::{MAX_MARKDOWN_CHARS, to_markdown};
+pub use export::{
+    MAX_MARKDOWN_CHARS, MarkdownExport, export_session_markdown, exports_dir, render_transcript,
+    render_usage_section, to_markdown,
+};
 pub use index::{all_model_usage, derive_title_from_body, resolve_display_title, session_stats};
 pub use reader::{replay, replay_path};
 pub use search::{SearchHit, SearchOptions, search_sessions};

@@ -37,7 +37,7 @@
 | 会话状态 Op(19 Op) | A1–A12 | serve_ops | K4、K9 | ✅ | — |
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R5 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
-| 持久化(rollout / 截断 / 索引 / 标题) | P1–P6 | cli_deep(session) | — | ✅ | P1–P2 |
+| 持久化(rollout / 截断 / 索引 / 标题 / 导出) | P1–P7 | cli_deep(session) | — | ✅ | P1–P2 |
 | 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
 | 编排(子代理/讨论/任务/团队/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅ | — |
@@ -126,7 +126,9 @@ rewind 物理截断(记录减少 + `.rewind-<ts>.bak` 备份)/ `zhuye session ls
 能列出该会话。P5 覆盖旧日期会话通过 thread id、内部 session id、`-c`、`-r 1` 恢复后续写原文件。
 P6 覆盖标题精化:block 数组 content(`[{"type":"text",...}]`)提取 text 块派生
 标题(不再泄漏 JSON 键名),`session rename` 自定义名经 `resolve_display_title`
-优先于派生标题(`session show` 的 `Title:` 行字段级断言)。
+优先于派生标题(`session show` 的 `Title:` 行字段级断言)。P7 覆盖 `session
+export` 完整转写稿:13 变体渲染 + 文末 Usage 段(per-model 表 / token 总量),
+不经 4000 字符截断;`--out` 原子写落盘。
 
 ### I 组 会话导入(`test_import.py`)
 独立二进制 `zhuye-import`(crate `crates/integrations/zhuye-import`,
@@ -345,7 +347,7 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `functional/test_tools.py` | 11 条(T1–T10) |
 | `functional/test_skills.py` | 3 条(SK1–SK3) |
 | `functional/test_recovery.py` | 11 条(R5 + X6) |
-| `functional/test_persistence.py` | 9 条(P1–P6) |
+| `functional/test_persistence.py` | 10 条(P1–P7) |
 | `functional/test_import.py` | 14 条(I1–I11) |
 | `functional/test_orchestration.py` | 5 条(O5) |
 | `functional/test_cli.py` | 6 条(C6) |
