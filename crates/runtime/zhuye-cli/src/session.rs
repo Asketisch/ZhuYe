@@ -682,10 +682,33 @@ fn preview_message_body(v: &serde_json::Value) -> String {
         .get("content")
         .and_then(|c| match c {
             serde_json::Value::String(s) => Some(s.clone()),
-            other => other
-                .get("text")
-                .and_then(|t| t.as_str())
-                .map(str::to_string),
+            // v1.2+ 数组形态(protocol ContentBlock):取 text 块拼接;
+            // 无文本(纯工具轮)回退 tool_use 名摘要,避免预览恒为空。
+            other => {
+                if let Some(blocks) = other.as_array() {
+                    let texts: Vec<&str> = blocks
+                        .iter()
+                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .filter(|t| !t.trim().is_empty())
+                        .collect();
+                    if !texts.is_empty() {
+                        return Some(texts.join(" "));
+                    }
+                    let tools: Vec<String> = blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                        .filter_map(|b| b.get("name").and_then(|n| n.as_str()))
+                        .map(|n| format!("[tool:{n}]"))
+                        .collect();
+                    if !tools.is_empty() {
+                        return Some(tools.join(" "));
+                    }
+                }
+                other
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string)
+            }
         })
         .unwrap_or_default();
     let single_line = body.replace('\n', " ").trim().to_string();
