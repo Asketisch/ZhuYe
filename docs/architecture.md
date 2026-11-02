@@ -84,7 +84,7 @@
 
 `Zhuye::builder(...)` 的链式方法:`workspace` / `approvals` / `plan_mode` /
 `with_plugins` / `with_prompts_dir` / `with_telemetry` / `with_traces_dir` /
-`with_rollout_dir` / `without_rollout` / `with_defaults`。
+`with_rollout_dir` / `without_rollout`(`with_defaults` 已删 —— `build()` 自带完整 M4)。
 
 ## 工具面裁剪
 
