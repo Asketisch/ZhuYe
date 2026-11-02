@@ -15,7 +15,7 @@
 | `abilities/` | llm, tools, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, bm25 | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、HookEngine、压缩 escalation、BM25 相关性排序等 |
 | `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, ast | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索 |
 | `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队、DAG 流水线、目标模式 |
-| `integrations/` | mcp, lsp, integration, stream | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端 |
+| `integrations/` | mcp, lsp, integration, stream, import | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端、外部 Harness 会话导入(Claude Code / Codex / ZCode;插件 `plugins/harness-import` 的能力核心,不进 SDK facade) |
 | `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(60+ re-exports + Builder)、PyO3 绑定 |
 
 ## 完整目录结构
@@ -55,7 +55,8 @@ crates/
 │   ├── zhuye-mcp             MCP 客户端(stdio / streamable-http)
 │   ├── zhuye-lsp             LSP 集成
 │   ├── zhuye-integration     集成胶水层
-│   └── zhuye-stream          流式会话后端
+│   ├── zhuye-stream          流式会话后端
+│   └── zhuye-import          外部 Harness 会话导入(Claude Code / Codex / ZCode)
 └── runtime/                运行时与入口
     ├── zhuye-core            AgentThread + 4 节点 StateGraph
     ├── zhuye-exec            headless + JSONL stdout + resume + serve
