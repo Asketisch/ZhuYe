@@ -171,12 +171,19 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
         { submissionId: 'unknown-probe' },
       );
       stdout.write(JSON.stringify({ id: 'unknown-probe', msg: { type: 'telemetry_event', payload: { x: 1 } } }) + '\n');
+      // v1.x additive 变体:side-channel(WP9)—— 真实新事件名,SDK 原样透传。
+      stdout.write(JSON.stringify({ id: 'unknown-probe', msg: {
+        type: 'side_channel_started', kind: 'started', id: 'side-00000001',
+        agent_name: 'a', prompt: 'p', started_at_ms: 1,
+      } }) + '\n');
       stdout.write(JSON.stringify({ id: 'unknown-probe', msg: {
         type: 'turn_complete', turn_id: 't', status: 'success', usage: {},
       } }) + '\n');
       const events: Event[] = [];
       for await (const event of stream) events.push(event);
       expect(events[0].msg).toEqual({ type: 'telemetry_event', payload: { x: 1 } });
+      expect(events[1].msg.type).toBe('side_channel_started');
+      expect((events[1].msg as Record<string, unknown>).id).toBe('side-00000001');
       expect(events.at(-1)?.msg.type).toBe('turn_complete');
     } finally {
       await customAgent.close();

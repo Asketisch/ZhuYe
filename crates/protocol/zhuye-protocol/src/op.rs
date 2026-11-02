@@ -179,6 +179,32 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         child_id: Option<String>,
     },
+
+    /// v1.x:启动 side-channel agent(用户驱动、与主 agent 并发的独立
+    /// agent 运行)。引擎经 `SideChannelDriver` 注册并注入 prompt,应答
+    /// 为 `EventMsg::SideChannelStarted`(per-turn 通道 + 会话扇出)。
+    ///
+    /// 与 `Task` 工具的区别:side-channel 由**用户**触发、不阻塞主
+    /// 轮次、独立取消令牌、事件不进主历史。driver 未配置(库路径默认)
+    /// 时返回 `SideChannelError`。
+    StartSideChannel {
+        /// agent 定义名(workspace + home agents 目录解析)。
+        agent: String,
+        /// 初始 prompt。
+        prompt: String,
+    },
+
+    /// v1.x:取消 side-channel(只触发该 id 的独立令牌,不影响主 agent
+    /// 与其它 side-channel)。未知 / 已终态 id → noop(不回错误)。
+    CancelSideChannel { id: String },
+
+    /// v1.x:查询 side-channel 快照。`id = None` 列出全部;
+    /// `Some(id)` 只查指定(未知 id 返回空列表)。应答为
+    /// `EventMsg::SideChannelStatus`。
+    QuerySideChannels {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
 }
 
 /// v1.3 SDK:客户端注册的自定义工具声明(spec 由客户端提供,
@@ -227,6 +253,9 @@ impl Op {
             Op::ToolExecutionResponse { .. } => "tool_execution_response",
             Op::Steer { .. } => "steer",
             Op::QuerySubagents { .. } => "query_subagents",
+            Op::StartSideChannel { .. } => "start_side_channel",
+            Op::CancelSideChannel { .. } => "cancel_side_channel",
+            Op::QuerySideChannels { .. } => "query_side_channels",
         }
     }
 }

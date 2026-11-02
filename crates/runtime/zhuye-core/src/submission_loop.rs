@@ -1084,6 +1084,77 @@ pub async fn submission_loop(
                 let _ = turn_tx.send(ev.clone()).await;
                 fan_out_session(&session_subs, &ev);
             }
+            // ── v1.x:side-channel agent(WP9)────────────────────────
+            // 用户驱动、与主 agent 并发的独立 agent 运行。driver 未配置
+            // (库路径默认)时以 Error 事件诚实应答,不静默丢弃。
+            zhuye_protocol::Op::StartSideChannel { agent, prompt } => {
+                let Some(driver) = cfg.side_channel_driver.as_ref() else {
+                    let ev = Event::new(
+                        sub.id.clone(),
+                        EventMsg::SideChannelFinished(side_channel_error_event(
+                            "side-channel driver not configured",
+                        )),
+                    );
+                    let _ = turn_tx.send(ev.clone()).await;
+                    fan_out_session(&session_subs, &ev);
+                    continue;
+                };
+                match driver.start(&agent, &prompt) {
+                    Ok((id, _cancel)) => {
+                        tracing::info!(%id, %agent, "side-channel started");
+                        let ev = Event::new(
+                            sub.id.clone(),
+                            EventMsg::SideChannelStarted(
+                                zhuye_protocol::SideChannelEvent::Started {
+                                    id,
+                                    agent_name: agent.clone(),
+                                    prompt: prompt.clone(),
+                                    started_at_ms: now_ms(),
+                                },
+                            ),
+                        );
+                        let _ = turn_tx.send(ev.clone()).await;
+                        fan_out_session(&session_subs, &ev);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "side-channel start failed");
+                        let ev = Event::new(
+                            sub.id.clone(),
+                            EventMsg::SideChannelFinished(side_channel_error_event(&e.to_string())),
+                        );
+                        let _ = turn_tx.send(ev.clone()).await;
+                        fan_out_session(&session_subs, &ev);
+                    }
+                }
+            }
+            zhuye_protocol::Op::CancelSideChannel { id } => {
+                if let Some(driver) = cfg.side_channel_driver.as_ref()
+                    && !driver.cancel(&id)
+                {
+                    tracing::debug!(%id, "cancel_side_channel: unknown or terminal id (noop)");
+                }
+            }
+            zhuye_protocol::Op::QuerySideChannels { id } => {
+                let channels = cfg
+                    .side_channel_driver
+                    .as_ref()
+                    .map(|d| {
+                        d.list()
+                            .into_iter()
+                            .filter(|c| id.as_deref().is_none_or(|want| want == c.id))
+                            .map(protocol_side_channel_info)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let ev = Event::new(
+                    sub.id.clone(),
+                    EventMsg::SideChannelStatus(zhuye_protocol::SideChannelStatusSnapshot {
+                        channels,
+                    }),
+                );
+                let _ = turn_tx.send(ev.clone()).await;
+                fan_out_session(&session_subs, &ev);
+            }
             zhuye_protocol::Op::ToolApproval { id, decision }
             | zhuye_protocol::Op::HookApproval { id, decision } => {
                 // M6:把用户裁决交给等待中的 ApprovalGate。
@@ -1393,6 +1464,37 @@ fn provider_of(model_spec: &str) -> String {
 /// 把会话级事件扇出给所有订阅者。用 `try_send`,让慢速 / 无界消费的
 /// 订阅者绝不阻塞 submission loop;channel 满或已关闭时静默丢弃事件
 /// (订阅者会看到一段空缺,语义等同丢掉一帧 UI 渲染)。
+/// v1.x:构造 side-channel Error 事件载荷。
+fn side_channel_error_event(message: &str) -> zhuye_protocol::SideChannelEvent {
+    zhuye_protocol::SideChannelEvent::Error {
+        id: String::new(),
+        finished_at_ms: now_ms(),
+        message: message.to_string(),
+    }
+}
+
+/// v1.x:core 侧 SideChannelInfo → 协议侧 SideChannelInfo。
+fn protocol_side_channel_info(
+    info: crate::side_channel::SideChannelInfo,
+) -> zhuye_protocol::SideChannelInfo {
+    zhuye_protocol::SideChannelInfo {
+        id: info.id,
+        agent_name: info.agent_name,
+        prompt: info.prompt,
+        started_at_ms: info.started_at_ms,
+        status: info.status,
+        duration_ms: info.duration_ms,
+    }
+}
+
+/// 当前 UNIX epoch 毫秒。
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 fn fan_out_session(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {
     let guard = subs.lock();
     for tx in guard.iter() {
