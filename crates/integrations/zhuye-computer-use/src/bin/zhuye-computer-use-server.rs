@@ -141,32 +141,35 @@ fn dispatch_tool(
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     // 统一 MediaError → String(错误文案给 LLM 看,含能力名与原因)。
     let result: Result<String, String> = match name {
-        "computer_screenshot" => backend.screenshot().map(|png| {
-            // 不内嵌 bytes——字节量对 LLM 上下文不友好;给元信息,宿主可
-            // 落盘后经 image_view 查看。
-            format!(
-                "screenshot captured: {} bytes (PNG);可让宿主保存为文件后经 image_view 查看",
-                png.len()
-            )
-        }).map_err(|e| e.to_string()),
-        "computer_click" => parse_click(&args)
-            .and_then(|a| backend.execute(&a).map_err(|e| e.to_string()).map(|_| "clicked".to_string())),
-        "computer_type" => {
-            str_arg(&args, "text").and_then(|t| {
-                backend
-                    .execute(&ComputerUseAction::KeyType { text: t })
-                    .map_err(|e| e.to_string())
-                    .map(|_| "typed".to_string())
+        "computer_screenshot" => backend
+            .screenshot()
+            .map(|png| {
+                // 不内嵌 bytes——字节量对 LLM 上下文不友好;给元信息,宿主可
+                // 落盘后经 image_view 查看。
+                format!(
+                    "screenshot captured: {} bytes (PNG);可让宿主保存为文件后经 image_view 查看",
+                    png.len()
+                )
             })
-        }
-        "computer_key" => {
-            str_arg(&args, "keys").and_then(|k| {
-                backend
-                    .execute(&ComputerUseAction::KeyCombo { keys: k })
-                    .map_err(|e| e.to_string())
-                    .map(|_| "pressed".to_string())
-            })
-        }
+            .map_err(|e| e.to_string()),
+        "computer_click" => parse_click(&args).and_then(|a| {
+            backend
+                .execute(&a)
+                .map_err(|e| e.to_string())
+                .map(|_| "clicked".to_string())
+        }),
+        "computer_type" => str_arg(&args, "text").and_then(|t| {
+            backend
+                .execute(&ComputerUseAction::KeyType { text: t })
+                .map_err(|e| e.to_string())
+                .map(|_| "typed".to_string())
+        }),
+        "computer_key" => str_arg(&args, "keys").and_then(|k| {
+            backend
+                .execute(&ComputerUseAction::KeyCombo { keys: k })
+                .map_err(|e| e.to_string())
+                .map(|_| "pressed".to_string())
+        }),
         "computer_scroll" => {
             let dx = args.get("dx").and_then(Value::as_i64).unwrap_or(0) as i32;
             let dy = args.get("dy").and_then(Value::as_i64).unwrap_or(0) as i32;
