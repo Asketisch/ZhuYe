@@ -63,6 +63,11 @@ pub struct ServeArgs {
     /// 按序号 resume(1-indexed,newest first)。
     #[arg(long, short = 'r', value_name = "N", conflicts_with_all = ["resume", "continue_last"])]
     pub resume_by: Option<usize>,
+    /// 显式启用的插件 id(可多次,如 `--plugin harness-import@inline`)。
+    /// 传入时**覆盖** config 的 `[plugins].enabled_plugins`,SDK 嵌入方
+    /// 据此按需精确加载;未传维持配置驱动。
+    #[arg(long = "plugin", value_name = "ID")]
+    pub plugins: Vec<String>,
 }
 
 impl From<&ServeArgs> for HeadlessArgs {
@@ -76,6 +81,8 @@ impl From<&ServeArgs> for HeadlessArgs {
             // serve 是 SDK 嵌入入口:内置 hook 需在 `[hooks].enabled`
             // 显式列出才启用(理由见 HeadlessArgs::hooks_explicit_only)。
             hooks_explicit_only: true,
+            // --plugin 显式列表:非空时覆盖 config 的 enabled_plugins。
+            plugins: (!a.plugins.is_empty()).then(|| a.plugins.clone()),
         }
     }
 }

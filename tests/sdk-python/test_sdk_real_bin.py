@@ -248,3 +248,51 @@ def test_K9_全局事件公开读取口(env_home: Path) -> None:
         assert event["msg"]["type"] == "permission_mode_changed"
     finally:
         agent.close()
+
+
+# ── K9 --plugin 显式插件加载 ─────────────────────────────────────────────
+
+
+def test_K9_plugins选项_显式加载并上报PluginLoaded(env_home: Path) -> None:
+    """`plugins=["demo@inline"]` 经 `--plugin` 传给 serve,启动时上报
+    `plugin_loaded` 全局事件(覆盖 config,而非配置驱动)。
+
+    依据:crates/runtime/zhuye-exec/src/headless.rs resolve_enabled_plugins、
+    sdks/python/zhuye/agent.py _serve_args。
+    """
+    import os
+
+    from zhuye import ZhuyeAgentOptions
+
+    plugin_dir = Path(__file__).resolve().parents[2] / "plugins" / "plugin-demo"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/plugin-demo 不存在(仓库不完整?)")
+
+    # 先把 demo 插件装入隔离 HOME(等价 zhuye plugin install)。
+    subprocess.run(
+        [str(ZHUYE_BIN), "plugin", "install", str(plugin_dir), "--scope", "user"],
+        env=dict(os.environ),
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+    opts = make_options()
+    assert isinstance(opts, ZhuyeAgentOptions)
+    opts.plugins = ["demo@inline"]
+    agent = ZhuyeAgent.spawn(opts)
+    try:
+        # plugin_loaded 在 bootstrap 期发出,轮询全局队列(上限 ~15s)。
+        loaded = None
+        for _ in range(15):
+            ev = agent.next_global_event(timeout_secs=1)
+            if ev is None:
+                break
+            if ev.get("type") == "plugin_loaded":
+                loaded = ev
+                break
+        assert loaded is not None, "未收到 plugin_loaded 全局事件"
+        assert loaded.get("plugin") == "demo@inline", f"插件 id 不符:{loaded}"
+        assert loaded.get("command_count", 0) >= 1, f"应有 demo:hello 命令:{loaded}"
+    finally:
+        agent.close()

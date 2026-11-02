@@ -52,6 +52,25 @@ pub struct HeadlessArgs {
     /// 默认启用 `verification` 之类 Stop hook 会在宿主 cwd 跑
     /// `cargo test`,对宿主进程既慢又不可预期。
     pub hooks_explicit_only: bool,
+    /// 显式插件 id 列表(`serve --plugin <id>` 可多次)。`None` /
+    /// 空 = 按 config 的 `[plugins].enabled_plugins` 挂载(默认);
+    /// 非空 = **显式覆盖**配置(SDK 嵌入方按需精确加载,不读全局开关)。
+    pub plugins: Option<Vec<String>>,
+}
+
+/// 解析插件挂载列表:显式 `--plugin` 覆盖优先,否则用 config。
+///
+/// 注:覆盖只作用于本次启动装配;若运行中 config 的 `[plugins]` 段
+/// 发生热重载,同步目标仍是 config 列表(见 `reload.rs`)—— 显式
+/// 加载是进程级语义,不回写配置。
+pub fn resolve_enabled_plugins(
+    args: &HeadlessArgs,
+    cfg: &zhuye_config::ReflectConfig,
+) -> Vec<String> {
+    match args.plugins.as_deref() {
+        Some(list) if !list.is_empty() => list.to_vec(),
+        _ => cfg.plugins.enabled_plugins.clone(),
+    }
 }
 
 /// [`bootstrap_common`] 的产物:两个分支后续装配都要用的共享句柄。
@@ -571,7 +590,7 @@ pub async fn bootstrap_normal(
         mcp_for_plugins,
         skills_for_plugins,
         factory.clone(),
-        &initial_cfg.plugins.enabled_plugins,
+        &resolve_enabled_plugins(args, &initial_cfg),
         Some(reload_tx.clone()),
     )
     .await;
@@ -738,7 +757,7 @@ pub async fn bootstrap_resumed(
         mcp_for_plugins,
         skills_for_plugins,
         factory.clone(),
-        &initial_cfg.plugins.enabled_plugins,
+        &resolve_enabled_plugins(args, &initial_cfg),
         None,
     )
     .await;
