@@ -165,3 +165,94 @@ fn take_capped(bytes: &[u8], cap: usize, truncated: &mut bool) -> String {
 pub fn local_runner() -> std::sync::Arc<dyn CommandRunner> {
     std::sync::Arc::new(LocalCommandRunner)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn run_echo_captures_stdout_and_exit_code() {
+        let cmd = WorkspaceCommand::new(
+            vec!["echo".into(), "runner-ok".into()],
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        );
+        let out = LocalCommandRunner.run(&cmd).await.unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(out.success());
+        assert!(out.stdout.contains("runner-ok"), "{}", out.stdout);
+        assert!(!out.truncated);
+        assert!(!out.timed_out);
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_process_and_reports_timed_out() {
+        let cmd = WorkspaceCommand::new(
+            vec!["sleep".into(), "30".into()],
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        )
+        .with_timeout(std::time::Duration::from_millis(150));
+        let out = LocalCommandRunner.run(&cmd).await.unwrap();
+        assert!(out.timed_out, "应报告超时");
+        assert_eq!(out.exit_code, -1);
+        assert!(!out.success());
+    }
+
+    #[tokio::test]
+    async fn output_over_cap_is_truncated_and_flagged() {
+        // 产出 4KB,上限 64 字节 → 截断 + 标记。
+        let cmd = WorkspaceCommand::new(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "printf 'x%.0s' $(seq 1 4096)".into(),
+            ],
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        )
+        .with_timeout(std::time::Duration::from_secs(10));
+        let mut small = cmd.clone();
+        small.max_output_bytes = 64;
+        let out = LocalCommandRunner.run(&small).await.unwrap();
+        assert!(out.truncated);
+        assert_eq!(out.stdout.len(), 64);
+        // 不设上限的对照:全量拿回。
+        let out2 = LocalCommandRunner.run(&cmd).await.unwrap();
+        assert!(!out2.truncated);
+        assert!(out2.stdout.len() >= 4096);
+    }
+
+    #[tokio::test]
+    async fn env_is_not_inherited_from_host() {
+        // env_clear 口径:宿主的自定义变量不透传;显式 env 列表才注入。
+        let cmd = WorkspaceCommand::new(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo \"[$ZHUYE_RUNNER_PROBE][$MY_PROBE]\"".into(),
+            ],
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        )
+        .with_env(vec![("MY_PROBE".into(), "yes".into())]);
+        unsafe {
+            std::env::set_var("ZHUYE_RUNNER_PROBE", "leak");
+        }
+        let out = LocalCommandRunner.run(&cmd).await.unwrap();
+        unsafe {
+            std::env::remove_var("ZHUYE_RUNNER_PROBE");
+        }
+        assert!(
+            out.stdout.contains("[][yes]"),
+            "宿主变量不得透传,显式 env 应注入: {}",
+            out.stdout
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_binary_reports_unavailable() {
+        let cmd = WorkspaceCommand::new(
+            vec!["zhuye-no-such-binary-xyz".into()],
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        );
+        let err = LocalCommandRunner.run(&cmd).await.unwrap_err();
+        assert!(matches!(err, WorkspaceCommandError::Unavailable(_)));
+    }
+}

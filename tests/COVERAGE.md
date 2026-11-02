@@ -42,7 +42,7 @@
 | KMS 知识库插件(install → serve --plugin → MCP 读写 → 磁盘落盘) | I12 | —(独立二进制 `zhuye-kms-server`) | — | ✅(zhuye-kms 28 例) | — |
 | Computer Use 插件(headless 降级 Unavailable 不 panic / 会话存活;真机截屏走 real feature 手动验) | I13 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
 | Shell 会话插件(run → read → kill 生命周期;增量游标 / 非 UTF-8 容错 / env_clear 由 crate 单测锁定) | I14 | —(独立二进制 `zhuye-shell-server`) | — | ✅(zhuye-shell 5 例) | — |
-| Git 工作流插件(分支/PR 探测 + tag checkpoint + Stop 自动 checkpoint hook 永远退出 0) | I15 | —(独立二进制 `zhuye-git-tools-server` + `zhuye-cp-hook`) | — | ✅(zhuye-git 16 例) | — |
+| Git 工作流插件(分支/PR 探测 + tag checkpoint + Stop 自动 checkpoint hook 永远退出 0) | I15 | —(独立二进制 `zhuye-git-tools-server` + `zhuye-cp-hook`) | — | ✅(zhuye-git 21 例 + git-tools 11 例) | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
 | 编排(子代理/讨论/任务/团队/squad 委派/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅(squad / actor 22 例) | — |
 | CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
