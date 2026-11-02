@@ -91,6 +91,13 @@ rl.on('line', (line) => {
     console.log(JSON.stringify({
       id: sub.id, msg: { type: 'some_future_event', payload: { x: 1 } },
     }));
+    // v1.x additive 变体:side-channel(WP9)—— 真实新事件名,SDK 原样透传。
+    console.log(JSON.stringify({
+      id: sub.id, msg: {
+        type: 'side_channel_started', kind: 'started', id: 'side-00000001',
+        agent_name: 'a', prompt: 'p', started_at_ms: 1,
+      },
+    }));
     console.log(JSON.stringify({
       id: sub.id, msg: {
         type: 'turn_complete', turn_id: 't', status: 'success',
@@ -226,10 +233,17 @@ def test_tool_call_args_delta_透传到事件流(agent: ZhuyeAgent) -> None:
 
 
 def test_未知事件变体降级不崩(agent: ZhuyeAgent) -> None:
-    """协议新增变体时,SDK 不得因不认识而抛错(按未知 type 降级)。"""
+    """协议新增变体时,SDK 不得因不认识而抛错(按未知 type 降级)。
+
+    同时覆盖一个**真实**的 v1.x additive 变体(`side_channel_started`,
+    WP9),而不只是合成名 —— 新增协议变体必须能被旧 SDK 透传不崩。
+    """
     events = list(agent.submit("hi"))
     types = [ev["msg"]["type"] for ev in events]
     assert "some_future_event" in types, f"未知变体应被原样透传:{types}"
+    assert "side_channel_started" in types, f"side_channel_started 应被透传:{types}"
+    sc = next(ev["msg"] for ev in events if ev["msg"]["type"] == "side_channel_started")
+    assert sc["id"] == "side-00000001" and sc["agent_name"] == "a", f"字段应原样:{sc}"
     assert types[-1] == "turn_complete", f"未知变体不应打断收尾:{types}"
     # agent 仍可用。
     assert agent.prompt("hi") == "mock-reply"

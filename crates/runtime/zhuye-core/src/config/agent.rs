@@ -196,6 +196,9 @@ pub struct AgentConfig {
     /// env(`OsSandbox::from_env`);`Some(b)` = 配置表态,Op 未覆盖时生效。
     /// 修复 `os_level = Some(false)` 此前不生效的缺口(headless 曾用
     /// `unsafe set_var` 桥接,且只桥接 `Some(true)`)。
+    /// v1.x:side-channel driver(用户驱动的并发 agent)。`None` =
+    /// 未配置(库路径默认),`Op::StartSideChannel` 以 Error 事件应答。
+    pub side_channel_driver: Option<crate::side_channel::SideChannelDriver>,
     pub sandbox_default: Option<bool>,
     /// v1.x:`[sandbox].writable_dirs` 透传(workspace 之外额外可写目录)。
     pub sandbox_writable: Vec<PathBuf>,
@@ -240,6 +243,7 @@ impl AgentConfig {
             last_abort_reason: Arc::new(RwLock::new(None)),
             subagent_runtime: None,
             subagent_status: None,
+            side_channel_driver: None,
             sandbox_default: None,
             sandbox_writable: Vec::new(),
             sandbox_network: None,
@@ -369,6 +373,15 @@ impl AgentConfig {
     /// v1.x:注入 `[sandbox].writable_dirs`。
     pub fn with_sandbox_writable(mut self, dirs: Vec<PathBuf>) -> Self {
         self.sandbox_writable = dirs;
+        self
+    }
+
+    /// v1.x:注入 side-channel driver(见 `side_channel_driver` 字段)。
+    pub fn with_side_channel_driver(
+        mut self,
+        driver: crate::side_channel::SideChannelDriver,
+    ) -> Self {
+        self.side_channel_driver = Some(driver);
         self
     }
 

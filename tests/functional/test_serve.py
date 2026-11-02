@@ -596,3 +596,47 @@ def test_A12_prompt_command_提示词层管理(serve_session, mock_script) -> No
         m = first_event(evs, "prompt_switched")
         assert m is not None, f"未见 prompt_switched:{msg_types(evs)}"
         assert "active_layers" in m["msg"], f"prompt_switched 缺 active_layers:{m['msg']}"
+
+
+def test_A13_side_channel启动查询取消(serve_session, mock_script) -> None:
+    """side-channel 三 Op:`start_side_channel` → `side_channel_started`;
+    `query_side_channels` → `side_channel_status`(含该 id);
+    `cancel_side_channel` → `side_channel_finished`(cancelled)。
+
+    依据:crates/runtime/zhuye-core/src/side_channel/(registry + driver)
+    + submission_loop 的三个 Op 分支。
+    """
+    require_binary()
+    script = mock_script(['{"type":"text","text":"t1"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        # 1) 启动:mock agent 定义不存在 → side-channel 走完 factory 失败
+        #    路径也会先注册并发 started;这里用不存在的 agent 验证启动
+        #    事件的字段完整性(started 先于 factory 结果)。
+        evs = s.submit(
+            {"type": "start_side_channel", "agent": "default", "prompt": "side prompt"}
+        )
+        m = first_event(evs, "side_channel_started")
+        assert m is not None, f"未见 side_channel_started:{msg_types(evs)}"
+        started = m["msg"]
+        for f in ("id", "agent_name", "prompt", "started_at_ms"):
+            assert f in started, f"started 缺 {f}:{started}"
+        assert started["agent_name"] == "default"
+        assert started["prompt"] == "side prompt"
+        sid = started["id"]
+
+        # 2) 查询:快照含该 id。
+        evs = s.submit({"type": "query_side_channels"})
+        m = first_event(evs, "side_channel_status")
+        assert m is not None, f"未见 side_channel_status:{msg_types(evs)}"
+        channels = m["msg"].get("channels")
+        assert isinstance(channels, list), f"channels 应为数组:{m['msg']}"
+        ids = [c.get("id") for c in channels]
+        assert sid in ids, f"快照缺 {sid}:{ids}"
+
+        # 3) 取消:未知 / 已终态 id 是 noop(不开新 turn,只回执关闭);
+        #    会话存活由随后的查询证明。
+        s.submit({"type": "cancel_side_channel", "id": sid})
+        s.submit({"type": "cancel_side_channel", "id": "side-00000000"})
+        evs = s.submit({"type": "query_side_channels"})
+        m = first_event(evs, "side_channel_status")
+        assert m is not None, f"取消后会话应仍可查询:{msg_types(evs)}"

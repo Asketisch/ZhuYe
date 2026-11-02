@@ -329,6 +329,49 @@ pub(crate) struct ReloadRxHandle(pub(crate) mpsc::Receiver<Event>);
 /// 随工作区签入。
 ///
 /// v1.5 修复:此前只有 normal 分支装配权限,resume 分支完全绕过
+/// v1.x:side-channel thread 工厂 —— 按 agent 名构造**独立** AgentThread。
+///
+/// 与主会话共用 bootstrap(agent 定义 / 工具 / memory store / policy),
+/// 差异两点:
+/// - **recorder = None** —— side-channel 不写主会话 rollout(「事件不进
+///   主历史」的承诺在这里落地);
+/// - **取消令牌由 registry 生成**(参数传入),不是主 token 的子级。
+fn build_side_channel_factory(
+    workspace: std::path::PathBuf,
+    model: String,
+    registry: zhuye_llm::SharedModelRegistry,
+    tools: Arc<ToolRegistry>,
+    cfg: zhuye_config::ReflectConfig,
+    telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
+) -> zhuye_core::side_channel::SideThreadFactory {
+    Arc::new(move |agent_name: &str, cancel: CancellationToken| {
+        let mut m4 = bootstrap_m4(
+            &workspace,
+            agent_name,
+            &model,
+            &registry,
+            ThreadId::new(),
+            None,
+            &cfg,
+            telemetry.clone(),
+        )
+        .ok_or_else(|| anyhow::anyhow!("side-channel: agent `{agent_name}` bootstrap failed"))?;
+        // 不写主历史:摘掉 recorder。
+        m4.recorder = None;
+        let thread_cfg = AgentConfig::new(model.clone(), workspace.clone())
+            .with_m4(m4)
+            .with_policy(Arc::new(cfg.routing_policy_with(&model)))
+            .with_cancel(cancel);
+        Ok(AgentThread::new(
+            thread_cfg,
+            registry.clone(),
+            tools.clone(),
+            None,
+            None,
+        ))
+    })
+}
+
 /// 权限规则与 YOLO 分类器。
 async fn apply_permission_layers(
     mut cfg: AgentConfig,
@@ -484,10 +527,26 @@ pub async fn bootstrap_normal(
             }
         }
     }
+    // v1.x:side-channel driver —— thread 工厂用与主会话同一套 bootstrap
+    // (agent 定义 / 工具 / memory),但 recorder=None(不写主历史)且取消
+    // 令牌由 registry 独立生成(主会话 Op::Interrupt 不误杀)。
+    let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new(
+        zhuye_core::side_channel::SideChannelRegistry::new(),
+        build_side_channel_factory(
+            workspace.clone(),
+            model.clone(),
+            registry.clone(),
+            tools.clone(),
+            initial_cfg.clone(),
+            telemetry_sink.clone(),
+        ),
+    );
+
     let mut cfg = AgentConfig::new(model.clone(), workspace.clone())
         .with_sandbox_default(sandbox_default)
         .with_sandbox_writable(sandbox_writable.clone())
         .with_sandbox_network(sandbox_network)
+        .with_side_channel_driver(side_channel_driver)
         .with_m4(m4)
         .with_policy(policy)
         .with_token_budget(token_budget)
