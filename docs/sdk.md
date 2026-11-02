@@ -94,7 +94,13 @@ await agent.close();
   (本地安装为 `name@inline`)。启动后经 `plugin_loaded` 全局事件确认
   (`nextGlobalEvent` / `next_global_event` 读取);
 - 协议未知事件类型自动降级 —— 协议 v0 冻结但允许新增变体,框架加变体
-  不断 SDK。
+  不断 SDK;
+- **side-channel 查询(WP9)**:`submit_op({"type":"query_side_channels"})`
+  → `side_channel_status` 快照(channels 数组)+ `submission_closed`
+  收尾。同族的 `start_side_channel` / `cancel_side_channel` 事件
+  (`side_channel_started` / `side_channel_finished`)按 additive 变体
+  原样透传。四层测试锁定:py/ts mock 层(sdks/*/tests)+
+  真二进制层(tests/sdk-python K10 / tests/sdk-ts K10)。
 
 ```python
 # 按需加载插件(不装则完全不加载,零影响)

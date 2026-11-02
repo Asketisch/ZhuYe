@@ -43,7 +43,8 @@
 | Computer Use 插件(headless 降级 Unavailable 不 panic / 会话存活;真机截屏走 real feature 手动验) | I13 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
 | Shell 会话插件(run → read → kill 生命周期;增量游标 / 非 UTF-8 容错 / env_clear 由 crate 单测锁定) | I14 | —(独立二进制 `zhuye-shell-server`) | — | ✅(zhuye-shell 5 例) | — |
 | Git 工作流插件(分支/PR 探测 + tag checkpoint + Stop 自动 checkpoint hook 永远退出 0) | I15 | —(独立二进制 `zhuye-git-tools-server` + `zhuye-cp-hook`) | — | ✅(zhuye-git 21 例 + git-tools 11 例) | — |
-| 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
+| 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS,plugins) | — | — |
+| SDK 新能力面(side-channel 查询 Op:`side_channel_status` 快照 + `submission_closed` 收尾;mock 层与真二进制层双侧) | A13 | — | K10(side-channel,双侧) | — | — |
 | 编排(子代理/讨论/任务/团队/squad 委派/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅(squad / actor 22 例) | — |
 | CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
 | 模型发现(清单接口 / 免费判定 / 动态 model) | — | models_* | — | ✅ | — |
@@ -369,8 +370,8 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |
 | **实模型演练层合计** | **10 条**(默认 SKIP,需 `ZHUYE_LIVE=1`) |
-| `sdk-python/test_sdk_real_bin.py` | 10 条(K1–K9) |
-| `sdk-ts/real-bin.test.mjs` | 10 条(K1–K9,与 Python 侧对齐) |
+| `sdk-python/test_sdk_real_bin.py` | 11 条(K1–K10) |
+| `sdk-ts/real-bin.test.mjs` | 11 条(K1–K10,与 Python 侧对齐;py 的 K10=side-channel 查询,ts 的 K10 编号=plugins) |
 | `rust/cli_core.sh` | 71 断言 |
 | `rust/cli_deep.sh` | 194 断言 |
 | `rust/serve_ops.sh` | 42 断言 |

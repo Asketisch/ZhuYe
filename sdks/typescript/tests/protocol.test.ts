@@ -78,6 +78,21 @@ function spawnMockServe(): ChildProcessWithoutNullStreams {
       if (opType === 'register_tools' || opType === 'tool_execution_response') {
         return;
       }
+      // v1.x:side-channel 查询 Op(非 turn)—— 回 status 快照后收尾。
+      if (opType === 'query_side_channels') {
+        process.stdout.write(JSON.stringify({
+          id: sub.id, msg: {
+            type: 'side_channel_status', channels: [
+              { id: 'side-00000001', agentName: 'a', prompt: 'p',
+                startedAtMs: 1, status: 'running', durationMs: null },
+            ],
+          },
+        }) + '\\n');
+        process.stdout.write(JSON.stringify({
+          id: sub.id, msg: { type: 'submission_closed' },
+        }) + '\\n');
+        return;
+      }
       if (opType === 'user_input' || opType === 'interrupt') {
         process.stdout.write(JSON.stringify({
           id: sub.id, msg: { type: 'turn_started', turn_id: 't', user_message_id: 'm' },
@@ -154,6 +169,21 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
     await closeP;
     const code = await exitPromise;
     expect(code).toBe(0);
+  }, 10_000);
+
+  it('query_side_channels Op → side_channel_status 透传 + submission_closed 收尾', async () => {
+    // 非 turn Op:迭代器必须收尾(v1.3 起 serve 排空 per-turn 通道后发
+    // submission_closed);新事件 side_channel_status 原样透传。
+    const stream = await agent.submit({ type: 'query_side_channels' } as never);
+    const events: Event[] = [];
+    for await (const ev of stream) events.push(ev);
+    const types = events.map((e) => e.msg.type);
+    expect(types).toContain('side_channel_status');
+    const status = events.find((e) => e.msg.type === 'side_channel_status')!.msg as unknown as {
+      channels: Array<{ id: string; status: string }>;
+    };
+    expect(status.channels[0]).toMatchObject({ id: 'side-00000001', status: 'running' });
+    expect(types.at(-1)).toBe('submission_closed');
   }, 10_000);
 
   it('UnknownEventMsg 降级不抛错', async () => {
