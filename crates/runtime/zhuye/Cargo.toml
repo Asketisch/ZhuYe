@@ -29,6 +29,8 @@ zhuye-mcp        = { workspace = true }
 zhuye-plugin     = { workspace = true }
 # v1.x:cron / autopilot 进 facade(SDK 消费者免直依赖 integrations 层)。
 zhuye-stream     = { workspace = true }
+# WP13:build()/build_async() 的 [sandbox] 装配(OsSandbox::resolve)。
+zhuye-sandbox    = { workspace = true }
 async-trait          = { workspace = true }
 anyhow               = { workspace = true }
 tokio                = { workspace = true }

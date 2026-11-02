@@ -24,9 +24,8 @@
 //!
 //!    ```ignore
 //!    let agent = Zhuye::builder("openai/gpt-4o")   // 指定模型
-//!        .workspace(".")                              // 指定工作目录
-//!        .with_defaults()?    // 压缩器 + 记忆 + 技能 + JSONL recorder
-//!        .build()?;
+//!        .workspace(".");                          // 指定工作目录
+//!    // build() 自带完整 M4(压缩器 + 记忆 + 技能 + JSONL recorder)
 //!    let mut stream = agent.submit(Submission::user_input("hello"));  // 提交输入
 //!    while let Some(event) = stream.next().await { /* 消费事件 */ }
 //!    ```
@@ -39,6 +38,12 @@ pub mod stream;
 
 // ── Core(保持原状)─────────────────────────────────────────────────────────
 pub use zhuye_core::{AgentConfig, AgentThread, TurnHandle};
+
+// ── Side-channel(用户驱动并发 agent,WP9/13)────────────────────────────
+pub use zhuye_core::side_channel::{
+    MAX_CONCURRENT, SideChannelDriver, SideChannelEvent, SideChannelId, SideChannelInfo,
+    SideChannelRegistry, SideChannelStartError, SideChannelStatus, SideThreadFactory,
+};
 
 // ── LLM ────────────────────────────────────────────────────────────────────
 pub use zhuye_llm::{

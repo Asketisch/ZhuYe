@@ -579,7 +579,12 @@ pub async fn bootstrap_normal(
     ));
     // v1.x:Activity 审计(WP12)—— 会话事件沉淀到
     // `~/.zhuye/activity/activity.jsonl`。独立 receiver,与 stdout
-    // drainer 并行互不阻塞;logger 失败只 warn。
+    // drainer 并行互不阻塞;`[telemetry].activity=false` 关闭。
+    if initial_cfg
+        .telemetry
+        .as_ref()
+        .map(|t| t.activity_enabled())
+        .unwrap_or(true)
     {
         let logger = zhuye_telemetry::ActivityLogger::with_default_home();
         let rx = thread.subscribe_session();
@@ -805,7 +810,12 @@ pub async fn bootstrap_resumed(
         Some(sanitizer.clone()),
         Some(hook_engine.clone()),
     ));
-    // v1.x:Activity 审计(resume 分支与 normal 同权)。
+    // v1.x:Activity 审计(resume 分支与 normal 同权;开关同 [telemetry].activity)。
+    if initial_cfg
+        .telemetry
+        .as_ref()
+        .map(|t| t.activity_enabled())
+        .unwrap_or(true)
     {
         let logger = zhuye_telemetry::ActivityLogger::with_default_home();
         let rx = thread.subscribe_session();

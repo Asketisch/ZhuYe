@@ -4654,6 +4654,7 @@ dependencies = [
  "zhuye-protocol",
  "zhuye-recovery",
  "zhuye-rollout",
+ "zhuye-sandbox",
  "zhuye-skills",
  "zhuye-stream",
  "zhuye-subagent",

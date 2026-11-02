@@ -127,12 +127,22 @@ pub struct TelemetrySection {
     /// `tool_schemas`(完整 ToolSpec JSON,含 parameters)。完整 schema
     /// 体量大,长会话磁盘增长明显,故默认关。
     pub record_tool_schemas: Option<bool>,
+    /// v1.x(WP12):Activity 审计开关(默认开)。`false` 时不落
+    /// `~/.zhuye/activity/activity.jsonl`(进程内审计订阅也不启动)。
+    #[serde(default)]
+    pub activity: Option<bool>,
 }
 
 impl TelemetrySection {
     /// 解析最终生效的 `enabled` 值(`None` → `true`)。
     pub fn is_enabled(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+
+    /// v1.x(WP12):Activity 审计是否启用(`None` → `true`;父开关
+    /// `enabled=false` 时一并关闭 —— 审计是 telemetry 的组成部分)。
+    pub fn activity_enabled(&self) -> bool {
+        self.is_enabled() && self.activity.unwrap_or(true)
     }
     /// 解析最终生效的 `redact` 值(`None` → `true`)。
     pub fn should_redact(&self) -> bool {
