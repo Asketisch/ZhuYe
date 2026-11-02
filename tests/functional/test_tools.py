@@ -482,3 +482,60 @@ def test_T11_memory工具读写删全链路(serve_session, mock_script, sandbox)
     assert writes, f"无 MemoryAccess::Write 记录:{[r.get('type') for r in records]}"
     assert writes[0]["agent_type"], "审计记录缺 agent_type"
     assert writes[0]["turn_id"], "审计记录缺 turn_id"
+
+
+@pytest.mark.skipif(
+    __import__("sys").platform not in ("darwin", "linux"),
+    reason="当前平台没有 OS 沙箱后端",
+)
+def test_T12_sandbox配置下沉显式关闭与env逃生口(serve_session, mock_script, sandbox) -> None:
+    """`[sandbox].os_level = false` 显式关闭必须生效(config 此前不桥接
+    `Some(false)`,用户关不掉);env `ZHUYE_SANDBOX_OS_LEVEL=1` 仍可临时
+    覆盖回来(逃生口)。
+
+    依据:crates/resources/zhuye-sandbox/src/os_sandbox.rs
+    `resolve_enabled`(env > config > 基线)+ headless 的
+    `AgentConfig.sandbox_default` 注入(取代 unsafe set_var 桥接)。
+    """
+    import json
+    import sys
+    import uuid
+    from pathlib import Path
+
+    require_binary()
+    # 目标选**OS 可写、但沙箱 allow 列表外**的路径(macOS /Users/Shared
+    # 是 1777;Linux 用 /dev/shm)。不能选 HOME / TMPDIR —— Seatbelt
+    # profile 对 /tmp、/private/var/folders 等临时目录本就放行,区分不出
+    # 沙箱开关;也不能选 /etc(非 root 本来就写不进去)。
+    outside = (Path("/Users/Shared") if sys.platform == "darwin" else Path("/dev/shm")) / (
+        "zhuye-cfg-sandbox-" + uuid.uuid4().hex
+    )
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "bash",
+                    "args": {"cmd": f"printf leaked > '{outside}'"}}),
+        '{"type":"text","text":"done"}',
+    ])
+
+    # 1) config 显式关 → 写入放行(sandbox_default=Some(false) 生效)。
+    sandbox.write_config('\n[sandbox]\nos_level = false\n')
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script),
+                            "ZHUYE_SANDBOX_STRICT": "0"}) as s:
+        events = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "写文件"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+    end = _tool_end(events)
+    assert end["is_error"] is False, f"config 显式关闭后写入应放行:{end}"
+    assert outside.exists(), "sandbox 未按 config 关闭(Some(false) 未生效)"
+    outside.unlink(missing_ok=True)
+
+    # 2) 同一 config + env 逃生口 → 写入被拒(env 优先)。
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script),
+                            "ZHUYE_SANDBOX_OS_LEVEL": "1", "ZHUYE_SANDBOX_STRICT": "1"}) as s:
+        events = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "写文件"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+    end = _tool_end(events)
+    assert end["is_error"] is True, f"env 逃生口应压掉 config 的关闭:{end}"
+    assert not outside.exists(), "env=1 时写入必须被拒"

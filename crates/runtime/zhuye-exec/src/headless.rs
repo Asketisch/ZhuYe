@@ -92,6 +92,13 @@ pub struct HeadlessCommon {
     /// `reload_tx` 的接收端(normal 分支桥接到 stdout drainer;resumed
     /// 分支 drop 掉,与 exec 历史行为一致)。
     pub(crate) _reload_rx: ReloadRxHandle,
+    /// v1.x:`[sandbox]` 段解析出的 OS 沙箱默认开关(env > config > 基线)。
+    /// `None` = 配置未表态(每 turn 跟随 env)。
+    pub sandbox_default: Option<bool>,
+    /// v1.x:`[sandbox].writable_dirs`(workspace 之外额外可写目录)。
+    pub sandbox_writable: Vec<PathBuf>,
+    /// v1.x:`[sandbox].allow_network`。
+    pub sandbox_network: Option<bool>,
 }
 
 /// [`bootstrap_normal`] / [`bootstrap_resumed`] 的产物。
@@ -116,20 +123,31 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     let initial_cfg = zhuye_config::load_default();
     init_tracing(initial_cfg.analytics.as_ref());
 
-    // 把 `[sandbox].os_level` 配置桥接到 env(`ZHUYE_SANDBOX_OS_LEVEL`)
-    // —— `BashTool` 在 execute 时读 env 决定是否激活 Seatbelt/Landlock。
-    // env 优先于 TOML(让 `ZHUYE_SANDBOX_OS_LEVEL=0` 能临时覆盖配置)。
-    // `Option<bool>`:`None` = 用户未表态 → 不桥接 env,让
-    // `OsSandbox::from_env()` 走**核心基线**(env 未设置 = 默认开启);
-    // `Some(true)` = 显式要求开 → 桥接 env=1。
-    if initial_cfg.sandbox.os_level == Some(true)
-        && std::env::var_os("ZHUYE_SANDBOX_OS_LEVEL").is_none()
-    {
-        unsafe {
-            std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", "1");
-        }
+    // v1.x:`[sandbox]` 段启动期解析为 OS 沙箱默认开关(env > config >
+    // 基线,见 `OsSandbox::resolve`),经 `AgentConfig.sandbox_default` 注入
+    // 每 turn —— 取代此前的 `unsafe set_var` 进程级桥接(Rust 2024 下
+    // set_var 是 unsafe 且多线程有竞态;且旧桥接只处理 `Some(true)`,
+    // `os_level = Some(false)` 用户显式关闭反而无效)。
+    let sandbox_cfg = &initial_cfg.sandbox;
+    let sandbox_default = (sandbox_cfg.os_level.is_some()
+        || !sandbox_cfg.writable_dirs.is_empty()
+        || sandbox_cfg.allow_network)
+        .then(|| {
+            zhuye_sandbox::OsSandbox::resolve(
+                sandbox_cfg.os_level,
+                sandbox_cfg.writable_dirs.clone(),
+                sandbox_cfg.allow_network,
+            )
+            .enabled
+        });
+    let sandbox_writable = sandbox_cfg.writable_dirs.clone();
+    let sandbox_network = sandbox_cfg.allow_network.then_some(true);
+    if let Some(on) = sandbox_default {
         tracing::info!(
-            "[sandbox].os_level = true → ZHUYE_SANDBOX_OS_LEVEL=1 (bash 将在 OS 沙箱内执行)"
+            enabled = on,
+            writable_dirs = sandbox_cfg.writable_dirs.len(),
+            allow_network = sandbox_cfg.allow_network,
+            "[sandbox] resolved → AgentConfig.sandbox_default (env 优先)"
         );
     }
 
@@ -323,6 +341,9 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         watcher,
         reload_tx,
         _reload_rx: reload_rx,
+        sandbox_default,
+        sandbox_writable,
+        sandbox_network,
     })
 }
 
@@ -415,6 +436,9 @@ pub async fn bootstrap_normal(
         watcher,
         reload_tx,
         _reload_rx: ReloadRxHandle(reload_rx),
+        sandbox_default,
+        sandbox_writable,
+        sandbox_network,
     } = common;
 
     // M4 bootstrap:agent 定义、skills、压缩器、记忆、prompt 构建器。
@@ -496,6 +520,9 @@ pub async fn bootstrap_normal(
         }
     }
     let mut cfg = AgentConfig::new(model.clone(), workspace.clone())
+        .with_sandbox_default(sandbox_default)
+        .with_sandbox_writable(sandbox_writable.clone())
+        .with_sandbox_network(sandbox_network)
         .with_m4(m4)
         .with_policy(policy)
         .with_token_budget(token_budget)
@@ -665,6 +692,9 @@ pub async fn bootstrap_resumed(
         watcher,
         reload_tx,
         _reload_rx: ReloadRxHandle(reload_rx),
+        sandbox_default,
+        sandbox_writable,
+        sandbox_network,
     } = common;
 
     let bundle = bootstrap_resume(thread_id_str).await?;
@@ -703,6 +733,9 @@ pub async fn bootstrap_resumed(
     factory.set_telemetry(telemetry_sink.clone());
     factory.set_cancel(cancel.clone());
     let cfg = AgentConfig::new(model.clone(), workspace.clone())
+        .with_sandbox_default(sandbox_default)
+        .with_sandbox_writable(sandbox_writable.clone())
+        .with_sandbox_network(sandbox_network)
         .with_m4(m4)
         .with_policy(Arc::new(initial_cfg.routing_policy_with(&model)))
         .with_telemetry(telemetry_sink)

@@ -514,9 +514,12 @@ pub async fn submission_loop(
                     }
                     Some(zhuye_protocol::ApprovalPolicy::Auto) | None => approval_enabled,
                 };
+                // v1.x:Op 未指定 sandbox_policy 时回退到配置表态
+                // (`AgentConfig.sandbox_default`)—— 两者都 None 才跟随 env。
                 let sandbox_override = thread_settings
                     .sandbox_policy
-                    .map(|p| matches!(p, zhuye_protocol::SandboxPolicy::OsSandbox));
+                    .map(|p| matches!(p, zhuye_protocol::SandboxPolicy::OsSandbox))
+                    .or(cfg.sandbox_default);
 
                 let ctx = NodeContext {
                     turn_id,

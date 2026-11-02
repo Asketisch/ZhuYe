@@ -126,6 +126,12 @@ pub struct ToolContext {
     /// `Some(true)` = 强制启用 OS 沙箱;`Some(false)` = 本 turn 关闭 OS
     /// 层(路径沙箱仍由各文件工具自身的 workspace 校验承担)。
     pub os_sandbox: Option<bool>,
+    /// v1.x:`[sandbox].writable_dirs` 透传(workspace 之外额外可写目录)。
+    /// 空 = 用 `OsSandbox` 自带的 env 派生(`ZHUYE_SANDBOX_WRITABLE`)。
+    pub os_sandbox_writable: Vec<PathBuf>,
+    /// v1.x:`[sandbox].allow_network` 透传。`None` = 不覆盖
+    /// `OsSandbox` 默认(false = 禁出站)。
+    pub os_sandbox_network: Option<bool>,
     /// v1.5 R2:后台任务生成器(宿主实现)。`None`(默认)= 工具不支持
     /// 后台执行;`Some` 时 bash 的 `run_in_background` 参数可用。
     pub background: Option<Arc<dyn TaskSpawner>>,
@@ -318,6 +324,8 @@ impl Default for ToolContext {
             background: None,
             human_input: None,
             parent_tail_json: Arc::new(RwLock::new(Vec::new())),
+            os_sandbox_writable: Vec::new(),
+            os_sandbox_network: None,
         }
     }
 }
