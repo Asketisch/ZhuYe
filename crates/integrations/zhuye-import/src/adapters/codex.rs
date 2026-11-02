@@ -141,6 +141,8 @@ pub(crate) fn parse_lines(
     let mut model: Option<String> = None;
 
     let mut entries: Vec<Entry> = Vec::new();
+    // keep_injected 时的注入脚手架缓冲:挂到下一个真实 user 输入所在轮。
+    let mut pending: Vec<String> = Vec::new();
     let mut current: Option<ImportedTurn> = None;
 
     for (lineno, line) in content.lines().enumerate() {
@@ -206,33 +208,39 @@ pub(crate) fn parse_lines(
                             // developer 消息是运行时脚手架,默认剔除。
                             "developer" if !opts.keep_injected => continue,
                             "developer" | "user" => {
-                                if role == "user" && is_injected(&text) && !opts.keep_injected {
+                                // 注入行(developer / <environment_context> 等
+                                // 脚手架)默认剔除;keep_injected 时**缓冲**而非
+                                // 立即开轮 —— 它们属于紧随其后的真实用户输入
+                                // 那一轮(原会话里就是同一次请求的上下文),
+                                // 独立成轮会产生「只有 user 无 assistant」的
+                                // 孤立消息,且与下一条 user 连续,部分 provider
+                                // 会拒绝。缓冲内容在真实输入到达时前置。
+                                let injected =
+                                    role == "developer" || (role == "user" && is_injected(&text));
+                                if injected {
+                                    if !opts.keep_injected || text.is_empty() {
+                                        continue;
+                                    }
+                                    pending.push(text);
                                     continue;
                                 }
                                 if text.is_empty() {
                                     continue;
                                 }
-                                // 真实用户输入 → 开新 turn。
-                                if role == "user" {
-                                    if let Some(t) = current.take() {
-                                        if !t.is_empty() {
-                                            entries.push(Entry::Turn(t));
-                                        }
+                                // 真实用户输入 → 开新 turn(前置挂缓冲的注入
+                                // 上下文)。
+                                if let Some(t) = current.take() {
+                                    if !t.is_empty() {
+                                        entries.push(Entry::Turn(t));
                                     }
-                                    let mut turn = ImportedTurn::empty();
-                                    turn.started_at = ts;
-                                    turn.user.push(UserBlock::Text { text });
-                                    current = Some(turn);
-                                } else {
-                                    // developer 且 keep_injected:作为 user
-                                    // 上下文文本并入当前轮(保留可见性)。
-                                    let turn = current.get_or_insert_with(|| {
-                                        let mut t = ImportedTurn::empty();
-                                        t.started_at = ts;
-                                        t
-                                    });
-                                    turn.user.push(UserBlock::Text { text });
                                 }
+                                let mut turn = ImportedTurn::empty();
+                                turn.started_at = ts;
+                                for ctx in pending.drain(..) {
+                                    turn.user.push(UserBlock::Text { text: ctx });
+                                }
+                                turn.user.push(UserBlock::Text { text });
+                                current = Some(turn);
                             }
                             "assistant" => {
                                 if text.is_empty() {
@@ -576,6 +584,41 @@ mod tests {
             })
             .sum();
         assert!(user_texts >= 3, "注入 user + developer + 真实 user");
+    }
+
+    /// keep_injected 的注入行必须**前置到真实 user 所在轮**,不能独立成轮
+    /// (否则产生只有 user 无 assistant 的孤立消息,且与下一条 user 连续,
+    /// provider 会拒绝)。回归:修复前注入行各自开轮。
+    #[test]
+    fn keep_injected_merges_into_real_turn() {
+        let s = parse_lines(
+            FIXTURE,
+            "rollout.jsonl",
+            &ImportOptions {
+                keep_injected: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(s.turn_count(), 1, "注入不得独立成轮");
+        let Entry::Turn(t) = &s.entries[0] else {
+            panic!();
+        };
+        // 顺序:注入 env → 注入 skills → 真实输入。
+        let texts: Vec<&str> = t
+            .user
+            .iter()
+            .filter_map(|b| match b {
+                UserBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert!(texts[0].contains("沙箱"), "{texts:?}");
+        assert!(texts[1].contains("技能"), "{texts:?}");
+        assert_eq!(texts[2], "帮我看下进程");
+        // 该轮仍有 assistant 内容(不是孤立 user 轮)。
+        assert!(!t.assistant.is_empty());
     }
 
     /// arguments 非 JSON 降级 raw;encrypted reasoning 记 warning。
