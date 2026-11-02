@@ -1,0 +1,453 @@
+"""能力覆盖层 · 外部 Harness 会话导入(zhuye-import 插件 + 独立二进制)。
+
+覆盖:
+- I1 Claude Code JSONL 直跑导入:session_meta 保留源 uuid、cwd → workspace、
+  assistant content 时序折叠(tool_use/tool_result 配对)、ai-title → .name;
+- I2 Codex rollout 直跑导入:developer/注入行过滤、arguments 解析、
+  compacted → compaction、token_count;
+- I3 ZCode SQLite 导入:schema 同构 fixture,前缀剥 uuid、model-only 过滤;
+- I4 dry-run 不落盘 / 重复导入幂等 / --force 覆盖;
+- I5 --from auto 嗅探混合目录 + --json 结构化输出;
+- I6 导入后 session ls / show 可见可读;
+- I7 插件全链路:install + serve --plugin → mock 模型调用 MCP 工具导入成功;
+- I8 导入会话 exec --resume 续跑:历史进入上下文(session_meta 无随机 id、
+  追加同一文件)。
+
+运行:./tests/run_all.sh functional-layer,或
+  ZHUYE_BIN=... python3 -m pytest tests/functional/test_import.py -v
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import sqlite3
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from wire import Sandbox, ZHUYE_BIN, rollout_files, rollout_records, run_cli
+
+pytestmark = pytest.mark.usefixtures("sandbox")
+
+# 会话导入二进制:与 zhuye 同目录的 sibling 产物。
+IMPORT_BIN = Path(ZHUYE_BIN).parent / "zhuye-import"
+# 仓库根(wire.ZHUYE_BIN = <root>/target/release/zhuye)。
+REPO_ROOT = Path(ZHUYE_BIN).resolve().parents[2]
+
+
+def _require_import_bin() -> None:
+    if not IMPORT_BIN.is_file():
+        pytest.skip(f"zhuye-import 二进制不存在:{IMPORT_BIN}(先 cargo build --release -p zhuye-import)")
+
+
+def run_import(sandbox: Sandbox, *args: str, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
+    """跑 `zhuye-import <args>`(env 走 sandbox 隔离 HOME)。"""
+    return subprocess.run(
+        [str(IMPORT_BIN), *args],
+        cwd=str(sandbox.cwd),
+        env=sandbox.env(),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+# ── 源格式 fixture(按本机实测形状构造,内容与各 adapter 单测同源) ──
+
+CLAUDE_FIXTURE = [
+    '{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"第一问:查端口"},"uuid":"u1","timestamp":"2026-05-01T10:00:00Z","cwd":"/work/fixture","sessionId":"af9ee90f-0000-4000-8000-000000000011","version":"2.0.0"}',
+    '{"type":"ai-title","aiTitle":"端口排查","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
+    '{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"role":"assistant","model":"test-model","content":[{"type":"text","text":"我来查。"},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"lsof -i :8080"}}],"usage":{"input_tokens":100,"cache_read_input_tokens":50,"output_tokens":20}},"timestamp":"2026-05-01T10:00:05Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
+    '{"parentUuid":"u1","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":"LISTEN 0.0.0.0:8080"}]},"timestamp":"2026-05-01T10:00:08Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
+    '{"parentUuid":"u1","isSidechain":false,"type":"user","isMeta":true,"message":{"role":"user","content":"Caveat: 注入应被过滤"},"uuid":"u2","timestamp":"2026-05-01T10:00:09Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
+    '{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"role":"assistant","model":"test-model","content":[{"type":"text","text":"8080 在监听。"}],"usage":{"input_tokens":120,"cache_read_input_tokens":50,"output_tokens":30}},"timestamp":"2026-05-01T10:00:10Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
+]
+
+CODEX_FIXTURE = [
+    '{"timestamp":"2026-06-01T08:00:00.000Z","type":"session_meta","payload":{"id":"bf9ee90f-0000-7000-8000-000000000022","timestamp":"2026-06-01T08:00:00.000Z","cwd":"/work/cx-fixture","originator":"Codex CLI","cli_version":"0.166.0"}}',
+    '{"timestamp":"2026-06-01T08:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>沙箱</environment_context>"}]}}',
+    '{"timestamp":"2026-06-01T08:00:02.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<skills_instructions>技能</skills_instructions>"}]}}',
+    '{"timestamp":"2026-06-01T08:00:03.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"跑个测试"}]}}',
+    '{"timestamp":"2026-06-01T08:00:04.000Z","type":"turn_context","payload":{"cwd":"/work/cx-fixture","model":"openai/gpt-test","effort":"high"}}',
+    '{"timestamp":"2026-06-01T08:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_x1","arguments":"{\\"cmd\\":\\"cargo test\\"}"}}',
+    '{"timestamp":"2026-06-01T08:00:06.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_x1","output":"test result: ok"}}',
+    '{"timestamp":"2026-06-01T08:00:07.000Z","type":"token_usage_record","payload":{"turn_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":40},"usage":{"input_tokens":300,"output_tokens":40}}}',
+    '{"timestamp":"2026-06-01T08:00:08.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"测试全绿。"}]}}',
+    '{"timestamp":"2026-06-01T08:00:09.000Z","type":"compacted","payload":{"message":{"type":"message","role":"user","content":[{"type":"input_text","text":"<SUMMARY>此前:跑测试全绿</SUMMARY>"}]}}}',
+]
+
+
+def _write_fixture(sandbox: Sandbox, name: str, lines: list[str]) -> Path:
+    p = sandbox.cwd / name
+    p.write_text("\n".join(lines) + "\n")
+    return p
+
+
+def _records_of(sandbox: Sandbox, thread_id: str) -> list[dict[str, Any]]:
+    """按 thread id 读单个会话文件的全部记录。"""
+    matches = [f for f in rollout_files(sandbox.home) if f.stem == thread_id]
+    assert matches, f"找不到 {thread_id} 的会话文件:{rollout_files(sandbox.home)}"
+    out = []
+    for line in matches[0].read_text().splitlines():
+        if line.strip():
+            out.append(json.loads(line))
+    return out
+
+
+# ── I1 Claude Code ───────────────────────────────────────────────────────
+
+
+def test_I1_claude导入_元数据与时序折叠(sandbox: Sandbox) -> None:
+    """Claude Code JSONL 导入:meta 保留源 uuid、cwd → workspace、
+    tool_use/tool_result 折叠进 assistant content、ai-title 写 .name。
+
+    依据:crates/integrations/zhuye-import/src/adapters/claude_code.rs。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "claude.jsonl", CLAUDE_FIXTURE)
+    proc = run_import(sandbox, str(src), "--from", "auto")
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    assert "imported" in proc.stdout, proc.stdout
+
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+    recs = _records_of(sandbox, tid)
+    # 首行 session_meta:索引契约 + 源 id/workspace 透传。
+    assert recs[0]["type"] == "session_meta", recs[0]
+    assert recs[0]["session_id"] == tid
+    assert recs[0]["workspace"] == "/work/fixture"
+    assert recs[0]["model"] == "test-model"
+    # 消息形状:user 1 条 + assistant 1 条(isMeta 行被过滤,不开新轮)。
+    msgs = [r for r in recs if r["type"] == "message"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"], msgs
+    user_content = msgs[0]["content"]
+    assert isinstance(user_content, list) and user_content[0]["type"] == "text"
+    assert "第一问" in user_content[0]["text"]
+    # assistant 时序折叠:text → tool_use → tool_result → text。
+    blocks = msgs[1]["content"]
+    assert [b["type"] for b in blocks] == ["text", "tool_use", "tool_result", "text"], blocks
+    assert blocks[1]["id"] == "toolu_1"
+    assert blocks[1]["args"]["command"] == "lsof -i :8080"
+    assert blocks[2]["call_id"] == "toolu_1"
+    assert blocks[2]["output"]["is_error"] is False
+    assert "LISTEN" in blocks[2]["output"]["content"][0]["text"]
+    # token_count 存在且带 provider 标记。
+    tc = [r for r in recs if r["type"] == "token_count"]
+    assert tc and tc[0]["provider"] == "claude-code"
+    assert tc[0]["usage"]["input_tokens"] == 120
+    # 落盘目录按源时间戳(2026-05-01)定日期。
+    files = [f for f in rollout_files(sandbox.home) if f.stem == tid]
+    assert files[0].parent.as_posix().endswith("2026/05/01"), files[0]
+    # ai-title → .name 文件。
+    name_file = sandbox.home / ".zhuye/sessions/_names" / f"{tid}.name"
+    assert name_file.read_text() == "端口排查"
+
+
+def test_I2_codex导入_过滤与降级(sandbox: Sandbox) -> None:
+    """Codex rollout 导入:developer/注入 user 行过滤、arguments 解析为
+    对象、compacted → compaction、token_count 挂轮。
+
+    依据:crates/integrations/zhuye-import/src/adapters/codex.rs。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "codex.jsonl", CODEX_FIXTURE)
+    proc = run_import(sandbox, str(src), "--from", "codex")
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+
+    tid = "bf9ee90f-0000-7000-8000-000000000022"
+    recs = _records_of(sandbox, tid)
+    assert recs[0]["type"] == "session_meta"
+    assert recs[0]["model"] == "openai/gpt-test"
+    assert recs[0]["workspace"] == "/work/cx-fixture"
+    msgs = [r for r in recs if r["type"] == "message"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"], msgs
+    assert "跑个测试" in msgs[0]["content"][0]["text"]
+    blocks = msgs[1]["content"]
+    assert [b["type"] for b in blocks] == ["tool_use", "tool_result", "text"], blocks
+    assert blocks[0]["args"] == {"cmd": "cargo test"}, blocks[0]
+    assert blocks[1]["output"]["content"][0]["text"] == "test result: ok"
+    # compacted → compaction(位置在 turn 之后)。
+    comp = [r for r in recs if r["type"] == "compaction"]
+    assert comp and "此前:跑测试全绿" in comp[0]["summary"]
+    assert comp[0]["strategy"] == "llm_summarize"
+    tc = [r for r in recs if r["type"] == "token_count"]
+    assert tc and tc[0]["provider"] == "codex"
+    assert tc[0]["usage"]["cached_tokens"] == 200
+
+
+# ── I3 ZCode ─────────────────────────────────────────────────────────────
+
+
+def _make_zcode_db(sandbox: Sandbox) -> Path:
+    """按逆向 schema(ZCode v2,2026-11)构造同构 fixture 库。"""
+    db_dir = sandbox.home / ".zcode/cli/db"
+    db_dir.mkdir(parents=True)
+    db = db_dir / "db.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE session (
+          id text primary key, directory text not null, title text,
+          time_created integer not null, time_updated integer not null,
+          time_deleted integer);
+        CREATE TABLE message (
+          id text primary key, session_id text not null,
+          time_created integer not null, data text not null, sequence integer);
+        CREATE TABLE part (
+          id text primary key, message_id text not null, session_id text,
+          time_created integer not null, data text not null, sequence integer);
+        CREATE TABLE turn_usage (
+          session_id text not null, turn_id text not null, user_message_id text,
+          input_tokens integer not null default 0,
+          output_tokens integer not null default 0,
+          cache_read_input_tokens integer not null default 0,
+          primary key(session_id, turn_id));
+        """
+    )
+    sid = "sess_cf9ee90f-0000-4000-8000-000000000033"
+    conn.execute(
+        "INSERT INTO session VALUES (?,?,?,?,?,NULL)",
+        (sid, "/work/zc-fixture", "ZCode 会话", 1775000000000, 1775000600000),
+    )
+    conn.execute(
+        "INSERT INTO message VALUES ('m1',?,1775000000100,'{\"role\":\"user\",\"time\":{\"created\":1775000000100}}',0)",
+        (sid,),
+    )
+    conn.execute(
+        "INSERT INTO message VALUES ('m2',?,1775000000200,'{\"role\":\"user\",\"time\":{\"created\":1775000000200},\"metadata\":{\"visibility\":\"model-only\",\"source\":\"plan_mode_exit\"}}',1)",
+        (sid,),
+    )
+    conn.execute(
+        "INSERT INTO message VALUES ('m3',?,1775000000300,'{\"role\":\"assistant\",\"time\":{\"created\":1775000000300},\"modelId\":\"glm-test\",\"providerId\":\"p\"}',2)",
+        (sid,),
+    )
+    conn.execute(
+        "INSERT INTO part VALUES ('p1','m1','s',1,'{\"type\":\"text\",\"text\":\"# Environment\\n注入\"}',0)"
+    )
+    conn.execute(
+        "INSERT INTO part VALUES ('p2','m1','s',2,'{\"type\":\"text\",\"text\":\"ZCode 的问题\"}',1)"
+    )
+    conn.execute(
+        "INSERT INTO part VALUES ('p3','m2','s',3,'{\"type\":\"text\",\"text\":\"元消息\"}',0)"
+    )
+    conn.execute(
+        "INSERT INTO part VALUES ('p4','m3','s',4,'{\"type\":\"reasoning\",\"text\":\"想一想\"}',0)"
+    )
+    conn.execute(
+        "INSERT INTO part VALUES ('p5','m3','s',5,'{\"type\":\"tool\",\"callID\":\"call_z\",\"tool\":\"Bash\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"ls\"},\"output\":\"a.rs\"}}',1)"
+    )
+    conn.execute(
+        "INSERT INTO part VALUES ('p6','m3','s',6,'{\"type\":\"text\",\"text\":\"答完了\"}',2)"
+    )
+    conn.execute(
+        "INSERT INTO turn_usage VALUES (?,?,?,500,60,300)",
+        (sid, "turn_1", "m1"),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_I3_zcode导入_sqlite来源(sandbox: Sandbox) -> None:
+    """ZCode SQLite 导入:--all --from zcode 走 discover;前缀剥 uuid、
+    model-only 与注入块过滤、tool 配对、turn_usage 挂轮。
+
+    依据:crates/integrations/zhuye-import/src/adapters/zcode.rs。
+    """
+    _require_import_bin()
+    _make_zcode_db(sandbox)
+    proc = run_import(sandbox, "--all", "--from", "zcode", "--json")
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    lines = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+    imported = [l for l in lines if l["status"] == "imported"]
+    assert len(imported) == 1, proc.stdout
+
+    tid = "cf9ee90f-0000-4000-8000-000000000033"
+    assert imported[0]["thread_id"] == tid
+    recs = _records_of(sandbox, tid)
+    assert recs[0]["type"] == "session_meta"
+    assert recs[0]["workspace"] == "/work/zc-fixture"
+    assert recs[0]["model"] == "glm-test"
+    msgs = [r for r in recs if r["type"] == "message"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"], msgs
+    assert msgs[0]["content"][0]["text"] == "ZCode 的问题"
+    blocks = msgs[1]["content"]
+    assert [b["type"] for b in blocks] == ["tool_use", "tool_result", "text"], blocks
+    assert blocks[0]["name"] == "Bash"
+    assert blocks[0]["args"] == {"command": "ls"}
+    assert blocks[1]["output"]["content"][0]["text"] == "a.rs"
+    tc = [r for r in recs if r["type"] == "token_count"]
+    assert tc and tc[0]["usage"]["input_tokens"] == 500
+
+
+# ── I4 幂等 / dry-run / force ────────────────────────────────────────────
+
+
+def test_I4_dry_run_幂等与force(sandbox: Sandbox) -> None:
+    """--dry-run 不落盘;重复导入 skipped;--force 覆盖且文件仍可解析。
+
+    依据:crates/integrations/zhuye-import/src/write.rs write_session。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "c.jsonl", CLAUDE_FIXTURE)
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+
+    dry = run_import(sandbox, str(src), "--dry-run")
+    assert dry.returncode == 0 and "dry-run" in dry.stdout, dry.stdout
+    assert rollout_files(sandbox.home) == [], "dry-run 不得落盘"
+
+    first = run_import(sandbox, str(src))
+    assert first.returncode == 0
+    n1 = len(_records_of(sandbox, tid))
+
+    again = run_import(sandbox, str(src))
+    assert again.returncode == 0
+    assert "已存在" in again.stdout or "failed" in again.stdout, again.stdout
+    assert len(_records_of(sandbox, tid)) == n1, "重复导入不得追加"
+
+    force = run_import(sandbox, str(src), "--force")
+    assert force.returncode == 0
+    recs = _records_of(sandbox, tid)
+    assert len(recs) == n1, "force 覆盖应为等量记录"
+    assert recs[0]["type"] == "session_meta"
+
+
+# ── I5 auto 嗅探 + --json ────────────────────────────────────────────────
+
+
+def test_I5_auto嗅探混合目录(sandbox: Sandbox) -> None:
+    """混合目录一次导入:claude/codex 各自被嗅探正确;--json 逐源一行。
+
+    依据:crates/integrations/zhuye-import/src/adapter.rs sniff。
+    """
+    _require_import_bin()
+    d = sandbox.cwd / "mixed"
+    d.mkdir()
+    (d / "a.jsonl").write_text("\n".join(CLAUDE_FIXTURE) + "\n")
+    (d / "b.jsonl").write_text("\n".join(CODEX_FIXTURE) + "\n")
+
+    proc = run_import(sandbox, str(d), "--from", "auto", "--json")
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    lines = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+    imported = sorted(l["thread_id"] for l in lines if l["status"] == "imported")
+    assert imported == [
+        "af9ee90f-0000-4000-8000-000000000011",
+        "bf9ee90f-0000-7000-8000-000000000022",
+    ], lines
+
+
+# ── I6 session ls / show 可见 ────────────────────────────────────────────
+
+
+def test_I6_导入会话对原生CLI可见(sandbox: Sandbox) -> None:
+    """导入产物是普通会话:`session ls` 列出、`session show` 可读、
+    标题显示 ai-title。
+
+    依据:crates/resources/zhuye-rollout/src/index/mod.rs list_sessions。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "c.jsonl", CLAUDE_FIXTURE)
+    run_import(sandbox, str(src))
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+
+    ls = run_cli(sandbox, "session", "ls")
+    assert ls.returncode == 0, ls.stderr
+    assert tid in ls.stdout, ls.stdout
+
+    show = run_cli(sandbox, "session", "show", tid)
+    assert show.returncode == 0, show.stderr
+    assert "第一问" in show.stdout, show.stdout
+    # 自定义名(.name 文件)由导入时的 ai-title 写入。
+    name_file = sandbox.home / ".zhuye/sessions/_names" / f"{tid}.name"
+    assert name_file.read_text() == "端口排查"
+
+
+# ── I7 插件全链路 ────────────────────────────────────────────────────────
+
+
+def test_I7_插件全链路_MCP工具导入(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """install + serve --plugin → mock 模型调用
+    mcp__plugin:harness-import:importer__import_session → 导入成功。
+
+    依据:crates/resources/zhuye-plugin/src/loader.rs register(MCP 工具
+    命名)、crates/integrations/zhuye-import/src/mcp_server.rs。
+    """
+    _require_import_bin()
+    plugin_dir = REPO_ROOT / "plugins" / "harness-import"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/harness-import 不存在")
+    # ${PLUGIN_ROOT}/bin/zhuye-import 由测试装配(bin/ 内容不入库)。
+    bin_dir = plugin_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shutil.copy2(IMPORT_BIN, bin_dir / "zhuye-import")
+
+    inst = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert inst.returncode == 0, inst.stderr + inst.stdout
+
+    src = _write_fixture(sandbox, "claude.jsonl", CLAUDE_FIXTURE)
+    # 工具全名:plugin_id 含 marketplace 后缀(@inline),见
+    # zhuye-mcp/src/manager.rs tool_descriptor_from_rmcp(mcp__{scoped}__{tool})。
+    tool_name = "mcp__plugin:harness-import@inline:importer__import_session"
+    script = mock_script(
+        [
+            json.dumps(
+                {
+                    "type": "tool_call",
+                    "name": tool_name,
+                    "args": {"path": str(src), "source_kind": "auto"},
+                }
+            ),
+            '{"type":"text","text":"导入完成"}',
+        ]
+    )
+    s = serve_session(args=["--plugin", "harness-import@inline"], env=sandbox.mock_env(script))
+    # ServeSession.submit(op) 发送并收集到终态,直接返回事件流。
+    events = s.submit({"type": "user_input", "items": [{"type": "text", "text": "帮我导入这个会话"}]})
+    types = [e["msg"]["type"] for e in events]
+    assert "turn_complete" in types, types
+
+    end = next(e for e in events if e["msg"]["type"] == "tool_call_end")
+    assert end["msg"]["is_error"] is False, f"MCP 工具失败:{end['msg']}"
+    out_text = "".join(
+        c.get("text", "")
+        for c in end["msg"].get("output", {}).get("content", [])
+        if isinstance(c, dict)
+    )
+    assert "imported" in out_text, out_text
+
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+    recs = _records_of(sandbox, tid)
+    assert recs[0]["type"] == "session_meta" and recs[0]["session_id"] == tid
+
+
+# ── I8 导入会话可续跑 ────────────────────────────────────────────────────
+
+
+def test_I8_导入会话_resume_续跑(sandbox: Sandbox, mock_script) -> None:
+    """导入后 `exec --resume <id>` 续跑:追加同一文件,且文件内全部
+    session_meta 的 session_id 一致(无随机 id 二次写入 —— resume 回填
+    session_id 的回归断言)。
+
+    依据:crates/runtime/zhuye-exec/src/headless.rs bootstrap_resumed
+    (with_session_id)、crates/runtime/zhuye-core/src/submission_loop.rs。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "c.jsonl", CLAUDE_FIXTURE)
+    run_import(sandbox, str(src))
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+    path = next(f for f in rollout_files(sandbox.home) if f.stem == tid)
+    before = len(_records_of(sandbox, tid))
+
+    script = mock_script(['{"type":"text","text":"续跑回复"}'])
+    proc = run_cli(sandbox, "exec", "--resume", tid, env=sandbox.mock_env(script), input_text="")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+
+    recs = _records_of(sandbox, tid)
+    assert len(recs) > before, "resume 应在同一文件追加"
+    metas = [r for r in recs if r["type"] == "session_meta"]
+    assert all(m["session_id"] == tid for m in metas), [m["session_id"] for m in metas]
+    # 续跑 turn 的回复落盘(assistant 追加)。
+    assert recs[-1]["type"] == "message" and recs[-1]["role"] == "assistant"
+    assert "续跑回复" in json.dumps(recs[-1]["content"], ensure_ascii=False)

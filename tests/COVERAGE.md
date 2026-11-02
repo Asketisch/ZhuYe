@@ -38,6 +38,8 @@
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R5 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
 | 持久化(rollout / 截断 / 索引) | P1–P5 | cli_deep(session) | — | ✅ | P1–P2 |
+| 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I8 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
+| 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
 | 编排(子代理/讨论/任务/团队/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅ | — |
 | CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
 | 模型发现(清单接口 / 免费判定 / 动态 model) | — | models_* | — | ✅ | — |
@@ -123,6 +125,27 @@
 rewind 物理截断(记录减少 + `.rewind-<ts>.bak` 备份)/ `zhuye session ls`
 能列出该会话。P5 覆盖旧日期会话通过 thread id、内部 session id、`-c`、`-r 1` 恢复后续写原文件。
 
+### I 组 会话导入(`test_import.py`)
+独立二进制 `zhuye-import`(crate `crates/integrations/zhuye-import`,
+插件 `plugins/harness-import` 的能力核心):
+- **I1 Claude Code**:源 uuid 保留为 thread id、`cwd → workspace`、
+  assistant content 时序折叠(tool_use/tool_result 配对)、`isMeta` 行
+  过滤、`token_count` 带 provider、落盘按源日期分桶、`ai-title` → `.name`;
+- **I2 Codex**:developer / 注入 user 行过滤、`function_call.arguments`
+  字符串解析为对象、`compacted → compaction`、轮用量挂 `token_count`;
+- **I3 ZCode**:schema 同构 SQLite fixture,`sess_` 前缀剥 uuid、
+  `visibility:"model-only"` 与注入块过滤、tool 配对、`turn_usage` 挂轮;
+- **I4 幂等**:`--dry-run` 不落盘 / 重复导入 skipped(退出码 0)/
+  `--force` 覆盖等量;
+- **I5 auto**:`--from auto` 混合目录逐文件嗅探 + `--json` 逐源一行;
+- **I6 原生可见**:导入产物 `session ls` 列出、`session show` 可读
+  (含数组 content 预览修复)、`.name` 自定义名;
+- **I7 插件全链路**:plugin install + `serve --plugin` → mock 模型调用
+  `mcp__plugin:harness-import@inline:importer__import_session` → 工具
+  成功、会话落盘、`turn_complete`;
+- **I8 可续跑**:`exec --resume <导入id>` 续跑追加同一文件,且文件内全部
+  `session_meta.session_id` 一致(resume 回填 session_id 的回归断言)。
+
 ### O 组 编排(`test_orchestration.py`)
 子代理 `call_explorer`(子代理执行 → 回执进历史)/ 讨论编排(transcript +
 Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路径
@@ -167,7 +190,7 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | 子命令 | 冒烟(cli_core/cli_modules) | 深度断言位置 |
 |---|---|---|
 | `exec` | ✅ | cli_deep(exec JSONL 字段级)、tools_drive(全工具驱动)、能力层 C2/C6(退出码映射) |
-| `serve` | ✅ | **能力层 19 Op 全量** + serve_ops.sh(FIFO 驱动,逐 op 断言 EventMsg)+ integrations(MCP/bubble/热重载) |
+| `serve` | ✅ | **能力层 19 Op 全量** + serve_ops.sh(FIFO 驱动,逐 op 断言 EventMsg)+ integrations(MCP/bubble/热重载);`--plugin` 显式加载见能力层 I7 |
 | `login` | ✅ | cli_deep:4 provider 路径、缺 key 报错、短 key 告警、`--force`、api_key 脱敏 |
 | `mcp` | ✅ | cli_deep:stdio+http 双传输 add/互斥报错/ls/show/remove/`test`(真 mock server 成功+坏 binary 失败)/registry 三路径 |
 | `config` | ✅ | cli_deep:set/unset/ls/show/`--reveal`/非法 key 报错 |
@@ -309,10 +332,11 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `functional/test_skills.py` | 3 条(SK1–SK3) |
 | `functional/test_recovery.py` | 11 条(R5 + X6) |
 | `functional/test_persistence.py` | 8 条(P1–P5) |
+| `functional/test_import.py` | 8 条(I1–I8) |
 | `functional/test_orchestration.py` | 5 条(O5) |
 | `functional/test_cli.py` | 6 条(C6) |
 | `functional/test_bugfixes.py` | 12 条(缺陷修复回归) |
-| **能力覆盖层合计** | **78 条** |
+| **能力覆盖层合计** | **86 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |
@@ -343,6 +367,11 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 - **`agent_message`(非流式 provider 的整段消息)**:mock provider 恒走
   delta 路径,该变体在离线套件不可达。
 - **bash 参数面套件的 Python 化**:见 §9 迁移路线(本次未迁)。
+- **会话导入的真实数据面**:I 组全部使用同构 fixture(按本机实测形状
+  构造),CI 不读 `~/.claude` / `~/.codex` / `~/.zcode` 真实数据(隐私 +
+  非封闭);ZCode 真实 SQLite 的 schema 漂移风险由 adapter 侧容错解析 +
+  模块文档的 schema 快照兜底。DeepSeek Harness 无公开格式,adapter 仅留
+  位未实现(`zhuye-import/src/adapter.rs` 注册表追加即可)。
 
 ## 9. bash 参数面 → Python 迁移路线(后续批次)
 
