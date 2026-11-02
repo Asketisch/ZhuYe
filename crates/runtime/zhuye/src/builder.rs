@@ -281,7 +281,7 @@ impl ZhuyeBuilder {
     /// `AgentThread::new + AgentConfig::with_m4(default_m4_deps)` 走底层 API。
     pub fn build(self) -> anyhow::Result<Zhuye> {
         let registry = build_registry_from_env(&self.model)?;
-        let tools = Arc::new(default_tool_registry());
+        let tools = default_tool_registry();
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出,部分移动后
         // 不能再整体借用 self。
         let telemetry_sink = self.resolve_telemetry_sink();
@@ -331,7 +331,7 @@ impl ZhuyeBuilder {
     ///   mcp_servers 能力落点)。
     pub async fn build_async(self) -> anyhow::Result<Zhuye> {
         let registry = build_registry_from_env(&self.model)?;
-        let tools = Arc::new(default_tool_registry());
+        let tools = default_tool_registry();
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出。
         let telemetry_sink = self.resolve_telemetry_sink();
         let cancel = self.cancel.unwrap_or_default();
@@ -710,38 +710,13 @@ fn is_mock_provider(model_spec: &str) -> bool {
     false
 }
 
-fn default_tool_registry() -> ToolRegistry {
-    use zhuye_tools::builtins;
-    let r = ToolRegistry::default();
-    r.register(Arc::new(builtins::EchoTool));
-    r.register(Arc::new(builtins::BashTool::default()));
-    r.register(Arc::new(builtins::ReadTool));
-    r.register(Arc::new(builtins::WriteTool));
-    r.register(Arc::new(builtins::EditTool));
-    r.register(Arc::new(builtins::DeleteTool));
-    r.register(Arc::new(builtins::GrepTool));
-    r.register(Arc::new(builtins::GlobTool));
-    // v1.x Plan mode 控制面工具 —— agent 可主动调 `EnterPlanMode` /
-    // `ExitPlanMode` 触发 plan 切换(替代手动 slash 命令)。
-    r.register(Arc::new(builtins::EnterPlanModeTool));
-    r.register(Arc::new(builtins::ExitPlanModeTool));
-    // v1.x Plan mode 写盘工具 —— Plan 阶段把 plan markdown 落到
-    // `<workspace>/.zhuye/plan/<name>.md`,供 ExitPlanMode 读取。
-    // required_permission = Auto,Plan mode 下免审批直写。必须与
-    // EnterPlanMode / ExitPlanMode 一起注册,否则 LLM 看到 schema
-    // (因 ALWAYS_ON_TOOLS 含 PlanWrite)却找不到实现 → "tool not found"。
-    r.register(Arc::new(builtins::PlanWriteTool));
-    r.register(Arc::new(builtins::EnterWorktreeTool));
-    r.register(Arc::new(builtins::ExitWorktreeTool));
-    // v1.0.0-rc1: AST 结构化搜索/重写工具(tree-sitter 后端,
-    // 默认 5 个 grammar:rust/typescript/python/go/javascript)。
-    r.register(Arc::new(zhuye_ast::AstTool::new()));
-    // v1.0.0-rc4: Web 工具 —— HTTP 抓取 + 搜索。WebFetch 走 `Prompt`
-    // 权限(由 queue 触发 ApprovalGate),WebSearch 走默认 `Auto`。
-    r.register(Arc::new(builtins::WebFetchTool::new()));
-    r.register(Arc::new(builtins::WebSearchTool::new()));
-    r.register(Arc::new(builtins::NotebookEditTool));
-    r
+fn default_tool_registry() -> Arc<ToolRegistry> {
+    // v1.x:内置清单收编至 `zhuye_exec::register_builtin_tools`(exec /
+    // serve / lib facade 三条路径共用,消除此前的双份漂移 —— 门面曾缺
+    // AskUser / ToolSearch / Checkpoint 等 9 个工具)。
+    let tools = Arc::new(ToolRegistry::default());
+    zhuye_tools::register_builtin_tools(&tools, None, Arc::new(zhuye_ast::AstTool::new()));
+    tools
 }
 
 // 用法占位 helper —— 让 builder 可以原样返回 Self,虽然
@@ -880,12 +855,16 @@ mod tests {
 
     #[test]
     fn default_tool_registry_has_seven_builtins_plus_plan_tools_plus_ast_plus_web() {
-        // 7 原始 + 3 plan(EnterPlanMode/ExitPlanMode/PlanWrite) + 2 worktree +
-        // ast + 2 web + notebook_edit = 17。PlanWrite 随本次修复一并
-        // 补注册(v0.4.0 之前漏注册导致 LLM 报 "tool not found")。
+        // 内置清单收编至 zhuye_tools::register_builtin_tools(单一事实源,
+        // 与 exec / serve 共用)。全量 26 个(含 AskUser / ToolSearch /
+        // Checkpoint / Rewind 等此前门面缺失的 9 个)。
         let r = default_tool_registry();
         let names = r.list();
-        assert_eq!(names.len(), 17, "expected 17 builtins, got {names:?}");
+        assert_eq!(
+            names.len(),
+            zhuye_tools::BUILTIN_TOOL_COUNT,
+            "got {names:?}"
+        );
         assert!(names.contains(&"bash".into()));
         assert!(names.contains(&"read".into()));
         assert!(names.contains(&"EnterPlanMode".to_string()));
@@ -896,6 +875,10 @@ mod tests {
         assert!(names.contains(&"ast".to_string()));
         assert!(names.contains(&"web_fetch".to_string()));
         assert!(names.contains(&"web_search".to_string()));
+        // v1.x:门面与 exec 并集后新增可见的 9 个。
+        for added in ["checkpoint", "rewind", "tool_search", "image_view", "brief"] {
+            assert!(names.iter().any(|n| n == added), "门面缺内置工具 {added}");
+        }
     }
 
     /// `plan_mode(true)` 让 `AgentConfig::permission_mode` 初始化为
@@ -963,7 +946,7 @@ mod tests {
         let t = Arc::new(AgentThread::new(
             AgentConfig::new("openai/gpt-4o", Path::new(".")),
             build_registry_from_env("openai/gpt-4o").unwrap(),
-            Arc::new(default_tool_registry()),
+            default_tool_registry(),
             None,
             None,
         ));

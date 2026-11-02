@@ -44,6 +44,7 @@
 | CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
 | 模型发现(清单接口 / 免费判定 / 动态 model) | — | models_* | — | ✅ | — |
 | 模型计价(费率表公开 / 费率卡 / cost 聚合) | — | — | — | zhuye-llm pricing(6 例) | — |
+| git 能力族(checkpoint tag+安全快照 / 分支 PR 探测 / 指令解析) | — | — | — | zhuye-git(16 例)+ zhuye-tools builtin_tools(1 例) | — |
 | 缺陷修复回归(预算耗尽显性化 / 配置隔离 / 工具裁切 / 提示词关闭 / mock 显性化) | ✔(12 条,见 `test_bugfixes.py`) | config(show 的 ZHUYE_HOME 断言) | — | ✅(provider 层非 SSE 校验 / 版本段拼接 / 采样参数默认值有 wiremock 回归) | — |
 
 ## 2. 能力覆盖层明细(`tests/functional/`)

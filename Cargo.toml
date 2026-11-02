@@ -26,6 +26,7 @@ members = [
     "crates/resources/zhuye-telemetry",
     "crates/resources/zhuye-sandbox",
     "crates/resources/zhuye-fs",
+    "crates/resources/zhuye-git",
     "crates/resources/zhuye-ast",
 
     # ── orchestration ── 多 agent 编排层
@@ -84,6 +85,7 @@ zhuye-rollout     = { path = "crates/resources/zhuye-rollout" }
 zhuye-telemetry   = { path = "crates/resources/zhuye-telemetry" }
 zhuye-sandbox     = { path = "crates/resources/zhuye-sandbox" }
 zhuye-fs          = { path = "crates/resources/zhuye-fs" }
+zhuye-git         = { path = "crates/resources/zhuye-git" }
 zhuye-ast         = { path = "crates/resources/zhuye-ast" }
 
 # ── orchestration ── 多 agent 编排层

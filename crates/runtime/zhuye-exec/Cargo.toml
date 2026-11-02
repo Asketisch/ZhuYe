@@ -34,6 +34,7 @@ zhuye-agent-def = { workspace = true }
 zhuye-prompt    = { workspace = true }
 zhuye-rollout   = { workspace = true }
 zhuye-sandbox   = { workspace = true }
+zhuye-git       = { workspace = true }
 zhuye-telemetry = { workspace = true }
 zhuye-subagent  = { workspace = true }
 zhuye-config    = { workspace = true }
