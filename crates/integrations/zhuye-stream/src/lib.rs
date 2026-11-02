@@ -5,14 +5,18 @@
 //! - `workspace_sync`: Git clone/sync
 //! - `cron`: v1.2 真实定时调度(driver + 5 字段表达式解析)
 
+pub mod autopilot;
 pub mod cron;
 pub mod postgres_session;
 pub mod sse_redis;
 pub mod workspace_sync;
 
+pub use autopilot::{
+    AutopilotConfig, AutopilotManager, AutopilotRun, AutopilotRunStatus, HISTORY_CAP,
+};
 pub use cron::{
     CronDriverHandle, CronJobSpec, CronParseError, CronSchedule, CronScheduler, CronStatus,
-    CronStubStatus,
+    CronStubStatus, default_cron_base, load_jobs, save_jobs, store_path_for,
 };
 pub use postgres_session::{PostgresSessionConfig, PostgresSessionStore, StubPostgresSessionStore};
 pub use sse_redis::{SseRedisBackend, SseRedisConfig, SseRedisStubStatus};

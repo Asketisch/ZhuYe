@@ -579,10 +579,16 @@ pub async fn bootstrap_normal(
     ));
 
     // Cron 真实调度:到期把 job.prompt 作为 user_input 注入。
-    let cron_scheduler = Arc::new(zhuye_stream::CronScheduler::new(
-        Some(thread.submission_sender()),
-        thread_id,
-    ));
+    // v1.x:启用持久化(`~/.zhuye/cron/<session>.json`)—— resume 同一
+    // thread id 时 job 恢复,进程退出不再丢。坏文件不覆盖、起步为空。
+    let cron_scheduler = {
+        let mut scheduler =
+            zhuye_stream::CronScheduler::new(Some(thread.submission_sender()), thread_id);
+        if let Some(base) = zhuye_stream::default_cron_base() {
+            scheduler = scheduler.with_store(zhuye_stream::store_path_for(&base, &thread_id));
+        }
+        Arc::new(scheduler)
+    };
     tools.register_with_source(
         ToolSource::Builtin,
         Arc::new(crate::CronTool::new(cron_scheduler.clone())),
@@ -791,6 +797,27 @@ pub async fn bootstrap_resumed(
         Some(sanitizer.clone()),
         Some(hook_engine.clone()),
     ));
+    // v1.x:resume 分支补齐 CronTool + 持久化(此前只在 normal 分支装配,
+    // resume 会话里 cron 工具不存在 → "tool not found";持久化 store 也
+    // 没接,job 跨重启恢复不了)。store 以 thread_id 命名,与 normal 分支
+    // 同一文件 → 同一 session 的 job 跨重启可见。
+    {
+        let mut scheduler =
+            zhuye_stream::CronScheduler::new(Some(thread.submission_sender()), thread_id);
+        if let Some(base) = zhuye_stream::default_cron_base() {
+            scheduler = scheduler.with_store(zhuye_stream::store_path_for(&base, &thread_id));
+        }
+        tools.register_with_source(
+            ToolSource::Builtin,
+            Arc::new(crate::CronTool::new(Arc::new(scheduler.clone()))),
+        );
+        let cron_driver = scheduler.start(30);
+        tokio::spawn(async move {
+            let _handle = cron_driver;
+            std::future::pending::<()>().await;
+        });
+        tracing::info!(session_id = %thread_id, "cron scheduler started (resume, tick=30s)");
+    }
     // 0.5:Plan mode 的执行机制是 hook,不是 permission mode。normal 分支
     // 注册的 PlanModeGate / read_before_edit 在 resume 分支也要有。
     if args.plan_mode {

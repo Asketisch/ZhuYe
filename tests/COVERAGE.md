@@ -37,7 +37,7 @@
 | 会话状态 Op(22 Op,含 side-channel 三 Op) | A1–A13 | serve_ops | K4、K9 | ✅ | — |
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R5 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
-| 持久化(rollout / 截断 / 索引 / 标题 / 导出) | P1–P7 | cli_deep(session) | — | ✅ | P1–P2 |
+| 持久化(rollout / 截断 / 索引 / 标题 / 导出 / cron store) | P1–P8 | cli_deep(session) | — | ✅ | P1–P2 |
 | 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
 | 编排(子代理/讨论/任务/团队/squad 委派/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅(squad / actor 22 例) | — |
@@ -355,12 +355,12 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `functional/test_tools.py` | 13 条(T1–T12) |
 | `functional/test_skills.py` | 3 条(SK1–SK3) |
 | `functional/test_recovery.py` | 11 条(R5 + X6) |
-| `functional/test_persistence.py` | 10 条(P1–P7) |
+| `functional/test_persistence.py` | 11 条(P1–P8) |
 | `functional/test_import.py` | 14 条(I1–I11) |
 | `functional/test_orchestration.py` | 5 条(O5) |
 | `functional/test_cli.py` | 7 条(C1–C7) |
 | `functional/test_bugfixes.py` | 12 条(缺陷修复回归) |
-| **能力覆盖层合计** | **96 条** |
+| **能力覆盖层合计** | **97 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |
@@ -383,7 +383,10 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
   语义,真实 provider 行为(429 退避、连接中断重试)需要网络,不在离线
   套件范围;`crates/abilities/zhuye-llm` 内有 wiremock 单测覆盖。
 - **cron / background task 的定时触发路径**:启动期可见(cron scheduler
-  started),定时到期的真实触发依赖时间流逝,未做长时等待断言。
+  started),定时到期的真实触发依赖时间流逝,未做长时等待断言。cron job
+  的**跨进程持久化**已覆盖(P8:create → 落盘 → resume 后 list 可见);
+  tick 到期逻辑由 zhuye-stream 单测覆盖(注入时钟不可控,功能层不做
+  长时等待)。
 - **OTLP telemetry 真实上报**:本地文件 trace(traces 子命令)已覆盖;
   OTLP exporter 只验启动不报错。
 - **并行远程工具调用**:mock provider 每次模型回复只发一个 tool_call,
