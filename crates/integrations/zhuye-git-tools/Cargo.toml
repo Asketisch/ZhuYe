@@ -16,3 +16,6 @@ tokio              = { workspace = true, features = ["rt-multi-thread", "macros"
 [[bin]]
 name = "zhuye-git-tools-server"
 path = "src/bin/zhuye-git-tools-server.rs"
+
+[dev-dependencies]
+tempfile = "3"
