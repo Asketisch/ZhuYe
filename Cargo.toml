@@ -17,6 +17,7 @@ members = [
     "crates/abilities/zhuye-recovery",
     "crates/abilities/zhuye-notes",
     "crates/abilities/zhuye-sanitize",
+    "crates/abilities/zhuye-kms",
 
     # ── resources ── 配置/权限/插件/可观测性
     "crates/resources/zhuye-config",
@@ -76,6 +77,7 @@ zhuye-compact    = { path = "crates/abilities/zhuye-compact" }
 zhuye-recovery   = { path = "crates/abilities/zhuye-recovery" }
 zhuye-notes      = { path = "crates/abilities/zhuye-notes" }
 zhuye-sanitize   = { path = "crates/abilities/zhuye-sanitize" }
+zhuye-kms        = { path = "crates/abilities/zhuye-kms" }
 
 # ── resources ── 配置/权限/插件/可观测性
 zhuye-config      = { path = "crates/resources/zhuye-config" }

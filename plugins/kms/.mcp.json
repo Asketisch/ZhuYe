@@ -1,0 +1,6 @@
+{
+  "kms": {
+    "command": "${PLUGIN_ROOT}/bin/zhuye-kms-server",
+    "timeout_secs": 60
+  }
+}

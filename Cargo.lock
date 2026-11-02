@@ -5010,6 +5010,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zhuye-kms"
+version = "0.1.8"
+dependencies = [
+ "parking_lot",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+ "zhuye-config",
+]
+
+[[package]]
 name = "zhuye-llm"
 version = "0.1.8"
 dependencies = [
