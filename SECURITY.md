@@ -30,8 +30,7 @@
 
 - **邮箱**:`security@zhuye-agent.dev`
 - **主题前缀**:`[SECURITY]`(便于邮件过滤)
-- **加密**(可选):维护者 GPG 公钥见 [`SECURITY_GPG.asc`](SECURITY_GPG.asc)(如有)
-  或在邮件中请求
+- **加密**(可选):维护者 GPG 公钥暂未随仓库分发,可在邮件中索取
 
 ### 报告应包含的信息
 

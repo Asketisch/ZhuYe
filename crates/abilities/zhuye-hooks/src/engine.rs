@@ -1,6 +1,6 @@
 //! `HookEngine` —— 持有已注册 hook、派发事件、合并决策。
 //!
-//! 合并优先级参见 `docs/tools-and-hooks.md §4.4`。
+//! 合并优先级参见 `docs/tools-and-hooks.md §4.3`。
 //!
 //! 实现要点:hook 以 `Arc<dyn Hook>` 形式存储。派发时在读锁内抓取相关
 //! hook 快照、随即释放锁,然后在锁外 `await` 各 hook 的 `handle`,

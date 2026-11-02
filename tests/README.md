@@ -102,8 +102,7 @@ Python 3 + pytest、Node ≥ 18。缺依赖的批次自动 SKIP,不算失败。
 - **实模型层是独立层**:默认 SKIP(不发起网络请求),不进 CI 门禁;模型
   **从 provider 接口实时获取**(不写死 id —— 免费模型集合随时变);断言只到
   **协议形状**,不断言回答文本;上游限流(429)判为**跳过**而非失败。
-  详见 [`live/README.md`](live/README.md) 与
-  [`docs/FREE_MODEL_PRACTICE.md`](../docs/FREE_MODEL_PRACTICE.md)。
+  详见 [`live/README.md`](live/README.md)。
 - **三个 id 互不相同**(易踩坑):`session_configured.session_id`、
   rollout 内 `session_meta.session_id`、**会话文件名**里的 thread id 是
   三个不同的 uuid。`--resume` 的参数必须用**文件名**里的 id。

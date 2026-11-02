@@ -1,7 +1,7 @@
 //! `ZhuyeBuilder` —— 一行启动公共库门面。
 //!
 //! 从 model spec + workspace 路径组合一个 `AgentThread`(可选带 M4 依赖)。
-//! 门面映射关系见 `docs/architecture.md §8`。
+//! 门面映射关系见 `docs/architecture.md` 的「门面映射」一节。
 //!
 //! 两种构造模式:
 //!

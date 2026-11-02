@@ -31,7 +31,7 @@
 //!    while let Some(event) = stream.next().await { /* 消费事件 */ }
 //!    ```
 //!
-//! 门面映射关系见 `docs/architecture.md §8`。
+//! 门面映射关系见 `docs/architecture.md` 的「门面映射」一节。
 
 pub mod builder;
 pub mod m4_bootstrap;

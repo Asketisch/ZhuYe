@@ -4,20 +4,6 @@
 > 源码 doc-comment 以 `§N.M` 形式引用本文章节。行为以代码为准,本文
 > 与代码不一致时视为文档 bug,欢迎修文档或提 issue。
 
-## 目录
-
-- §1 工具总览与注册表分层
-- §2 内置工具契约
-- §3 工具执行队列与并发模型
-- §4 Hook 事件与决策协议
-- §5 内置 Hook 与配置 schema
-- §6 权限模式
-- §7 审批门(ApprovalGate)
-- §8 沙箱
-  - §8.1 OS 级沙箱(Seatbelt / Landlock)
-
----
-
 ## §1 工具总览与注册表分层
 
 `Tool` trait(`zhuye-tools/src/tool.rs`)是所有工具的公共契约:
@@ -36,10 +22,47 @@
 | Remote | serve 模式 | Python / TS SDK 注册的宿主语言函数 |
 
 同名冲突时**后注册者覆盖**(`register` 直接覆写 HashMap 条目);
-`register_if_absent` 则保留已有。安全下限:非 Builtin 来源会被
-`FloorEnforcingTool` 包一层,强制 `required_permission >= Prompt`。
+`register_if_absent` 则保留已有。
+
+**安全下限(floor)不是自动的。** `register_with_source` 直接写入,不包
+`FloorEnforcingTool`;只有 `register_with_source_floor` 以及
+`register_runtime_tool` / `register_plugin_tool` / `register_mcp_tool`
+这些便捷入口才触发包装。包装后外部来源(Runtime / Plugin / Mcp)的
+`required_permission()` 不得低于 `Prompt` —— 外部工具不能把主程序的
+最低门禁降成 `Auto`。
+
+`ToolSource::Remote` **不算**外部来源(`is_external()` 只含 Runtime /
+Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本进程
+的审批没有保护对象。SDK 侧自己负责把关。
 
 ## §2 内置工具契约
+
+内置工具共 24 个,实现在 `crates/abilities/zhuye-tools/src/builtins/`。
+名字分两派:**计划 / worktree 一族是 PascalCase**,其余是 snake_case。
+
+| 工具 | 用途 |
+|---|---|
+| `bash` | 在 workspace 里跑 shell 命令,工作目录跨调用保持 |
+| `read` | 读文本文件(带行号) |
+| `write` | 写文件,返回 diff |
+| `edit` | 精确串替换,返回 diff |
+| `delete_file` | 删文件(不删目录) |
+| `glob` | 按 pattern 列文件,按 mtime 倒序 |
+| `grep` | 正则搜索;`rank=bm25` 时按 BM25 相关性重排 |
+| `notebook_edit` | `.ipynb` 单元的增删改查 |
+| `image_view` | 把本地图片作为多模态内容块返回 |
+| `echo` | 原样回显入参(纯函数,可并发) |
+| `brief` | 把附件 / 长上下文摘要成 briefing 块 |
+| `web_fetch` | 抓 URL,正文转 Markdown |
+| `web_search` | Brave Search,返回标题 / 链接 / 摘要 |
+| `ask_user` | 自由文本提问,阻塞当前轮;`secret=true` 时答案脱敏 |
+| `ask_user_question` | 1-4 个结构化问题 × 2-4 个选项,阻塞当前轮 |
+| `request_human_input` | 跨进程持久化的人工输入,每 500ms 轮询 |
+| `tool_search` | 按关键词搜可用工具 |
+| `get_context_remaining` | 报告累计 token、窗口大小与剩余额度 |
+| `background_status` | 后台工具调用的状态 |
+| `EnterPlanMode` / `ExitPlanMode` / `PlanWrite` | 只读规划模式的控制面 |
+| `EnterWorktree` / `ExitWorktree` | 进 / 出临时 git worktree |
 
 通用约定:
 
@@ -47,7 +70,7 @@
   (`ToolError::PathEscape`)。`grep` / `glob` 的 `path`(搜索根目录)同样
   过 `resolve_sandbox_dir`,不是例外 —— 0.6 之前它俩直接把参数喂给
   `WalkBuilder`,可以遍历整个文件系统;
-- `read` 前置 `FileReadStateTracker` 记录(§4.7),`edit` / `write` 前置
+- `read` 前置 `FileReadStateTracker` 记录(§4.4),`edit` / `write` 前置
   `ReadBeforeEditHook`(§5)校验"先读后写";
 - 工具输出统一 `ToolOutput { content, is_error, metadata, elapsed_ms }`。
   **各工具有各自的截断上限**(见下表),没有统一的 16 KiB 截断;
@@ -60,37 +83,32 @@
 | `read` | 2000 行(1000 头 + 1000 尾) | 中间插入省略标记 |
 | `grep` | `max_results`(默认 100) | 报告 `truncated` + 省略计数 |
 | `glob` | 1000 条 | 报告 `truncated` |
-| `web_fetch` | body 5 MiB / markdown 50 KB | 报告 `body_truncated` / markdown 截断标记 |
+| `web_fetch` | body 5 MiB / markdown 50000 字符 | 报告 `body_truncated` / markdown 截断标记 |
 | `web_search` | body 2 MiB / 输出 8 KB | 逐条累积到上限即停 |
 
-所有按**字节**的截断都经 `zhuye_protocol::truncate_str` 做 char 边界
+按**字节**的截断都经 `zhuye_protocol::truncate_str` 做 char 边界
 对齐(0.8):CJK 内容一个汉字 3 字节,直接 `String::truncate` / byte-slice
-会在非边界处 panic。
+会在非边界处 panic。`web_fetch` 的 markdown 上限是**字符数**,不是字节。
 
-各工具细节(源码 `crates/abilities/zhuye-tools/src/builtins/`):
+各工具细节:
 
-- §2.2 `read`:offset / limit 分页;图片走 `image_view` 多模态块;
+- §2.1 `read`:offset / limit 分页;图片走 `image_view` 多模态块;
   notebook 用 `notebook_edit` 的 list / read action。`offset` / `limit`
   有 `maximum` 上界(0.9:此前 `offset + limit` 会回绕导致 slice panic),
   读入前还有 32 MiB 文件大小上限。
-- §2.3 `write`:整文件覆写;先读后写校验;报告写入字节数。落盘为
+- §2.2 `write`:整文件覆写;先读后写校验;报告写入字节数。落盘为
   temp + rename 原子写;路径校验对相对路径同样生效(0.2:此前
   `if path.is_absolute()` 把相对 `..` 穿越整个漏掉)。
-- §2.4 `edit`:`old_string` 精确匹配;多处命中报错;mtime 漂移超阈值拒写
+- §2.3 `edit`:`old_string` 精确匹配;多处命中报错;mtime 漂移超阈值拒写
   (防并发覆盖)。**不支持** `replace_all`(计划中的补齐项)。
-- §2.5 `grep`:`ignore::WalkBuilder` 遍历 + regex;`rank_mode = bm25`
-  时按 BM25 重排(反射 `zhuye-bm25`)。输出为相对 workspace 的路径。
-- §2.6 `glob`:pattern / path;同样走 ignore 树(尊重 .gitignore)。
+- §2.4 `grep`:`ignore::WalkBuilder` 遍历 + regex;排序参数是 `rank`,
+  取值 `regex`(默认)/ `bm25`(反射 `zhuye-bm25`)。输出为相对
+  workspace 的路径。
+- §2.5 `glob`:pattern / path;同样走 ignore 树(尊重 .gitignore)。
   当前实现是**路径子串匹配**(不是真 glob),排序按 mtime 倒序 +
   路径名字典序兜底。
 
-其余:执行类 `bash`(timeout_ms / run_in_background)、`background_status`;
-Web 类 `web_fetch`(SSRF 防护)/ `web_search`(Brave)/ `url_safety`;
-计划类 `enter_plan_mode` / `exit_plan_mode` / `plan_write`;交互类
-`ask_user` / `ask_user_question` / `request_human_input`;worktree 类
-`enter_worktree` / `exit_worktree`;元工具 `tool_search` / `brief` /
-`get_context_remaining` / `echo` / `delete_file` / `notebook_edit` /
-`image_view`。
+`url_safety` 是 `web_fetch` 内部用的 SSRF 防护 helper,不是独立工具。
 
 ## §3 工具执行队列与并发模型
 
@@ -130,16 +148,22 @@ permission_mode }`。
 `Allow` / `Deny { reason }` / `ModifyArgs(json)` /
 `InjectMessage(SystemMessage)` / `PermissionOverride(PermissionMode)` /
 `Ask { reason }`(转人工审批模态)/ `Combined(Vec)`(单 hook 返回多重
-决策)。§4.5:`Combined` 经 `ResolvedDecision::resolve()` 规范化展平,
-冲突时 **Deny > ModifyArgs > InjectMessage > Allow** 优先。
+决策)。
 
-### §4.4 引擎合并优先级
+### §4.3 规范化与合并优先级
+
+`Combined` 由 `HookDecision::resolve()` 递归展平,按优先级归类叶子:
+**Deny > Ask > ModifyArgs(后者胜) > InjectMessage(全部收集)**。
+`Allow` 不参与优先级,只表示"无动作"。
+
+展平按叶子**出现顺序** DFS 归类(栈式遍历会反转顺序,导致
+"第一个 Deny 生效 / 最后一个 ModifyArgs 生效"的语义错乱)。
 
 `HookEngine::dispatch` 按注册顺序依次调用订阅了该事件的 hook,
-合并规则:任一 Deny 即终局 Deny;多个 ModifyArgs 后者覆盖前者;
-多个 InjectMessage 拼接;多个 Ask 以首个为准(避免连环弹窗)。
+再走同一套归类规则:任一 Deny 即终局 Deny;多个 ModifyArgs 后者覆盖
+前者;多个 InjectMessage 拼接;多个 Ask 以首个为准(避免连环弹窗)。
 
-### §4.7 读状态跟踪(file_read_state.rs)
+### §4.4 读状态跟踪(file_read_state.rs)
 
 `FileReadStateTracker` 记录"哪些文件在何时以何 mtime 被读过",
 供 `ReadBeforeEditHook`(§5)判定 edit/write 的 old_string 是否基于
@@ -151,18 +175,45 @@ permission_mode }`。
 
 - §5.1 `SearchBudgetHook`:单 turn 内 grep/glob 次数预算,超限注入提醒。
 - §5.2 `TestRunnerHook`:PostToolUse(写类工具)后自动跑测试命令。
-- §5.3 `PlanCompletionHook`:plan 模式下跟踪 `plan_write` 完成度。
+- §5.3 `PlanCompletionHook`:Stop hook,在允许 turn 以 `AgentDecision`
+  原因结束前要求显式验证;`strict` 时注入提醒并 Deny,最多 3 次。
+  **不是** plan 步骤完成度跟踪器。
 - §5.4 `VerificationHook`:Stop 时跑验证命令,失败 Deny 强制续跑修复。
-- `PlanModeGateHook`:plan 模式下 blanket-deny 写工具(见 PLAN_MODE.md)。
-- `ReadBeforeEditHook`:先读后写强制(§4.7)。
-- `LangfuseTrackerHook`:遥测埋点。
+- `PlanModeGate`:plan 模式下 blanket-deny 写工具(见 PLAN_MODE.md)。
+- `ReadBeforeEditHook`:先读后写强制(§4.4)。
+- `LangfuseTracker`:遥测埋点。
 
-§5.5 配置 schema(`hooks.json` / config.toml `[hooks]`):数组,每项
-`{ name, event, matcher?, command, timeout_ms? }`;`event` 为
-§4.1 事件名的 snake_case;`matcher` 仅对带工具名的事件生效,支持
-`*` / `?` 通配。`ShellHook`(shell.rs)把事件 JSON 写子进程 stdin,
-stdout 回 JSON 决策(`{"decision":"deny","reason":"..."}` 等);
-**fail-closed**:命令超时或非零退出视为 Deny。
+### §5.5 配置 schema
+
+config.toml 的 `[hooks]` 是**具名子节**,不是数组:
+
+```toml
+[hooks]
+enabled = ["search_budget", "verification"]   # 省略 = 全部启用
+
+[hooks.search_budget]
+max_calls = 20
+search_tools = ["grep", "glob"]
+
+[hooks.verification]
+run_on_stop = true
+test_command = "cargo test -p zhuye-core --lib"
+```
+
+可用子节:`search_budget` / `test_runner` / `plan_completion` /
+`verification` / `langfuse_tracker` / `read_before_edit`。
+(`zhuye-hooks/src/config.rs` 的 `HooksConfig` 是同一批字段的 hooks 侧
+镜像,不含 `read_before_edit`;该字段只在 config crate 的
+`HooksSection` 上。)
+
+**外部命令式 hook**(`ShellHook`,shell.rs)是另一套机制,走 `hooks.json`,
+不经过 config.toml:把事件 JSON 写子进程 stdin,stdout 回 JSON 决策
+(`{"decision":"deny","reason":"..."}` 等);**fail-closed** —— 命令超时
+或非零退出视为 Deny。构造参数是 `{ name, event, matcher?, command,
+timeout }`(`timeout` 是 `Duration`,不是毫秒数);`event` 接受
+**全小写无下划线**的事件名(`pretooluse` / `posttooluse` / `stop` …),
+未知名字 skip + warn;`matcher` 仅对带工具名的事件生效,支持 `*` / `?`
+通配。
 
 ## §6 权限模式
 
@@ -211,22 +262,6 @@ action 而变**:
 ApproveForSession(会话内记忆)。hook 的 `Ask` 决策同样路由到此处
 (`ApprovalKind::Hook`)。
 
-## §7.5 Plan mode
-
-`--plan-mode` 的强制力来自 `PlanModeGate`(PreToolUse hook 把白名单外
-工具 blanket-deny),**不是** `PermissionMode::Plan` —— 后者只让审批层
-知道当前模式,单独存在时写工具照样放行。三个入口都必须同时做两件事:
-
-| 入口 | permission mode | PlanModeGate |
-|---|---|---|
-| `zhuye exec`(普通) | `headless.rs` `bootstrap_normal` | 同上 |
-| `zhuye exec --resume`(0.5 前缺失) | `headless.rs` `bootstrap_resumed` | 同上 |
-| `ZhuyeBuilder::plan_mode(true)` / zhuye-py(0.5 前缺失) | `builder.rs` | 同上 |
-
-`zhuye exec --plan-mode` 的退出码:**122 = 计划生成失败需重试**
-(turn 结束仍未见过 `PlanReady` / `PlanApproved` 事件);0 = 正常产出计划。
-普通 headless 调用不受影响。
-
 ## §8 沙箱
 
 ### §8.1 OS 级沙箱(Seatbelt / Landlock)
@@ -268,3 +303,7 @@ strict + 后端不可用时返回 `Err`,BashTool 据此抛
 `status_line()` 对网络边界**按 backend 如实报告**:Seatbelt 真发
 `(deny network*)`;Landlock 的 `handled_access_net` 恒为 0,所以标
 "网络:不受沙箱约束"而不是"网络:拒绝"。
+
+## §9 Plan mode
+
+只读规划模式的入口、白名单与退出码见 [PLAN_MODE.md](PLAN_MODE.md)。

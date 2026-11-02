@@ -1,6 +1,6 @@
 //! `HookDecision` —— hook 可返回的 5 种决策,加上 `Combined` 包装。
 //!
-//! 协议层面的含义参见 `docs/tools-and-hooks.md §4.2` / `§4.5`。
+//! 协议层面的含义参见 `docs/tools-and-hooks.md §4.2` / `§4.3`。
 
 use serde::{Deserialize, Serialize};
 
