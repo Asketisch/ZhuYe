@@ -187,6 +187,7 @@ max_tokens = 4096                             # optional: default output cap
 | [`docs/prompts.md`](docs/prompts.md) | Prompt library and layered overrides |
 | [`docs/tools-and-hooks.md`](docs/tools-and-hooks.md) | Built-in tools and hooks |
 | [`docs/plugins.md`](docs/plugins.md) | Plugins: manifest, capabilities, marketplace |
+| [`docs/plugin-usage.md`](docs/plugin-usage.md) | Plugin usage & ops: CLI commands, install/enable, troubleshooting |
 | [`docs/PLAN_MODE.md`](docs/PLAN_MODE.md) | Plan mode |
 | [`docs/sanitize.md`](docs/sanitize.md) | Output sanitization |
 | [`docs/FREE_MODEL_PRACTICE.md`](docs/FREE_MODEL_PRACTICE.md) | Free-model live practice |

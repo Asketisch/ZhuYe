@@ -190,6 +190,7 @@ max_tokens = 4096                             # 可选：默认输出上限
 | [`docs/prompts.md`](docs/prompts.md) | 提示词库与分层覆盖 |
 | [`docs/tools-and-hooks.md`](docs/tools-and-hooks.md) | 内置工具与 hooks |
 | [`docs/plugins.md`](docs/plugins.md) | 插件开发：manifest、capability、marketplace |
+| [`docs/plugin-usage.md`](docs/plugin-usage.md) | 插件使用与运维：CLI 命令、安装启用、排障 |
 | [`docs/PLAN_MODE.md`](docs/PLAN_MODE.md) | Plan mode |
 | [`docs/sanitize.md`](docs/sanitize.md) | 输出净化 |
 | [`docs/FREE_MODEL_PRACTICE.md`](docs/FREE_MODEL_PRACTICE.md) | 免费模型实跑实践 |
