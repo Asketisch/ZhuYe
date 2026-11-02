@@ -32,6 +32,16 @@ const ZHUYE_BIN_ENV = 'ZHUYE_BIN';
 const DEFAULT_BIN = 'zhuye';
 const READLINE_LIMIT = 16 * 1024 * 1024;
 const STDIN_HANDSHAKE_TIMEOUT_MS = 30_000;
+/** 握手失败时随异常携带的 stderr 尾部块数上限。 */
+const STDERR_TAIL_LINES = 32;
+
+/** 把 stderr 尾部 ring buffer 拼成诊断文本(解码容错)。 */
+function stderrTailText(tail: Buffer[]): string {
+  return tail
+    .map((c) => c.toString('utf-8').trim())
+    .filter((s) => s.length > 0)
+    .join(' | ');
+}
 
 /** 单次工具执行的本地 handler(远程工具回执内容)。 */
 export type ToolHandler = (
@@ -60,6 +70,12 @@ export interface ZhuyeAgentOptions {
   spawnOptions?: Omit<SpawnOptions, 'bin' | 'args' | 'env' | 'cwd'>;
   /** `session_configured` 握手超时(ms)。默认 30s。 */
   handshakeTimeoutMs?: number;
+  /**
+   * 子进程 stderr 接管回调。提供后每个原始块交给回调(落文件 /
+   * 送日志系统 / 过滤降噪),不再硬编码直通宿主 stderr。
+   * 未提供时维持旧行为(透传宿主 stderr)。
+   */
+  onStderr?: (chunk: Buffer) => void;
 }
 
 interface SpawnOptions {
@@ -122,9 +138,18 @@ export class ZhuyeAgent {
       env: spawnOpts.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    // 子进程 stderr → 当前进程 stderr(让 tracing 日志透传)。
+    // 子进程 stderr → 提供 onStderr 回调时交给回调;否则透传
+    // 当前进程 stderr。无论哪种模式,尾部都保留在 ring buffer 里,
+    // 握手期子进程死亡时把真实原因带进异常。
+    const stderrTail: Buffer[] = [];
     child.stderr.on('data', (chunk: Buffer) => {
-      process.stderr.write(chunk);
+      stderrTail.push(chunk);
+      if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift();
+      if (options.onStderr) {
+        options.onStderr(chunk);
+      } else {
+        process.stderr.write(chunk);
+      }
     });
     const proc: ServeProcess = {
       child,
@@ -138,33 +163,88 @@ export class ZhuyeAgent {
       readyResolve = res;
       readyReject = rej;
     });
+    // 握手期死亡时 ready 被拒绝;若调用方从未 await 它(spawn 后
+    // 直接 close / 只用全局事件),挂一个 no-op 兜底标记已处理,
+    // 避免 unhandled rejection 打爆宿主。后续 await 仍能拿到该错误。
+    ready.catch(() => {});
     const agent = new ZhuyeAgent(proc, ready);
+    // 握手是否仍在进行 —— 子进程在握手期退出时,ready 立刻拒绝
+    // (带 stderr 尾部),不再傻等满握手超时后报泛化的 timed out。
+    let handshakeSettled = false;
     // 子进程意外退出 → 通知所有 close 监听者(submit / prompt 等
     // 仍 await 中的 promise 借此抛错 / 收尾)。
     child.on('exit', (code, signal) => {
-      agent.handleServeExit(
-        new Error(
-          `zhuye serve exited unexpectedly (code=${code} signal=${signal ?? 'none'})`,
-        ),
-      );
+      // 阶段标记必须在 exit 时刻捕获:等待 stderr 排空期间握手状态
+      // 可能被翻转,措辞判定要以死亡时的阶段为准。
+      const wasHandshake = !handshakeSettled;
+      // 握手期死亡与运行期死亡措辞区分,方便排障定位。
+      const buildErr = () => {
+        const tail = stderrTail.length
+          ? ` stderr tail: ${stderrTailText(stderrTail)}`
+          : '';
+        return wasHandshake
+          ? new Error(
+              `zhuye serve exited during handshake (code=${code} signal=${signal ?? 'none'})${tail}`,
+            )
+          : new Error(
+              `zhuye serve exited unexpectedly (code=${code} signal=${signal ?? 'none'})${tail}`,
+            );
+      };
+      if (!wasHandshake) {
+        agent.handleServeExit(buildErr());
+        return;
+      }
+      // 竞态:子进程写 stderr 后立刻退出时,`exit` 事件可能先于
+      // stderr 的 `data` 事件投递(管道排空晚于进程退出),此刻同步读
+      // stderrTail 会拿到空尾、丢失真实原因。握手失败不在毫秒级关键
+      // 路径上 —— 等 `close`(stdio 全部关闭,stderr 必已投递)或至多
+      // 500ms 兜底,再构建错误。
+      let drainSettled = false;
+      const finish = () => {
+        if (drainSettled) return;
+        drainSettled = true;
+        // 等待期间 stdout 缓冲可能投递了 session_configured:握手实际
+        // 成功则让路,不再以失败拒绝。
+        if (handshakeSettled) return;
+        handshakeSettled = true;
+        const err = buildErr();
+        readyReject(err);
+        agent.handleServeExit(err);
+      };
+      child.once('close', finish);
+      const drainTimer = setTimeout(finish, 500);
+      drainTimer.unref?.();
     });
     // spawn 失败(典型:二进制路径不存在,ENOENT):ChildProcess 的
     // error 事件没有监听者会以 uncaught exception 打爆宿主进程;这里
     // 转为握手失败(ready 尚未 settle 时立即拒绝,否则等握手超时)。
     child.on('error', (err) => {
       const failure = new Error(`zhuye serve failed to start: ${err.message}`);
-      readyReject(failure);
+      if (!handshakeSettled) {
+        handshakeSettled = true;
+        readyReject(failure);
+      }
       agent.handleServeExit(failure);
     });
     const handshakeMs = options.handshakeTimeoutMs ?? STDIN_HANDSHAKE_TIMEOUT_MS;
     const timer = setTimeout(() => {
-      readyReject(new Error(`zhuye serve handshake timed out after ${handshakeMs}ms`));
+      if (handshakeSettled) return;
+      handshakeSettled = true;
+      readyReject(
+        new Error(
+          `zhuye serve handshake timed out after ${handshakeMs}ms` +
+            (stderrTail.length
+              ? ` stderr tail: ${stderrTailText(stderrTail)}`
+              : ''),
+        ),
+      );
     }, handshakeMs);
     timer.unref?.();
     // 在握手阶段消费 stdout,直到见到 session_configured 后再切给
     // 业务消费者 —— 简单做法:让后台 consumer 自己处理,ready 在
     // session_configured 时 resolve。
     agent.onceSessionConfigured = () => {
+      handshakeSettled = true;
       clearTimeout(timer);
       readyResolve();
     };
@@ -189,6 +269,9 @@ export class ZhuyeAgent {
       readyResolve = res;
       readyReject = rej;
     });
+    // 与 spawn 同款兜底:握手超时拒绝而调用方从未 await 时,
+    // 不让 unhandled rejection 打爆宿主;后续 await 仍能拿到该错误。
+    ready.catch(() => {});
     const agent = new ZhuyeAgent(proc, ready);
     const timer = setTimeout(() => {
       readyReject(new Error(`fromStdio handshake timed out after ${handshakeTimeoutMs}ms`));
@@ -245,7 +328,13 @@ export class ZhuyeAgent {
     for await (const ev of await this.submit(text)) {
       const msg = ev.msg;
       if (msg.type === 'agent_message_delta') result += msg.delta;
-      else if (msg.type === 'agent_message') result += msg.text;
+      else if (msg.type === 'agent_message') {
+        // 全量消息是权威快照 —— 覆盖(而非追加)已累计的 delta,
+        // 协议允许同轮混合下发时不会产生重复文本。text 经 typeof 守卫:
+        // EventMsg 联合含开放成员(UnknownEventMsg),窄化后仍是 unknown。
+        const { text } = msg as { text?: unknown };
+        if (typeof text === 'string') result = text;
+      }
       else if (msg.type === 'turn_complete') break;
       else if (msg.type === 'turn_aborted') {
         // 对齐 Python SDK:turn_aborted 不是正常完成,返回部分文本

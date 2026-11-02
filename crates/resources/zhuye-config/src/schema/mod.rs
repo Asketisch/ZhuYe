@@ -50,7 +50,10 @@ use serde::{Deserialize, Serialize};
 // ── 顶层配置 ──────────────────────────────────────────────────
 
 /// 顶层配置 —— 对应 `~/.zhuye/config.toml` 的根表。
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+///
+/// 注:不再 derive `Eq` —— provider 段的 `temperature: Option<f32>`
+/// 不实现 `Eq`;`PartialEq` 已覆盖所有既有用法(断言比较)。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ReflectConfig {
     #[serde(default)]
     pub active: ActiveSection,
@@ -200,6 +203,27 @@ pub struct ActiveSection {
     pub credential: Option<String>,
     #[serde(default)]
     pub max_iterations: Option<u32>,
+    /// 主 agent 工具白名单(`[active] tools`)。非空时 LLM 可见
+    /// 工具集与该名单**求交** —— 与 `.zhuye/agents/*.md` frontmatter 的
+    /// `tools` 语义一致,只是作用在配置层,让 serve / SDK 接入方无需
+    /// 写 agent 文件即可裁掉 16 个内置工具(bash / write / web_search
+    /// 等)。空 = 不过滤(向后兼容)。客户端注册的远程工具同样受此
+    /// 名单约束(想保留就要显式列出)。
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// 主 agent 工具黑名单(`[active] disallowed_tools`)。与
+    /// agent 定义层的同名列表**取并集**后过滤。空 = 无额外排除。
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
+    /// 内置 skill 包开关(`[active] bundled_skills`)。**默认 false(关闭)**:
+    /// 框架层不为会话注入 15 个编码向内置 skill(code-review / commit-helper
+    /// 等),ephemeral 块因此不再每 turn 携带 ~1.4KB 的目录死文本 —— 本仓库
+    /// 定位纯框架层,内置技能属应用层偏好,交由使用者显式开启。写
+    /// `[active] bundled_skills = true` 恢复合入;workspace / home 的文件
+    /// skill(`.zhuye/skills/`)与插件 skill 不受此开关影响,同名时仍以
+    /// 文件目录扫描结果优先。
+    #[serde(default)]
+    pub bundled_skills: bool,
 }
 
 // ── 沙箱 / 提问 / 模型 / 特性开关 / 目标 ────
