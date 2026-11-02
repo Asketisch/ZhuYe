@@ -27,6 +27,7 @@ from wire import (
     require_binary,
     rollout_files,
     rollout_records,
+    rollout_thread_id,
     run_cli,
 )
 
@@ -284,3 +285,65 @@ def test_P7_导出稿含Usage段与模型级拆分(serve_session, mock_script, s
     assert proc.returncode == 0, f"session export --out 退出码={proc.returncode}:{proc.stderr}"
     assert dest.exists(), "导出文件未生成"
     assert "## Usage" in dest.read_text(), "落盘稿缺 Usage 段"
+
+
+def test_P8_cron任务跨进程持久化(serve_session, mock_script, sandbox) -> None:
+    """mock 调 `cron create` → job 落 `~/.zhuye/cron/<thread_id>.json`;
+    `--resume` 同一 thread id 重启后 `cron list` 仍列出该 job(字段级)。
+
+    依据:crates/integrations/zhuye-stream/src/cron.rs `with_store` /
+    `store_path_for`(此前 docstring 承诺落盘但代码无 fs 写入,进程退出
+    即丢)。
+    """
+    require_binary()
+
+    # 1) 第一段会话:创建 job。
+    script = mock_script([
+        '{"type":"tool_call","name":"cron","args":{"action":"create",'
+        '"schedule":"0 9 * * 1-5","prompt":"standup","name":"晨会"}}',
+        '{"type":"text","text":"scheduled"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "建个定时"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+        end = None
+        for e in evs:
+            if e["msg"]["type"] == "tool_call_end" and not e["msg"].get("is_error"):
+                end = e["msg"]
+                break
+        assert end is not None, f"cron create 应成功:{[e['msg']['type'] for e in evs]}"
+        thread_id = rollout_thread_id(sandbox.home)
+
+    # 2) 落盘文件存在且含 schedule / prompt(字段级)。
+    store = sandbox.home / ".zhuye/cron" / f"{thread_id}.json"
+    assert store.exists(), f"cron store 未落盘:{store}"
+    jobs = json.loads(store.read_text())
+    assert len(jobs) == 1, f"应恰好 1 条 job:{jobs}"
+    assert jobs[0]["schedule"] == "0 9 * * 1-5", f"schedule 不符:{jobs[0]}"
+    assert jobs[0]["prompt"] == "standup", f"prompt 不符:{jobs[0]}"
+    assert jobs[0]["name"] == "晨会", f"name 不符:{jobs[0]}"
+    assert jobs[0]["enabled"] is True
+    job_id = jobs[0]["id"]
+
+    # 3) --resume 同一 thread id 重启:job 从 store 加载,cron list 可见。
+    script = mock_script([
+        '{"type":"tool_call","name":"cron","args":{"action":"list"}}',
+        '{"type":"text","text":"listed"}',
+    ])
+    with serve_session(args=["--resume", thread_id],
+                       env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "看看任务"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+        listed = None
+        for e in evs:
+            if e["msg"]["type"] == "tool_call_end" and not e["msg"].get("is_error"):
+                listed = json.dumps(e["msg"])
+                break
+        assert listed is not None, f"cron list 应成功:{[e['msg']['type'] for e in evs]}"
+        assert job_id in listed and "0 9 * * 1-5" in listed and "standup" in listed, (
+            f"重启后 job 应完整恢复:{listed[:400]}"
+        )

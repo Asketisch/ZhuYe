@@ -4655,6 +4655,7 @@ dependencies = [
  "zhuye-recovery",
  "zhuye-rollout",
  "zhuye-skills",
+ "zhuye-stream",
  "zhuye-subagent",
  "zhuye-task",
  "zhuye-telemetry",
@@ -5306,10 +5307,13 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "uuid",
+ "zhuye-config",
+ "zhuye-fs",
  "zhuye-protocol",
 ]
 
