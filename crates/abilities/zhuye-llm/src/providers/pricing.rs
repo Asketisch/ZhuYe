@@ -215,6 +215,193 @@ pub fn cumulative_cost_usd(model_id: &str, history: &[TokenUsage]) -> Option<f64
     if priced_any { Some(total) } else { None }
 }
 
+// ── v1.x:费率表公开 + 费率卡 ────────────────────────────────────────
+//
+// 背景:ReflectDesktop 要在 GUI 上解释「这笔费用怎么算出来的」,而
+// `PRICING_TABLE` 是私有 const —— 桌面端只能用**合成用量反解**线性
+// 公式(令 input=1M / output=1M / cached=1M / cache_write=1M 各调一次
+// `price()`,从四个结果倒推倍率)把价目表读出来。反解能工作,但它是
+// 「唯一事实源在核心、读取方靠数学 reconstruct」的别扭形态。
+//
+// 现在表直接公开,`rate_card()` 改为读表,反解测试留作**防漂移基准**
+// (rate_card 的倍率必须能复算出 `price()` 的结果)。
+
+/// 公开静态费率表(只读切片)。
+///
+/// 公开即承诺「表项稳定」—— 表按季度随提供方牌价刷新(见模块 doc),
+/// 消费方(CLI / GUI / SDK)应展示表内数据,不要另抄一份。
+pub fn pricing_table() -> &'static [ModelPricing] {
+    PRICING_TABLE
+}
+
+/// 按 `model_id` 查费率条目,**容忍 `provider/` 前缀**。
+///
+/// 与 [`price`] 的区别:`price` 要求调用方预先剥离前缀(graph 节点
+/// 已做);本函数面向展示场景(GUI / CLI 拿到的是完整 spec,如
+/// `"anthropic/claude-sonnet-4-latest"`),自行剥离。大小写不敏感。
+pub fn pricing_for(model_id: &str) -> Option<&'static ModelPricing> {
+    let bare = model_id.split_once('/').map(|(_, m)| m).unwrap_or(model_id);
+    lookup(bare)
+}
+
+/// 单模型费率卡 —— 「这笔费用怎么算出来的」的结构化解释。
+///
+/// 每 1M token 的 USD 绝对价与相对倍率都给全:倍率来自表内字段,
+/// 绝对价 = `input_price * factor`(与 [`price`] 同公式,便于直接展示)。
+/// 未定价模型(未知 / 本地) → `priced = false` 且全部字段 `None`
+/// (与核心「未知模型不编造数字」的口径一致:宁可缺省,不给错数)。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateCard {
+    /// 调用方传入的完整 model spec(原样回显,可能带 `provider/` 前缀)。
+    pub model: String,
+    /// 费率表内是否有该模型。
+    pub priced: bool,
+    /// 每 1M **非缓存**输入 token 的 USD 价格(表内基准价)。
+    pub input_price: Option<f64>,
+    /// 输出倍率(相对 `input_price`)。
+    pub output_factor: Option<f64>,
+    /// 缓存读取(cache_read)倍率。
+    pub cache_read_factor: Option<f64>,
+    /// 缓存写入(cache_creation)倍率。
+    pub cache_write_factor: Option<f64>,
+    /// 每 1M 输出 token 的 USD 价格(由倍率换算,便于直接展示)。
+    pub output_price: Option<f64>,
+    /// 每 1M 缓存读取 token 的 USD 价格。
+    pub cache_read_price: Option<f64>,
+    /// 每 1M 缓存写入 token 的 USD 价格。
+    pub cache_write_price: Option<f64>,
+}
+
+impl RateCard {
+    /// 未定价模型的费率卡(全字段 None)。
+    fn unpriced(model: &str) -> Self {
+        Self {
+            model: model.to_string(),
+            priced: false,
+            input_price: None,
+            output_factor: None,
+            cache_read_factor: None,
+            cache_write_factor: None,
+            output_price: None,
+            cache_read_price: None,
+            cache_write_price: None,
+        }
+    }
+}
+
+/// 查某模型的费率卡(读表,不做反解)。`provider/` 前缀容忍。
+pub fn rate_card(model: &str) -> RateCard {
+    let Some(p) = pricing_for(model) else {
+        return RateCard::unpriced(model);
+    };
+    RateCard {
+        model: model.to_string(),
+        priced: true,
+        input_price: Some(p.input_price),
+        output_factor: Some(p.output_factor),
+        cache_read_factor: Some(p.cache_read_factor),
+        cache_write_factor: Some(p.cache_write_factor),
+        // 绝对价 = 基准价 × 倍率,与 price() 的分段公式同源。
+        output_price: Some(p.input_price * p.output_factor),
+        cache_read_price: Some(p.input_price * p.cache_read_factor),
+        cache_write_price: Some(p.input_price * p.cache_write_factor),
+    }
+}
+
+/// 批量查费率卡(保持输入顺序)。
+pub fn rate_cards(models: &[String]) -> Vec<RateCard> {
+    models.iter().map(|m| rate_card(m)).collect()
+}
+
+#[cfg(test)]
+mod rate_card_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_model_is_not_priced() {
+        let card = rate_card("openai/some-unknown-model");
+        assert!(!card.priced);
+        assert_eq!(card.input_price, None);
+        assert_eq!(card.model, "openai/some-unknown-model");
+    }
+
+    #[test]
+    fn priced_model_exposes_input_price_and_factors() {
+        // 表内 claude-sonnet-4-latest:input 3.0、output 5×、
+        // cache_read 0.1×、cache_write 1.25×。
+        let card = rate_card("anthropic/claude-sonnet-4-latest");
+        assert!(card.priced, "claude-sonnet-4-latest 应在费率表内");
+        assert!((card.input_price.unwrap() - 3.0).abs() < 1e-9);
+        assert!((card.output_factor.unwrap() - 5.0).abs() < 1e-9);
+        assert!((card.cache_read_factor.unwrap() - 0.1).abs() < 1e-9);
+        assert!((card.cache_write_factor.unwrap() - 1.25).abs() < 1e-9);
+        // 换算价 = 倍率 × input_price。
+        assert!((card.output_price.unwrap() - 15.0).abs() < 1e-9);
+        assert!((card.cache_read_price.unwrap() - 0.3).abs() < 1e-9);
+        assert!((card.cache_write_price.unwrap() - 3.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn provider_prefix_is_stripped_like_core() {
+        // 带不带 provider 前缀应命中同一条费率。
+        let with = rate_card("anthropic/claude-sonnet-4-latest");
+        let without = rate_card("claude-sonnet-4-latest");
+        assert_eq!(with.input_price, without.input_price);
+        assert_eq!(with.output_factor, without.output_factor);
+        assert_eq!(with.priced, without.priced);
+    }
+
+    #[test]
+    fn rate_card_matches_core_price_function() {
+        // 防漂移:rate_card 的倍率必须能复算出 price() 的结果 ——
+        // 桌面端旧版靠合成用量反解,本测试把同一不变量锁在表读取侧。
+        let card = rate_card("anthropic/claude-sonnet-4-latest");
+        let usage = TokenUsage {
+            input_tokens: 1_200_000,
+            output_tokens: 50_000,
+            cached_tokens: 300_000,
+            cache_write_tokens: 100_000,
+            total_tokens: 1_250_000,
+        };
+        let expected = price("claude-sonnet-4-latest", &usage).unwrap();
+        let ip = card.input_price.unwrap();
+        let non_cached = 1_200_000f64 - 300_000.0 - 100_000.0;
+        let manual = (non_cached
+            + 300_000.0 * card.cache_read_factor.unwrap()
+            + 100_000.0 * card.cache_write_factor.unwrap()
+            + 50_000.0 * card.output_factor.unwrap())
+            * ip
+            / 1_000_000.0;
+        assert!((expected - manual).abs() < 1e-9, "{expected} vs {manual}");
+    }
+
+    #[test]
+    fn rate_cards_preserve_order() {
+        let models = vec![
+            "anthropic/claude-sonnet-4-latest".to_string(),
+            "x/y".to_string(),
+        ];
+        let cards = rate_cards(&models);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].model, models[0]);
+        assert_eq!(cards[1].model, models[1]);
+    }
+
+    #[test]
+    fn pricing_table_is_public_and_non_empty() {
+        // 公开表即承诺:SDK / GUI 展示单价不必再反解。
+        assert!(!pricing_table().is_empty());
+        assert!(pricing_table().iter().any(|p| p.canonical_id == "gpt-4o"));
+        // pricing_for 与 price 的查表口径一致(同一条目)。
+        assert_eq!(
+            pricing_for("openai/gpt-4o").map(|p| p.canonical_id),
+            Some("gpt-4o")
+        );
+        assert!(pricing_for("gpt-4o:mini").is_none(), "tag 后缀不匹配");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

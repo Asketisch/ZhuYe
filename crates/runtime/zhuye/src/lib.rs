@@ -44,8 +44,9 @@ pub use zhuye_core::{AgentConfig, AgentThread, TurnHandle};
 pub use zhuye_llm::{
     AnthropicClient, AnthropicConfig, Capabilities, ChatEvent, ChatMessage, ChatRequest,
     ContentBlock as LlmContentBlock, CredentialPool, LlmError, ModelClient, ModelRegistry,
-    OllamaClient, OllamaConfig, OpenAIClient, OpenAIConfig, PoolEntry, ProviderKind,
-    SharedModelRegistry, SystemBlocks, ThinkingConfig, providers,
+    OllamaClient, OllamaConfig, OpenAIClient, OpenAIConfig, PoolEntry, ProviderKind, RateCard,
+    SharedModelRegistry, SystemBlocks, ThinkingConfig, price, pricing_for, pricing_table,
+    providers, rate_card, rate_cards,
 };
 
 // ── 协议(Protocol)───────────────────────────────────────────────────────
