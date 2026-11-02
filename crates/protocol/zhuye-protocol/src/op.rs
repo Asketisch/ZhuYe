@@ -116,11 +116,11 @@ pub enum Op {
     /// `SetPermissionMode { mode: current.next_in_ui_cycle() }`。
     CyclePermissionMode,
 
-    /// v1.2 P1:目标模式。设定目标 + 可选命令
-    /// 校验 + token 预算。submission_loop 收到后构造 `GoalController` 放入
-    /// `NodeContext.goal`,后续每轮 turn 结束由 controller 自校验(LM judge)
-    /// + 可选命令。未完成则把续作文本推进 steering 队列,等下一条
-    /// `UserInput` 合并,不自行提交新回合。完成则退出。
+    /// v1.2 P1:目标模式。设定目标 + 可选命令校验 + token 预算。
+    /// submission_loop 收到后构造 `GoalController` 放入 `NodeContext.goal`,
+    /// 后续每轮 turn 结束由 controller 自校验(LM judge)+ 可选命令。
+    /// 未完成则把续作文本推进 steering 队列,等下一条 `UserInput` 合并,
+    /// 不自行提交新回合。完成则退出。
     EnterGoalMode {
         goal: String,
         #[serde(default)]

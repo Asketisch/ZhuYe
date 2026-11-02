@@ -13,7 +13,7 @@ shell hook 与 MCP server 表达,权限模型与内置工具一致。
 
 ```bash
 # 安装(复制到 ~/.zhuye/plugins/cache 并登记 installed_plugins.json)
-zhuye plugin install examples/plugin-demo
+zhuye plugin install plugins/plugin-demo
 
 # 启用(写回 ~/.zhuye/config.toml 的 [plugins].enabled_plugins;
 # id 必须是 name@marketplace 全名,本地安装为 demo@inline)
@@ -23,7 +23,12 @@ zhuye plugin enable demo@inline
 zhuye exec "/demo:hello 张三"
 ```
 
-可运行的完整示例见 [`examples/plugin-demo/`](../examples/plugin-demo/)。
+可运行的完整示例见 [`plugins/plugin-demo/`](../plugins/plugin-demo/)。
+仓库自带插件统一放在 [`plugins/`](../plugins/) 目录(约定见其 README);
+功能型插件实例:[`plugins/harness-import/`](../plugins/harness-import/) ——
+把 Claude Code / Codex / ZCode 历史会话导入为烛夜会话(能力核心是
+`crates/integrations/zhuye-import`,经 MCP server 工具 + slash 命令接入,
+二进制同时支持终端直跑批量导入)。
 
 ## 插件目录结构
 
