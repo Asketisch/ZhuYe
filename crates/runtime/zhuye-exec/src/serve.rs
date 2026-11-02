@@ -162,6 +162,8 @@ where
         let ev = proactive_session_configured(&thread);
         sink.send(ev).await?;
     }
+    // v1.x:Activity 审计 tee(WP12)—— serve 的三条 per-turn 排水环共用。
+    let activity = zhuye_telemetry::ActivityLogger::with_default_home();
     // 远程工具桥:请求事件经独立通道产出,由专职 task 转发到 sink。
     let (bridge, mut bridge_rx) = RemoteBridge::new(64);
     let mut session_rx = thread.subscribe_session();
@@ -247,6 +249,9 @@ where
                 let sub_id = sub.id.clone();
                 let mut handle = thread.submit(sub).await;
                 while let Some(ev) = handle.next().await {
+                    if let Some(a) = zhuye_telemetry::map_event(&ev) {
+                        let _ = activity.record(a);
+                    }
                     if sink.send(ev).await.is_err() {
                         break;
                     }
@@ -277,8 +282,12 @@ where
                         let sub_id = sub.id.clone();
                         let mut handle = thread.submit(prompt_sub).await;
                         let sink5 = sink.clone();
+                        let activity5 = activity.clone();
                         tokio::spawn(async move {
                             while let Some(ev) = handle.next().await {
+                                if let Some(a) = zhuye_telemetry::map_event(&ev) {
+                                    let _ = activity5.record(a);
+                                }
                                 if matches!(ev.msg, EventMsg::SessionConfigured(_)) {
                                     continue;
                                 }
@@ -300,8 +309,12 @@ where
                 let sub_id = sub.id.clone();
                 let mut handle = thread.submit(sub).await;
                 let sink4 = sink.clone();
+                let activity4 = activity.clone();
                 tokio::spawn(async move {
                     while let Some(ev) = handle.next().await {
+                        if let Some(a) = zhuye_telemetry::map_event(&ev) {
+                            let _ = activity4.record(a);
+                        }
                         // SessionConfigured 同时走 session 扇出通道(见
                         // submission_loop),由 session 转发 task 统一写出;
                         // 此处跳过避免重复。

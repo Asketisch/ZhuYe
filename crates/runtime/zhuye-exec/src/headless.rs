@@ -577,6 +577,14 @@ pub async fn bootstrap_normal(
         Some(sanitizer.clone()),
         Some(hook_engine.clone()),
     ));
+    // v1.x:Activity 审计(WP12)—— 会话事件沉淀到
+    // `~/.zhuye/activity/activity.jsonl`。独立 receiver,与 stdout
+    // drainer 并行互不阻塞;logger 失败只 warn。
+    {
+        let logger = zhuye_telemetry::ActivityLogger::with_default_home();
+        let rx = thread.subscribe_session();
+        tokio::spawn(zhuye_telemetry::pump_events(logger, rx));
+    }
 
     // Cron 真实调度:到期把 job.prompt 作为 user_input 注入。
     // v1.x:启用持久化(`~/.zhuye/cron/<session>.json`)—— resume 同一
@@ -797,6 +805,12 @@ pub async fn bootstrap_resumed(
         Some(sanitizer.clone()),
         Some(hook_engine.clone()),
     ));
+    // v1.x:Activity 审计(resume 分支与 normal 同权)。
+    {
+        let logger = zhuye_telemetry::ActivityLogger::with_default_home();
+        let rx = thread.subscribe_session();
+        tokio::spawn(zhuye_telemetry::pump_events(logger, rx));
+    }
     // v1.x:resume 分支补齐 CronTool + 持久化(此前只在 normal 分支装配,
     // resume 会话里 cron 工具不存在 → "tool not found";持久化 store 也
     // 没接,job 跨重启恢复不了)。store 以 thread_id 命名,与 normal 分支

@@ -20,11 +20,16 @@
 //! - 覆盖本地模型:Ollama 已返回真实 token(`prompt_eval_count`/`eval_count`),
 //!   引擎补读 `total_duration`/`eval_duration` 填 latency。
 
+pub mod activity;
 pub mod langfuse;
 pub mod model;
 pub mod sink;
 pub mod writer;
 
+pub use activity::{
+    ActivityEvent, ActivityFilter, ActivityKind, ActivityLevel, ActivityLogger, CAP_INMEMORY,
+    ROTATE_BYTES, map_event, pump_events,
+};
 pub use langfuse::{LangfuseConfig, LangfuseExporter};
 pub use model::{
     DEFAULT_TRACES_DIR, Level, ModelIoRecord, ModelRef, SpanStatus, TelemetryWriteConfig,

@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import time
+
 import json
 from typing import Any
 
@@ -640,3 +642,33 @@ def test_A13_side_channel启动查询取消(serve_session, mock_script) -> None:
         evs = s.submit({"type": "query_side_channels"})
         m = first_event(evs, "side_channel_status")
         assert m is not None, f"取消后会话应仍可查询:{msg_types(evs)}"
+
+
+def test_A14_activity审计落盘(serve_session, mock_script, sandbox) -> None:
+    """一轮对话后 `~/.zhuye/activity/activity.jsonl` 落盘:
+    `turnStarted` / `turnComplete` 记录(camelCase 字段级)。
+
+    依据:crates/resources/zhuye-telemetry/src/activity.rs(ActivityLogger
+    + pump_events)+ headless 的 subscribe_session 接线。
+    """
+    require_binary()
+    script = mock_script(['{"type":"text","text":"audit-me"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "审计一轮"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+    time.sleep(0.8)
+    audit = sandbox.home / ".zhuye/activity/activity.jsonl"
+    assert audit.exists(), f"activity.jsonl 未落盘:{audit}"
+    import json as _json
+
+    records = [_json.loads(line) for line in audit.read_text().splitlines() if line.strip()]
+    types = [r.get("kind") for r in records]
+    assert "turn_started" in types, f"缺 turn_started:{types}"
+    assert "turn_complete" in types, f"缺 turn_complete:{types}"
+    # 字段级:camelCase + actor 归属(turn 类 = user)。
+    started = next(r for r in records if r.get("kind") == "turn_started")
+    for f in ("id", "tsMs", "actor", "summary", "level"):
+        assert f in started, f"activity 记录缺 {f}:{started}"
+    assert started["actor"]["actorId"] == "user", f"turn 应归 user actor:{started}"

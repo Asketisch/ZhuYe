@@ -111,6 +111,12 @@ pub use zhuye_telemetry::{
 // ── Subagent(新暴露)───────────────────────────────────────────────────────
 pub use zhuye_subagent::{CallSubAgentTool, DataTransferConfig, SubAgentFactory, SubAgentSpec};
 
+// ── 审计:Activity 时间线(WP12)────────────────────────────────────────
+pub use zhuye_telemetry::{
+    ActivityEvent, ActivityFilter, ActivityKind, ActivityLevel, ActivityLogger, map_event,
+    pump_events,
+};
+
 // ── 定时:integration 层的 cron / autopilot(WP11)─────────────────────
 pub use zhuye_stream::{
     AutopilotConfig, AutopilotManager, AutopilotRun, AutopilotRunStatus, CronDriverHandle,

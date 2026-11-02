@@ -17,6 +17,7 @@
 //!
 //! 完整规范参见 `sdks/PROTOCOL.md`。
 
+pub mod actor;
 pub mod ask_user_input;
 pub mod bash_command;
 pub mod error;
@@ -31,6 +32,7 @@ pub mod stats;
 pub mod submission;
 pub mod text;
 
+pub use actor::{Actor, ActorKind, ActorType};
 pub use bash_command::{BASH_COMMAND_KEYS, resolve_bash_command, split_shell_segments};
 pub use error::ProtocolError;
 pub use event::{EVENT_ID_NONE, Event};
