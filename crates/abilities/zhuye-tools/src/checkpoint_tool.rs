@@ -18,11 +18,11 @@
 //! 截断点之后的记录进入 `.bak` 备份,rewind marker 紧跟截断点追加
 //! (append-only 语义不破坏)。
 
+use crate::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::Value;
+use zhuye_git::checkpoint as git_cp;
 use zhuye_protocol::{PermissionMode, ToolError, ToolOutput};
-use zhuye_tools::checkpoint::{git_auto_commit, git_current_sha, git_reset_hard, is_valid_commit};
-use zhuye_tools::{Tool, ToolContext};
 
 /// 工作区 git 快照工具。create / list 两个 action。
 pub struct CheckpointTool;
@@ -98,11 +98,15 @@ impl CheckpointTool {
     async fn exec_create(&self, ctx: &ToolContext, args: &Value) -> Result<ToolOutput, ToolError> {
         let workspace = ctx.workspace_path();
         let label = args.get("label").and_then(|v| v.as_str());
-        let msg = match label {
-            Some(l) => format!("zhuye checkpoint: {l}"),
-            None => "zhuye checkpoint".to_string(),
+        // v1.x:改走 zhuye-git 的 checkpoint::create —— 统一 subject 前缀
+        // 并打 tag(reset --hard 之后仍可达、可列、可再回退)。
+        let sha = match git_cp::create(&workspace, label.unwrap_or(""))
+            .map_err(|e| ToolError::Execution(e.to_string()))?
+        {
+            Some(cp) => cp.sha,
+            None => git_cp::current_sha(&workspace)
+                .ok_or_else(|| ToolError::Execution("checkpoint: no changes and no HEAD".into()))?,
         };
-        let sha = git_auto_commit(&workspace, &msg)?;
         // 写 RolloutRecord::Checkpoint(若 recorder / session 可用)。
         // best-effort:写失败只 warn,不阻塞(checkpoint 本身已成功)。
         if let Err(e) = write_checkpoint_record(&ctx, &sha, label) {
@@ -274,11 +278,13 @@ impl Tool for RewindTool {
             });
         }
 
-        // 文件回退目标校验(仅 scope 涉及文件时)。
-        if rewind_files && !is_valid_commit(&workspace, &sha) {
+        // 文件回退目标校验(仅 scope 涉及文件时):**只接受 zhuye-git 创建
+        // 并打了 tag 的 checkpoint** —— 畸形 sha / 用户手挑的任意 commit
+        // 一律拒绝,不会被打进 `reset --hard`。
+        if rewind_files && git_cp::find_checkpoint(&workspace, &sha, 200).is_err() {
             return Err(ToolError::InvalidArgs {
                 message: format!(
-                    "rewind: '{sha}' is not a valid commit in {}",
+                    "rewind: '{sha}' is not a zhuye checkpoint in {}",
                     workspace.display()
                 ),
             });
@@ -312,9 +318,35 @@ impl Tool for RewindTool {
         }
 
         // ── 文件回退(workspace / both)─────────────────────────────────
-        let from_sha = git_current_sha(&workspace).unwrap_or_else(|_| "unknown".into());
+        let mut safety_note = String::new();
+        let from_sha = git_cp::current_sha(&workspace).unwrap_or_else(|| "unknown".into());
         if rewind_files {
-            git_reset_hard(&workspace, &sha)?;
+            // 回退前先做一次安全快照提交(reset --hard 会丢未提交改动;
+            // 快照打了 tag,用户反悔了还能再回退到回退前状态)。
+            match git_cp::create(&workspace, "pre-rewind safety snapshot") {
+                Ok(Some(safety)) => {
+                    safety_note = format!(" Pre-rewind safety snapshot: `{}`.", safety.sha);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "rewind: safety snapshot failed (proceeding)");
+                }
+            }
+            for args in [vec!["reset", "--hard", sha.as_str()], vec!["clean", "-fd"]] {
+                let out = std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(&workspace)
+                    .output();
+                match out {
+                    Ok(o) if o.status.success() => {}
+                    Ok(o) => {
+                        return Err(ToolError::Execution(
+                            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                        ));
+                    }
+                    Err(e) => return Err(ToolError::Execution(e.to_string())),
+                }
+            }
         }
 
         // ── 对话回退(conversation / both)──────────────────────────────
@@ -355,7 +387,7 @@ impl Tool for RewindTool {
         } else {
             "Workspace files left untouched (scope=conversation).".to_string()
         };
-        let text = format!("{files_part}{conversation_note}");
+        let text = format!("{files_part}{conversation_note}{safety_note}");
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::Text { text }],
             is_error: false,
@@ -448,8 +480,8 @@ fn list_checkpoint_records(ctx: &ToolContext) -> Vec<zhuye_protocol::RolloutReco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolContext;
     use zhuye_protocol::{ReviewDecision, RolloutRecorder as _, ThreadId};
-    use zhuye_tools::ToolContext;
 
     /// 改 `ZHUYE_ROLLOUT_BASE` env 的用例必须持有的进程级锁(env 是
     /// 进程全局,并行用例共享)。
@@ -462,9 +494,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zhuye_ckpttool_{}_{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        zhuye_tools::worktree::run_git(&dir, &["init"]).unwrap();
-        zhuye_tools::worktree::run_git(&dir, &["config", "user.email", "t@t.t"]).unwrap();
-        zhuye_tools::worktree::run_git(&dir, &["config", "user.name", "T"]).unwrap();
+        crate::worktree::run_git(&dir, &["init"]).unwrap();
+        crate::worktree::run_git(&dir, &["config", "user.email", "t@t.t"]).unwrap();
+        crate::worktree::run_git(&dir, &["config", "user.name", "T"]).unwrap();
         let mut ctx = ToolContext::default();
         ctx.session_id = ThreadId::new();
         ctx.set_workspace(dir.clone());

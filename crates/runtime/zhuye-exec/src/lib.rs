@@ -13,7 +13,6 @@
 //! 以 JSONL 流形式向 stdout 输出事件。tracing 日志走 stderr。
 
 mod bootstrap;
-mod checkpoint_tool;
 mod cron_tool;
 mod headless;
 mod jsonl;
@@ -27,7 +26,6 @@ mod tests;
 
 // 重导出,保留历史公共 API 表面积。内部也通过 `crate::` 路径引用这些项。
 pub use bootstrap::ResumeBundle;
-pub use checkpoint_tool::{CheckpointTool, RewindTool};
 pub use cron_tool::CronTool;
 pub use jsonl::JsonlWriter;
 pub use memory_tool::MemoryTool;

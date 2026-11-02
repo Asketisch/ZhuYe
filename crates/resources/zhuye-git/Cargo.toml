@@ -1,0 +1,18 @@
+[package]
+name = "zhuye-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: git 能力族(checkpoint 快照 / 分支与 PR 探测 / assistant 指令解析)"
+
+[dependencies]
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tokio              = { workspace = true, features = ["process", "io-util", "macros", "rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio    = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+pretty_assertions = "1"

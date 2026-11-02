@@ -215,50 +215,15 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     // Receiver 会让 HeadlessCommon 无法 Clone;这里包成消费端句柄。
     let reload_rx = ReloadRxHandle(reload_rx);
 
-    // 2. 工具注册表(builtin 全量注册,与 exec 历史行为一致)。
+    // 2. 工具注册表(builtin 全量注册 —— 单一事实源
+    // `register_builtin_tools`,与 lib facade 共用,勿在此内联追加)。
     let tools = Arc::new(ToolRegistry::default());
-    tools.register(Arc::new(zhuye_tools::builtins::EchoTool));
-    tools.register(Arc::new(zhuye_tools::builtins::BashTool::default()));
-    // 核心文件工具:与 lib facade(`zhuye::builder::default_tool_registry`)对齐。
-    // 此前缺失导致 CLI headless/serve 下模型调用 read/write/edit/grep/glob 报
-    // "tool not found",而 ALWAYS_ON_TOOLS prompt 仍向模型宣告这些工具可用。
-    tools.register(Arc::new(zhuye_tools::builtins::ReadTool));
-    tools.register(Arc::new(zhuye_tools::builtins::WriteTool));
-    tools.register(Arc::new(zhuye_tools::builtins::EditTool));
-    tools.register(Arc::new(zhuye_tools::builtins::DeleteTool));
-    tools.register(Arc::new(zhuye_tools::builtins::GrepTool));
-    tools.register(Arc::new(zhuye_tools::builtins::GlobTool));
-    tools.register(Arc::new(zhuye_tools::builtins::EnterPlanModeTool));
-    tools.register(Arc::new(zhuye_tools::builtins::ExitPlanModeTool));
-    tools.register(Arc::new(zhuye_tools::builtins::PlanWriteTool));
-    tools.register(Arc::new(zhuye_tools::builtins::EnterWorktreeTool));
-    tools.register(Arc::new(zhuye_tools::builtins::ExitWorktreeTool));
-    tools.register(Arc::new(zhuye_ast::AstTool::new()));
-    tools.register(Arc::new(zhuye_tools::builtins::WebFetchTool::new()));
-    tools.register(Arc::new(zhuye_tools::builtins::WebSearchTool::new()));
-    let ask_uq_limits = initial_cfg
+    let ask_uq_max = initial_cfg
         .ask_user_question
         .as_ref()
         .and_then(|s| s.resolved())
-        .unwrap_or(zhuye_config::schema::ResolvedAskUserQuestion {
-            max_questions: 4,
-            max_options: 4,
-            default_timeout_secs: 900,
-        });
-    tools.register(Arc::new(zhuye_tools::builtins::AskUserQuestionTool {
-        max_questions: ask_uq_limits.max_questions,
-    }));
-    tools.register(Arc::new(zhuye_tools::builtins::AskUserTool));
-    tools.register(Arc::new(zhuye_tools::builtins::RequestHumanInputTool));
-    tools.register(Arc::new(zhuye_tools::builtins::ToolSearchTool::new(
-        tools.clone(),
-    )));
-    tools.register(Arc::new(zhuye_tools::builtins::ImageViewTool));
-    tools.register(Arc::new(zhuye_tools::builtins::NotebookEditTool));
-    tools.register(Arc::new(zhuye_tools::builtins::BriefTool));
-    tools.register(Arc::new(zhuye_tools::builtins::GetContextRemainingTool));
-    tools.register(Arc::new(crate::CheckpointTool));
-    tools.register(Arc::new(crate::RewindTool));
+        .map(|r| r.max_questions as u32);
+    zhuye_tools::register_builtin_tools(&tools, ask_uq_max, Arc::new(zhuye_ast::AstTool::new()));
 
     // task 系统:默认 FileTaskStore 持久化,`--ephemeral-*` / HOME 缺失
     // 时降级内存后端。

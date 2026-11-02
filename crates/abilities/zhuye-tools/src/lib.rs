@@ -23,8 +23,10 @@ pub use zhuye_protocol::bash_command;
 // 此处整体 re-export,`crate::bm25::*` 路径与外部 `zhuye_tools::bm25`
 // 使用方保持源码兼容。
 pub use zhuye_bm25 as bm25;
+pub mod builtin_tools;
 pub mod builtins;
 pub mod checkpoint;
+pub mod checkpoint_tool;
 pub mod plan_approval;
 pub mod queue;
 pub mod registry;
@@ -41,7 +43,9 @@ pub use approval::{
 };
 pub use bash_command::{BASH_COMMAND_KEYS, resolve_bash_command};
 pub use bm25::{Bm25Hit, rank_lines, tokenize};
+pub use builtin_tools::{BUILTIN_TOOL_COUNT, register_builtin_tools};
 pub use builtins::bash::{BashCommandClass, classify_command};
+pub use checkpoint_tool::{CheckpointTool, RewindTool};
 pub use plan_approval::{PlanApprovalGate, PlanApprovalWaiters, complete_plan_approval};
 pub use queue::{ToolCallRequest, ToolExecutionQueue, ToolResult};
 pub use registry::{ToolRegistry, ToolSource};
