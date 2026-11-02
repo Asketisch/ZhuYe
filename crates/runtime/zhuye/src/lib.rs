@@ -111,6 +111,12 @@ pub use zhuye_telemetry::{
 // ── Subagent(新暴露)───────────────────────────────────────────────────────
 pub use zhuye_subagent::{CallSubAgentTool, DataTransferConfig, SubAgentFactory, SubAgentSpec};
 
+// ── 编排:任务 / 团队 / squad(WP10)───────────────────────────────────
+pub use zhuye_task::{
+    Actor, ActorKind, ActorType, SquadError, SquadManager, SquadMember, SquadSpec, TaskManager,
+    TeamFile, TeamMemberSpec,
+};
+
 // ── 讨论(Discussion,M9 首次暴露,v0.2.3 扩展)──────────────────────────────
 // 顶层 re-export:核心 facade (M9) + LLM 实战集成所需的高级 API (v0.2.3)。
 // `comm_tools` / `runtime` / `orchestrator` 仍走 `zhuye_discussion::*`,
