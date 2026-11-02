@@ -48,7 +48,8 @@ bin/zhuye-import --from zcode ...                                # ZCode 见下
 - 保留:turn 结构、可见文本、工具调用与结果、token 用量、压缩摘要、
   工作区归属;源 id 是合法 UUID 时原样保留(重复导入天然幂等)。
 - 默认丢弃:思考链(`include_thinking` / `--include-thinking` 保留)、
-  Harness 注入的环境脚手架(`keep_injected` / `--keep-injected` 保留)、
+  Harness 注入的环境脚手架(`keep_injected` / `--keep-injected` 保留;
+  保留时**前置到紧随的真实用户输入所在轮**,不独立成轮)、
   Claude Code 子代理轨迹(`--include-sidechain` 保留)。
 - ZCode:历史存于 `~/.zcode/cli/db/db.sqlite`,导入时先拷贝到临时
   目录只读解析,不写源库;MCP 工具入口不暴露 SQLite 路径,批量导入

@@ -88,8 +88,22 @@ await agent.close();
   (serve 侧 core 串行排队,事件按各自 `id` 路由);
 - `interrupt()` 打断当前 turn(该 turn 以 `turn_aborted` 收尾);
 - `approve()` 响应 `approval_request` 审批请求(approve / deny + reason);
+- `plugins` 选项显式加载插件 —— 传入时以 `--plugin <id>` 启动 serve,
+  **覆盖** config 的 `[plugins].enabled_plugins`(嵌入方按需精确启用,
+  不读全局开关);缺省 / 空 = 维持配置驱动。id 形如 `name@marketplace`
+  (本地安装为 `name@inline`)。启动后经 `plugin_loaded` 全局事件确认
+  (`nextGlobalEvent` / `next_global_event` 读取);
 - 协议未知事件类型自动降级 —— 协议 v0 冻结但允许新增变体,框架加变体
   不断 SDK。
+
+```python
+# 按需加载插件(不装则完全不加载,零影响)
+agent = ZhuyeAgent.spawn(ZhuyeAgentOptions(plugins=["harness-import@inline"]))
+```
+
+```ts
+await ZhuyeAgent.spawn({ plugins: ['harness-import@inline'] });
+```
 
 ## 离线联调
 
