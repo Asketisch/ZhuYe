@@ -707,6 +707,11 @@ pub async fn bootstrap_resumed(
         .with_policy(Arc::new(initial_cfg.routing_policy_with(&model)))
         .with_telemetry(telemetry_sink)
         .with_cancel(cancel.clone())
+        // 回填 session_id:submission_loop 每轮 `rec.replay(cfg.session_id)`
+        // 重建历史 —— 未设置时是随机新 uuid,永远命不中原文件,恢复的
+        // 历史进不了模型上下文(跨轮失忆)。三处 id(文件名 /
+        // session_meta.session_id / 此处)对齐后,历史稳定进入每轮 base。
+        .with_session_id(thread_id)
         .with_preload_messages(bundle.initial_messages.clone());
     // 与 normal 分支同权:权限三层装配(config > project > user)+ YOLO
     // 分类器。此前 resume 分支漏装,resume 会话会绕过权限规则。
