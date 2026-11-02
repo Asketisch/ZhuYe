@@ -40,7 +40,7 @@
 | 持久化(rollout / 截断 / 索引 / 标题 / 导出) | P1–P7 | cli_deep(session) | — | ✅ | P1–P2 |
 | 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS) | — | — |
-| 编排(子代理/讨论/任务/团队/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅ | — |
+| 编排(子代理/讨论/任务/团队/squad 委派/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅(squad / actor 22 例) | — |
 | CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
 | 模型发现(清单接口 / 免费判定 / 动态 model) | — | models_* | — | ✅ | — |
 | 模型计价(费率表公开 / 费率卡 / cost 聚合) | — | — | — | zhuye-llm pricing(6 例) | — |
