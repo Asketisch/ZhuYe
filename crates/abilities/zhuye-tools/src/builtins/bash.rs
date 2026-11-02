@@ -349,8 +349,20 @@ impl Tool for BashTool {
         //   ZHUYE_SANDBOX_STRICT=0 显式开启)。
         // v1.5 R1:OS 沙箱来源优先级 —— ToolContext 覆盖(`sandbox_policy`
         // 每 turn 下发)> env(`OsSandbox::from_env`)。
+        // v1.x:`[sandbox].writable_dirs` / `allow_network` 经 ToolContext
+        // 透传(此前框架内无消费方);空列表 / None 时维持 OsSandbox 自带的
+        // env 派生口径。
         let sandbox = match ctx.os_sandbox {
-            Some(on) => zhuye_sandbox::OsSandbox::with_enabled(on),
+            Some(on) => {
+                let mut s = zhuye_sandbox::OsSandbox::with_enabled(on);
+                if !ctx.os_sandbox_writable.is_empty() {
+                    s.writable_dirs = ctx.os_sandbox_writable.clone();
+                }
+                if let Some(net) = ctx.os_sandbox_network {
+                    s.allow_network = net;
+                }
+                s
+            }
             None => zhuye_sandbox::OsSandbox::from_env(),
         };
         // 严格模式 fail-closed:后端 / 初始化失败 → 直接报错,不裸执行。

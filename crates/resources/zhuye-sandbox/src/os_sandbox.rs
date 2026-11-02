@@ -145,18 +145,35 @@ impl OsSandbox {
     /// `ZHUYE_SANDBOX_OS_LEVEL=1` 加 `ZHUYE_SANDBOX_STRICT=0` 可临时
     /// 回到旧降级语义(用于本地调试 / 过渡期)。
     pub fn from_env() -> Self {
-        let on = std::env::var("ZHUYE_SANDBOX_OS_LEVEL")
-            .ok()
-            .map(|s| {
-                // 显式 "0/false/no/off" 才关闭,空 / 其他值 → 视为开启
-                // (向后兼容 v1.2 的 "设了就开" 语义)。
-                !matches!(
-                    s.trim().to_ascii_lowercase().as_str(),
-                    "" | "0" | "false" | "no" | "off"
-                )
-            })
-            .unwrap_or(true);
-        Self::with_enabled(on)
+        Self::with_enabled(parse_env_os_level(
+            &std::env::var("ZHUYE_SANDBOX_OS_LEVEL").unwrap_or_default(),
+        ))
+    }
+
+    /// v1.x:env > config > 基线 三段优先级解析出完整沙箱策略。
+    ///
+    /// 收编桌面端 `app-core/src/sandbox.rs` 的纯函数口径(env 优先是
+    /// 运维临时降级的逃生口),并修复核心 CLI 此前的桥接缺口:
+    /// `[sandbox].os_level = Some(false)` **不生效**(headless 只桥接
+    /// `Some(true)`,因为 `from_env()` 未设 env 时默认开启)。
+    ///
+    /// `writable_dirs` / `allow_network` 仅在沙箱启用时有意义(关闭时
+    /// 本就不受限);strict 仍读 env(`ZHUYE_SANDBOX_STRICT`)。
+    pub fn resolve(
+        cfg_os_level: Option<bool>,
+        writable_dirs: Vec<PathBuf>,
+        allow_network: bool,
+    ) -> Self {
+        let on = resolve_enabled(
+            std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok().as_deref(),
+            cfg_os_level,
+        );
+        let mut s = Self::with_enabled(on);
+        if on {
+            s.writable_dirs = writable_dirs;
+            s.allow_network = allow_network;
+        }
+        s
     }
 
     /// v1.5 R1:显式指定开关的构造器 —— `ThreadSettingsOverrides
@@ -862,6 +879,75 @@ pub fn probe_landlock_exec() -> bool {
 // 被引用。保留别名让旧代码继续编译,内部映射到新 API。
 #[doc(hidden)]
 pub type OsSandboxStubStatus = OsSandboxStatus;
+
+/// v1.x:解析 `ZHUYE_SANDBOX_OS_LEVEL` 的开关语义(纯函数)。
+///
+/// 显式 `""` / `"0"` / `"false"` / `"no"` / `"off"` 才关闭;其余值
+/// (含 `"1"` / `"true"` / 任意未识别值)视为开启 —— 与 v1.2 "设了就开"
+/// 的向后兼容语义一致。
+pub fn parse_env_os_level(raw: &str) -> bool {
+    !matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
+/// v1.x:env > config > 基线 三段优先级(纯函数,不碰进程 env)。
+///
+/// - env 已设置(`Some`)→ env 说了算(逃生口:运维可临时覆盖配置);
+/// - env 未设置 → 尊重 `[sandbox].os_level` 表态(`None` = 未表态);
+/// - 两者都未表态 → 基线开启(`OsSandbox::default()` = enabled + strict)。
+pub fn resolve_enabled(env_raw: Option<&str>, cfg_os_level: Option<bool>) -> bool {
+    if let Some(raw) = env_raw {
+        return parse_env_os_level(raw);
+    }
+    cfg_os_level.unwrap_or(true)
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn parse_env_os_level_only_explicit_off_disables() {
+        for off in ["", "0", "false", "no", "off", " off ", "FALSE"] {
+            assert!(!parse_env_os_level(off), "{off:?} 应判为关闭");
+        }
+        for on in ["1", "true", "yes", "on", "anything-else"] {
+            assert!(parse_env_os_level(on), "{on:?} 应判为开启");
+        }
+    }
+
+    #[test]
+    fn env_beats_config_beats_baseline() {
+        // env 优先:逃生口可临时覆盖配置(关的 env 压掉开的 config,反之亦然)。
+        assert!(!resolve_enabled(Some("0"), Some(true)));
+        assert!(resolve_enabled(Some("1"), Some(false)));
+        // env 未表态 → 尊重 config。
+        assert!(resolve_enabled(None, Some(true)));
+        assert!(!resolve_enabled(None, Some(false)));
+        // 两者都未表态 → 基线开启。
+        assert!(resolve_enabled(None, None));
+    }
+
+    #[test]
+    fn resolve_carries_writable_dirs_and_network() {
+        let s = OsSandbox::resolve(Some(true), vec![PathBuf::from("/tmp/extra")], true);
+        assert!(s.enabled);
+        assert_eq!(s.writable_dirs, vec![PathBuf::from("/tmp/extra")]);
+        assert!(s.allow_network);
+        // 关闭时沙箱整体透传,writable / network 设置无意义(不受限)。
+        let off = OsSandbox::resolve(Some(false), vec![PathBuf::from("/x")], true);
+        assert!(!off.enabled);
+    }
+
+    #[test]
+    fn resolve_respects_env_escape_hatch() {
+        // env 显式关闭时,即使 config 要求开也关(纯函数口径)。
+        let on = resolve_enabled(Some("0"), Some(true));
+        assert!(!on);
+    }
+}
 
 #[cfg(test)]
 mod tests {
