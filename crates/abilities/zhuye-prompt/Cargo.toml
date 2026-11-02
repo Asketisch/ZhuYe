@@ -7,6 +7,7 @@ description = "ZhuYe: layered system prompt and Anthropic cache_control injectio
 
 [dependencies]
 zhuye-protocol = { workspace = true }
+zhuye-config   = { workspace = true }
 zhuye-llm      = { workspace = true }
 minijinja          = { workspace = true }
 serde              = { workspace = true }

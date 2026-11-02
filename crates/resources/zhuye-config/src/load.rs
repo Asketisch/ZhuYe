@@ -2,9 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::DEFAULT_CONFIG_FILE;
 use crate::error::ConfigError;
 use crate::schema::{CURRENT_CONFIG_VERSION, ReflectConfig};
-use crate::{DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILE};
 
 /// config.toml 的绝对路径。
 ///
@@ -15,15 +15,10 @@ use crate::{DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILE};
 /// 多端点并行)拿不到配置隔离。现在配置读取与数据目录一致:
 /// `ZHUYE_HOME` 指向的目录**就是** `.zhuye` 目录本身(其下直接放
 /// `config.toml`),未设置时回落 `$HOME/.zhuye`。
+///
+/// home 解析统一走 [`crate::paths::data_dir`] —— 全框架唯一口径。
 pub fn default_config_path() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("ZHUYE_HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join(DEFAULT_CONFIG_FILE));
-        }
-    }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|h| h.join(DEFAULT_CONFIG_DIR).join(DEFAULT_CONFIG_FILE))
+    crate::paths::data_dir().map(|dir| dir.join(DEFAULT_CONFIG_FILE))
 }
 
 /// 从任意 TOML 字符串解析;失败转 `ConfigError::Parse`。

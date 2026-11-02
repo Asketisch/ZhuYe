@@ -74,10 +74,13 @@ pub fn copy(key: &str) -> &'static str {
         .unwrap_or_else(|| panic!("missing prompt copy section: {key}"))
 }
 
+/// 数据目录 home —— 口径统一走 [`zhuye_config::data_dir`]。
+///
+/// 此前这里自带一份 `$ZHUYE_HOME` > `$HOME/.zhuye` 解析(且空串算
+/// 已设置,会解析出空路径);与 config / notes / task 的各自实现漂移
+/// 过多次,现收编为全框架单一事实源。
 fn zhuye_home() -> Option<PathBuf> {
-    std::env::var_os("ZHUYE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".zhuye")))
+    zhuye_config::data_dir()
 }
 
 /// 解析 `## key` 分节的 Markdown 为有序表。库内多个模块共用。

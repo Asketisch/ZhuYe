@@ -36,11 +36,11 @@ pub use tool::AddSessionNoteTool;
 
 /// 解析 JSONL notes 落盘目录。
 ///
-/// 优先级:`$ZHUYE_HOME` > `$HOME/.zhuye`。`ZHUYE_HOME` 未设置且
-/// `HOME` 未设置时返回 `None` —— caller 应 fallback 到纯 RAM store。
+/// 优先级:`$ZHUYE_HOME` > `$HOME/.zhuye`(getpwuid 兜底)。`ZHUYE_HOME`
+/// 为空串按未设置处理 —— 此前空串会解析出空路径,落盘直接失败。
+///
+/// home 口径统一走 [`zhuye_config::data_dir`](zhuye_config::data_dir) ——
+/// 全框架单一事实源,notes 与 config / task / prompt 落同一个根。
 pub fn resolve_notes_home() -> Option<std::path::PathBuf> {
-    if let Some(p) = std::env::var_os("ZHUYE_HOME") {
-        return Some(std::path::PathBuf::from(p));
-    }
-    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".zhuye"))
+    zhuye_config::data_dir()
 }
