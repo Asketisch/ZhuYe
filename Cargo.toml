@@ -39,6 +39,7 @@ members = [
     "crates/integrations/zhuye-lsp",
     "crates/integrations/zhuye-integration",
     "crates/integrations/zhuye-stream",
+    "crates/integrations/zhuye-import",
 
     # ── runtime ── 运行时与入口
     # 注:zhuye-tui 已拆分至独立仓库 Reflect-TUI(https://cnb.cool/Demon1019/Reflect-CLI),
@@ -95,6 +96,7 @@ zhuye-mcp         = { path = "crates/integrations/zhuye-mcp" }
 zhuye-lsp         = { path = "crates/integrations/zhuye-lsp" }
 zhuye-integration = { path = "crates/integrations/zhuye-integration" }
 zhuye-stream      = { path = "crates/integrations/zhuye-stream" }
+zhuye-import      = { path = "crates/integrations/zhuye-import" }
 
 # ── runtime ── 运行时与入口
 zhuye-core = { path = "crates/runtime/zhuye-core" }
@@ -167,6 +169,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # 记忆(M4 可能切换到 rusqlite)
 sled = "0.34"
+
+# 会话导入(zhuye-import):ZCode 历史存于 SQLite;bundled 自带 C 源,
+# 免系统依赖。仅 zhuye-import 消费,不进 SDK facade。
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 # 并发原语
 parking_lot = "0.12"
