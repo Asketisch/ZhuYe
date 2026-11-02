@@ -216,9 +216,15 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         let mut handle = session.thread.submit(sub).await;
         let stdout = std::io::stdout();
         let mut writer = JsonlWriter::new(stdout.lock());
+        // v1.x:Activity 审计 tee(WP12)—— 与 stdout 排水同环,不额外
+        // 消费者;record 失败只丢审计不杀会话。
+        let activity = zhuye_telemetry::ActivityLogger::with_default_home();
         let mut plan_produced = false;
         let mut code = 0;
         while let Some(event) = handle.next().await {
+            if let Some(a) = zhuye_telemetry::map_event(&event) {
+                let _ = activity.record(a);
+            }
             if is_plan_ready_event(&event) {
                 plan_produced = true;
             }
@@ -264,9 +270,14 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         zhuye_protocol::Submission::user_input_items(items)
     };
     let mut handle = session.thread.submit(sub).await;
+    // v1.x:Activity 审计 tee(同 resume 分支)。
+    let activity = zhuye_telemetry::ActivityLogger::with_default_home();
     let mut plan_produced = false;
     let mut code = 0;
     while let Some(event) = handle.next().await {
+        if let Some(a) = zhuye_telemetry::map_event(&event) {
+            let _ = activity.record(a);
+        }
         if is_plan_ready_event(&event) {
             plan_produced = true;
         }

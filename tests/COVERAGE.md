@@ -34,7 +34,7 @@
 | 技能面(内置包开关 / 文件 skill 激活) | SK1–SK3 | integrations | — | ✅ | — |
 | 远程工具(注册/往返/失败/超时) | T3–T4、X4 | serve_ops | K3、K8 | ✅ | — |
 | 审批交互(approve / deny / bubble / shell 规则) | T5–T7 | integrations | — | ✅ | — |
-| 会话状态 Op(22 Op,含 side-channel 三 Op) | A1–A13 | serve_ops | K4、K9 | ✅ | — |
+| 会话状态 Op(22 Op)+ Activity 审计落盘 | A1–A14 | serve_ops | K4、K9 | ✅(activity 7 例) | — |
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R5 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
 | 持久化(rollout / 截断 / 索引 / 标题 / 导出 / cron store) | P1–P8 | cli_deep(session) | — | ✅ | P1–P2 |
@@ -351,7 +351,7 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 
 | 文件 | 规模 |
 |---|---|
-| `functional/test_serve.py` | 23 条(D6 + S3 + A13) |
+| `functional/test_serve.py` | 24 条(D6 + S3 + A13) |
 | `functional/test_tools.py` | 13 条(T1–T12) |
 | `functional/test_skills.py` | 3 条(SK1–SK3) |
 | `functional/test_recovery.py` | 11 条(R5 + X6) |
@@ -360,7 +360,7 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `functional/test_orchestration.py` | 5 条(O5) |
 | `functional/test_cli.py` | 7 条(C1–C7) |
 | `functional/test_bugfixes.py` | 12 条(缺陷修复回归) |
-| **能力覆盖层合计** | **97 条** |
+| **能力覆盖层合计** | **98 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |
