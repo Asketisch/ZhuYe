@@ -5046,7 +5046,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+ "tracing",
  "zhuye-bm25",
+ "zhuye-fs",
  "zhuye-protocol",
 ]
 

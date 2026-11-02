@@ -93,7 +93,12 @@ impl FileMemoryStore {
         }
     }
 
-    fn path(&self, scope: MemoryScope, agent_type: &str) -> Result<PathBuf, MemoryError> {
+    /// `(scope, agent_type)` 的 MEMORY.md 路径。条目级编辑(edit 模块)复用。
+    pub(crate) fn path(
+        &self,
+        scope: MemoryScope,
+        agent_type: &str,
+    ) -> Result<PathBuf, MemoryError> {
         resolve_path(scope, &self.workspace, &self.home, agent_type)
     }
 }
