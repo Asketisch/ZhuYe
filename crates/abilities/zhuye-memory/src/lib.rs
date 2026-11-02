@@ -25,11 +25,13 @@
 //! 注入 memory 的字符上限为
 //! [`MAX_MEMORY_INJECT_CHARS`](8000,与 Zhuye 一致)。
 
+pub mod edit;
 pub mod model;
 pub mod retrieval;
 pub mod scope;
 pub mod store;
 
+pub use edit::{EntryWriteOptions, MemoryEntry, WHOLE_DOCUMENT_KEY, migrate_legacy_agent_dir};
 pub use model::{MemoryError, MemoryScope};
 pub use retrieval::{MemorySection, retrieve_relevant, retrieve_relevant_arc, split_sections};
 pub use scope::{MAX_MEMORY_INJECT_CHARS, resolve_path};

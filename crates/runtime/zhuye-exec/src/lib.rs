@@ -17,6 +17,7 @@ mod checkpoint_tool;
 mod cron_tool;
 mod headless;
 mod jsonl;
+mod memory_tool;
 mod reload;
 mod runtime_config;
 pub mod serve;
@@ -29,6 +30,7 @@ pub use bootstrap::ResumeBundle;
 pub use checkpoint_tool::{CheckpointTool, RewindTool};
 pub use cron_tool::CronTool;
 pub use jsonl::JsonlWriter;
+pub use memory_tool::MemoryTool;
 pub use reload::{diff_sections_for_test, handle_reload, spawn_reload_task};
 
 use clap::Args;

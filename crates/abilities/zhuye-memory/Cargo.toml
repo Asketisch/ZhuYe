@@ -8,6 +8,8 @@ description = "ZhuYe: agent persistent memory (project / local / user scopes)"
 [dependencies]
 zhuye-protocol = { workspace = true }
 zhuye-bm25    = { workspace = true }
+zhuye-fs      = { workspace = true }
+tracing       = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 thiserror          = { workspace = true }

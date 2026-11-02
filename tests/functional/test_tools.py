@@ -31,6 +31,7 @@ from wire import (
     first_event,
     msg_types,
     require_binary,
+    rollout_files,
 )
 
 pytestmark = pytest.mark.usefixtures("sandbox")
@@ -410,3 +411,74 @@ def test_T10_双流截断后保留失败退出码(serve_session, mock_script) ->
     assert metadata["exit_code"] == 1, metadata
     assert metadata["stdout_bytes"] == 100 * 1024, metadata
     assert metadata["stderr_bytes"] == 100 * 1024, metadata
+
+
+def test_T11_memory工具读写删全链路(serve_session, mock_script, sandbox) -> None:
+    """mock 调内置 `memory` 工具:write → read → remove,逐轮断言
+    MEMORY.md 落盘形态(`## <key>` 块)、读回内容、删除后条目消失,
+    以及 rollout 的 MemoryAccess::Write 审计记录(字段级)。
+
+    依据:crates/abilities/zhuye-memory/src/edit.rs(条目级编辑)+
+    crates/runtime/zhuye-exec/src/memory_tool.rs(工具面)。
+    """
+    import json
+
+    require_binary()
+    script = mock_script([
+        '{"type":"tool_call","name":"memory","args":{"action":"write","scope":"project",'
+        '"key":"deploy","value":"发布前先跑 ./tests/run_all.sh functional"}}',
+        '{"type":"text","text":"written"}',
+        '{"type":"tool_call","name":"memory","args":{"action":"read","scope":"project"}}',
+        '{"type":"text","text":"read"}',
+        '{"type":"tool_call","name":"memory","args":{"action":"remove","scope":"project","key":"deploy"}}',
+        '{"type":"text","text":"removed"}',
+    ])
+    memory_files = lambda: list((sandbox.cwd / ".zhuye/agent-memory").glob("*/MEMORY.md"))
+
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        # 1) write:工具回执 + 落盘形态(`## deploy` 整行标题 + 正文)。
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "记一下发布流程"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+        end = _tool_end(evs)
+        assert end["is_error"] is False, f"memory write 应成功:{end}"
+        assert "deploy" in _tool_text(end), f"回执未提 key:{_tool_text(end)!r}"
+        files = memory_files()
+        assert files, "未生成 MEMORY.md"
+        body = files[0].read_text()
+        assert "## deploy\n" in body, f"缺条目块:{body!r}"
+        assert "发布前先跑" in body, f"条目正文缺失:{body!r}"
+
+        # 2) read:工具输出含刚写入的正文。
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "读一下记忆"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+        end = _tool_end(evs)
+        assert end["is_error"] is False, f"memory read 应成功:{end}"
+        assert "发布前先跑" in _tool_text(end), f"读回内容缺失:{_tool_text(end)!r}"
+
+        # 3) remove:条目消失(幂等删除,文件可残留为空)。
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "删掉它"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+        end = _tool_end(evs)
+        assert end["is_error"] is False, f"memory remove 应成功:{end}"
+        assert "deploy" not in files[0].read_text(), "条目未删除"
+
+    # 4) rollout 审计:MemoryAccess::Write 记录(字段级)。
+    records = [
+        json.loads(line)
+        for f in rollout_files(sandbox.home)
+        for line in f.read_text().splitlines()
+        if line.strip()
+    ]
+    writes = [
+        r for r in records
+        if r.get("type") == "memory_access" and r.get("op") == "write"
+    ]
+    assert writes, f"无 MemoryAccess::Write 记录:{[r.get('type') for r in records]}"
+    assert writes[0]["agent_type"], "审计记录缺 agent_type"
+    assert writes[0]["turn_id"], "审计记录缺 turn_id"

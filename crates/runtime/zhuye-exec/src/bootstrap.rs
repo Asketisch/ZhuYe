@@ -14,6 +14,8 @@ use zhuye_llm::{ChatMessage, SharedModelRegistry};
 use zhuye_lsp::{LspConnectionManager, LspLifecycleEvent, LspTool};
 use zhuye_mcp::{McpConnectionManager, McpLifecycleEvent, McpServerConfig, McpToolAdapter};
 use zhuye_memory::{FileMemoryStore, InMemoryStore, MemoryStore};
+
+use crate::MemoryTool;
 use zhuye_prompt::PromptBuilder;
 use zhuye_protocol::ThreadId;
 use zhuye_rollout::JsonlRolloutWriter;
@@ -199,8 +201,18 @@ pub(crate) fn bootstrap_m4(
     // (进程退出即丢,对话历史已在 rollout JSONL),Project/User scope 走文件。
     // 此前用纯 FileMemoryStore,Session scope 也落文件,与设计意图不符。
     let file_store = Arc::new(FileMemoryStore::new(workspace, home_path));
-    let memory_arc: Arc<dyn MemoryStore> = Arc::new(InMemoryStore::with_fallback(file_store));
+    let memory_arc: Arc<dyn MemoryStore> =
+        Arc::new(InMemoryStore::with_fallback(file_store.clone()));
     let memory: Arc<dyn MemoryStore> = memory_arc;
+
+    // v1.x:memory 读写工具 —— 写侧与 pre_loop 注入读侧共用同一个
+    // FileMemoryStore(同一 resolve_path 口径);agent_type 取构造时的
+    // 活跃 agent 名(不引入进程级全局,桌面端曾因此出现「GUI 写的记忆
+    // agent 读不到」)。走 register_runtime_tool 应用 Runtime 源安全 floor。
+    tools().register_runtime_tool(Arc::new(
+        MemoryTool::new(file_store, agent_name.to_string())
+            .with_session(zhuye_rollout::path::default_base(), thread_id),
+    ));
 
     // v1.1.0 Phase 6 P0:Session memory notes。
     //
