@@ -10,11 +10,11 @@
 //! 复刻聚合逻辑。
 
 use anyhow::{Context, anyhow};
-use zhuye_protocol::{ModelUsage, RolloutRecord, SessionInfo, SessionStats, ThreadId};
+use zhuye_protocol::{ModelUsage, SessionInfo, SessionStats, ThreadId};
 use zhuye_rollout::index::list_sessions;
 use zhuye_rollout::path::{default_base, session_path_at};
-// v1.x:接入此前孤儿的 rename/to_markdown(S5b + S3);读取侧标题合并走
-// zhuye_rollout::resolve_display_title,不再直接读 .name。
+// v1.x:接入此前孤儿的 rename(S5b);标题合并走 resolve_display_title,
+// 导出走 render_transcript / render_usage_section,均不再直接读 .name。
 use zhuye_rollout::index::rename_session;
 // 双 ID(文件名 thread id vs 首行内部 session_id)兜底解析助手。
 use zhuye_rollout::index::{
@@ -24,7 +24,6 @@ use zhuye_rollout::index::{
 use uuid::Uuid;
 use zhuye_rollout::{
     all_model_usage, derive_title_from_body, index::session_stats, resolve_display_title,
-    to_markdown,
 };
 
 /// `zhuye session ls` —— 列出本地 session(按 started_at desc,limit 默认 20)。
@@ -398,25 +397,31 @@ pub fn rename(id: &str, name: &str) -> anyhow::Result<()> {
 }
 
 /// `zhuye session export <id> [--out <file>]` —— 把会话导出为人类可读
-/// markdown(v1.x S3)。此前 `to_markdown` 是孤儿 —— 完整渲染了 8 种 record
-/// 变体(含 Checkpoint/Rewind/TokenCount),但从未接入 CLI。
+/// markdown(v1.x S3)。
 ///
-/// 不带 `--out` 打印到 stdout;带 `--out` 写到文件。
-pub fn export(id: &str, out: Option<&std::path::Path>) -> anyhow::Result<()> {
+/// v1.x 起改用**完整转写稿**(`zhuye_rollout::export`):逐条渲染全部
+/// 13 个 `RolloutRecord` 变体 + 文末 Usage 段(模型级 token 拆分 /
+/// 压缩节省 / 记忆访问审计),不再走 4000 字符截断的 Pill 预览版
+/// `to_markdown`。
+///
+/// 不带 `--out` 打印到 stdout;带 `--out` 写到调用方指定路径(原子写)。
+///
+/// async:全树回放走 `zhuye_rollout::reader::replay`(tokio fs),由 main 的
+/// runtime `block_on` 驱动(与 discussion / plugin install 同模式)。
+pub async fn export(id: &str, out: Option<&std::path::Path>) -> anyhow::Result<()> {
     let base = default_base();
-    let (tid, path) = resolve_session_path(&base, id)?;
-    // 同步读 + 逐行解析(与 fork_with_history 同款,不依赖 tokio reactor)。
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("read session file {}", path.display()))?;
-    let records: Vec<RolloutRecord> = content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<RolloutRecord>(l).ok())
-        .collect();
-    let markdown = to_markdown(&records);
+    let (tid, _path) = resolve_session_path(&base, id)?;
+    // 全树回放(活跃 + 轮转副本,跨日期目录)—— 与桌面端导出同源。
+    let records = zhuye_rollout::reader::replay(&base, tid)
+        .await
+        .with_context(|| format!("replay session {tid}"))?;
+    let mut markdown = zhuye_rollout::render_transcript(&tid, &records);
+    markdown.push_str(&zhuye_rollout::render_usage_section(
+        zhuye_rollout::index::session_stats(&base, tid).as_ref(),
+    ));
     match out {
         Some(p) => {
-            std::fs::write(p, &markdown)
+            zhuye_fs::write_atomic(p, markdown.as_bytes())
                 .with_context(|| format!("write export file {}", p.display()))?;
             println!(
                 "Exported session {tid} → {} ({} bytes)",
