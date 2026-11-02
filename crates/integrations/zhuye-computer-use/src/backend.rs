@@ -78,7 +78,9 @@ impl ComputerBackend for RealComputerBackend {
                 }
                 ComputerUseAction::MouseClick { x, y, button } => {
                     let mut enigo = make_enigo()?;
-                    enigo.move_mouse(*x, *y, Coordinate::Abs).map_err(input_err)?;
+                    enigo
+                        .move_mouse(*x, *y, Coordinate::Abs)
+                        .map_err(input_err)?;
                     let btn = parse_button(button);
                     enigo.button(btn, Direction::Click).map_err(input_err)
                 }
@@ -231,7 +233,9 @@ mod tests {
         let backend = RealComputerBackend;
         if backend.capability() == BackendCapability::None {
             let err = backend.screenshot().unwrap_err();
-            assert!(matches!(err, MediaError::Unavailable { capability, .. } if capability == "screenshot"));
+            assert!(
+                matches!(err, MediaError::Unavailable { capability, .. } if capability == "screenshot")
+            );
             let err = backend
                 .execute(&ComputerUseAction::MouseClick {
                     x: 1,
@@ -239,7 +243,9 @@ mod tests {
                     button: "left".into(),
                 })
                 .unwrap_err();
-            assert!(matches!(err, MediaError::Unavailable { capability, .. } if capability == "mouse_input"));
+            assert!(
+                matches!(err, MediaError::Unavailable { capability, .. } if capability == "mouse_input")
+            );
         }
     }
 
