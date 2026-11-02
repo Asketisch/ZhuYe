@@ -13,15 +13,19 @@ use anyhow::{Context, anyhow};
 use zhuye_protocol::{ModelUsage, RolloutRecord, SessionInfo, SessionStats, ThreadId};
 use zhuye_rollout::index::list_sessions;
 use zhuye_rollout::path::{default_base, session_path_at};
-// v1.x:接入此前孤儿的 rename/read_name/to_markdown(S5b + S3)。
-use zhuye_rollout::index::{read_session_name, rename_session};
+// v1.x:接入此前孤儿的 rename/to_markdown(S5b + S3);读取侧标题合并走
+// zhuye_rollout::resolve_display_title,不再直接读 .name。
+use zhuye_rollout::index::rename_session;
 // 双 ID(文件名 thread id vs 首行内部 session_id)兜底解析助手。
 use zhuye_rollout::index::{
     find_file_by_session_id, find_files_by_name_prefix, first_line_session_id,
 };
 // v1.x:统一统计聚合(替代此前的 CLI 侧复刻)。
 use uuid::Uuid;
-use zhuye_rollout::{all_model_usage, index::session_stats, to_markdown};
+use zhuye_rollout::{
+    all_model_usage, derive_title_from_body, index::session_stats, resolve_display_title,
+    to_markdown,
+};
 
 /// `zhuye session ls` —— 列出本地 session(按 started_at desc,limit 默认 20)。
 ///
@@ -82,14 +86,15 @@ pub fn show(id: &str) -> anyhow::Result<()> {
     let base = default_base();
     let (tid, path) = resolve_session_path(&base, id)?;
     println!("Session: {tid}");
-    // v1.x:显示自定义名(若有),优先于自动派生的 title。
-    if let Ok(Some(name)) = read_session_name(&base, tid) {
-        println!("Name:    {name}");
-    }
+    // v1.x:展示标题统一走 resolve_display_title(自定义名 > 首条 user
+    // 消息派生标题)—— 框架侧唯一合并口径,CLI 不再自己读 .name。
     println!("Path:    {}", path.display());
 
     // 读前 20 行:SessionMeta + 消息/压缩预览。
     let content = std::fs::read_to_string(&path).context("read session jsonl")?;
+    if let Some(title) = resolve_display_title(&base, tid, derive_title_from_body(&content)) {
+        println!("Title:   {title}");
+    }
 
     // v1.x:统一统计(活跃 + 轮转文件全扫)。旧 session 无 TokenCount →
     // 全 0 / None,不破坏展示。

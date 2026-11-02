@@ -107,6 +107,109 @@ fn list_sessions_no_title_when_no_user_message() {
     assert!(sessions[0].title.is_none(), "empty session has no title");
 }
 
+/// v1.x:user 消息的 block 数组格式(`[{"type":"text","text":..}]`)必须
+/// 提取 text 块文本派生标题 —— 此前走 `to_string()` 会把整段 JSON
+/// 序列化结果当标题,列表里满屏 `[{"type":"text"...`。
+#[test]
+fn list_sessions_derives_title_from_block_array_content() {
+    let dir = tempdir().unwrap();
+    let day_dir = dir.path().join("2026/06/18");
+    std::fs::create_dir_all(&day_dir).unwrap();
+    let sid = ThreadId::new();
+    let body = format!(
+        "{}\n{}\n",
+        serde_json::to_string(&RolloutRecord::SessionMeta {
+            session_id: sid,
+            model: "m".into(),
+            started_at: chrono::Utc::now(),
+            workspace: None,
+        })
+        .unwrap(),
+        serde_json::to_string(&RolloutRecord::message(
+            TurnId::new(),
+            MessageRole::User,
+            // 新格式:block 数组。混入一个 image 块验证只取 text 块。
+            serde_json::json!([
+                {"type": "text", "text": "帮我把 checkpoint 的 tag 方案移植进框架"},
+                {"type": "image", "data": [1, 2, 3], "mime_type": "image/png"},
+            ]),
+        ))
+        .unwrap(),
+    );
+    std::fs::write(day_dir.join(format!("{sid}.jsonl")), body).unwrap();
+
+    let sessions = list_sessions(dir.path()).unwrap();
+    assert_eq!(sessions.len(), 1);
+    let title = sessions[0].title.as_deref().unwrap_or_default();
+    assert_eq!(title, "帮我把 checkpoint 的 tag 方案移植进框架");
+    assert!(
+        !title.contains("type") && !title.contains("mime_type"),
+        "block array must not leak JSON keys into title: {title}"
+    );
+}
+
+/// `extract_message_text` 的三态直测:字符串 / block 数组 / 数字回退。
+#[test]
+fn extract_message_text_covers_three_shapes() {
+    // 旧格式:纯字符串。
+    assert_eq!(
+        extract_message_text(&serde_json::json!("plain text")),
+        "plain text"
+    );
+    // 新格式:多 text 块按序拼接(derive_title 后续会折叠空白)。
+    assert_eq!(
+        extract_message_text(&serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ])),
+        "first\nsecond"
+    );
+    // 数组里没有 text 块 → 回退序列化串(至少不返回空)。
+    assert!(
+        extract_message_text(&serde_json::json!([
+            {"type": "image", "data": [], "mime_type": "image/png"}
+        ]))
+        .contains("image")
+    );
+    // 数字 / 对象:旧回退口径不变(去首尾引号)。
+    assert_eq!(extract_message_text(&serde_json::json!(42)), "42");
+}
+
+/// `resolve_display_title` 口径:自定义名 > 派生标题;未命名回落 derived;
+/// `.name` 为空文件按未命名处理。
+#[test]
+fn resolve_display_title_prefers_custom_name() {
+    let dir = tempdir().unwrap();
+    let sid = ThreadId::new();
+    let derived = Some("derived".to_string());
+
+    // 未命名 → 派生标题。
+    assert_eq!(
+        resolve_display_title(dir.path(), sid, derived.clone()).as_deref(),
+        Some("derived")
+    );
+
+    // 命名后 → 自定义名优先。
+    rename_session(dir.path(), sid, "my session").unwrap();
+    assert_eq!(
+        resolve_display_title(dir.path(), sid, derived.clone()).as_deref(),
+        Some("my session")
+    );
+
+    // 空 .name 文件(手写产生)→ 按未命名,回退派生标题。
+    let names_dir = dir.path().join("_names");
+    std::fs::create_dir_all(&names_dir).unwrap();
+    std::fs::write(names_dir.join(format!("{sid}.name")), "  \n").unwrap();
+    assert_eq!(
+        resolve_display_title(dir.path(), sid, derived).as_deref(),
+        Some("derived")
+    );
+
+    // 两者皆无 → None(调用方自行回落,如显示 thread id)。
+    let unnamed = ThreadId::new();
+    assert_eq!(resolve_display_title(dir.path(), unnamed, None), None);
+}
+
 #[test]
 fn missing_base_returns_empty() {
     let dir = tempdir().unwrap();

@@ -184,3 +184,51 @@ def test_P5_旧日期会话恢复后续写原文件(serve_session, mock_script, 
     messages = [r for r in records if r.get("type") == "message"]
     assert any(r["role"] == "assistant" and "continued" in json.dumps(r["content"]) for r in messages)
     assert list((sandbox.home / ".zhuye/sessions").glob("*/*/*/*.jsonl")) == [active]
+
+
+def test_P6_标题精化_block数组与自定义名合并(serve_session, mock_script, sandbox) -> None:
+    """`zhuye session show` 的 Title 字段:block 数组 content 提取 text 块,
+    自定义名(`session rename`)优先于派生标题。
+
+    依据:crates/resources/zhuye-rollout/src/index/mod.rs
+    `extract_message_text`(block 数组)/ `resolve_display_title`(合并口径)。
+    此前 block 数组走 `to_string()`,标题是整段 JSON 序列化串。
+    """
+    import json
+    import uuid
+
+    require_binary()
+    thread_id = str(uuid.uuid4())
+    day = sandbox.home / ".zhuye/sessions/2026/11/02"
+    day.mkdir(parents=True)
+    meta = {"type": "session_meta", "session_id": thread_id,
+            "model": "mock", "started_at": "2026-11-02T00:00:00Z"}
+    # block 数组格式的 user 消息(新格式),混入 image 块。
+    history = {"type": "message", "turn_id": str(uuid.uuid4()), "role": "user",
+               "content": [{"type": "text", "text": "修复 rollout 标题精化"},
+                           {"type": "image", "data": [1, 2], "mime_type": "image/png"}]}
+    active = day / f"{thread_id}.jsonl"
+    active.write_text(json.dumps(meta) + "\n" + json.dumps(history) + "\n")
+
+    # 1) 未命名 → Title 为 text 块文本,不含 JSON 键名。
+    proc = run_cli(sandbox, "session", "show", thread_id, env={"ZHUYE_MODEL": "mock"}, timeout=30)
+    assert proc.returncode == 0, f"session show 退出码={proc.returncode}:{proc.stderr}"
+    title_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("Title:")]
+    assert title_lines, f"session show 未输出 Title 行:\n{proc.stdout!r}"
+    assert title_lines[0] == "Title:   修复 rollout 标题精化", (
+        f"block 数组标题应为 text 块拼接,实际={title_lines[0]!r}"
+    )
+    assert "mime_type" not in proc.stdout and '"type"' not in proc.stdout, (
+        f"标题不得泄漏 block JSON 键名:\n{proc.stdout!r}"
+    )
+
+    # 2) rename 后 → Title 为自定义名(优先于派生标题)。
+    proc = run_cli(sandbox, "session", "rename", thread_id, "我的会话",
+                   env={"ZHUYE_MODEL": "mock"}, timeout=30)
+    assert proc.returncode == 0, f"session rename 退出码={proc.returncode}:{proc.stderr}"
+    proc = run_cli(sandbox, "session", "show", thread_id, env={"ZHUYE_MODEL": "mock"}, timeout=30)
+    assert proc.returncode == 0, f"session show 退出码={proc.returncode}:{proc.stderr}"
+    title_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("Title:")]
+    assert title_lines == ["Title:   我的会话"], (
+        f"自定义名应优先于派生标题,实际={title_lines!r}"
+    )
