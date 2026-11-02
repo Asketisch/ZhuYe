@@ -8,13 +8,13 @@
 | agents | `agents/reviewer.md` | 模型可调用 `call_demo_reviewer` 子代理 |
 | skills | `skills/demo-skill/SKILL.md` | 模型可 `load_skill` 激活的演示技能 |
 | hooks | `hooks/hooks.json` | 每次工具调用后在 stderr 打一行日志 |
-| mcp_servers | `.mcp.json` + `servers/echo_server.py` | `mcp__plugin:demo:echo__echo` 回显工具 |
+| mcp_servers | `.mcp.json` + `servers/echo_server.py` | `mcp__plugin:demo@inline:echo__echo` 回显工具 |
 
 ## 安装与启用
 
 ```bash
 # 1. 安装(复制到 ~/.zhuye/plugins/cache 并登记)
-zhuye plugin install examples/plugin-demo
+zhuye plugin install plugins/plugin-demo
 
 # 2. 启用(写回 config.toml [plugins].enabled_plugins;
 #    id 必须是 name@marketplace 全名,本地安装为 demo@inline)
