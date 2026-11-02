@@ -1,0 +1,6 @@
+{
+  "git": {
+    "command": "${PLUGIN_ROOT}/bin/zhuye-git-tools-server",
+    "timeout_secs": 30
+  }
+}
