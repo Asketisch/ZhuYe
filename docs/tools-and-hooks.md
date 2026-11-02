@@ -37,7 +37,7 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 
 ## §2 内置工具契约
 
-内置工具共 24 个,实现在 `crates/abilities/zhuye-tools/src/builtins/`。
+内置工具共 25 个,实现在 `crates/abilities/zhuye-tools/src/builtins/`(memory 在 `zhuye-exec`,见下)。
 名字分两派:**计划 / worktree 一族是 PascalCase**,其余是 snake_case。
 
 | 工具 | 用途 |
@@ -50,6 +50,7 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 | `glob` | 按 pattern 列文件,按 mtime 倒序 |
 | `grep` | 正则搜索;`rank=bm25` 时按 BM25 相关性重排 |
 | `notebook_edit` | `.ipynb` 单元的增删改查 |
+| `memory` | 持久记忆读写:list / read / write / remove(`## <key>` 条目块,project / user 双 scope;写 Prompt、读 Auto)。存 `MEMORY.md`,与 pre_loop 注入同源 |
 | `image_view` | 把本地图片作为多模态内容块返回 |
 | `echo` | 原样回显入参(纯函数,可并发) |
 | `brief` | 把附件 / 长上下文摘要成 briefing 块 |
@@ -190,6 +191,7 @@ config.toml 的 `[hooks]` 是**具名子节**,不是数组:
 ```toml
 [hooks]
 enabled = ["search_budget", "verification"]   # 省略 = 全部启用
+disabled = ["verification"]                   # v1.x:显式禁用(运行期 zhuye hooks disable 写回)
 
 [hooks.search_budget]
 max_calls = 20
@@ -205,6 +207,15 @@ test_command = "cargo test -p zhuye-core --lib"
 (`zhuye-hooks/src/config.rs` 的 `HooksConfig` 是同一批字段的 hooks 侧
 镜像,不含 `read_before_edit`;该字段只在 config crate 的
 `HooksSection` 上。)
+
+**启停持久化(v1.x)**:`[hooks].disabled` 名单持久化 `HookEngine` 的
+运行期禁用 —— `zhuye hooks ls / disable / enable` 三条 CLI 读写它(与
+`plugin enable` 同一 config 写入口);`build_engine` 注册后统一 apply,
+先注册后禁用,未注册的名字静默无效(插件 hook 未加载时同样安全)。
+
+**插件 hook 的 env 白名单**:`hooks.json` 的 `env: ["NAME", ...]` 显式
+放行本应被 secret 剔除的环境变量(白名单优先)。`ShellHook` 子进程
+env_clear 后只保留 HOME / PATH 与显式放行名单。
 
 **外部命令式 hook**(`ShellHook`,shell.rs)是另一套机制,走 `hooks.json`,
 不经过 config.toml:把事件 JSON 写子进程 stdin,stdout 回 JSON 决策
@@ -307,3 +318,34 @@ strict + 后端不可用时返回 `Err`,BashTool 据此抛
 ## §9 Plan mode
 
 只读规划模式的入口、白名单与退出码见 [PLAN_MODE.md](PLAN_MODE.md)。
+
+## §10 git 能力族与 checkpoint(收编自客户端,WP8/17)
+
+### §10.1 快照语义(zhuye-git::checkpoint)
+
+- **tag 化**:`CheckpointTool::create` / `RewindTool` 的每个快照都是
+  `zhuye-checkpoint:` subject 提交 + `zhuye-cp/<sha8>` tag。tag 在
+  `reset --hard` 之后依然可达 —— 「回退之后想撤销回退」靠它,
+  `git log` 从 HEAD 出发看不到已脱离分支的快照。
+- **rewind 前安全快照**:rewind 先对当前(可能脏的)工作区打一次
+  `pre-rewind safety snapshot` 再 reset,反悔时再 rewind 到安全快照即可。
+- **白名单校验**:rewind 只接受 tag 列表里的 sha(`find_checkpoint`,
+  limit 200),畸形 / 用户手挑的任意提交都会被拒。
+- `create` 无改动返回 no-changes;`--no-verify` 跳过 pre-commit hook
+  (安全网不该被项目自己的 lint 挡住)。
+
+### §10.2 插件与 hook
+
+- `plugins/git-tools`:MCP 工具 `git_branch_summary`(分支 + 与默认分支
+  的 diff 统计 + 打开的 PR,gh 尽力而为)+ `git_checkpoint_create`;
+- `plugins/git-tools/hooks/hooks.json`:Stop hook `zhuye-cp-hook` 每轮
+  结束自动快照。**永远退出 0** —— 外部 hook fail-closed(非零 = Deny),
+  而 Stop 的 Deny 语义是否决完成、强制续跑;checkpoint 失败不能造成
+  无限续跑循环(失败详情走 stderr)。
+
+### §10.3 assistant 输出指令(zhuye-git::directives)
+
+`::git-{stage,commit,create-branch,push,create-pr}{cwd=…}` 行内指令由
+渲染层剥离成结构化动作;`::code-comment{title body file …}` 重写为可见
+Markdown(优先级 `[P0-3]`)。两份属性解析器行为有意不同(git 指令不转义、
+code-comment 经 `parse_quoted_value` 支持 `\"`),被测试锁定,勿统一。

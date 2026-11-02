@@ -56,6 +56,19 @@ rl.on('line', (line) => {
     console.log(JSON.stringify({ id: sub.id, msg: sub.op.event }));
     return;
   }
+  // v1.x:side-channel 查询 Op(非 turn)—— 回 status 快照后收尾。
+  if (opType === 'query_side_channels') {
+    console.log(JSON.stringify({
+      id: sub.id, msg: {
+        type: 'side_channel_status', channels: [
+          { id: 'side-00000001', agentName: 'a', prompt: 'p',
+            startedAtMs: 1, status: 'running', durationMs: null },
+        ],
+      },
+    }));
+    console.log(JSON.stringify({ id: sub.id, msg: { type: 'submission_closed' } }));
+    return;
+  }
   // 测试回执:把客户端写回的 ToolOutput 以全局事件(id='')回显,
   // 供测试断言 SDK 确实调用了本地 handler 并写入了正确回执。
   // 注:回执 submission 的 id 是 SDK 新生成的 uuid(无监听者),
@@ -247,6 +260,22 @@ def test_未知事件变体降级不崩(agent: ZhuyeAgent) -> None:
     assert types[-1] == "turn_complete", f"未知变体不应打断收尾:{types}"
     # agent 仍可用。
     assert agent.prompt("hi") == "mock-reply"
+
+
+def test_side_channel查询Op_状态快照透传(agent: ZhuyeAgent) -> None:
+    """`submit_op({"type":"query_side_channels"})`(非 turn)→ mock 回
+    `side_channel_status`(channels 数组,camelCase)+ `submission_closed`
+    收尾。SDK 对新 Op / 新事件原样透传,迭代器不挂起。
+
+    真二进制层的同型用例见 tests/sdk-python/test_sdk_real_bin.py::K10。
+    """
+    evs = list(agent.submit_op({"type": "query_side_channels"}))
+    types = [ev["msg"]["type"] for ev in evs]
+    assert "side_channel_status" in types, f"缺 status 事件:{types}"
+    status = next(ev["msg"] for ev in evs if ev["msg"]["type"] == "side_channel_status")
+    ch = status["channels"][0]
+    assert ch["id"] == "side-00000001" and ch["status"] == "running", f"字段应原样:{ch}"
+    assert types[-1] == "submission_closed", f"非 turn Op 应以收尾标记结束:{types}"
 
 
 def test_wire_field_names_stable() -> None:

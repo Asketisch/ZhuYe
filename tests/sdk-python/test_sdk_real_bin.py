@@ -308,3 +308,26 @@ def test_K9_plugins选项_显式加载并上报PluginLoaded(env_home: Path) -> N
         assert loaded.get("command_count", 0) >= 1, f"应有 demo:hello 命令:{loaded}"
     finally:
         agent.close()
+
+
+# ── K10 side-channel 查询 Op(WP9 新能力面)──────────────────────────────
+
+
+def test_K10_side_channel查询Op_真二进制返回status快照(env_home: Path) -> None:
+    """真二进制:`submit_op({"type":"query_side_channels"})` → 真实 serve
+    回 `side_channel_status`(channels 数组)+ `submission_closed` 收尾。
+
+    与 K4(set_effort 静默)不同:这个 Op 有真实应答事件 —— exec 路径
+    已装配 side-channel driver(WP13),查询不再走 "not configured" Error
+    分支。纯逻辑层同型用例:sdks/python/tests/test_protocol.py(mock)。
+    """
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"t1"}']))
+    try:
+        evs = drain(agent.submit_op({"type": "query_side_channels"}))
+        types = msg_types(evs)
+        assert "side_channel_status" in types, f"缺 status 事件:{types}"
+        status = next(e["msg"] for e in evs if e["msg"]["type"] == "side_channel_status")
+        assert isinstance(status.get("channels"), list), f"channels 应为数组:{status}"
+        assert types[-1] == "submission_closed", f"收尾异常:{types}"
+    finally:
+        agent.close()

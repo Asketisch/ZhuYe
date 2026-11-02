@@ -7,7 +7,7 @@
 **不含** `tui` 子命令)。
 
 - Rust stable,edition 2024,MSRV 1.85(rust-toolchain.toml 锁定)
-- 35 crate workspace,按 6 层分组于 `crates/<layer>/<crate>/`
+- 41 crate workspace,按 6 层分组于 `crates/<layer>/<crate>/`
 
 ## 常用命令
 
@@ -58,10 +58,10 @@ make gc                                   # 清 target/debug 中 cargo 不 GC �
 | 层 | Crate | 职责 |
 |----|-------|------|
 | `protocol/` | zhuye-protocol | Submission / Op / EventMsg / Item + RolloutRecorder trait。所有层的公共契约 |
-| `abilities/` | llm, tools, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、HookEngine、压缩 escalation 等 |
-| `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, ast | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索 |
-| `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队、DAG 流水线、目标模式 |
-| `integrations/` | mcp, lsp, integration, stream, import | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端、外部 Harness 会话导入(Claude Code / Codex / ZCode;插件 `plugins/harness-import` 的能力核心,不进 SDK facade) |
+| `abilities/` | llm, tools, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, kms | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、HookEngine、压缩 escalation、本地知识库 wiki 等 |
+| `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, ast, fs, git | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索、共享文件原语、git 能力族 |
+| `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队/squad、DAG 流水线、目标模式、side-channel(zhuye-core) |
+| `integrations/` | mcp, lsp, integration, stream, import, computer-use, shell, git-tools | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端(含 cron / autopilot)、外部 Harness 会话导入、Computer Use、常驻 shell 会话池、git 工作流 MCP server(后四者是 `plugins/*` 的能力核心,不进 SDK facade) |
 | `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(130+ re-exports + Builder)、PyO3 绑定 |
 
 ### 核心数据流

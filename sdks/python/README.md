@@ -200,6 +200,8 @@ event = agent.next_global_event(timeout_secs=5)   # 阻塞读一条;超时抛 qu
 
 ```python
 evs = list(agent.submit_op({"type": "set_permission_mode", "mode": "plan"}))
+# side-channel 查询(WP9):真实 serve 返回 status 快照,迭代器以 submission_closed 收尾
+evs = list(agent.submit_op({"type": "query_side_channels"}))
 evs = list(agent.submit_op({
     "type": "user_input",
     "items": [{"type": "text", "text": "调研一下"}],
@@ -264,6 +266,8 @@ evs = list(agent.submit_op({
 | `plan_request` / `plan_ready` / `plan_approved` / `plan_rejected` / `plan_draft_updated` / `plan_step` | submission / 全局 | 计划模式事件 |
 | `error` / `stream_error` | submission | 错误(`error` 会被 `prompt()` 转为异常) |
 | `shutdown_complete` | submission | 关闭完成 |
+| `side_channel_started` / `side_channel_finished` | submission / 全局 | side-channel agent(WP9):用户发起的并发 agent;`finished` 含 done / cancelled / error 三态 |
+| `side_channel_status` | submission | `submit_op({"type":"query_side_channels"})` 的应答(channels 快照数组) |
 | `submission_closed` | submission | 该提交通道排空(非 turn Op 的收尾标记) |
 | `turn_rewound` / `config_reloaded` / `collab_*` / `mcp_server_*` / `mcp_tool_invoked` / `lsp_server_*` / `plugin_loaded` / `quota_exhausted` / `routing` | — | 其余变体见 protocol.py |
 | `UnknownEventMsg` 形态 | 任意 | 未识别变体降级(`type` 保留原值),保证前向兼容 |

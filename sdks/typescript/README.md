@@ -69,6 +69,9 @@ Node 进程                                  zhuye serve 子进程
   是全局事件,但 SDK 内部拦截并调用本地 handler,不会进入任何一个队列。
 - **迭代器收尾**:`turn_complete` / `turn_aborted` / `shutdown_complete` /
   `submission_closed` 为终态事件,`for await` 在其后自然结束;连接断开
+  - v1.x 新增 `side_channel_started` / `side_channel_finished` /
+    `side_channel_status`(side-channel agent,协议 v0 冻结下按 additive
+    变体透传,旧客户端自动降级)
   (EOF)也会唤醒并结束所有迭代器,不会永久挂起。
 
 ## 使用指南
@@ -192,12 +195,17 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 | 计划 | `enter_plan_mode` / `exit_plan_mode` / `plan_approval` | `plan_approval.choice ∈ auto_mode/manual_approve/revise` |
 | 交互 | `ask_user_question_response` / `ask_user_input_response` | 回应全局事件 ask_user_question / ask_user_input |
 | 状态 | `set_effort` / `set_permission_mode` / `cycle_permission_mode` | mode ∈ auto/prompt/plan/deny/bubble |
+| side-channel | `start_side_channel` / `cancel_side_channel` / `query_side_channels` | WP9:用户发起的并发 agent;query 回 `side_channel_status` 快照 |
 | 目标 | `enter_goal_mode` / `exit_goal_mode` | goal + 可选 verify_command / token_budget |
 | 工具 | `register_tools` / `tool_execution_response` | 通常用 `registerTool()` 封装,不必手写 |
 
 示例:切计划模式、带 thread_settings 提交
 
 ```ts
+// side-channel 查询(非 turn Op,以 submission_closed 收尾)
+for await (const e of await agent.submit({ type: 'query_side_channels' })) {
+  if (e.msg.type === 'side_channel_status') console.log(e.msg.channels);
+}
 for await (const e of await agent.submit({ type: 'set_permission_mode', mode: 'plan' })) {}
 for await (const e of await agent.submit({
   type: 'user_input',

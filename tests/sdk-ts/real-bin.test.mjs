@@ -137,6 +137,27 @@ describe('TS SDK 绑定层 × 真二进制', () => {
     }
   });
 
+  it('K10: side-channel 查询 Op 返回 status 快照 + submission_closed 收尾', async () => {
+    // WP9 新能力面:exec 已装配 side-channel driver(WP13),查询有真实
+    // 应答(与 K4 的 set_effort 静默不同)。纯逻辑层同型用例在
+    // sdks/typescript/tests/protocol.test.ts(mock serve)。
+    const agent = await ZhuyeAgent.spawn(
+      makeOptions(['{"type":"text","text":"t1"}'])
+    );
+    try {
+      const types = [];
+      let status;
+      for await (const ev of await agent.submit({ type: 'query_side_channels' })) {
+        types.push(ev.msg.type);
+        if (ev.msg.type === 'side_channel_status') status = ev.msg;
+      }
+      assert.equal(types.at(-1), 'submission_closed', `收尾异常:${types}`);
+      assert.ok(Array.isArray(status?.channels), `channels 应为数组:${JSON.stringify(status)}`);
+    } finally {
+      await agent.close();
+    }
+  });
+
   it('K6: close 幂等 + 子进程优雅退出', async () => {
     const agent = await ZhuyeAgent.spawn(makeOptions());
     await agent.close();
