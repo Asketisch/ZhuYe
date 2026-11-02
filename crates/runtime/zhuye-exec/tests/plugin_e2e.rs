@@ -1,6 +1,6 @@
 //! 插件链路端到端集成测试(离线,mock 模型)。
 //!
-//! 全链路:示例插件 `examples/plugin-demo` 在隔离 HOME 中真实
+//! 全链路:示例插件 `plugins/plugin-demo` 在隔离 HOME 中真实
 //! `install_local` → `PluginRuntime` 挂载五类 capability →
 //! `serve_session` 内提交 `/demo:hello 张三` → 断言 mock 模型收到的
 //! 是命令 md 展开后的正文,而非原始 `/demo:hello` 文本。
@@ -28,7 +28,7 @@ use zhuye_subagent::SubAgentFactory;
 use zhuye_tools::ToolRegistry;
 
 /// 仓库内示例插件(`crates/runtime/zhuye-exec` → 仓库根 3 级向上)。
-const DEMO_PLUGIN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../examples/plugin-demo");
+const DEMO_PLUGIN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../plugins/plugin-demo");
 
 /// 改写 `$HOME` 的互斥锁(锁横跨 await,用 tokio Mutex 避免
 /// `clippy::await_holding_lock`)。
