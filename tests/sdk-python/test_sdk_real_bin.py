@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from sdkharness import drain, make_options, msg_types
+from sdkharness import ZHUYE_BIN, drain, make_options, msg_types
 
 from zhuye import ContentBlock, ZhuyeAgent, ToolOutput
 
@@ -283,15 +283,27 @@ def test_K9_plugins选项_显式加载并上报PluginLoaded(env_home: Path) -> N
     agent = ZhuyeAgent.spawn(opts)
     try:
         # plugin_loaded 在 bootstrap 期发出,轮询全局队列(上限 ~15s)。
+        # next_global_event 超时抛 queue.Empty(而非返回 None),逐次捕获。
+        # 注意:队列里是整条 wire Event,类型在 ev["msg"]["type"]。
+        import queue
+
         loaded = None
         for _ in range(15):
-            ev = agent.next_global_event(timeout_secs=1)
+            try:
+                ev = agent.next_global_event(timeout_secs=1)
+            except queue.Empty:
+                continue
             if ev is None:
                 break
-            if ev.get("type") == "plugin_loaded":
-                loaded = ev
+            if ev.get("msg", {}).get("type") == "plugin_loaded":
+                loaded = ev["msg"]
                 break
-        assert loaded is not None, "未收到 plugin_loaded 全局事件"
+        assert loaded is not None, (
+            f"未收到 plugin_loaded 全局事件:"
+            f"qsize={agent._global_queue.qsize()} "
+            f"reader_alive={agent._reader_thread.is_alive()} "
+            f"proc={agent._proc.poll()}"
+        )
         assert loaded.get("plugin") == "demo@inline", f"插件 id 不符:{loaded}"
         assert loaded.get("command_count", 0) >= 1, f"应有 demo:hello 命令:{loaded}"
     finally:
