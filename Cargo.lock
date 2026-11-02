@@ -7390,6 +7390,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zhuye-shell"
+version = "0.1.8"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zhuye-config",
+]
+
+[[package]]
 name = "zhuye-skills"
 version = "0.1.8"
 dependencies = [

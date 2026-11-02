@@ -1,0 +1,14 @@
+# Shell 会话插件 —— 常驻交互式 shell(启动 / 增量读 / stdin / kill)。
+#
+# 使用前必须先构建二进制(装插件 = 授权任意代码执行,本插件的会话
+# env_clear 不继承宿主凭据,但进程仍有本机用户权限,请仅在信任的环境
+# 安装):
+#   ./scripts/build_shell_plugin.sh
+#   zhuye plugin install plugins/shell --scope user
+#   zhuye plugin enable shell@inline
+name = "shell"
+version = "0.1.0"
+description = "常驻 shell 会话池:后台启动进程、增量读输出、写 stdin、kill。适合 REPL / dev server / watch;一次性命令用内置 bash"
+keywords = ["shell", "terminal", "long-running"]
+commands = "./commands"
+mcp_servers = "./.mcp.json"

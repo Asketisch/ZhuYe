@@ -758,3 +758,73 @@ def test_I13_computer_use插件_降级不panic(sandbox: Sandbox, mock_script, se
     # 是 wire 收尾标记,不算 turn 事件)。
     turn_types = [t for t in types if t != "submission_closed"]
     assert turn_types[-1] == "turn_complete", types
+
+
+def test_I14_shell插件_常驻会话增读与kill(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """shell 插件:`shell_run` 起后台会话(立即返回)→ `shell_read` 增量
+    取输出 → `shell_kill` 清理。与一次性 bash 工具互补的长任务面。
+
+    依据:crates/integrations/zhuye-shell(ShellSessions 增量游标 / 锁不跨
+    await / env_clear)+ plugins/shell/。
+    """
+    sh_bin = Path(ZHUYE_BIN).parent / "zhuye-shell-server"
+    if not sh_bin.is_file():
+        pytest.skip(f"zhuye-shell-server 二进制不存在:{sh_bin}")
+    plugin_dir = REPO_ROOT / "plugins" / "shell"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/shell 不存在")
+    bin_dir = plugin_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shutil.copy2(sh_bin, bin_dir / "zhuye-shell-server")
+
+    inst = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert inst.returncode == 0, inst.stderr + inst.stdout
+
+    tool_run = "mcp__plugin:shell@inline:shell__shell_run"
+    tool_read = "mcp__plugin:shell@inline:shell__shell_read"
+    tool_kill = "mcp__plugin:shell@inline:shell__shell_kill"
+    # 连续 tool_call 行(中间不放 text —— mock 的纯文本行会结束 turn)。
+    # 单次 read(run 与 read 之间无引擎间隔,输出可能尚未写入缓冲 ——
+    # 增量语义由 zhuye-shell crate 单测锁定;此处验插件链路与会话生命周期)。
+    script = mock_script([
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_run,
+            "args": {"command": "echo shell-plugin-live; sleep 30"},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_read,
+            "args": {"session_id": "sh-00000000"},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "name": tool_kill,
+            "args": {"session_id": "sh-00000000"},
+        }),
+        '{"type":"text","text":"all done"}',
+    ])
+    s = serve_session(args=["--plugin", "shell@inline"], env=sandbox.mock_env(script))
+    events = s.submit({"type": "user_input", "items": [{"type": "text", "text": "起个后台任务"}]})
+    types = [e["msg"]["type"] for e in events]
+    assert "turn_complete" in [t for t in types if t != "submission_closed"], types
+
+    ends = [e for e in events if e["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == 3, f"应有三个 tool_call_end:{types}"
+    # 1) run:立即返回 session_id。
+    assert ends[0]["msg"]["is_error"] is False, f"run 失败:{ends[0]['msg']}"
+    run_text = _text_of(ends[0]["msg"])
+    assert "sh-00000000" in run_text, run_text
+    # 2) read:不 error 且带状态行(running / exited 或增量输出)。
+    assert ends[1]["msg"]["is_error"] is False, f"read 失败:{ends[1]['msg']}"
+    read_text = _text_of(ends[1]["msg"])
+    assert "--- " in read_text, f"read 应带状态分段:{read_text}"
+    # 3) kill:成功。
+    assert ends[2]["msg"]["is_error"] is False, f"kill 失败:{ends[2]['msg']}"
+    assert "killed" in _text_of(ends[2]["msg"])
+
+
+def _text_of(msg: dict) -> str:
+    return "".join(
+        c.get("text", "") for c in msg.get("output", {}).get("content", []) if isinstance(c, dict)
+    )

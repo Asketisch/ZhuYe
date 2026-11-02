@@ -44,6 +44,7 @@ members = [
     "crates/integrations/zhuye-stream",
     "crates/integrations/zhuye-import",
     "crates/integrations/zhuye-computer-use",
+    "crates/integrations/zhuye-shell",
 
     # ── runtime ── 运行时与入口
     # 注:zhuye-tui 已拆分至独立仓库 Reflect-TUI(https://cnb.cool/Demon1019/Reflect-CLI),
@@ -105,6 +106,7 @@ zhuye-integration = { path = "crates/integrations/zhuye-integration" }
 zhuye-stream      = { path = "crates/integrations/zhuye-stream" }
 zhuye-import      = { path = "crates/integrations/zhuye-import" }
 zhuye-computer-use = { path = "crates/integrations/zhuye-computer-use" }
+zhuye-shell      = { path = "crates/integrations/zhuye-shell" }
 
 # ── runtime ── 运行时与入口
 zhuye-core = { path = "crates/runtime/zhuye-core" }
