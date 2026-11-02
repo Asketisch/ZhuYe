@@ -464,6 +464,12 @@ pub struct SanitizeSection {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HooksSection {
     pub enabled: Option<Vec<String>>,
+    /// v1.x:显式禁用的 hook 名(持久化 `HookEngine::disable` 状态)。
+    /// 名称即注册名:内置 hook 用短名(`search_budget` 等),插件 hook 用
+    /// `plugin:<插件id>:<事件>#<序号>`。注册后统一 apply,先注册后禁用
+    /// 的顺序由 `build_engine` 保证。
+    #[serde(default)]
+    pub disabled: Option<Vec<String>>,
     #[serde(default)]
     pub search_budget: Option<SearchBudgetSection>,
     #[serde(default)]

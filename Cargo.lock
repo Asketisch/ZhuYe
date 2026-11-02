@@ -4722,6 +4722,7 @@ dependencies = [
  "zhuye-discussion",
  "zhuye-exec",
  "zhuye-fs",
+ "zhuye-hooks",
  "zhuye-integration",
  "zhuye-llm",
  "zhuye-mcp",

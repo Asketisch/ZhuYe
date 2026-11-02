@@ -354,9 +354,9 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `functional/test_persistence.py` | 10 条(P1–P7) |
 | `functional/test_import.py` | 14 条(I1–I11) |
 | `functional/test_orchestration.py` | 5 条(O5) |
-| `functional/test_cli.py` | 6 条(C6) |
+| `functional/test_cli.py` | 7 条(C1–C7) |
 | `functional/test_bugfixes.py` | 12 条(缺陷修复回归) |
-| **能力覆盖层合计** | **93 条** |
+| **能力覆盖层合计** | **94 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |
