@@ -139,6 +139,8 @@ pub(crate) fn parse_lines(
     let mut title: Option<String> = None;
 
     let mut entries: Vec<Entry> = Vec::new();
+    // keep_injected 时的注入行缓冲:挂到下一个真实 user 输入所在轮。
+    let mut pending: Vec<String> = Vec::new();
     let mut current: Option<ImportedTurn> = None;
 
     for (lineno, line) in content.lines().enumerate() {
@@ -206,19 +208,31 @@ pub(crate) fn parse_lines(
                     }
                     continue;
                 }
-                if is_meta && !opts.keep_injected {
-                    // "Caveat: …" 等注入行。
+                if is_meta || (matches!(content, Value::String(ref s) if is_injected(s))) {
+                    // "Caveat: …" 等注入行。默认剔除;keep_injected 时缓冲,
+                    // 前置到下一个真实 user 输入所在轮 —— 独立成轮会产生
+                    // 「只有 user 无 assistant」的孤立消息,且与下一条 user
+                    // 连续(部分 provider 拒绝连续同角色消息)。
+                    if !opts.keep_injected {
+                        continue;
+                    }
+                    if let Some(t) = extract_text(&content) {
+                        pending.push(t);
+                    }
                     continue;
                 }
 
                 match content {
                     Value::String(s) => {
-                        if is_injected(&s) && !opts.keep_injected {
-                            continue;
-                        }
+                        // 注入串已在上方统一处理(过滤或缓冲),这里必然是
+                        // 真实用户输入。
                         flush(&mut entries, &mut current);
                         let mut turn = ImportedTurn::empty();
                         turn.started_at = ts;
+                        // 前置挂缓冲的注入上下文(见 is_meta 分支)。
+                        for ctx in pending.drain(..) {
+                            turn.user.push(UserBlock::Text { text: ctx });
+                        }
                         turn.user.push(UserBlock::Text { text: s });
                         current = Some(turn);
                     }
@@ -266,7 +280,11 @@ pub(crate) fn parse_lines(
                             flush(&mut entries, &mut current);
                             let mut turn = ImportedTurn::empty();
                             turn.started_at = ts;
-                            turn.user = prompt;
+                            // 前置挂缓冲的注入上下文(见 is_meta 分支)。
+                            for ctx in pending.drain(..) {
+                                turn.user.push(UserBlock::Text { text: ctx });
+                            }
+                            turn.user.extend(prompt);
                             current = Some(turn);
                         }
                         // tool_result 紧随其后并入当前 turn(含 prompt 开新
