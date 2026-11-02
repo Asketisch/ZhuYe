@@ -30,15 +30,21 @@
 `PlanModeGate`(PreToolUse hook)采用**保守白名单**:
 
 - 默认 allow:`read` / `grep` / `glob` / `echo` + Plan 控制面工具
-  (`plan_write` / `exit_plan_mode` / `enter_plan_mode`);
+  (`ExitPlanMode` / `PlanWrite`);
+- **`EnterPlanMode` 刻意不在白名单内** —— 已在 Plan 模式时调用它会被
+  deny(reason 提示已在 Plan 模式);
 - 其余一律 deny,`Deny.reason` 携带工具名(可观测,agent 能自行调整);
-- 白名单可注入自定义(测试 / 高级场景,`PlanModeGate::with_allowlist`)。
+- 白名单可注入自定义(测试 / 高级场景,`PlanModeGate::with_allowlist`).
+
+白名单定义在 `plan_mode_gate.rs` 的 `default_read_only_allowlist()`。
 
 ## 4. 计划本体与审批协议
 
-- `plan_write`:agent 写结构化计划(steps + status),产生
+- `PlanWrite`:agent 写结构化计划(steps + status),产生
   `PlanStep` 事件流(TUI 渲染进度);
-- `PlanCompletionHook` 跟踪完成度,计划完备后发 `PlanReady`;
+- `PlanCompletionHook` 是 **Stop hook**:在允许 turn 以 `AgentDecision`
+  原因结束前要求显式验证(strict 时注入提醒并 Deny,最多 3 次),**不是**
+  计划步骤完成度跟踪器;
 - 用户决策走 `Op::PlanApproval { id, choice }`,与 `PlanRequestEvent.id`
   配对回送 waiter。选项:1 = 批准并退出 Plan mode 进入执行;
   2 = 拒绝(`PlanRejected`,agent 修订计划);3 = 中止;
@@ -50,7 +56,19 @@
 产出计划文本后 turn 结束。约定 **exit code 122 = 计划生成失败需重试**
 (见 `ExecArgs::plan_mode` 的 doc-comment;供脚本化调用方判定)。
 
-## 6. 设计原则(为什么这样切)
+## 6. Plan mode 与 `PermissionMode::Plan` 的区别
+
+`--plan-mode` 的强制力来自 `PlanModeGate`(PreToolUse hook 把白名单外
+工具 blanket-deny),**不是** `PermissionMode::Plan` —— 后者只让审批层
+知道当前模式,单独存在时写工具照样放行。三个入口都必须同时做两件事:
+
+| 入口 | permission mode | PlanModeGate |
+|---|---|---|
+| `zhuye exec`(普通) | `headless.rs` `bootstrap_normal` | 同上 |
+| `zhuye exec --resume` | `headless.rs` `bootstrap_resumed` | 同上 |
+| `ZhuyeBuilder::plan_mode(true)` / zhuye-py | `builder.rs` | 同上 |
+
+## 7. 设计原则(为什么这样切)
 
 - **请求与切换分离**:`EnterPlanMode` 只发事件,切换由用户审批驱动 ——
   权限收紧必须由人确认,agent 不能自我提权(双向都成立:进入 Plan

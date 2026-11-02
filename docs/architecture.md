@@ -1,12 +1,12 @@
 # 架构详解
 
-> 本文是烛夜的架构参考:workspace 六层职责、完整目录结构、核心数据流
-> 与关键设计决策。README 讲差异定位与用法,本文面向需要理解内部实现
+> 本文是烛夜的架构参考:workspace 六层职责、核心数据流、门面映射
+> 与关键设计决策。README 讲用法,本文面向需要理解内部实现
 > 或二次开发的读者。
 
 ## Workspace 分层(依赖方向自上而下)
 
-34 个 crate 按 6 层分组于 `crates/<layer>/<crate>/`,依赖只能自上而下
+35 个 crate 按 6 层分组于 `crates/<layer>/<crate>/`,依赖只能自上而下
 (上层依赖下层,protocol 是所有层的公共契约):
 
 | 层 | Crate | 职责 |
@@ -16,58 +16,10 @@
 | `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, ast | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索 |
 | `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队、DAG 流水线、目标模式 |
 | `integrations/` | mcp, lsp, integration, stream, import | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端、外部 Harness 会话导入(Claude Code / Codex / ZCode;插件 `plugins/harness-import` 的能力核心,不进 SDK facade) |
-| `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(60+ re-exports + Builder)、PyO3 绑定 |
+| `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(136 个公开名 + Builder)、PyO3 绑定 |
 
-## 完整目录结构
-
-```
-crates/
-├── protocol/               公共契约
-│   └── zhuye-protocol        Submission / Op / EventMsg + RolloutRecorder
-├── abilities/              能力原语
-│   ├── zhuye-llm             ModelClient trait + OpenAI(含 Responses)/Anthropic/Ollama/mock + pricing
-│   ├── zhuye-tools           Tool trait + 24 内建工具 + ToolExecutionQueue(lib 门面默认注册 17 个,其余由 exec / 交互客户端装配)
-│   ├── zhuye-hooks           HookEngine + 12 事件 + 7 决策
-│   ├── zhuye-skills          SKILL.md 扫描 + 加载
-│   ├── zhuye-memory          3 scope 记忆(Project/User/Session)
-│   ├── zhuye-agent-def       Markdown frontmatter Agent 定义
-│   ├── zhuye-prompt          分层 prompt + cache_control 注入
-│   ├── zhuye-compact         本地截断后再 LLM 摘要
-│   ├── zhuye-recovery        上下文恢复(压缩后重读文件;登记与笔记每轮注入)
-│   ├── zhuye-notes           笔记
-│   ├── zhuye-sanitize        输出净化
-│   └── zhuye-bm25            BM25 相关性排序(供 grep 工具的 rank=bm25 模式)
-├── resources/              配置 / 权限 / 持久化
-│   ├── zhuye-config          统一 TOML 配置 + 热重载
-│   ├── zhuye-permissions     权限规则引擎
-│   ├── zhuye-plugin          插件 lifecycle
-│   ├── zhuye-rollout         JSONL 持久化 + session index
-│   ├── zhuye-telemetry       可观测性
-│   ├── zhuye-sandbox         多级沙箱
-│   └── zhuye-ast             tree-sitter 代码搜索
-├── orchestration/          多 agent 编排
-│   ├── zhuye-subagent        Tool-per-Agent 子代理工厂(并发在途 ≤ 16)
-│   ├── zhuye-discussion      多 Agent 讨论编排
-│   ├── zhuye-task            结构化任务 / 团队
-│   ├── zhuye-pipeline        DAG 流水线(两种失败策略都不提前停)
-│   └── zhuye-goal            目标模式(续作等下一条用户输入)
-├── integrations/           外部协议集成
-│   ├── zhuye-mcp             MCP 客户端(stdio / streamable-http)
-│   ├── zhuye-lsp             LSP 集成
-│   ├── zhuye-integration     集成胶水层
-│   ├── zhuye-stream          流式会话后端
-│   └── zhuye-import          外部 Harness 会话导入(Claude Code / Codex / ZCode)
-└── runtime/                运行时与入口
-    ├── zhuye-core            AgentThread + 4 节点 StateGraph
-    ├── zhuye-exec            headless + JSONL stdout + resume + serve
-    ├── zhuye-cli             CLI 顶层路由(单一 zhuye 二进制)
-    ├── zhuye                 lib facade(60+ re-exports + Builder)
-    └── zhuye-py              PyO3 Python 绑定(同步 run API)
-sdks/                          多语言 SDK
-├── PROTOCOL.md                    serve wire 协议规范
-├── python/                        纯 stdlib Python SDK(zhuye)
-└── typescript/                    纯 TS npm SDK(zhuye)
-```
+各 crate 的完整清单见根目录 [`Cargo.toml`](../Cargo.toml) 的 `members`
+段;`AGENTS.md` 另有一份分层职责表。
 
 `zhuye` 二进制由 `zhuye-cli` crate 产出,是本仓库的**薄 headless 入口**;
 框架消费方的主接口是 `zhuye` 库门面(Builder / re-exports)。本二进制的子命令
@@ -101,6 +53,38 @@ sdks/                          多语言 SDK
 | ModelCall | 调用 ModelClient(SSE 流式),产出文本增量与工具调用 |
 | ToolExec | 审批 gate 检查 → 经 ToolExecutionQueue 执行工具(内置 / MCP / 远程)→ 结果回填 history |
 | CheckStop | 模型无新工具调用时判定回合结束;Stop hook 可否决并强制续跑 |
+
+## 门面映射
+
+`zhuye` 库门面(`crates/runtime/zhuye/src/lib.rs`)把各 crate 的关键类型
+平铺 re-export 出去,共 135 个 `pub use` 标识符 + `Zhuye` 别名 = **136 个
+公开名**。按来源分组:
+
+| 门面 re-export | 来源 crate | 备注 |
+|---|---|---|
+| `AgentConfig` `AgentThread` `TurnHandle` | zhuye-core | |
+| `AnthropicClient` `OpenAIClient` `OllamaClient` `ModelClient` `ModelRegistry` `CredentialPool` `ThinkingConfig` … | zhuye-llm | provider + 路由 + 凭据池 |
+| `Op` `EventMsg` `Submission` `Event` `RolloutRecord` `PermissionMode` `ContentBlock` … | zhuye-protocol | |
+| `Tool` `ToolRegistry` `ToolSpec` `ToolContext` `ToolError` | zhuye-tools | `ToolOutput` 因与协议层同名,门面侧别名 `ToolOutputType` |
+| `Hook` `HookEngine` `HookDecision` `HookEvent` `HookEventKind` `SystemMessage` … | zhuye-hooks | |
+| `MemoryScope` `MemoryStore` `FileMemoryStore` `InMemoryStore` | zhuye-memory | |
+| `SkillsCatalog` | zhuye-skills | |
+| `AgentDefinition` | zhuye-agent-def | |
+| `PromptLibrary` `PromptSet` `init_library` `library` `split_spec` | zhuye-prompt | |
+| `Compactor` | zhuye-compact | |
+| `JsonlRolloutWriter` `replay` `replay_path` `list_sessions` `session_stats` `to_markdown` `all_model_usage` … | zhuye-rollout | |
+| `TelemetrySink` `LangfuseExporter` `read_model_io_file` `read_span_log_file` … | zhuye-telemetry | |
+| `CallSubAgentTool` `SubAgentFactory` `SubAgentSpec` `DataTransferConfig` | zhuye-subagent | |
+| `DiscussionConfig` `DiscussionOrchestrator` `MessageBus` `build_context` `prompt_for_closure` … | zhuye-discussion | |
+| `ZhuyeBuilder` / `Zhuye` | 本 crate | `Zhuye::builder(model)` 是唯一构造入口 |
+
+门面**不** re-export:`zhuye-cli`(CLI 路由)、`zhuye-import`(外部会话
+导入,见 `plugins/harness-import`)、`zhuye-stream`、`zhuye-integration`、
+`zhuye-py`(PyO3 绑定,走独立 crate)。
+
+`Zhuye::builder(...)` 的链式方法:`workspace` / `approvals` / `plan_mode` /
+`with_plugins` / `with_prompts_dir` / `with_telemetry` / `with_traces_dir` /
+`with_rollout_dir` / `without_rollout` / `with_defaults`。
 
 ## 工具面裁剪
 
@@ -152,14 +136,13 @@ spawn 时为子代理构造**仅含白名单工具**的过滤后 registry(coordi
 
 ### 3. 代码层(ToolRegistry API)
 
-库用户经 `agent.thread().tools()` 拿到 registry 直接增删:
+库用户经 `agent.thread().tools()` 拿到 registry 直接增删,可用 API 与
+注册来源分层见 [tools-and-hooks.md §1](tools-and-hooks.md)。注意
+`register_except` 的签名带 source 首参:
 
-| API | 用途 |
-|-----|------|
-| `register` / `register_with_source` | 注册单个工具(自定义 `Tool` trait 实现、MCP / 插件 / 运行时工具各有专用入口) |
-| `unregister(name)` | 单摘一个工具 |
-| `unregister_source(source)` | 按来源整组移除(如一键摘掉全部 MCP 工具) |
-| `register_except(tools, excluded)` | 批量装配 + 排除名单 |
+```rust
+registry.register_except(source, tools, excluded)
+```
 
 `custom_tool` 示例(`cargo run -p zhuye --example custom_tool`)演示
 了注册自定义工具的标准写法。

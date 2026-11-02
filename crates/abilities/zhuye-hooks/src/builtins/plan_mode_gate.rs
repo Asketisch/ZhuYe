@@ -115,7 +115,7 @@ fn is_plan_file_path(path: &str) -> bool {
 
 /// PreToolUse hook:Plan mode 下 blanket-deny 白名单外工具。
 ///
-/// 设计原则(参见 `docs/PLAN_MODE.md` 草案):
+/// 设计原则(参见 `docs/PLAN_MODE.md`):
 /// - **保守**:Plan mode 默认 deny 一切,白名单显式 allow
 /// - **可观测**:`Deny.reason` 携带工具名,便于 agent 调整行为
 /// - **可配置**:测试与高级用户可传入自定义白名单(例如临时允许 `Skill` 工具)

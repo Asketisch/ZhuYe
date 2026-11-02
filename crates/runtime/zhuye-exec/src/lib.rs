@@ -107,7 +107,7 @@ pub struct ExecArgs {
 
 /// `--plan-mode` 下"计划生成失败"的退出码。
 ///
-/// `docs/PLAN_MODE.md:50` 与 `ExecArgs::plan_mode` 的 doc 都承诺了这个
+/// `docs/PLAN_MODE.md` 与 `ExecArgs::plan_mode` 的 doc 都承诺了这个
 /// 退出码,但**全仓库没有任何实现** —— `async_main` 正常路径恒返回
 /// `Ok(())`(exit 0),依赖 122 做重试判断的脚本调用方会永远看到"成功"。
 ///

@@ -13,6 +13,35 @@ non-breaking,客户端必须容忍未知 `"type"`)。
 
 ---
 
+## 0. 协议面与版本策略
+
+### 0.1 三个协议面
+
+| 面 | 载体 | 定义位置 |
+|---|---|---|
+| Submission(Op) | 客户端 → AgentThread 的 mpsc 通道;`zhuye serve` 上为 stdin 每行一个 JSON | `crates/protocol/zhuye-protocol/src/op.rs` |
+| Event(EventMsg) | AgentThread → 客户端;serve 上为 stdout 每行一个 JSON | `crates/protocol/zhuye-protocol/src/event_msg/` |
+| RolloutRecord | 持久化 JSONL(`~/.zhuye/sessions/YYYY/MM/DD/<thread>.jsonl`) | `crates/protocol/zhuye-protocol/src/recorder.rs` |
+
+三者共享 `ThreadId` / `TurnId` newtype 与 `ContentBlock` / `ToolError`
+等基础类型(`item.rs`)。
+
+### 0.2 版本策略
+
+- 判别符 serde `snake_case`;未知变体容忍是**客户端义务**;
+- 语义化承诺:Op / EventMsg 只增不改;如需字段演进,新增变体而非
+  复用旧名;
+- 改动既有变体字段属 breaking,禁止;
+- serve 的 SDK 扩展(如 `submission_closed`)在本文单独标注引入版本;
+- `RolloutRecord` 的持久化形态见 `crates/protocol/zhuye-protocol/src/recorder.rs`:
+  `SessionMeta`(首条)/ `Message` / `Compaction`(resume 回放压缩边界)/
+  `Fork`(分叉标记)/ `Checkpoint` / `DiscussionTranscript` /
+  `TokenCount`(token / 成本索引)。文件 256 KiB 轮转 ×3,单条 16 KiB
+  截断 + 密钥脱敏(见 [docs/sanitize.md](../docs/sanitize.md));
+  `truncate_after` 支持 rewind 物理截断(先写 `.bak`)。
+
+---
+
 ## 1. 启动与握手
 
 ```

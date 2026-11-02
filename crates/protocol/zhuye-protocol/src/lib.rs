@@ -15,7 +15,7 @@
 //! 具备异步友好(mpsc 通道)、可序列化(JSON)以及版本稳定
 //! (v0 已冻结,新增变体均以非破坏方式追加)的特性。
 //!
-//! 完整规范参见 `docs/protocol.md`。
+//! 完整规范参见 `sdks/PROTOCOL.md`。
 
 pub mod ask_user_input;
 pub mod bash_command;

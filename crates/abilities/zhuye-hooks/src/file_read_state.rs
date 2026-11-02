@@ -25,7 +25,7 @@
 //! `parking_lot::RwLock<HashMap<PathBuf, ReadRecord>>`。PreToolUse 取
 //! 读锁(快),PostToolUse 取写锁。无需 async,所有路径都是 sync stats。
 //!
-//! 参见 `docs/tools-and-hooks.md §4.7`(待补充)的设计 rationale,
+//! 参见 `docs/tools-and-hooks.md §4.4` 的设计 rationale,
 //! 特别是 **bash 绕过路径** 的免责说明。
 
 use std::collections::HashMap;

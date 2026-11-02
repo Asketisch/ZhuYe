@@ -5,14 +5,41 @@ Python SDK 与 TS SDK 通过 `.github/workflows/release-sdks.yml` 自动发布:
 CLI 二进制的发布(`release.yml` → GitHub Release)由同一条 tag 一并触发,
 两条流水线互不依赖。
 
-三处版本统一管理(单一版本号贯穿 Rust workspace / Python / TS),
-用 `scripts/release_sdk.sh` 维护:
+**四处**版本统一管理(单一版本号贯穿 Rust workspace / Python pyproject /
+Python `__version__` / TS package.json),用 `scripts/release_sdk.sh` 维护:
 
 ```bash
 ./scripts/release_sdk.sh check        # 版本一致性 + 本地构建双包 + 元数据检查(不发布)
-./scripts/release_sdk.sh bump 0.2.0   # 三处版本同步 bump(幂等),记得提交改动
+./scripts/release_sdk.sh bump 0.2.0   # 四处版本同步 bump(幂等),记得提交改动
 ./scripts/release_sdk.sh tag 0.2.0    # 正式发布:打 v0.2.0 并 push(⚠️ 触发下面两条流水线)
 ```
+
+## 流水线结构
+
+`release-sdks.yml` 共 8 个 job:
+
+| job | 做什么 |
+|---|---|
+| `dispatch-guard` | 触发面守卫(只有 main / tag 可触发) |
+| `gate` | 四处版本一致性校验 + 双 SDK 离线测试(mock,无网络);失败则后续 job 全不执行 |
+| `binaries` | 5 平台编译 `zhuye-cli` release 二进制 |
+| `npm-platform` | 5 平台子包组装(binary + 动态生成 manifest) |
+| `pypi` | 5 平台 wheel(maturin 自动平台 tag,内嵌二进制) |
+| `pypi-sdist` | 纯源码 sdist + `twine check` |
+| `pypi-publish` | 统一上传所有 wheel / sdist 到 PyPI |
+| `npm` | 主包 `zhuye` 发布(发布前动态注入 `optionalDependencies`) |
+
+平台矩阵是 5 个:`darwin-arm64` / `darwin-x64` / `linux-x64` /
+`linux-arm64` / `win32-x64`。
+
+产出 artifact 共 5 类:`binary-<slug>` / `npm-platform-<slug>` /
+`pypi-wheel-<slug>` / `pypi-sdist` / `npm-pack`。
+
+npm 侧一共发 **6 个包**:主包 `zhuye` + 5 个平台子包
+`zhuye-<os>-<arch>`(`zhuye-darwin-arm64` / `zhuye-darwin-x64` /
+`zhuye-linux-x64` / `zhuye-linux-arm64` / `zhuye-win32-x64`),主包通过
+`optionalDependencies` 按平台锁定。**每个子包都要单独登记 Trusted
+Publisher**,不能只登记主包。
 
 ## 测试阶段(当前状态)
 
@@ -22,8 +49,8 @@ CLI 二进制的发布(`release.yml` → GitHub Release)由同一条 tag 一并�
 1. 本地跑 `./scripts/release_sdk.sh check`,确认双包构建与元数据检查通过;
 2. 推送后在 GitHub **Actions → release-sdks → Run workflow** 手动触发,
    `dry_run` 保持默认 `true`;
-3. 检查 run 的三个 job(gate / PyPI / npm)全绿,并下载
-   `pypi-dist`、`npm-pack` 两个 artifact 人工核对包内容与元数据。
+3. 检查 run 的各 job 全绿,并下载 `pypi-wheel-<slug>`、`pypi-sdist`、
+   `npm-pack`、`npm-platform-<slug>` 人工核对包内容与元数据。
 
 ⚠️ 测试阶段**不要推 `v*` tag**:那会同时触发 `release.yml`(CLI 发公开
 GitHub Release)与 `release-sdks.yml`(SDK 真发布;平台未配置时会失败)。
@@ -59,6 +86,7 @@ npm publish                        # 首版手动发布
 然后在 npmjs.com 包设置页 → Trusted Publisher 登记(保存后 **2 天内必须完成
 一次成功发布**,否则配置过期需重建):Owner `Asketisch` / Repository
 `ZhuYe` / Workflow `release-sdks.yml` / Environment `npm`。
+**5 个平台子包 `zhuye-<os>-<arch>` 各自都要登记一遍**。
 
 ### 第 3 步:发布
 
@@ -80,7 +108,8 @@ npm publish                        # 首版手动发布
 | 位置 | 文件 / 操作 |
 |---|---|
 | PyPI 包名 | `sdks/python/pyproject.toml` 的 `[project] name` |
-| npm 包名 | `sdks/typescript/package.json` 的 `name` |
+| npm 主包名 | `sdks/typescript/package.json` 的 `name` |
+| npm 平台子包名 | 流水线 `npm-platform` job 的 `zhuye-${slug}` 生成逻辑 + 主包 `optionalDependencies` |
 | 仓库地址(三处) | 根 `Cargo.toml` `[workspace.package] repository`、`pyproject.toml` `[project.urls]`、`package.json` `repository`/`homepage`/`bugs` |
 | Python 包导入名(如涉及) | `sdks/python/zhuye/` 目录名 + `pyproject.toml` `[tool.setuptools]` include |
 | 本文档 | 上述第 1/2 步登记用的名字 |
@@ -94,9 +123,11 @@ npm publish                        # 首版手动发布
 `release-sdks.yml` 在构建检查之外内置两层安装验证,捕获「构建过但装不上 /
 缺文件 / 入口导入失败」类问题:
 
-- **发布前(dry-run 也跑)**:Python 对本地 wheel 做干净 venv 安装并
-  `import zhuye`;npm 对 pack 出的真实 tgz 在干净目录安装并 ESM
-  `import('zhuye')` 断言 `ZhuyeAgent` 导出;
+- **发布前(dry-run 也跑)**:Python 对本地 wheel 做干净 venv 安装,断言
+  `import zhuye` + **内嵌二进制能解析出来并执行 `--version`**;
+  npm 对 pack 出的真实 tgz 在干净目录安装,断言 ESM `import('zhuye')` 导出
+  `ZhuyeAgent`,并在平台子包已可解析时进一步执行内嵌二进制的 `--version`
+  (dry-run 下平台子包尚未发布,该子断言被跳过,由发布后验证把关);
 - **发布后(仅正式发布)**:分别从 PyPI / npm registry 真实安装
   `zhuye==<tag 版本>`,Python 侧额外断言 `__version__` 与 tag 一致
   (registry CDN 有传播延迟,内置重试)。失败时可在 Actions 页单独重跑

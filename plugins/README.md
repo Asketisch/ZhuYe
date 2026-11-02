@@ -13,7 +13,7 @@ zhuye plugin enable <插件名>@inline
 
 插件机制说明(清单格式、五类 capability、`${PLUGIN_ROOT}` 展开、热重载)
 见 [`docs/plugins.md`](../docs/plugins.md);安装 / 启用 / marketplace /
-排障等使用向内容见 [`docs/plugin-usage.md`](../docs/plugin-usage.md)。
+排障等使用向内容见 [`docs/plugins.md`](../docs/plugins.md)。
 
 ## 现有插件
 

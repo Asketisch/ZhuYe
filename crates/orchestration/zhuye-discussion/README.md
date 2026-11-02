@@ -111,7 +111,7 @@ cli           — `zhuye discussion run` CLI 入口(DiscussionToml + try_build_l
 - **v0.2.3 LLM wiring**:`prompt_for_closure` 接 `SubAgentFactory::spawn` + `SpawnedChild::collect_result`;LLM 通过 `send_message` / `finish_discussion` 工具调用表达意图,`collect_result` 拿到的 assistant 文本丢弃(避免 transcript 双写)
 - **v0.2.3 round 标记**:runtime 每轮 `store(round, SeqCst)` 到共享 `Arc<AtomicU32>`,`SendMessageTool` / `FinishDiscussionTool` 在 `execute()` 时 `load` 后写入 `DiscussionMessage.round`,保证 transcript 消息带正确轮次(跨轮共识检测 `consensus_window > 1` 依赖此)
 - **v0.2.3 AgentTurn emit**:`OrchestratorEvent::AgentTurn { agent, round }` 在每次 spawn+drain 后 emit,顺序模式直接转发,并发模式经 `Arc<Mutex<Vec>>` bridge 汇总
-- 协议不暴露讨论状态(`docs/protocol.md §342` 的 `EventMsg::Collab*` 12 个 v0 不实现);状态全在 crate 内消化,唯一外部可见的是 `RolloutRecord::DiscussionTranscript` 持久化
+- 协议不暴露讨论状态(`EventMsg::Collab*` 12 个 v0 不实现);状态全在 crate 内消化,唯一外部可见的是 `RolloutRecord::DiscussionTranscript` 持久化
 
 ## 已知限制(留 v0.2.4 / v0.3.x / v1 解决)
 
