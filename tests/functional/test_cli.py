@@ -194,3 +194,49 @@ def test_C6_exec_退出码映射(sandbox, mock_script) -> None:
     )
     assert doc.returncode == 0, f"doctor 退出码={doc.returncode}:{doc.stderr[:500]}"
     assert doc.stdout.strip(), "doctor 无输出"
+
+
+def test_C7_hooks启停持久化(sandbox) -> None:
+    """`zhuye hooks disable/enable` 写 `[hooks].disabled` 并生效:
+    disable 后该 hook 不再 veto Stop(会话可正常收尾),enable 后恢复。
+
+    依据:crates/abilities/zhuye-hooks/src/config.rs `build_engine` 的
+    disabled apply + crates/runtime/zhuye-cli/src/hooks.rs。
+    """
+    require_binary()
+    # 沙箱默认 `[hooks] enabled = []`(关全部重 hook);本用例显式启用
+    # verification 一个,验名单增删与状态反映。
+    sandbox.write_config("\n[hooks]\nenabled = [\"verification\"]\n")
+
+    # 1) 基线:ls 能列出注册的 hook(默认全启用)。
+    proc = run_cli(sandbox, "hooks", "ls", timeout=30)
+    assert proc.returncode == 0, f"hooks ls 退出码={proc.returncode}:{proc.stderr}"
+    assert "verification" in proc.stdout, f"未列出内置 hook:\n{proc.stdout!r}"
+    assert "disabled" not in proc.stdout, f"默认不应有禁用项:\n{proc.stdout!r}"
+
+    # 2) disable verification → 写进 config.toml#hooks.disabled。
+    proc = run_cli(sandbox, "hooks", "disable", "verification", timeout=30)
+    assert proc.returncode == 0, f"hooks disable 退出码={proc.returncode}:{proc.stderr}"
+    cfg = (sandbox.home / ".zhuye/config.toml").read_text()
+    assert "disabled" in cfg and "verification" in cfg, f"config 未写禁用名单:\n{cfg!r}"
+
+    # 3) ls 反映禁用状态。
+    proc = run_cli(sandbox, "hooks", "ls", timeout=30)
+    assert "disabled" in proc.stdout, f"ls 未反映禁用状态:\n{proc.stdout!r}"
+    verification_line = [ln for ln in proc.stdout.splitlines() if "verification" in ln]
+    assert verification_line and "disabled" in verification_line[0], (
+        f"verification 应显示 disabled:{verification_line!r}"
+    )
+
+    # 4) enable → 从名单移除(幂等)。
+    proc = run_cli(sandbox, "hooks", "enable", "verification", timeout=30)
+    assert proc.returncode == 0, f"hooks enable 退出码={proc.returncode}:{proc.stderr}"
+    cfg = (sandbox.home / ".zhuye/config.toml").read_text()
+    assert "verification" not in cfg.split("disabled")[-1] if "disabled" in cfg else True, (
+        f"enable 后 config 仍含 verification:\n{cfg!r}"
+    )
+    proc = run_cli(sandbox, "hooks", "ls", timeout=30)
+    verification_line = [ln for ln in proc.stdout.splitlines() if "verification" in ln]
+    assert verification_line and "disabled" not in verification_line[0], (
+        f"enable 后 verification 应恢复:{verification_line!r}"
+    )
