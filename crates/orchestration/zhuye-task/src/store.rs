@@ -181,16 +181,13 @@ impl FileTaskStore {
         }
     }
 
-    /// 用默认 `$ZHUYE_HOME` 或 `$HOME/.zhuye` 构造。
+    /// 用默认数据目录构造(`$ZHUYE_HOME` > `$HOME/.zhuye`)。
+    ///
+    /// home 口径统一走 [`zhuye_config::data_dir`](zhuye_config::data_dir) ——
+    /// 与 config / notes / prompt 落同一个根;空串 `ZHUYE_HOME` 按未设置
+    /// 处理(此前会解析出空路径)。
     pub fn with_default_home() -> Result<Self, TaskError> {
-        let home = std::env::var("ZHUYE_HOME")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".zhuye"))
-            })
+        let home = zhuye_config::data_dir()
             .ok_or_else(|| TaskError::Invalid("ZHUYE_HOME / HOME not set".into()))?;
         Ok(Self::new(home))
     }
