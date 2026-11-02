@@ -64,6 +64,7 @@ CLAUDE_FIXTURE = [
     '{"parentUuid":"u1","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":"LISTEN 0.0.0.0:8080"}]},"timestamp":"2026-05-01T10:00:08Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
     '{"parentUuid":"u1","isSidechain":false,"type":"user","isMeta":true,"message":{"role":"user","content":"Caveat: 注入应被过滤"},"uuid":"u2","timestamp":"2026-05-01T10:00:09Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
     '{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"role":"assistant","model":"test-model","content":[{"type":"text","text":"8080 在监听。"}],"usage":{"input_tokens":120,"cache_read_input_tokens":50,"output_tokens":30}},"timestamp":"2026-05-01T10:00:10Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
+    '{"parentUuid":"u1","isSidechain":true,"type":"user","message":{"role":"user","content":"子代理输入,默认剔除"},"uuid":"side-1","timestamp":"2026-05-01T10:00:11Z","sessionId":"af9ee90f-0000-4000-8000-000000000011"}',
 ]
 
 CODEX_FIXTURE = [
@@ -451,3 +452,186 @@ def test_I8_导入会话_resume_续跑(sandbox: Sandbox, mock_script) -> None:
     # 续跑 turn 的回复落盘(assistant 追加)。
     assert recs[-1]["type"] == "message" and recs[-1]["role"] == "assistant"
     assert "续跑回复" in json.dumps(recs[-1]["content"], ensure_ascii=False)
+
+
+# ── I9 三个 CLI 开关端到端 ───────────────────────────────────────────────
+
+# 带 thinking 块的 Claude 会话(默认丢弃思考链,开关保留)。
+CLAUDE_THINKING_FIXTURE = [
+    '{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"问个问题"},"uuid":"u1","timestamp":"2026-05-01T10:00:00Z","cwd":"/w","sessionId":"df9ee90f-0000-4000-8000-000000000044"}',
+    '{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"role":"assistant","model":"m","content":[{"type":"thinking","thinking":"内部推演过程"},{"type":"text","text":"可见答复"}]},"timestamp":"2026-05-01T10:00:05Z","sessionId":"df9ee90f-0000-4000-8000-000000000044"}',
+]
+
+
+def test_I9a_include_thinking开关(sandbox: Sandbox) -> None:
+    """--include-thinking:thinking 块折叠为 <thinking> 文本进 assistant content;
+    默认(不带)则丢弃。
+
+    依据:crates/integrations/zhuye-import/src/convert.rs append_turn。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "t.jsonl", CLAUDE_THINKING_FIXTURE)
+    tid = "df9ee90f-0000-4000-8000-000000000044"
+
+    run_import(sandbox, str(src))
+    off = json.dumps(_records_of(sandbox, tid), ensure_ascii=False)
+    assert "内部推演过程" not in off, "默认应丢弃 thinking"
+    assert "可见答复" in off
+
+    run_import(sandbox, str(src), "--include-thinking", "--force")
+    on = json.dumps(_records_of(sandbox, tid), ensure_ascii=False)
+    assert "<thinking>内部推演过程</thinking>" in on, on
+    assert "可见答复" in on, "正文不得被开关影响"
+
+
+def test_I9b_keep_injected开关(sandbox: Sandbox) -> None:
+    """--keep-injected:Codex 注入行(environment_context / developer)默认
+    过滤,开关打开后作为 user 上下文保留。
+
+    依据:crates/integrations/zhuye-import/src/adapters/codex.rs is_injected。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "x.jsonl", CODEX_FIXTURE)
+    tid = "bf9ee90f-0000-7000-8000-000000000022"
+
+    run_import(sandbox, str(src))
+    off = json.dumps(_records_of(sandbox, tid), ensure_ascii=False)
+    assert "沙箱" not in off, "默认应过滤注入 user 行"
+    assert "技能" not in off, "默认应过滤 developer 行"
+
+    run_import(sandbox, str(src), "--keep-injected", "--force")
+    on = json.dumps(_records_of(sandbox, tid), ensure_ascii=False)
+    assert "沙箱" in on, on
+    assert "技能" in on, on
+
+
+def test_I9c_include_sidechain开关(sandbox: Sandbox) -> None:
+    """--include-sidechain:Claude isSidechain 子代理行默认跳过,开关打开
+    后作为独立 turn 导入。
+
+    依据:crates/integrations/zhuye-import/src/adapters/claude_code.rs parse_lines。
+    """
+    _require_import_bin()
+    src = _write_fixture(sandbox, "s.jsonl", CLAUDE_FIXTURE)
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+
+    run_import(sandbox, str(src))
+    off = json.dumps(_records_of(sandbox, tid), ensure_ascii=False)
+    assert "子代理输入" not in off, "默认应跳过 sidechain"
+
+    run_import(sandbox, str(src), "--include-sidechain", "--force")
+    on = json.dumps(_records_of(sandbox, tid), ensure_ascii=False)
+    assert "子代理输入" in on, on
+
+
+# ── I10 --all discover(claude-code / codex 目录扫描) ─────────────────────
+
+
+def test_I10_all_discover_claude与codex(sandbox: Sandbox) -> None:
+    """--all --from claude-code / codex 扫描本机默认安装位置
+    (~/.claude/projects/*、~/.codex/sessions/**),各自导入成功。
+
+    依据:crates/integrations/zhuye-import/src/adapters/{claude_code,codex}.rs discover。
+    """
+    _require_import_bin()
+    # Claude:~/.claude/projects/<escaped-cwd>/<uuid>.jsonl
+    proj = sandbox.home / ".claude/projects/-w-proj"
+    proj.mkdir(parents=True)
+    (proj / "af9ee90f-0000-4000-8000-000000000011.jsonl").write_text(
+        "\n".join(CLAUDE_FIXTURE) + "\n"
+    )
+    # Codex:~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl(递归收集)
+    cx = sandbox.home / ".codex/sessions/2026/06/01"
+    cx.mkdir(parents=True)
+    (cx / "rollout-2026-06-01T08-00-00-bf9ee90f-0000-7000-8000-000000000022.jsonl").write_text(
+        "\n".join(CODEX_FIXTURE) + "\n"
+    )
+
+    p1 = run_import(sandbox, "--all", "--from", "claude-code", "--json")
+    assert p1.returncode == 0, p1.stderr
+    lines = [json.loads(l) for l in p1.stdout.splitlines() if l.strip()]
+    imported = [l for l in lines if l["status"] == "imported"]
+    assert [l["thread_id"] for l in imported] == ["af9ee90f-0000-4000-8000-000000000011"], lines
+    assert "af9ee90f-0000-4000-8000-000000000011" in run_cli(sandbox, "session", "ls").stdout
+
+    p2 = run_import(sandbox, "--all", "--from", "codex", "--json")
+    assert p2.returncode == 0, p2.stderr
+    lines2 = [json.loads(l) for l in p2.stdout.splitlines() if l.strip()]
+    imported2 = [l for l in lines2 if l["status"] == "imported"]
+    assert [l["thread_id"] for l in imported2] == ["bf9ee90f-0000-7000-8000-000000000022"], lines2
+
+    # 重复 --all 幂等:第二次应全部 skipped(退出码仍为 0)。
+    p3 = run_import(sandbox, "--all", "--from", "claude-code", "--json")
+    assert p3.returncode == 0, p3.stderr
+    lines3 = [json.loads(l) for l in p3.stdout.splitlines() if l.strip()]
+    assert all(l["status"] == "skipped" for l in lines3), lines3
+
+
+# ── I11 MCP list_importable + 批量失败退出码 ─────────────────────────────
+
+
+def _mcp_call(bin_path: Path, home: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """直连 `zhuye-import mcp` 发一个请求读一个响应(stdin 关闭即退出)。"""
+    proc = subprocess.run(
+        [str(bin_path), "mcp"],
+        input=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}) + "\n",
+        capture_output=True,
+        text=True,
+        env=sandbox_env(home),
+        timeout=30,
+    )
+    lines = [l for l in proc.stdout.splitlines() if l.strip()]
+    assert lines, f"MCP server 无响应:{proc.stderr[-300:]}"
+    return json.loads(lines[0])
+
+
+def sandbox_env(home: Path) -> dict[str, Any]:
+    import os
+
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    return env
+
+
+def test_I11a_mcp_list_importable工具(sandbox: Sandbox) -> None:
+    """MCP list_importable 成功路径:扫描 fixture HOME 的 Claude 目录,
+    返回来源清单。
+
+    依据:crates/integrations/zhuye-import/src/mcp_server.rs tool_list_importable。
+    """
+    _require_import_bin()
+    proj = sandbox.home / ".claude/projects/-w-proj"
+    proj.mkdir(parents=True)
+    (proj / "af9ee90f-0000-4000-8000-000000000011.jsonl").write_text(
+        "\n".join(CLAUDE_FIXTURE) + "\n"
+    )
+    resp = _mcp_call(
+        IMPORT_BIN,
+        sandbox.home,
+        "tools/call",
+        {"name": "list_importable", "arguments": {"source_kind": "claude-code"}},
+    )
+    assert resp["result"]["isError"] is False, resp
+    text = resp["result"]["content"][0]["text"]
+    assert "发现 1 个来源" in text, text
+    assert "af9ee90f-0000-4000-8000-000000000011.jsonl" in text, text
+
+
+def test_I11b_批量失败退出码非零(sandbox: Sandbox) -> None:
+    """全部来源失败(格式无法识别)→ 退出码 1(脚本可感知);部分成功 + 部分
+    失败 → 退出码 0(批量语义)。
+
+    依据:crates/integrations/zhuye-import/src/bin/zhuye-import.rs run_import。
+    """
+    _require_import_bin()
+    bad = sandbox.cwd / "bad.jsonl"
+    bad.write_text('{"hello":1}\n')
+
+    proc = run_import(sandbox, str(bad))
+    assert proc.returncode == 1, f"全失败应非零退出:{proc.stdout}"
+
+    # 混入一个好来源 → 部分失败,退出码 0 且失败行可见。
+    good = _write_fixture(sandbox, "good.jsonl", CLAUDE_FIXTURE)
+    proc2 = run_import(sandbox, str(bad), str(good))
+    assert proc2.returncode == 0, proc2.stdout
+    assert "failed" in proc2.stdout and "imported" in proc2.stdout, proc2.stdout
