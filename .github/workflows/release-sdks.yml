@@ -165,7 +165,7 @@ jobs:
         run: cargo build --release -p ${{ env.ZHUYE_CLI_PACKAGE }} ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}
 
       - name: 上传二进制产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.slug }}
           path: target/${{ matrix.target }}${{ matrix.target != '' && '/' || '' }}release/zhuye${{ matrix.exe }}
@@ -267,7 +267,7 @@ jobs:
           fi
 
       - name: 上传发布包预览
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-platform-${{ matrix.slug }}
           path: sdks/npm-platform/zhuye-${{ matrix.slug }}/**
@@ -392,7 +392,7 @@ jobs:
           fi
 
       - name: 上传 wheel 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pypi-wheel-${{ matrix.slug }}
           path: sdks/python/dist/*
@@ -427,7 +427,7 @@ jobs:
         run: twine check sdks/python/dist/*
 
       - name: 上传 sdist 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pypi-sdist
           path: sdks/python/dist/*
@@ -558,7 +558,7 @@ jobs:
           ZHUYE_SMOKE_STRICT: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
 
       - name: 上传发布包预览
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-pack
           path: sdks/typescript/packing/*
