@@ -517,9 +517,16 @@ def test_T12_sandbox配置下沉显式关闭与env逃生口(serve_session, mock_
     ])
 
     # 1) config 显式关 → 写入放行(sandbox_default=Some(false) 生效)。
+    #
+    # v1.9 S2:模型来源命令默认强制沙箱(config/env 关沙箱对其无效),
+    # 故验证 config 下沉管道需同时打开显式逃生口
+    # ZHUYE_UNTRUSTED_ALLOW_BARE=1 —— 闸门放行(BareByOverride)后,
+    # Some(false) 的关闭语义才对这条 bash 生效。逃生口缺省时该场景
+    # 写入会被强制沙箱拒绝(S2 的正确行为,见 zhuye-sandbox::untrusted)。
     sandbox.write_config('\n[sandbox]\nos_level = false\n')
     with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script),
-                            "ZHUYE_SANDBOX_STRICT": "0"}) as s:
+                            "ZHUYE_SANDBOX_STRICT": "0",
+                            "ZHUYE_UNTRUSTED_ALLOW_BARE": "1"}) as s:
         events = s.submit(
             {"type": "user_input", "items": [{"type": "text", "text": "写文件"}]},
             timeout=DRAIN_TIMEOUT,
