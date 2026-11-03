@@ -132,6 +132,12 @@ pub struct ToolContext {
     /// v1.x:`[sandbox].allow_network` 透传。`None` = 不覆盖
     /// `OsSandbox` 默认(false = 禁出站)。
     pub os_sandbox_network: Option<bool>,
+    /// v1.9 S2:本次调用命令文本的来源(authorship)。`None` = 默认
+    /// `ModelAuthored`(harness 里 bash 工具的命令几乎都是模型产出)。
+    /// 不可信来源经 `zhuye_sandbox::UntrustedGate` 强制沙箱 —— 全局
+    /// 沙箱关闭开关对其无效。宿主如果代用户执行亲笔命令(如 GUI 终端),
+    /// 显式传 `Some(UserAuthored)`。
+    pub command_origin: Option<zhuye_sandbox::CommandOrigin>,
     /// v1.5 R2:后台任务生成器(宿主实现)。`None`(默认)= 工具不支持
     /// 后台执行;`Some` 时 bash 的 `run_in_background` 参数可用。
     pub background: Option<Arc<dyn TaskSpawner>>,
@@ -326,6 +332,7 @@ impl Default for ToolContext {
             parent_tail_json: Arc::new(RwLock::new(Vec::new())),
             os_sandbox_writable: Vec::new(),
             os_sandbox_network: None,
+            command_origin: None,
         }
     }
 }
