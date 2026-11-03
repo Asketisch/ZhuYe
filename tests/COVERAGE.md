@@ -254,6 +254,34 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 - **plugin**:marketplace add/install/enable → 启动期 `plugin_loaded`
   (plugin 名/version/skill_count)。
 
+### SDK 绑定层(K 组,`tests/sdk-python/test_sdk_real_bin.py` + `tests/sdk-ts/real-bin.test.mjs`)
+
+真二进制 + mock provider,断言 **SDK 客户端自身的行为**(服务端语义归
+能力覆盖层;历史证明只有这一层能发现协议漂移 —— mock 是自己写的假
+服务端,不随真协议演进):
+
+- **K1** `spawn` 完成 `session_configured` 握手才返回;
+- **K2** 单轮 prompt 文本回流(K2b 多轮上下文保持);
+- **K3** 远程工具:注册 → LLM 调用 → 客户端 handler 执行 → 回执 →
+  `tool_call_end`;
+- **K4** 非 turn op(set_effort)迭代器以 `submission_closed` 收尾
+  (v1.3 前会永久挂起);
+- **K5** interrupt 打断在飞 turn(`turn_aborted`);
+- **K6** close 幂等 + 子进程优雅退出;
+- **K7/K7b** 坏流(非 JSONL)握手超时抛错 / 二进制不存在转可等待
+  rejection;
+- **K8** handler 抛异常 → `is_error=true` 错误回执;
+- **K9** 全局事件读取口(`next_global_event` / `nextGlobalEvent`);
+  py 另有 K9b 插件选项(`--plugin` 显式加载 → `plugin_loaded`);
+- **K10(side-channel,WP9)** `submit_op/submit({"type":
+  "query_side_channels"})` → 真实 serve 回 `side_channel_status`
+  (channels 快照数组)+ `submission_closed` 收尾 —— exec 已装配
+  driver(WP13),查询有真实应答。两侧 mock 层(sdks/*/tests)另有
+  同型用例与 `side_channel_started` 透传断言。
+
+  注:TS 侧 K10 编号历史上被 plugins 用例占用,side-channel 用例在
+  ts 文件内同名标注 K10;对照表见 §7 用例规模汇总。
+
 ## 5. 已知产品限制(测试断言当前行为,防退化)
 
 - ~~`pipeline run`:plan 预设模板硬编码 `{{input.audience}}`~~(v1.6 已修复:
