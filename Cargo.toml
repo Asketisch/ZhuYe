@@ -27,6 +27,7 @@ members = [
     "crates/resources/zhuye-telemetry",
     "crates/resources/zhuye-sandbox",
     "crates/resources/zhuye-audit",
+    "crates/resources/zhuye-secrets",
     "crates/resources/zhuye-fs",
     "crates/resources/zhuye-git",
     "crates/resources/zhuye-ast",
@@ -91,6 +92,7 @@ zhuye-rollout     = { path = "crates/resources/zhuye-rollout" }
 zhuye-telemetry   = { path = "crates/resources/zhuye-telemetry" }
 zhuye-sandbox     = { path = "crates/resources/zhuye-sandbox" }
 zhuye-audit       = { path = "crates/resources/zhuye-audit" }
+zhuye-secrets     = { path = "crates/resources/zhuye-secrets" }
 zhuye-fs          = { path = "crates/resources/zhuye-fs" }
 zhuye-git         = { path = "crates/resources/zhuye-git" }
 zhuye-ast         = { path = "crates/resources/zhuye-ast" }
@@ -177,6 +179,11 @@ once_cell   = "1"
 # v1.9:输入侧提示注入检测(zhuye-sanitize::prompt_guard)的 SHA-256 指纹,
 # 与审计日志(zhuye-audit)的指纹算法保持一致。
 sha2        = "0.10"
+# v1.9 S8:密钥加密存储(zhuye-secrets)。AES-256-GCM 认证加密 +
+# HKDF-SHA256 每条目派生(per-entry salt),getrandom 由 aes-gcm 默认
+# feature 提供(Nonce/Key 生成用 OsRng)。
+aes-gcm     = "0.10"
+hkdf        = "0.12"
 
 # Prompt 构建
 minijinja = "2"
