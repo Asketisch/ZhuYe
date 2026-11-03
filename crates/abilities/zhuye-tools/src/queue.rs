@@ -496,11 +496,67 @@ impl ToolExecutionQueue {
             }
         }
 
+        // v1.9 C1/C2:循环失控守卫(执行前裁决)。
+        // 软档 → 放行 + advisory 文本(执行后前插到输出);
+        // 硬档(重复 + 无进展证据)→ 不执行,直接返回阻断错误。
+        // ctx 会被 move 进 tool.execute,守卫句柄先取出。
+        let loop_guard_arc = ctx.loop_guard.clone();
+        let mut loop_advisory: Option<String> = None;
+        if let Some(guard_arc) = &loop_guard_arc {
+            let args_hash = crate::loop_guard::LoopGuard::canonical_args_hash(&effective_args);
+            let decision = {
+                let mut g = guard_arc.lock().expect("loop guard poisoned");
+                let preview = {
+                    let raw = serde_json::to_string(&effective_args).unwrap_or_default();
+                    let cfg_max = g.config.preview_chars;
+                    // 复用模块内截断(按字符截断,不切多字节)。
+                    if raw.chars().count() <= cfg_max {
+                        raw
+                    } else {
+                        format!("{}…", raw.chars().take(cfg_max).collect::<String>())
+                    }
+                };
+                g.observe_hashed(&call.name, &args_hash, Some(&preview))
+            };
+            match decision {
+                crate::loop_guard::GuardDecision::Block { message } => {
+                    return ToolResult {
+                        call_id: call.id,
+                        content: vec![ContentBlock::text(message)],
+                        is_error: true,
+                        elapsed_ms: 0,
+                        metadata: serde_json::json!({"loop_guard": "blocked"}),
+                    };
+                }
+                crate::loop_guard::GuardDecision::Advise { message } => {
+                    loop_advisory = Some(message);
+                }
+                crate::loop_guard::GuardDecision::Proceed => {}
+            }
+        }
+
         // 带超时执行。
+        // (v1.9 C1/C2:args 在 move 前留一份指纹/登记用副本。)
+        let lg_args = effective_args.clone();
         let start = Instant::now();
         let exec = tool.execute(ctx, effective_args);
         let outcome = timeout(effective_timeout, exec).await;
         let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        // v1.9 C1/C2:执行后登记输出指纹(进度证据)。error / timeout
+        // 也登记 —— 失败输出的"每次都一样"同样是失控证据。
+        macro_rules! lg_record {
+            ($text:expr) => {
+                if let Some(guard_arc) = &loop_guard_arc {
+                    let args_hash = crate::loop_guard::LoopGuard::canonical_args_hash(&lg_args);
+                    let rh = crate::loop_guard::LoopGuard::result_hash(&$text);
+                    guard_arc
+                        .lock()
+                        .expect("loop guard poisoned")
+                        .record_result_hashed(&call.name, &args_hash, &rh);
+                }
+            };
+        }
 
         match outcome {
             Ok(Ok(mut output)) => {
@@ -520,6 +576,17 @@ impl ToolExecutionQueue {
                 // `Err(_)` 分支(行 434-486)时跳过 sanitize —— 那里合成
                 // 的错误模板文本不含真实工具数据。
                 sanitize_output(&mut output, &self.sanitizer);
+                // v1.9 C1/C2:登记成功输出指纹(进度证据)。
+                let success_text = output
+                    .content
+                    .iter()
+                    .map(|c| match c {
+                        ContentBlock::Text { text } => text.as_str(),
+                        _ => "",
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                lg_record!(success_text);
                 let output_clone = output.clone();
                 let _ = self
                     .hook_engine
@@ -529,9 +596,16 @@ impl ToolExecutionQueue {
                         elapsed_ms,
                     })
                     .await;
+                // v1.9 C1/C2:advisory 前插(在脱敏后的输出前,提醒模型
+                // 它在重复同一调用;不阻断执行)。
+                let mut final_content = Vec::with_capacity(output.content.len() + 1);
+                if let Some(msg) = loop_advisory.take() {
+                    final_content.push(ContentBlock::text(msg));
+                }
+                final_content.extend(output.content);
                 ToolResult {
                     call_id: call.id,
-                    content: output.content,
+                    content: final_content,
                     is_error: is_err,
                     elapsed_ms,
                     metadata: output.metadata,
@@ -545,6 +619,8 @@ impl ToolExecutionQueue {
                     metadata: serde_json::json!({"kind": format!("{e:?}")}),
                     elapsed_ms,
                 };
+                // v1.9 C1/C2:登记失败输出指纹。
+                lg_record!(e.to_string());
                 let _ = self
                     .hook_engine
                     .dispatch(&HookEvent::PostToolUseFailure {
@@ -564,15 +640,16 @@ impl ToolExecutionQueue {
             Err(_elapsed) => {
                 warn!(tool = %call.name, "tool execution timed out");
                 let tool_error = ToolError::Timeout { elapsed_ms };
+                let timeout_text = format!("tool '{}' timed out after {elapsed_ms}ms", call.name);
                 let output = ToolOutput {
-                    content: vec![ContentBlock::text(format!(
-                        "tool '{}' timed out after {elapsed_ms}ms",
-                        call.name
-                    ))],
+                    content: vec![ContentBlock::text(timeout_text.clone())],
                     is_error: true,
                     metadata: serde_json::json!({"timeout_ms": elapsed_ms}),
                     elapsed_ms,
                 };
+                // v1.9 C1/C2:登记超时指纹(超时文本含 elapsed,变化中 ——
+                // 记录完整文本;相同 elapsed 才算无进展)。
+                lg_record!(timeout_text);
                 let _ = self
                     .hook_engine
                     .dispatch(&HookEvent::PostToolUseFailure {
@@ -1167,5 +1244,152 @@ mod tests {
         assert!(!out[0].is_error, "Plan mode Safe bash 应直接执行");
         // 审批门不应被触发(没发 ApprovalRequest)。
         assert!(rx.try_recv().is_err(), "Plan mode Safe bash 不该弹审批");
+    }
+}
+
+// v1.9 C1/C2:queue 级循环失控守卫集成测试(追加在文件末尾 tests 模块外,
+// 独立模块避免与既有 tests 冲突)。
+#[cfg(test)]
+mod loop_guard_queue_tests {
+    use super::*;
+    use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct EchoTool;
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo_guarded"
+        }
+        fn description(&self) -> &str {
+            "echo for loop guard queue tests"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn required_permission(&self) -> PermissionMode {
+            PermissionMode::Auto
+        }
+        async fn execute(&self, _ctx: ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput {
+                content: vec![ContentBlock::text(format!(
+                    "out:{}",
+                    args.get("text").and_then(|v| v.as_str()).unwrap_or("")
+                ))],
+                is_error: false,
+                metadata: serde_json::json!({}),
+                elapsed_ms: 0,
+            })
+        }
+    }
+
+    fn queue_with_guard() -> (
+        ToolExecutionQueue,
+        Arc<std::sync::Mutex<crate::loop_guard::LoopGuard>>,
+    ) {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(EchoTool));
+        let ctx = ToolContext::for_workspace("/tmp");
+        let queue =
+            ToolExecutionQueue::new(Arc::new(registry), Arc::new(HookEngine::new()), ctx, 4);
+        let guard = Arc::new(std::sync::Mutex::new(
+            crate::loop_guard::LoopGuard::with_defaults(),
+        ));
+        let mut queue = queue;
+        queue.base_ctx.loop_guard = Some(guard.clone());
+        (queue, guard)
+    }
+
+    fn req(id: &str, text: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: id.to_string(),
+            name: "echo_guarded".to_string(),
+            args: serde_json::json!({"text": text}),
+        }
+    }
+
+    #[tokio::test]
+    async fn identical_repeats_get_advisory_prepended() {
+        let (queue, _g) = queue_with_guard();
+        // 前 2 次 Proceed;第 3 次起 advisory 前插(warn=3)。
+        for i in 0..2 {
+            let results = queue.execute_all(vec![req(&format!("c{i}"), "same")]).await;
+            assert_eq!(results[0].content.len(), 1, "第 {} 次无 advisory", i);
+        }
+        let results = queue.execute_all(vec![req("c2", "same")]).await;
+        assert!(results[0].content.len() >= 2, "第 3 次应前插 advisory");
+        let first = match &results[0].content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            _ => panic!("text"),
+        };
+        assert!(first.contains("[loop-guard] advisory"));
+    }
+
+    #[tokio::test]
+    async fn progressing_outputs_never_block() {
+        // 同参调用但输出变化:每次执行产生不同输出 → 永不阻断。
+        // 注意:echo 工具同 args 输出必然相同,这里用 guard 直接登记
+        // 变化的结果模拟"输出在变"(进度证据路径)。
+        let (_q, g) = queue_with_guard();
+        let args = serde_json::json!({"text": "poll"});
+        for i in 0..12 {
+            let mut guard = g.lock().unwrap();
+            let d = guard.observe("echo_guarded", &args);
+            assert!(
+                !matches!(d, crate::loop_guard::GuardDecision::Block { .. }),
+                "有进展重复不得 Block"
+            );
+            guard.record_result("echo_guarded", &args, &format!("h{i}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn stuck_repeats_blocked_at_hard_threshold() {
+        let (queue, g) = queue_with_guard();
+        let args = serde_json::json!({"text": "stuck"});
+        // 先直接把 guard 推到硬线边缘:5 次(3,4,5 为 advise)+ 同输出连击。
+        for _ in 0..5 {
+            g.lock().unwrap().observe("echo_guarded", &args);
+            g.lock()
+                .unwrap()
+                .record_result("echo_guarded", &args, "same-hash");
+        }
+        // 第 6 次经 queue 执行:observe → Block → 不执行,返回阻断错误。
+        let call = ToolCallRequest {
+            id: "blocked-1".to_string(),
+            name: "echo_guarded".to_string(),
+            args: args.clone(),
+        };
+        let results = queue.execute_all(vec![call]).await;
+        assert!(results[0].is_error, "硬线重复必须阻断为错误");
+        let text = match &results[0].content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            _ => panic!("text"),
+        };
+        assert!(text.contains("[loop-guard] blocked"), "got: {text}");
+        assert_eq!(
+            results[0]
+                .metadata
+                .get("loop_guard")
+                .and_then(|v| v.as_str()),
+            Some("blocked")
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_none_is_noop() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(EchoTool));
+        let queue = ToolExecutionQueue::new(
+            Arc::new(registry),
+            Arc::new(HookEngine::new()),
+            ToolContext::for_workspace("/tmp"),
+            4,
+        );
+        for i in 0..10 {
+            let results = queue.execute_all(vec![req(&format!("n{i}"), "x")]).await;
+            assert_eq!(results[0].content.len(), 1, "无守卫时行为不变");
+        }
     }
 }

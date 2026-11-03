@@ -29,6 +29,8 @@ ignore             = { workspace = true }
 once_cell          = { workspace = true }
 parking_lot        = { workspace = true }
 regex              = { workspace = true }
+# v1.9 C1/C2:循环失控守卫的调用/输出指纹(SHA-256)。
+sha2               = { workspace = true }
 zhuye-bm25       = { workspace = true }
 reqwest            = { workspace = true }
 serde              = { workspace = true }

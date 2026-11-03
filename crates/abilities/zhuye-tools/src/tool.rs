@@ -138,6 +138,11 @@ pub struct ToolContext {
     /// 沙箱关闭开关对其无效。宿主如果代用户执行亲笔命令(如 GUI 终端),
     /// 显式传 `Some(UserAuthored)`。
     pub command_origin: Option<zhuye_sandbox::CommandOrigin>,
+    /// v1.9 C1/C2:循环失控守卫(会话级共享)。`None`(默认)= 不检测;
+    /// `Some` 时 `ToolExecutionQueue::execute_single` 在每次工具执行前
+    /// 记账并裁决:软档 advisory 前插提醒文本,硬档(重复+无进展)直接
+    /// 阻断返回错误。执行后由 queue 登记输出指纹作进度证据。
+    pub loop_guard: Option<Arc<std::sync::Mutex<crate::loop_guard::LoopGuard>>>,
     /// v1.5 R2:后台任务生成器(宿主实现)。`None`(默认)= 工具不支持
     /// 后台执行;`Some` 时 bash 的 `run_in_background` 参数可用。
     pub background: Option<Arc<dyn TaskSpawner>>,
@@ -333,6 +338,7 @@ impl Default for ToolContext {
             os_sandbox_writable: Vec::new(),
             os_sandbox_network: None,
             command_origin: None,
+            loop_guard: None,
         }
     }
 }
