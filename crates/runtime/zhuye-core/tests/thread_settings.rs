@@ -307,20 +307,21 @@ async fn sandbox_policy_os_forces_seatbelt_per_turn() {
         std::env::set_var("ZHUYE_SANDBOX_STRICT", "0");
         std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", "1");
     }
-    let restore = |prior_on: Option<String>, prior_strict: Option<String>, prior_bare: Option<String>| {
-        match prior_on {
-            Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", p) },
-            None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_OS_LEVEL") },
-        }
-        match prior_strict {
-            Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_STRICT", p) },
-            None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_STRICT") },
-        }
-        match prior_bare {
-            Some(p) => unsafe { std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", p) },
-            None => unsafe { std::env::remove_var("ZHUYE_UNTRUSTED_ALLOW_BARE") },
-        }
-    };
+    let restore =
+        |prior_on: Option<String>, prior_strict: Option<String>, prior_bare: Option<String>| {
+            match prior_on {
+                Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", p) },
+                None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_OS_LEVEL") },
+            }
+            match prior_strict {
+                Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_STRICT", p) },
+                None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_STRICT") },
+            }
+            match prior_bare {
+                Some(p) => unsafe { std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", p) },
+                None => unsafe { std::env::remove_var("ZHUYE_UNTRUSTED_ALLOW_BARE") },
+            }
+        };
 
     // Seatbelt 放行 workspace+tmp;$HOME 用户可写但不在放行清单 ——
     // 正好区分「无沙箱可写」与「有沙箱拒写」。

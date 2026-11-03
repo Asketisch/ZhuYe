@@ -28,12 +28,17 @@
 //! Allow/Deny(详见 S5a.2 commit)。
 
 pub mod matcher;
+pub mod policy;
 pub mod resolver;
 pub mod rules;
 pub mod store;
 pub mod yolo;
 
-pub use matcher::evaluate_with_context;
+pub use matcher::{evaluate_full, evaluate_with_context};
+pub use policy::{
+    Decision, DecisionReason, PolicyConfig, PolicyEngine, Precedence, RiskLabel,
+    UnspecifiedDefault, is_control_plane_tool,
+};
 pub use resolver::{PermissionResolver, StorePermissionResolver};
 pub use rules::{PermissionAction, PermissionRule, RuleMatch, evaluate};
 pub use store::{

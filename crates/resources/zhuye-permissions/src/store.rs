@@ -286,6 +286,7 @@ mod tests {
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         }
     }
 
@@ -412,6 +413,7 @@ mod tests {
             action: PermissionAction::Allow,
             tool_glob: None,
             shell_pattern: Some("git *".into()),
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -420,6 +422,7 @@ mod tests {
             action: PermissionAction::Deny,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -443,6 +446,7 @@ mod tests {
             action: PermissionAction::Deny,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -453,6 +457,7 @@ mod tests {
                 action: PermissionAction::Allow,
                 tool_glob: None,
                 shell_pattern: None,
+                resource_glob: None,
             })
             .await
             .unwrap();
@@ -500,6 +505,7 @@ mod tests {
                 action: PermissionAction::Ask,
                 tool_glob: None,
                 shell_pattern: Some("git push *".into()),
+                resource_glob: None,
             })
             .await
             .unwrap();

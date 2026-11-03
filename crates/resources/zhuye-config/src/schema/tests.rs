@@ -695,6 +695,7 @@ fn expanded_rules_flattens_allow_deny_in_correct_order() {
             action: zhuye_permissions::PermissionAction::Deny,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         }],
         allow: vec!["Bash".into(), "Bash(git:*)".into()],
         deny: vec!["Bash(curl:*)".into()],
@@ -724,6 +725,7 @@ fn expanded_rules_without_arrays_equals_rules() {
         action: zhuye_permissions::PermissionAction::Allow,
         tool_glob: None,
         shell_pattern: None,
+        resource_glob: None,
     };
     let sec = PermissionsSection {
         rules: vec![rule.clone()],

@@ -195,8 +195,15 @@ impl AuditSink for FailingSink {
 /// 敏感键名(小写匹配,包含即整值替换)。与 zhuye-sanitize 的
 /// 密钥 pattern 互补:pattern 抓值形态,键名抓"位置"。
 const SENSITIVE_KEY_SUBSTRINGS: [&str; 9] = [
-    "token", "secret", "password", "passwd", "credential", "api_key", "apikey",
-    "authorization", "private_key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "api_key",
+    "apikey",
+    "authorization",
+    "private_key",
 ];
 
 /// 递归脱敏一个 JSON 值:
@@ -210,8 +217,14 @@ pub fn redact_value(v: &serde_json::Value) -> serde_json::Value {
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, val) in map {
                 let key_lower = k.to_lowercase();
-                if SENSITIVE_KEY_SUBSTRINGS.iter().any(|s| key_lower.contains(s)) {
-                    out.insert(k.clone(), serde_json::Value::String("[REDACTED:key]".into()));
+                if SENSITIVE_KEY_SUBSTRINGS
+                    .iter()
+                    .any(|s| key_lower.contains(s))
+                {
+                    out.insert(
+                        k.clone(),
+                        serde_json::Value::String("[REDACTED:key]".into()),
+                    );
                 } else {
                     out.insert(k.clone(), redact_value(val));
                 }
@@ -221,9 +234,7 @@ pub fn redact_value(v: &serde_json::Value) -> serde_json::Value {
         serde_json::Value::Array(items) => {
             serde_json::Value::Array(items.iter().map(redact_value).collect())
         }
-        serde_json::Value::String(s) => {
-            serde_json::Value::String(zhuye_sanitize::redact_string(s))
-        }
+        serde_json::Value::String(s) => serde_json::Value::String(zhuye_sanitize::redact_string(s)),
         other => other.clone(),
     }
 }
@@ -291,7 +302,7 @@ impl AuditLog {
             fingerprint,
         };
         let line = serde_json::to_string(&rec)?;
-        self.sink.append(&line)?;
+        self.sink.append(line.as_str())?;
         Ok(rec)
     }
 
@@ -323,7 +334,10 @@ impl AuditLog {
                 // 审计失败状态变更也要尽力留痕;留痕再失败只能返回
                 // AuditFailed(状态本身没变,无审计缺口)。
                 match self.record(committed) {
-                    Ok(rec) => Err(CommitError::Mutation(e, Some(rec))),
+                    Ok(rec) => Err(CommitError::Mutation(Box::new(MutationFailure {
+                        error: e,
+                        audit_record: Some(rec),
+                    }))),
                     Err(ae) => Err(CommitError::AuditFailedAfterMutation(ae)),
                 }
             }
@@ -331,12 +345,23 @@ impl AuditLog {
     }
 }
 
+/// [`CommitError::Mutation`] 携带的失败详情。
+#[derive(Debug, thiserror::Error)]
+#[error("state mutation failed: {error:?}")]
+pub struct MutationFailure<E> {
+    pub error: E,
+    /// 失败留痕记录(Some = 已写入审计)。
+    pub audit_record: Option<AuditRecord>,
+}
+
 /// [`AuditLog::audit_and_commit`] 的错误。
 #[derive(Debug, thiserror::Error)]
 pub enum CommitError<E> {
-    /// 状态变更失败(携带原错误);`Some(rec)` 为失败留痕记录。
+    /// 状态变更失败(携带原错误 + 失败留痕记录)。整体盒装:错误路径
+    /// 非热路径,避免 Result<_, CommitError<E>> 整体膨胀
+    /// (clippy result_large_err)。
     #[error("state mutation failed: {0:?}")]
-    Mutation(E, Option<AuditRecord>),
+    Mutation(Box<MutationFailure<E>>),
     /// 状态变更成功但审计写失败(fail-closed:调用方必须回滚/终止)。
     #[error(transparent)]
     AuditFailedAfterMutation(AuditError),
@@ -401,7 +426,12 @@ mod tests {
         let rec = log.record(sample_entry(detail)).unwrap();
         let line = &sink.lines()[0];
         // 密钥字面量不得出现在落盘记录。
-        for secret in ["sk-abcdefghijklmnopqrstuv", "ghp_abcdefghijklmnopqrstuvwxyz", "AKIAIOSFODNN7EXAMPLE", "hunter2"] {
+        for secret in [
+            "sk-abcdefghijklmnopqrstuv",
+            "ghp_abcdefghijklmnopqrstuvwxyz",
+            "AKIAIOSFODNN7EXAMPLE",
+            "hunter2",
+        ] {
             assert!(!line.contains(secret), "泄漏 {secret}: {line}");
         }
         // 敏感键的值整段替换。
@@ -461,8 +491,9 @@ mod tests {
             Err::<i32, _>("boom")
         });
         match res {
-            Err(CommitError::Mutation(e, Some(rec))) => {
-                assert_eq!(e, "boom");
+            Err(CommitError::Mutation(failure)) => {
+                assert_eq!(failure.error, "boom");
+                let rec = failure.audit_record.expect("失败留痕应已写入");
                 assert_eq!(rec.outcome, AuditOutcome::Failed);
             }
             other => panic!("expected Mutation failure with record, got {other:?}"),
@@ -496,10 +527,7 @@ mod tests {
     fn audit_write_failure_on_failed_mutation_still_errors() {
         let log = AuditLog::new(std::sync::Arc::new(FailingSink));
         let res = log.audit_and_commit(sample_entry(json!({})), || Err::<(), _>("x"));
-        assert!(matches!(
-            res,
-            Err(CommitError::AuditFailedAfterMutation(_))
-        ));
+        assert!(matches!(res, Err(CommitError::AuditFailedAfterMutation(_))));
     }
 
     #[test]
@@ -509,15 +537,10 @@ mod tests {
         let handles: Vec<_> = (0..16)
             .map(|i| {
                 let log = log.clone();
-                std::thread::spawn(move || {
-                    log.record(sample_entry(json!({"i": i}))).unwrap().seq
-                })
+                std::thread::spawn(move || log.record(sample_entry(json!({"i": i}))).unwrap().seq)
             })
             .collect();
-        let mut seqs: Vec<u64> = handles
-            .into_iter()
-            .map(|h| h.join().unwrap())
-            .collect();
+        let mut seqs: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         seqs.sort();
         let unique: std::collections::HashSet<u64> = seqs.iter().copied().collect();
         assert_eq!(unique.len(), 16, "seq 必须全唯一");
@@ -531,16 +554,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
         {
-            let log = AuditLog::new(std::sync::Arc::new(
-                FileSink::open(&path).unwrap(),
-            ) as std::sync::Arc<dyn AuditSink>);
+            let log = AuditLog::new(std::sync::Arc::new(FileSink::open(&path).unwrap())
+                as std::sync::Arc<dyn AuditSink>);
             log.record(sample_entry(json!({"a": 1}))).unwrap();
             log.record(sample_entry(json!({"a": 2}))).unwrap();
         }
         // 重新 open:序号续号。
-        let log = AuditLog::new(std::sync::Arc::new(
-            FileSink::open(&path).unwrap(),
-        ) as std::sync::Arc<dyn AuditSink>);
+        let log =
+            AuditLog::new(std::sync::Arc::new(FileSink::open(&path).unwrap())
+                as std::sync::Arc<dyn AuditSink>);
         // 直接 new(sink 注入)的序号基线是 0 —— 续号语义由 open 承担
         // (见 audit_log_open_resumes_seq_from_line_count)。
         let rec = log.record(sample_entry(json!({"a": 3}))).unwrap();
@@ -561,8 +583,7 @@ mod tests {
         let log = AuditLog::open(dir.path()).unwrap();
         let rec = log.record(sample_entry(json!({"n": 4}))).unwrap();
         assert_eq!(rec.seq, 4, "序号必须跨进程续(行数基线)");
-        let content =
-            std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+        let content = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
         assert_eq!(content.lines().count(), 4);
     }
 

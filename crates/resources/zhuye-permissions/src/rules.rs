@@ -26,6 +26,12 @@ pub enum PermissionAction {
 /// v1.x 字段:`tool` + `action`。P2 扩展:
 /// - `tool_glob`:工具名 glob(与 `tool` 二选一,优先 glob)
 /// - `shell_pattern`:Bash 命令 glob(需配合 `tool = "Bash"`)
+///
+/// v1.9(1.5 权限语义升级):
+///
+/// - `resource_glob`:**资源维度** —— 规则只在"被操作的资源"(文件
+///   路径 / URL / 命令行等,由调用方传入)匹配该 glob 时生效
+///   (opencode `action × resource` 双通配语义)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRule {
     /// 工具名(精确匹配)。例:`"Bash"` / `"Write"` / `"Read"`。
@@ -38,6 +44,12 @@ pub struct PermissionRule {
     /// Bash 命令 glob(如 `git *`)。仅对 Bash 工具 + 有命令上下文时生效。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_pattern: Option<String>,
+    /// 资源 glob(如 `/etc/*` / `https://evil.example/*`)。调用方评估时
+    /// 传资源字符串(`evaluate_full` 的 `resource` 参数);`None` 资源
+    /// 上下文时,带 resource_glob 的规则不参与(Allow/Ask 侧),Deny 侧
+    /// fail-closed 语义同 shell_pattern。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_glob: Option<String>,
 }
 
 /// Resolver 评估结果:`Allow` 短路 / `Deny` 短路 / `Ask` 强制 prompt /
@@ -71,6 +83,7 @@ mod tests {
             action: a,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         }
     }
 

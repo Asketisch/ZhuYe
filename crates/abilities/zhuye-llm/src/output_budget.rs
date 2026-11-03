@@ -21,8 +21,8 @@
 //! 时调用 [`adaptive_max_tokens`];模型不在窗口表(`context_window_for
 //! == None`,mock / 本地未知模型)时保持 `None`(行为不变)。
 
-use crate::request::{ChatMessage, ChatRequest, ContentBlock, ToolSpec};
 use crate::providers::context_window_for;
+use crate::request::{ChatMessage, ChatRequest, ContentBlock, ToolSpec};
 
 /// tokenizer 估算误差余量(输入估算 × (1+0.10) 预留)。
 pub const TOKENIZER_ERROR_MARGIN: f64 = 0.10;
@@ -194,8 +194,7 @@ mod tests {
             tool_calls: vec![crate::request::ToolCallRequest {
                 id: "c1".into(),
                 name: name.into(),
-                arguments: serde_json::from_str(args_json)
-                    .expect("test args must be valid json"),
+                arguments: serde_json::from_str(args_json).expect("test args must be valid json"),
             }],
             thinking: None,
         })
@@ -203,8 +202,10 @@ mod tests {
 
     #[test]
     fn estimate_counts_chars_and_framing() {
-        let mut req = ChatRequest::default();
-        req.model = "claude-sonnet-4".into();
+        let mut req = ChatRequest {
+            model: "claude-sonnet-4".into(),
+            ..ChatRequest::default()
+        };
         req.messages.push(user_msg(&"x".repeat(400)));
         // 400 chars / 4 = 100 + per-message 8。
         assert_eq!(
@@ -215,13 +216,16 @@ mod tests {
 
     #[test]
     fn estimate_counts_system_tools_and_calls() {
-        let mut req = ChatRequest::default();
-        req.model = "claude-sonnet-4".into();
-        req.system = SystemBlocks(vec![SystemBlock {
-            text: "y".repeat(200),
-            cache_control: None,
-            ephemeral: false,
-        }]);
+        let mut req = ChatRequest {
+            model: "claude-sonnet-4".into(),
+            system: SystemBlocks(vec![SystemBlock {
+                text: "y".repeat(200),
+                cache_control: None,
+                ephemeral: false,
+            }]),
+            ..ChatRequest::default()
+        };
+        let _ = &req;
         req.messages.push(assistant_call(
             "bash",
             r#"{"cmd":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
@@ -239,16 +243,24 @@ mod tests {
 
     #[test]
     fn unknown_model_yields_none() {
-        let mut req = ChatRequest::default();
-        req.model = "totally-unknown-model-xyz".into();
+        let mut req = ChatRequest {
+            model: "totally-unknown-model-xyz".into(),
+            ..ChatRequest::default()
+        };
         req.messages.push(user_msg("hi"));
-        assert_eq!(adaptive_max_tokens(&req), None, "未知模型保持 None(行为不变)");
+        assert_eq!(
+            adaptive_max_tokens(&req),
+            None,
+            "未知模型保持 None(行为不变)"
+        );
     }
 
     #[test]
     fn known_model_gets_budget() {
-        let mut req = ChatRequest::default();
-        req.model = "claude-sonnet-4".into(); // 200k 窗口
+        let mut req = ChatRequest {
+            model: "claude-sonnet-4".into(), // 200k 窗口
+            ..ChatRequest::default()
+        };
         req.messages.push(user_msg(&"x".repeat(400)));
         let mt = adaptive_max_tokens(&req).expect("已知模型应有预算");
         // 小输入:headroom 巨大 → 硬上限 32768。
@@ -257,14 +269,19 @@ mod tests {
 
     #[test]
     fn budget_breakdown_is_consistent() {
-        let mut req = ChatRequest::default();
-        req.model = "gpt-4o".into(); // 128k
+        let mut req = ChatRequest {
+            model: "gpt-4o".into(), // 128k
+            ..ChatRequest::default()
+        };
         for _ in 0..100 {
             req.messages.push(user_msg(&"x".repeat(400)));
         }
         let b = resolve_output_budget(&req, 128_000);
         // input_estimate 已含每消息框架:100 × (100 文本 + 8 帧) = 10800。
-        assert_eq!(b.input_estimate, 100 * (100 + CHAT_TEMPLATE_OVERHEAD_PER_MESSAGE));
+        assert_eq!(
+            b.input_estimate,
+            100 * (100 + CHAT_TEMPLATE_OVERHEAD_PER_MESSAGE)
+        );
         assert_eq!(b.framing_tokens, 0, "无工具时 schema 包裹为 0");
         // error_margin_tokens 是**余量部分**(× margin),不是总预留;
         // 总预留 = input + margin = 10800 + 1080 = 11880。
@@ -278,8 +295,10 @@ mod tests {
 
     #[test]
     fn near_full_window_falls_to_headroom_or_floor() {
-        let mut req = ChatRequest::default();
-        req.model = "gpt-4o".into(); // 128k
+        let mut req = ChatRequest {
+            model: "gpt-4o".into(), // 128k
+            ..ChatRequest::default()
+        };
         // 500 条 ≈ 50k+ 输入 → headroom 仍巨大 → HardCap。
         for _ in 0..500 {
             req.messages.push(user_msg(&"x".repeat(400)));
@@ -287,8 +306,10 @@ mod tests {
         let b = resolve_output_budget(&req, 128_000);
         assert_eq!(b.clamped_by, BudgetClamp::HardCap);
         // 1200 条 ≈ 120k+ → 余量极小 → WindowHeadroom / MinFloor。
-        let mut big = ChatRequest::default();
-        big.model = "gpt-4o".into();
+        let mut big = ChatRequest {
+            model: "gpt-4o".into(),
+            ..ChatRequest::default()
+        };
         for _ in 0..1200 {
             big.messages.push(user_msg(&"x".repeat(400)));
         }
@@ -305,8 +326,10 @@ mod tests {
 
     #[test]
     fn overfull_window_floors_at_min() {
-        let mut req = ChatRequest::default();
-        req.model = "gpt-4o".into(); // 128k
+        let mut req = ChatRequest {
+            model: "gpt-4o".into(), // 128k
+            ..ChatRequest::default()
+        };
         for _ in 0..2000 {
             req.messages.push(user_msg(&"x".repeat(400)));
         }
@@ -317,7 +340,7 @@ mod tests {
 
     #[test]
     fn estimate_text_tokens_rounds_up() {
-        assert_eq!(estimate_text_tokens(&"a".repeat(1)), 1);
+        assert_eq!(estimate_text_tokens("a"), 1);
         assert_eq!(estimate_text_tokens(&"a".repeat(4)), 1);
         assert_eq!(estimate_text_tokens(&"a".repeat(5)), 2);
         assert_eq!(estimate_text_tokens(""), 0);

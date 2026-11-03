@@ -150,10 +150,13 @@ impl SecretStore {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let aad = aad_for(name);
         let ct = cipher
-            .encrypt(&nonce, aes_gcm::aead::Payload {
-                msg: plaintext.as_bytes(),
-                aad: &aad,
-            })
+            .encrypt(
+                &nonce,
+                aes_gcm::aead::Payload {
+                    msg: plaintext.as_bytes(),
+                    aad: &aad,
+                },
+            )
             .map_err(|_| SecretError::AuthFailed(format!("encrypt {name}")))?;
         store.entries.insert(
             name.to_string(),
@@ -208,9 +211,10 @@ impl SecretStore {
     pub fn delete(&self, name: &str) -> Result<bool, SecretError> {
         let _g = self.io_lock.lock();
         let mut store = self.read_store()?;
-        Ok(store.entries.remove(name).is_some_and(|_| {
-            self.write_store(&store).is_ok()
-        }))
+        Ok(store
+            .entries
+            .remove(name)
+            .is_some_and(|_| self.write_store(&store).is_ok()))
     }
 
     /// 列出全部条目名(排序)。
@@ -296,7 +300,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str, what: &str) -> Result<Vec<u8>, SecretError> {
-    if s.len() % 2 != 0 {
+    if s.len() & 1 == 1 {
         return Err(SecretError::Corrupt(format!("{what} hex odd length")));
     }
     (0..s.len())
@@ -474,10 +478,7 @@ mod tests {
         assert_ne!(ct, flipped);
         v["entries"]["k"]["ct"] = serde_json::Value::String(flipped);
         std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
-        assert!(matches!(
-            store.get("k"),
-            Err(SecretError::AuthFailed(_))
-        ));
+        assert!(matches!(store.get("k"), Err(SecretError::AuthFailed(_))));
     }
 
     #[test]
@@ -513,7 +514,7 @@ mod tests {
         let k1 = std::fs::read(&key_path).unwrap();
         drop(store);
         let store2 = SecretStore::open(dir.path()).unwrap();
-        let k2 = std::fs::read(&store2.machine_key_path()).unwrap();
+        let k2 = std::fs::read(store2.machine_key_path()).unwrap();
         assert_eq!(k1, k2, "machine key 必须复用,不能每次重生成");
     }
 
