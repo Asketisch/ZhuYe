@@ -18,7 +18,7 @@ use zhuye_protocol::{
 
 use super::{
     ApprovalWaiters, AskUserInputWaiters, AskUserQuestionWaiters, MAX_ASK_USER_PROMPT_BYTES,
-    complete_approval, complete_ask_user_question,
+    MAX_PENDING_APPROVALS, complete_approval, complete_ask_user_question,
 };
 
 /// 单 turn 的审批门。由 `submission_loop` 持有,交给
@@ -65,6 +65,12 @@ pub struct ApprovalGate {
     /// gate 上是安全的;会话令牌仍由调用方的 `cancel` 参数负责
     /// (`Op::Shutdown` 的语义)。
     pub(super) turn_cancel: Option<CancellationToken>,
+    /// v1.9 S6:审批 TTL。`Some(d)` 时 gate 构造起算 `created_at + d`
+    /// 为**共享绝对死线**,本 turn 全部挂起审批到点统一过期(Deny);
+    /// `None` = 不超时(headless 全自动流水线显式关闭)。
+    pub(super) approval_ttl: Option<std::time::Duration>,
+    /// v1.9 S6:gate 构造时刻(死线锚点)。
+    pub(super) created_at: std::time::Instant,
 }
 
 // 手写 Debug —— `Arc<dyn PermissionResolver>` 没 derive Debug。
@@ -92,7 +98,44 @@ impl std::fmt::Debug for ApprovalGate {
             )
             .field("yolo_classifier", &self.yolo_classifier.lock().is_some())
             .field("yolo_threshold", &*self.yolo_threshold.lock())
+            .field("approval_ttl", &self.approval_ttl)
             .finish()
+    }
+}
+
+/// v1.9 S7:abort-safe 审批租约。
+///
+/// `ask_tool` / `ask_hook` 注册 waiter 后立即持有一个 lease;等待
+/// future 无论从哪条路径退出(cancel / interrupt / TTL / decision /
+/// drop-abort),lease 的 Drop 都保证 waiter 条目从 map 清除:
+/// - 正常路径:decision 经 `complete_approval` 先移除条目 → Drop no-op;
+/// - 异常路径(future 被 abort / panic):没有别的清理者 → Drop 兜底,
+///   不留占挂起名额的死条目。
+///
+/// 有了它,"注册后、select 前 future 被 drop" 的窗口也不再泄漏
+/// (旧实现在该窗口里条目永久悬挂)。
+struct WaiterLease {
+    map: ApprovalWaiters,
+    request_id: String,
+}
+
+impl WaiterLease {
+    fn register(
+        map: &ApprovalWaiters,
+        request_id: String,
+        tx: oneshot::Sender<ReviewDecision>,
+    ) -> WaiterLease {
+        map.lock().insert(request_id.clone(), tx);
+        WaiterLease {
+            map: std::sync::Arc::clone(map),
+            request_id,
+        }
+    }
+}
+
+impl Drop for WaiterLease {
+    fn drop(&mut self) {
+        self.map.lock().remove(&self.request_id);
     }
 }
 
@@ -188,7 +231,52 @@ impl ApprovalGate {
             session_permission_mode,
             yolo_classifier: Mutex::new(None),
             yolo_threshold: Mutex::new(0.8),
+            approval_ttl: Some(std::time::Duration::from_secs(
+                super::DEFAULT_APPROVAL_TTL_SECS,
+            )),
+            created_at: std::time::Instant::now(),
         }
+    }
+
+    /// v1.9 S6:设置审批 TTL(覆盖默认 300s)。gate 构造起算,本 turn
+    /// 全部挂起审批共享同一绝对死线。
+    pub fn with_approval_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.approval_ttl = Some(ttl);
+        self
+    }
+
+    /// v1.9 S6:显式关闭审批超时(headless 全自动流水线等场景)。
+    pub fn without_approval_ttl(mut self) -> Self {
+        self.approval_ttl = None;
+        self
+    }
+
+    /// v1.9 S6:共享绝对死线(`None` = 未启用 TTL)。
+    fn absolute_deadline(&self) -> Option<std::time::Instant> {
+        self.approval_ttl
+            .map(|ttl| self.created_at + ttl)
+    }
+
+    /// v1.9 S6:清扫全部挂起审批 —— 统一以 Deny(过期)裁决。返回
+    /// 过期条数。给 `submission_loop` 的周期任务用;等待侧的 select
+    /// 死线是兜底,两者语义一致(过期即 Deny,不可能再执行)。
+    pub fn expire_pending_approvals(&self) -> usize {
+        let reason = super::expired_reason();
+        let mut map = self.waiters.lock();
+        let n = map.len();
+        for (_, tx) in map.drain() {
+            let _ = tx.send(ReviewDecision::Deny { reason: reason.clone() });
+        }
+        if n > 0 {
+            tracing::warn!(expired = n, "approval gate: TTL sweep expired pending approvals");
+        }
+        n
+    }
+
+    /// v1.9 S6:剩余到死线的等待时长(`None` = 未启用 TTL)。
+    fn ttl_sleep(&self) -> Option<std::time::Duration> {
+        self.absolute_deadline()
+            .map(|d| d.saturating_duration_since(std::time::Instant::now()))
     }
 
     /// v1.5 R1:置位/解除回合级 deny-all。置位后,本回合所有走 gate 的
@@ -362,9 +450,21 @@ impl ApprovalGate {
             }
         }
 
+        // v1.9 S7:全局挂起上限 —— 超限 fail-closed 直接 Deny,不注册
+        // (不让 waiter map 在 UI 客户端失联 / 死循环时无界增长)。
+        if self.waiters.lock().len() >= MAX_PENDING_APPROVALS {
+            return ReviewDecision::Deny {
+                reason: format!(
+                    "approval gate: pending approvals at cap ({MAX_PENDING_APPROVALS}); fail-closed deny"
+                ),
+            };
+        }
+
         let request_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel::<ReviewDecision>();
-        self.waiters.lock().insert(request_id.clone(), tx);
+        // v1.9 S7:abort-safe 租约 —— lease 持有期间条目必在;lease drop
+        // (任何退出路径)即清理。事件发送失败等早期退出同样覆盖。
+        let _lease = WaiterLease::register(&self.waiters, request_id.clone(), tx);
 
         let ev = Event::new(
             self.sub_id.clone(),
@@ -379,23 +479,35 @@ impl ApprovalGate {
         );
 
         if self.event_tx.send(ev).await.is_err() {
-            // Receiver 已 drop —— 没有消费者,无法拿到决策,自动拒绝。
-            self.waiters.lock().remove(&request_id);
+            // Receiver 已 drop —— 没有消费者,无法拿到决策,自动拒绝
+            // (线断即拒;lease drop 清理 waiter 条目)。
             return ReviewDecision::Deny {
                 reason: "approval channel closed".into(),
             };
         }
 
+        // v1.9 S6:共享绝对死线(TTL 未启用时用 pending 永挂,交给
+        // cancel / interrupt / decision 分支)。Box<dyn Future> 是 Unpin,
+        // select! 里以 `&mut` 等待。
+        let mut ttl_fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = ()> + Send>,
+        > = match self.ttl_sleep() {
+            Some(d) => Box::pin(tokio::time::sleep(d)),
+            None => Box::pin(std::future::pending()),
+        };
+
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                self.waiters.lock().remove(&request_id);
                 ReviewDecision::Deny { reason: "cancelled".into() }
             }
             // 回合级中断(Op::Interrupt)—— 解除等待,不让回合停在审批门上。
             _ = self.wait_turn_cancel() => {
-                self.waiters.lock().remove(&request_id);
                 ReviewDecision::Deny { reason: "turn interrupted".into() }
+            }
+            // v1.9 S6:审批超时 —— 过期即 Deny,过期后的审批不可能再执行。
+            _ = &mut ttl_fut => {
+                ReviewDecision::Deny { reason: super::expired_reason() }
             }
             res = rx => {
                 match res {
@@ -406,6 +518,7 @@ impl ApprovalGate {
                 }
             }
         }
+        // `_lease` 在此 drop:所有路径统一清理 waiter 条目。
     }
 
     /// 向用户请求审批一次 hook 决策(`ask_tool` 的 `ApprovalKind::Hook` 版本)。
@@ -423,9 +536,19 @@ impl ApprovalGate {
                 reason: "approval_policy = deny(本回合拒绝所有需审批的工具)".into(),
             };
         }
+        // v1.9 S7:挂起上限(hook 审批同样受限)。
+        if self.waiters.lock().len() >= MAX_PENDING_APPROVALS {
+            return ReviewDecision::Deny {
+                reason: format!(
+                    "approval gate: pending approvals at cap ({MAX_PENDING_APPROVALS}); fail-closed deny"
+                ),
+            };
+        }
+
         let request_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel::<ReviewDecision>();
-        self.waiters.lock().insert(request_id.clone(), tx);
+        // v1.9 S7:abort-safe 租约(同 ask_tool)。
+        let _lease = WaiterLease::register(&self.waiters, request_id.clone(), tx);
 
         let ev = Event::new(
             self.sub_id.clone(),
@@ -440,27 +563,37 @@ impl ApprovalGate {
         );
 
         if self.event_tx.send(ev).await.is_err() {
-            self.waiters.lock().remove(&request_id);
             return ReviewDecision::Deny {
                 reason: "approval channel closed".into(),
             };
         }
 
+        // v1.9 S6:共享绝对死线(同 ask_tool)。
+        let mut ttl_fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = ()> + Send>,
+        > = match self.ttl_sleep() {
+            Some(d) => Box::pin(tokio::time::sleep(d)),
+            None => Box::pin(std::future::pending()),
+        };
+
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                self.waiters.lock().remove(&request_id);
                 ReviewDecision::Deny { reason: "cancelled".into() }
             }
             // 回合级中断(Op::Interrupt)。
             _ = self.wait_turn_cancel() => {
-                self.waiters.lock().remove(&request_id);
                 ReviewDecision::Deny { reason: "turn interrupted".into() }
+            }
+            // v1.9 S6:审批超时。
+            _ = &mut ttl_fut => {
+                ReviewDecision::Deny { reason: super::expired_reason() }
             }
             res = rx => res.unwrap_or(ReviewDecision::Deny {
                 reason: "approval channel dropped".into(),
             }),
         }
+        // `_lease` 在此 drop:所有路径统一清理 waiter 条目。
     }
 
     /// v1.1.0 P1 #14:LLM 主动向用户发起 1-4 道结构化问题。emit
