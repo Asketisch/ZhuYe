@@ -11,12 +11,11 @@
 //!
 //! ## 规则
 //!
-//! 1. 每次 shell spawn 都带一个 [`CommandOrigin`]:
-//!    - [`CommandOrigin::UserAuthored`] —— 用户亲笔(可信);
-//!    - 其余([`CommandOrigin::ModelAuthored`] / [`CommandOrigin::StoredText`]
-//!      / [`CommandOrigin::External`])—— 不可信。
-//!    注:调度任务里存的命令文本,按**创建者**定 origin —— 用户亲手
-//!    写的 schedule 条目是 `UserAuthored`;模型经工具创建的是
+//! 1. 每次 shell spawn 都带一个 [`CommandOrigin`]:[`CommandOrigin::UserAuthored`]
+//!    为用户亲笔(可信);其余([`CommandOrigin::ModelAuthored`] /
+//!    [`CommandOrigin::StoredText`] / [`CommandOrigin::External`])为不可信。
+//!    调度任务里存的命令文本按**创建者**定 origin —— 用户亲手写的
+//!    schedule 条目是 `UserAuthored`;模型经工具创建的是
 //!    `ModelAuthored`。审批通过不改变 authorship:批准的是"允许执行",
 //!    不改变"这条文本是谁写的"。
 //! 2. 可信来源 → 维持全局开关语义(旧行为,`TrustedPassthrough`)。
@@ -88,7 +87,12 @@ impl UntrustedGate {
     /// 从 env 构造:`ZHUYE_UNTRUSTED_ALLOW_BARE=1` 打开显式逃生口。
     pub fn from_env() -> Self {
         let allow = std::env::var("ZHUYE_UNTRUSTED_ALLOW_BARE")
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(false);
         Self::with_allow_bare(allow)
     }
@@ -137,7 +141,8 @@ impl UntrustedGate {
     /// 状态行(TUI / banner / `/sandbox` 面板)。
     pub fn status_line(&self) -> String {
         if self.allow_bare_override {
-            "untrusted-gate: ZHUYE_UNTRUSTED_ALLOW_BARE=1 —— 不可信命令允许裸跑(显式豁免,危险)".into()
+            "untrusted-gate: ZHUYE_UNTRUSTED_ALLOW_BARE=1 —— 不可信命令允许裸跑(显式豁免,危险)"
+                .into()
         } else if Self::backend_available() {
             "untrusted-gate: 不可信命令强制沙箱(全局沙箱开关对其无效)".into()
         } else {
@@ -187,7 +192,10 @@ mod tests {
             if UntrustedGate::backend_available() {
                 assert_eq!(d, GateDecision::ForceSandbox, "{origin:?} 应强制沙箱");
             } else {
-                assert!(matches!(d, GateDecision::Reject { .. }), "{origin:?} 应拒绝");
+                assert!(
+                    matches!(d, GateDecision::Reject { .. }),
+                    "{origin:?} 应拒绝"
+                );
             }
         }
     }

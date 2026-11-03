@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::policy::PolicyEngine;
 use crate::rules::RuleMatch;
 use crate::store::PermissionStore;
 
@@ -48,6 +49,10 @@ pub trait PermissionResolver: Send + Sync {
 /// 失败。`tracing::warn!` 留排查痕迹。
 pub struct StorePermissionResolver {
     store: Arc<dyn PermissionStore>,
+    /// v1.9(1.5):v2 策略引擎。默认配置 = v1 兼容(DenyWins +
+    /// Fallthrough)+ 两项安全底线:风险标签硬拒(凭据外传/提权)与
+    /// 控制面自保护(改权限/配置的工具不可被规则自动放行)。
+    engine: PolicyEngine,
 }
 
 // 手写 Debug:`Arc<dyn PermissionStore>` 没有 derive Debug。
@@ -55,13 +60,28 @@ impl std::fmt::Debug for StorePermissionResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StorePermissionResolver")
             .field("store", &"<dyn PermissionStore>")
+            .field("engine", &self.engine)
             .finish()
     }
 }
 
 impl StorePermissionResolver {
     pub fn new(store: Arc<dyn PermissionStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            engine: PolicyEngine::default(),
+        }
+    }
+
+    /// v1.9(1.5):显式指定策略引擎(嵌入方自定义 precedence /
+    /// 默认全拒 / 无人值守模式等)。
+    pub fn with_engine(store: Arc<dyn PermissionStore>, engine: PolicyEngine) -> Self {
+        Self { store, engine }
+    }
+
+    /// 策略引擎只读访问(调用方查 Decision reason)。
+    pub fn engine(&self) -> &PolicyEngine {
+        &self.engine
     }
 }
 
@@ -92,6 +112,7 @@ mod tests {
             action: PermissionAction::Allow,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -107,6 +128,7 @@ mod tests {
             action: PermissionAction::Deny,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -131,6 +153,7 @@ mod tests {
             action: PermissionAction::Allow,
             tool_glob: None,
             shell_pattern: Some("git *".into()),
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -170,6 +193,7 @@ mod tests {
             action: PermissionAction::Deny,
             tool_glob: None,
             shell_pattern: Some("rm -rf *".into()),
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -197,6 +221,7 @@ mod tests {
             action: PermissionAction::Deny,
             tool_glob: None,
             shell_pattern: Some("rm -rf *".into()),
+            resource_glob: None,
         })
         .await
         .unwrap();
@@ -225,6 +250,7 @@ mod tests {
             action: PermissionAction::Allow,
             tool_glob: None,
             shell_pattern: Some("git *".into()),
+            resource_glob: None,
         })
         .await
         .unwrap();

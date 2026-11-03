@@ -305,12 +305,14 @@ mod tests {
         assert!(v.reason.contains("output"));
         assert!(d.is_retired());
         // 退役后不再触发。
-        assert!(d.record_turn(&TurnEvidence {
-            output_hash: Some(h),
-            completed_with_outcome: true,
-            ..Default::default()
-        })
-        .is_none());
+        assert!(
+            d.record_turn(&TurnEvidence {
+                output_hash: Some(h),
+                completed_with_outcome: true,
+                ..Default::default()
+            })
+            .is_none()
+        );
     }
 
     #[test]
@@ -331,13 +333,14 @@ mod tests {
         });
         // 之后再 4 轮同输出:链最长 4+1 <6 → 不判定。
         for _ in 0..4 {
-            assert!(d
-                .record_turn(&TurnEvidence {
+            assert!(
+                d.record_turn(&TurnEvidence {
                     output_hash: Some(h.clone()),
                     completed_with_outcome: true,
                     ..Default::default()
                 })
-                .is_none());
+                .is_none()
+            );
         }
     }
 
@@ -353,13 +356,14 @@ mod tests {
             });
         }
         // 不同输出 → 链清空重来。
-        assert!(d
-            .record_turn(&TurnEvidence {
+        assert!(
+            d.record_turn(&TurnEvidence {
                 output_hash: Some(output_fingerprint("different")),
                 completed_with_outcome: true,
                 ..Default::default()
             })
-            .is_none());
+            .is_none()
+        );
         assert_eq!(d.snapshot().identical_output_streak, 1);
     }
 
@@ -444,7 +448,7 @@ mod tests {
         d.record_turn(&timing_out(4));
         // 打断后只有 2 连(< threshold 3)→ 不判。
         assert!(
-            d.record_turn(&timing_out(5)).is_none() == false,
+            d.record_turn(&timing_out(5)).is_some(),
             "第 3 个连续超时轮应判 Timeout"
         );
     }

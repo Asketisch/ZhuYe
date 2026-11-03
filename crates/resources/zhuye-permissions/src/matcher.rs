@@ -39,9 +39,24 @@ pub fn evaluate_with_context(
     tool_name: &str,
     bash_command: Option<&str>,
 ) -> RuleMatch {
+    evaluate_full(rules, tool_name, bash_command, None)
+}
+
+/// v1.9(1.5):完整评估 —— 在 [`evaluate_with_context`] 之上增加
+/// **资源维度**(`rule.resource_glob` 对 `resource` 做 glob 匹配)。
+///
+/// 资源语义与 shell_pattern 对齐:
+/// - `Deny` + 带 `resource_glob`:资源上下文缺失时 fail-closed 直接 Deny;
+/// - `Allow` / `Ask` + 带 `resource_glob`:无资源上下文 → 不参与。
+pub fn evaluate_full(
+    rules: &[PermissionRule],
+    tool_name: &str,
+    bash_command: Option<&str>,
+    resource: Option<&str>,
+) -> RuleMatch {
     let mut matched = RuleMatch::NoMatch;
     for rule in rules {
-        if let Some(m) = match_rule(rule, tool_name, bash_command) {
+        if let Some(m) = match_rule_full(rule, tool_name, bash_command, resource) {
             if m == RuleMatch::Deny {
                 return RuleMatch::Deny;
             }
@@ -53,11 +68,40 @@ pub fn evaluate_with_context(
     matched
 }
 
-fn match_rule(
+/// v1.9 policy 引擎用的单规则匹配入口(FirstMatch / LastMatch 需要
+/// 逐条评估;`match_rule_full` 保持私有,这里开一个受控公开面)。
+pub(crate) fn match_rule_for_engine(
     rule: &PermissionRule,
     tool_name: &str,
     bash_command: Option<&str>,
+    resource: Option<&str>,
 ) -> Option<RuleMatch> {
+    match_rule_full(rule, tool_name, bash_command, resource)
+}
+
+fn match_rule_full(
+    rule: &PermissionRule,
+    tool_name: &str,
+    bash_command: Option<&str>,
+    resource: Option<&str>,
+) -> Option<RuleMatch> {
+    // 资源维度预检:v1.9(1.5)。带 resource_glob 的规则只在资源命中时
+    // 生效;无资源上下文时 Deny fail-closed、Allow/Ask 不参与
+    // (与 shell_pattern 的 0.4 语义一致)。
+    if let Some(pat) = rule.resource_glob.as_deref() {
+        let glob = Glob::new(pat).ok()?;
+        let matcher = glob.compile_matcher();
+        match resource {
+            Some(r) if matcher.is_match(r) => {}
+            Some(_) => return None,
+            None => {
+                return match rule.action {
+                    PermissionAction::Deny => Some(RuleMatch::Deny),
+                    _ => None,
+                };
+            }
+        }
+    }
     // shell 规则优先。
     if let Some(pat) = rule.shell_pattern.as_deref() {
         if !tool_names_equal(&rule.tool, tool_name) {
@@ -167,6 +211,7 @@ mod tests {
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         }
     }
 
@@ -177,6 +222,7 @@ mod tests {
             action: PermissionAction::Allow,
             tool_glob: Some("Web*".into()),
             shell_pattern: None,
+            resource_glob: None,
         }];
         assert_eq!(
             evaluate_with_context(&rules, "WebFetch", None),
@@ -195,6 +241,7 @@ mod tests {
             action: PermissionAction::Allow,
             tool_glob: None,
             shell_pattern: Some("git *".into()),
+            resource_glob: None,
         }];
         assert_eq!(
             evaluate_with_context(&rules, "Bash", Some("git status")),
@@ -258,6 +305,7 @@ mod tests {
                 action: PermissionAction::Allow,
                 tool_glob: None,
                 shell_pattern: Some("git *".into()),
+                resource_glob: None,
             },
         ];
         assert_eq!(
@@ -275,6 +323,7 @@ mod tests {
             action,
             tool_glob: None,
             shell_pattern: Some(pattern.into()),
+            resource_glob: None,
         }
     }
 

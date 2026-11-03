@@ -147,6 +147,7 @@ fn make_gate_with_resolver(
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         };
         futures::executor::block_on(store.add(rule)).unwrap();
     }
@@ -775,6 +776,7 @@ fn make_ask_user_gate_with_resolver(
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         };
         futures::executor::block_on(store.add(rule)).unwrap();
     }

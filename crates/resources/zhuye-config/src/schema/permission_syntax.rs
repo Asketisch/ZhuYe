@@ -93,6 +93,7 @@ pub fn parse_permission_entry(s: &str, action: PermissionAction) -> Option<Permi
                     action,
                     tool_glob: None,
                     shell_pattern: None,
+                    resource_glob: None,
                 });
             }
             return Some(PermissionRule {
@@ -100,6 +101,7 @@ pub fn parse_permission_entry(s: &str, action: PermissionAction) -> Option<Permi
                 action,
                 tool_glob: None,
                 shell_pattern: Some(shell_pattern),
+                resource_glob: None,
             });
         }
         // 非 Bash 工具或空括号:忽略括号内容,仅按工具名放行。
@@ -108,6 +110,7 @@ pub fn parse_permission_entry(s: &str, action: PermissionAction) -> Option<Permi
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         });
     }
 
@@ -118,6 +121,7 @@ pub fn parse_permission_entry(s: &str, action: PermissionAction) -> Option<Permi
             action,
             tool_glob: Some(s.to_string()),
             shell_pattern: None,
+            resource_glob: None,
         })
     } else {
         Some(PermissionRule {
@@ -125,6 +129,7 @@ pub fn parse_permission_entry(s: &str, action: PermissionAction) -> Option<Permi
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         })
     }
 }
@@ -139,6 +144,7 @@ mod tests {
             action: PermissionAction::Allow,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         }
     }
 

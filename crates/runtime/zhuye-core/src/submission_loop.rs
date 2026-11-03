@@ -158,9 +158,7 @@ pub async fn submission_loop(
     // v1.9 C3:会话级中毒检测器(submission_loop 即会话作用域)。
     // turn 结束时喂证据;判定中毒 → 向客户端发带 `session_poisoned`
     // code 的 Error 事件,宿主据此退役本会话(新开会话迁移 notes/memory)。
-    let poison_detector = Arc::new(Mutex::new(
-        crate::poisoned::PoisonDetector::with_defaults(),
-    ));
+    let poison_detector = Arc::new(Mutex::new(crate::poisoned::PoisonDetector::with_defaults()));
     // v1.x Plan mode:全局 `PlanApprovalGate` 持有所有 pending plan 切换
     // 请求的 oneshot。`Op::EnterPlanMode` / `Op::ExitPlanMode` 注册 waiter
     // 然后 emit `PlanRequest` / `PlanReady` 等待 TUI 回执;`Op::PlanApproval`
