@@ -312,10 +312,14 @@ npm test             # 协议层 vitest(mock serve,离线)
 ```
 
 mock serve 进程由测试内嵌脚本直接跑在 Node 上,不依赖真 `zhuye` 二进制 ——
-完全离线,不需要网络/API key。
+完全离线,不需要网络/API key。覆盖:握手、prompt 聚合、远程工具、未知
+事件降级、`side_channel_*` 新变体透传与查询 Op(`query_side_channels` →
+status 快照 + `submission_closed` 收尾)。
 
-端到端测试(对真 `zhuye serve` 子进程的集成)在仓库 CI 里跑:构建二进制后
-执行 `./tests/run_all.sh sdk-ts`。
+端到端测试(`tests/sdk-ts/real-bin.test.mjs`,K1–K10 真二进制绑定层 ——
+K10 即 side-channel 查询 Op 的真 serve 应答)在仓库 CI 里跑:构建二进制后
+执行 `./tests/run_all.sh sdk-ts`(本地可 `ZHUYE_BIN=... node --test
+tests/sdk-ts/real-bin.test.mjs` 直接驱动)。
 
 ## 协议与版本兼容
 

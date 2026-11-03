@@ -304,6 +304,17 @@ mock serve 进程跑在 Node 上(Node ≥ 18),不依赖真 `zhuye` 二进制 —
 (`python -m pytest` 会把本目录加入 `sys.path`),无需构建安装;打包后端为
 maturin(平台 wheel 由 CI 产出并内嵌二进制),本地构建需 Rust 工具链。
 
+**两层测试结构**:
+
+- 本目录(`sdks/python/tests/`)是 **mock 层** —— 协议回路与降级语义,
+  覆盖:握手、多轮、远程工具、审批、未知变体降级、`side_channel_*`
+  新变体透传与查询 Op(`query_side_channels` → status 快照 +
+  `submission_closed` 收尾);
+- 仓库级 `tests/sdk-python/test_sdk_real_bin.py` 是**真二进制绑定层**
+  (K1–K10),驱动真 `zhuye serve`,断言 SDK 客户端自身行为 —— K10 即
+  side-channel 查询 Op 的真 serve 应答。运行:
+  `./tests/run_all.sh sdk-python`(需先构建二进制,`ZHUYE_BIN` 可覆盖)。
+
 端到端测试(对真 `zhuye serve` 子进程的集成)在仓库 CI 里跑:配置好
 `ZHUYE_BIN` 后执行 `./tests/run_all.sh sdk-python`。
 
