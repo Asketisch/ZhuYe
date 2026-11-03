@@ -172,6 +172,9 @@ zhuye-bm25 = { path = "crates/abilities/zhuye-bm25" }
 htmd        = "0.5"
 # 通用 lazy container(`WebSearchTool` 等延迟初始化的场景)。
 once_cell   = "1"
+# v1.9:输入侧提示注入检测(zhuye-sanitize::prompt_guard)的 SHA-256 指纹,
+# 与审计日志(zhuye-audit)的指纹算法保持一致。
+sha2        = "0.10"
 
 # Prompt 构建
 minijinja = "2"

@@ -352,7 +352,7 @@ impl Tool for BashTool {
         // v1.x:`[sandbox].writable_dirs` / `allow_network` 经 ToolContext
         // 透传(此前框架内无消费方);空列表 / None 时维持 OsSandbox 自带的
         // env 派生口径。
-        let sandbox = match ctx.os_sandbox {
+        let mut sandbox = match ctx.os_sandbox {
             Some(on) => {
                 let mut s = zhuye_sandbox::OsSandbox::with_enabled(on);
                 if !ctx.os_sandbox_writable.is_empty() {
@@ -365,6 +365,35 @@ impl Tool for BashTool {
             }
             None => zhuye_sandbox::OsSandbox::from_env(),
         };
+        // v1.9 S2:不可信来源强制隔离闸门。模型/流程写的命令不受全局
+        // 沙箱开关约束 —— 后端可用时强制沙箱,后端不可用时拒绝执行。
+        // 见 zhuye_sandbox::untrusted 模块文档(模块文档即规则)。
+        let origin = ctx
+            .command_origin
+            .unwrap_or(zhuye_sandbox::CommandOrigin::ModelAuthored);
+        let gate = zhuye_sandbox::UntrustedGate::from_env();
+        match gate.decide(origin) {
+            zhuye_sandbox::GateDecision::ForceSandbox if !sandbox.is_active() => {
+                // 后端可用但全局开关关闭:开关对不可信来源无效,重建为
+                // 启用 + 严格(保留 ctx 透传的可写目录 / 网络配置)。
+                warn!(origin = ?origin, "untrusted gate: forcing sandbox despite global off-switch");
+                let mut forced = zhuye_sandbox::OsSandbox::enabled(std::mem::take(
+                    &mut sandbox.writable_dirs,
+                ));
+                forced.allow_network = sandbox.allow_network;
+                forced.strict = true;
+                sandbox = forced;
+            }
+            zhuye_sandbox::GateDecision::Reject { reason } => {
+                warn!(origin = ?origin, "untrusted gate: rejecting bare exec");
+                return Err(ToolError::SandboxUnavailable { reason });
+            }
+            zhuye_sandbox::GateDecision::BareByOverride => {
+                warn!(origin = ?origin,
+                      "untrusted gate: ZHUYE_UNTRUSTED_ALLOW_BARE=1 explicit override, running bare");
+            }
+            _ => {}
+        }
         // 严格模式 fail-closed:后端 / 初始化失败 → 直接报错,不裸执行。
         if let Err(reason) = sandbox.enforce_or_fail() {
             warn!(error = %reason, "sandbox fail-closed; refusing bare exec");
@@ -675,6 +704,12 @@ mod tests {
     fn unsandboxed_ctx(ws: impl Into<std::path::PathBuf>) -> ToolContext {
         let mut ctx = ToolContext::for_workspace(ws);
         ctx.os_sandbox = Some(false);
+        // v1.9 S2:执行机制类测试(echo/cwd/timeout 等)模拟的是
+        // 「宿主/用户亲笔命令 + 全局关沙箱」的可信组合;若不声明,
+        // 默认 ModelAuthored 会被不可信闸门强制回沙箱(macOS 上后端
+        // 可用),掩盖被测机制。不可信来源的强制行为由下方 S2 专项
+        // 测试覆盖。
+        ctx.command_origin = Some(zhuye_sandbox::CommandOrigin::UserAuthored);
         ctx
     }
 
@@ -1089,6 +1124,134 @@ mod tests {
             _ => panic!("expected text"),
         };
         assert!(text.contains("unsandboxed-ok"), "got: {text}");
+    }
+
+    /// v1.9 S2 核心不变式(bash 集成层):全局沙箱关闭(OS_LEVEL=0 +
+    /// STRICT=0)+ 模型来源命令 → 闸门强制回沙箱,写系统目录仍被内核
+    /// 拒绝。「运维关掉沙箱」对模型写的命令无效。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn untrusted_model_cmd_stays_sandboxed_when_global_off() {
+        let _g = SANDBOX_ENV_LOCK.lock().unwrap();
+        let prior_on = std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok();
+        let prior_strict = std::env::var("ZHUYE_SANDBOX_STRICT").ok();
+        unsafe {
+            std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", "0");
+            std::env::set_var("ZHUYE_SANDBOX_STRICT", "0");
+        }
+        let t = BashTool::default();
+        let mut ctx = unsandboxed_ctx("/tmp");
+        // 显式模型来源(None 的默认也是 ModelAuthored,这里写明意图)。
+        ctx.command_origin = Some(zhuye_sandbox::CommandOrigin::ModelAuthored);
+        let marker = "/usr/local/.zhuye-untrusted-gate-test";
+        let cmd =
+            format!("touch {marker} 2>/dev/null; test -f {marker} && echo WROTE || echo BLOCKED");
+        let out = t
+            .execute(ctx, serde_json::json!({"cmd": cmd, "timeout_ms": 15000}))
+            .await
+            .unwrap();
+        // 还原 env(无论断言是否通过)。
+        unsafe {
+            match prior_on {
+                Some(p) => std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", p),
+                None => std::env::remove_var("ZHUYE_SANDBOX_OS_LEVEL"),
+            }
+            match prior_strict {
+                Some(p) => std::env::set_var("ZHUYE_SANDBOX_STRICT", p),
+                None => std::env::remove_var("ZHUYE_SANDBOX_STRICT"),
+            }
+        }
+        let text = match &out.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text"),
+        };
+        assert!(
+            text.contains("BLOCKED"),
+            "S2: 全局沙箱关闭时模型命令必须仍被强制沙箱(写 /usr/local 应被拒);got: {text}"
+        );
+        let _ = std::fs::remove_file(marker);
+    }
+
+    /// v1.9 S2:显式逃生口 `ZHUYE_UNTRUSTED_ALLOW_BARE=1` 打开时,
+    /// 模型命令允许裸跑 —— 闸门放行(BareByOverride)。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn untrusted_allow_bare_override_lets_model_cmd_run_bare() {
+        let _g = SANDBOX_ENV_LOCK.lock().unwrap();
+        let prior_on = std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok();
+        let prior_strict = std::env::var("ZHUYE_SANDBOX_STRICT").ok();
+        let prior_bare = std::env::var("ZHUYE_UNTRUSTED_ALLOW_BARE").ok();
+        unsafe {
+            std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", "0");
+            std::env::set_var("ZHUYE_SANDBOX_STRICT", "0");
+            std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", "1");
+        }
+        let t = BashTool::default();
+        let mut ctx = unsandboxed_ctx("/tmp");
+        ctx.command_origin = Some(zhuye_sandbox::CommandOrigin::ModelAuthored);
+        // 裸跑下写 /tmp 内文件一定成功(与沙箱无关,证明命令真的执行了)。
+        let out = t
+            .execute(ctx, serde_json::json!({"cmd": "echo bare-override-ok"}))
+            .await
+            .unwrap();
+        unsafe {
+            match prior_on {
+                Some(p) => std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", p),
+                None => std::env::remove_var("ZHUYE_SANDBOX_OS_LEVEL"),
+            }
+            match prior_strict {
+                Some(p) => std::env::set_var("ZHUYE_SANDBOX_STRICT", p),
+                None => std::env::remove_var("ZHUYE_SANDBOX_STRICT"),
+            }
+            match prior_bare {
+                Some(p) => std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", p),
+                None => std::env::remove_var("ZHUYE_UNTRUSTED_ALLOW_BARE"),
+            }
+        }
+        let text = match &out.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text"),
+        };
+        assert!(text.contains("bare-override-ok"), "got: {text}");
+    }
+
+    /// v1.9 S2:用户亲笔命令(终端宿主代执行)在全局沙箱关闭时按旧
+    /// 语义裸跑 —— 闸门不拦可信来源(与 `unsandboxed_ctx` 组合验证)。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn user_authored_cmd_bypasses_gate_when_global_off() {
+        let _g = SANDBOX_ENV_LOCK.lock().unwrap();
+        let prior_on = std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok();
+        let prior_strict = std::env::var("ZHUYE_SANDBOX_STRICT").ok();
+        unsafe {
+            std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", "0");
+            std::env::set_var("ZHUYE_SANDBOX_STRICT", "0");
+        }
+        let t = BashTool::default();
+        let mut ctx = unsandboxed_ctx("/tmp");
+        ctx.command_origin = Some(zhuye_sandbox::CommandOrigin::UserAuthored);
+        let out = t
+            .execute(ctx, serde_json::json!({"cmd": "echo user-bare-ok"}))
+            .await
+            .unwrap();
+        unsafe {
+            match prior_on {
+                Some(p) => std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", p),
+                None => std::env::remove_var("ZHUYE_SANDBOX_OS_LEVEL"),
+            }
+            match prior_strict {
+                Some(p) => std::env::set_var("ZHUYE_SANDBOX_STRICT", p),
+                None => std::env::remove_var("ZHUYE_SANDBOX_STRICT"),
+            }
+        }
+        let text = match &out.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text"),
+        };
+        assert!(text.contains("user-bare-ok"), "got: {text}");
     }
 
     /// v1.3 fail-closed 不变式:strict + 后端不可用时 BashTool 必须

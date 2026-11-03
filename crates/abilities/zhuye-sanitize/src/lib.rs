@@ -33,6 +33,12 @@
 //! 具体 provider pattern 必须排在 `KEY_ASSIGN` 之前,否则赋值形态会把
 //! 它们整段吞掉。
 //!
+//! ## 输入侧提示注入检测(v1.9)
+//!
+//! [`prompt_guard`] 模块与输出脱敏互补:不可信文本进入模型上下文
+//! **之前**扫描,Allow/Block/Review 三档裁决 + SHA-256 指纹 +
+//! 工具定义扫描。详见 [`prompt_guard`] 模块文档。
+//!
 //! ## 幂等性
 //!
 //! 默认 pattern 的值字符类显式排除 `[` 与 `]`,因此 `[REDACTED]`
@@ -42,6 +48,8 @@
 
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
+
+pub mod prompt_guard;
 
 /// 默认脱敏 marker。与 `zhuye_tools::sanitize::DEFAULT_MARKER` 对齐。
 pub const DEFAULT_MARKER: &str = "[REDACTED]";
