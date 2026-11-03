@@ -212,11 +212,12 @@ test_command = "cargo test --quiet"
 
     /// `ZHUYE_HOME` 指向的目录放有合法 config.toml 时,
     /// `load_default` 必须读到它(配置与 session-notes 等数据目录同一
-    /// 套 `ZHUYE_HOME` 语义)。env 改写用互斥锁串行化,避免并行测试互踩。
+    /// 套 `ZHUYE_HOME` 语义)。env 改写与读 env 的测试(paths.rs 等)
+    /// 共用 crate 级 `paths::ENV_LOCK` 串行化,避免并行测试互踩 ——
+    /// 函数局部锁只管得了本文件,管不了并行读 env 的其他模块。
     #[test]
     fn zhuye_home_redirects_config_load() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap();
+        let _guard = crate::paths::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let toml = r#"
 [active]

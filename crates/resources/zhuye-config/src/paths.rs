@@ -15,6 +15,15 @@ use std::path::{Path, PathBuf};
 
 use crate::DEFAULT_CONFIG_DIR;
 
+/// 进程 env(`ZHUYE_HOME` / `HOME`)的测试互斥锁。
+///
+/// `data_dir` / `data_path` 在一次调用里要读两个变量,读与读之间若另一
+/// 测试并发改写 env(load.rs 的 `zhuye_home_redirects_config_load`),
+/// 断言两边就会各拿到一个值 —— CI macos 实证过这个 flake。读 env 的
+/// 测试与改 env 的测试都必须持同一把锁串行化。仅测试消费,运行时无读者。
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 用户级数据目录：`$ZHUYE_HOME` > `$HOME/.zhuye`。
 ///
 /// `ZHUYE_HOME` 指向的**就是**数据目录本身（其下直接放 `config.toml`），
@@ -100,7 +109,11 @@ mod tests {
 
     #[test]
     fn data_path_appends_subdirectories() {
-        // 只验拼装规则；进程 env 不改，避免与其他并发测试相互污染。
+        // 只验拼装规则;进程 env 不改,避免与其他并发测试相互污染。
+        // 但本测试要**读**两次 env(`data_dir` + `data_path` 内部各一次),
+        // 必须与改 env 的测试(load.rs)持同一把锁串行,否则两次读取可能
+        // 落在并发改写的前后两侧 —— CI macos 曾因此间歇失败。
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut expected = data_dir().unwrap();
         expected.push("sessions-archive");
         assert_eq!(data_path(&["sessions-archive"]), Some(expected));
@@ -111,6 +124,9 @@ mod tests {
         // 取不到 home 时的回落必须是相对 `.zhuye`;`ZHUYE_HOME` 为相对路径时
         // 原样采用(历史上即如此)。env 版 `data_path_or_relative` 的回落分支
         // 依赖 HOME 缺失,无法在测试进程内确定性构造,这里只锁纯函数口径。
+        // 最后一个断言两侧都依赖 `$HOME`(`dirs::home_dir` 首选读它),
+        // 同样要持 ENV_LOCK 与改 env 的测试串行。
+        let _guard = ENV_LOCK.lock().unwrap();
         assert_eq!(
             resolve_data_dir(Some("relative/home".into()), None).unwrap(),
             PathBuf::from("relative/home")
