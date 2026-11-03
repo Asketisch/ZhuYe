@@ -30,6 +30,7 @@ pub mod credential;
 pub mod error;
 pub mod event;
 pub mod model_catalog;
+pub mod output_budget;
 pub mod policy;
 pub mod providers;
 pub mod quota;

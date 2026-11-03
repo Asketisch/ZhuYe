@@ -77,6 +77,10 @@ pub(crate) async fn ensure_sse_response(
 /// 合入请求(请求侧显式值优先)。`ChatRequest` 是各 provider 共用的
 /// 入参形态,在 `stream()` 入口统一做一次默认值回填,比在各
 /// `XxxRequest::from` 里分散处理更不易漏。
+/// v1.9 C8 文档见函数体;`apply_request_param_defaults` 在「请求侧与
+/// provider 段配置都未给 max_tokens」时按模型上下文窗口自适应推
+/// 安全输出预算(见 `crate::output_budget`);模型不在窗口表
+/// (未知 / mock)时维持 `None` —— 行为与 v1.8 完全一致。
 pub(crate) fn apply_request_param_defaults(
     request: &mut ChatRequest,
     temperature: Option<f32>,
@@ -87,6 +91,10 @@ pub(crate) fn apply_request_param_defaults(
     }
     if request.max_tokens.is_none() {
         request.max_tokens = max_tokens;
+    }
+    // v1.9 C8:两级默认都缺席 → 自适应预算兜底。
+    if request.max_tokens.is_none() {
+        request.max_tokens = crate::output_budget::adaptive_max_tokens(request);
     }
 }
 
