@@ -25,6 +25,7 @@ pub mod background_tasks;
 pub mod config;
 pub mod eval;
 pub mod graph;
+pub mod poisoned;
 pub mod resume;
 pub mod side_channel;
 pub mod steering_queue;
@@ -47,6 +48,7 @@ pub use side_channel::{
     SideThreadFactory,
 };
 pub use steering_queue::{SteeringMessage, SteeringPriority, SteeringQueue};
+pub use poisoned::{PoisonClass, PoisonConfig, PoisonDetector, PoisonSnapshot, PoisonVerdict, TurnEvidence};
 pub use subagent_registry::SubagentRuntimeRegistry;
 pub use submission_loop::NodeContext;
 pub use turn::TurnHandle;
