@@ -26,6 +26,7 @@ members = [
     "crates/resources/zhuye-rollout",
     "crates/resources/zhuye-telemetry",
     "crates/resources/zhuye-sandbox",
+    "crates/resources/zhuye-audit",
     "crates/resources/zhuye-fs",
     "crates/resources/zhuye-git",
     "crates/resources/zhuye-ast",
@@ -89,6 +90,7 @@ zhuye-plugin      = { path = "crates/resources/zhuye-plugin" }
 zhuye-rollout     = { path = "crates/resources/zhuye-rollout" }
 zhuye-telemetry   = { path = "crates/resources/zhuye-telemetry" }
 zhuye-sandbox     = { path = "crates/resources/zhuye-sandbox" }
+zhuye-audit       = { path = "crates/resources/zhuye-audit" }
 zhuye-fs          = { path = "crates/resources/zhuye-fs" }
 zhuye-git         = { path = "crates/resources/zhuye-git" }
 zhuye-ast         = { path = "crates/resources/zhuye-ast" }
