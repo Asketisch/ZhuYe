@@ -144,4 +144,31 @@ mod tests {
             PathBuf::from("/ws/.zhuye/agent-memory")
         );
     }
+
+    /// 锁纪律的**结构门禁**(确定性,不靠调度采样)。
+    ///
+    /// 竞态回归无法用单条行为用例锁定(依赖线程调度,压测只能概率放大),
+    /// 这里机械校验锁纪律本身:改 env 的测试(load.rs)与读 env 的测试
+    /// (paths.rs 两条)必须都引用 crate 级 `ENV_LOCK`。谁把锁改回函数
+    /// 局部、或新增/删掉持锁点,本测试立即失败。
+    #[test]
+    fn env_lock_discipline_is_structurally_enforced() {
+        let load_src = include_str!("load.rs");
+        assert!(
+            load_src.contains("crate::paths::ENV_LOCK.lock()"),
+            "load.rs 的 env 改写测试必须持 crate 级 paths::ENV_LOCK \
+             (函数局部锁锁不住其他模块的 env 读者,见 ENV_LOCK 文档)"
+        );
+        let paths_src = include_str!("paths.rs");
+        // 搜索词必须用 concat! 拼接:门禁自身就在 paths.rs 里,直接写字面量
+        // 会被 include_str 读进来形成自匹配(把计数撑爆,第一次落地即翻车)。
+        let guard = concat!("let _guard = ", "ENV_LOCK.lock()");
+        assert_eq!(
+            paths_src.matches(guard).count(),
+            2,
+            "paths.rs 恰好两个测试读进程 env(data_path_appends_subdirectories \
+             与 relative_fallback_keeps_the_same_dir_name),都必须持 ENV_LOCK;\
+             新增读 env 测试时同步补锁并更新此断言"
+        );
+    }
 }
