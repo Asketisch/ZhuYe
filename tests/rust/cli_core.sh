@@ -127,7 +127,7 @@ cli_core_session() {
     tcase "session rename 报告改名成功" grep -q "Renamed session" ren.txt
 
     "$ZHUYE_BIN" session export "$SID" > export.md 2>&1
-    tcase "session export 输出 markdown 头" assert_contains x "# ZhuYe Session" export.md
+    tcase "session export 输出 markdown 头" assert_contains x "# ZhuYe session" export.md
     tcase "session export --out 写文件" \
         sh -c "\"$ZHUYE_BIN\" session export '$SID' --out exp2.md && test -s exp2.md"
 
