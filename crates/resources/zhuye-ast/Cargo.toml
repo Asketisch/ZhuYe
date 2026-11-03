@@ -50,7 +50,7 @@ tree-sitter-swift       = { version = "0.7",  optional = true }
 tree-sitter-kotlin      = { version = "0.3",  optional = true }
 tree-sitter-c-sharp     = { version = "0.23", optional = true }
 tree-sitter-scala       = { version = "0.26", optional = true }
-tree-sitter-haskell     = { version = "0.23", optional = true }
+tree-sitter-haskell     = { version = "0.24", optional = true }
 tree-sitter-elixir      = { version = "0.3",  optional = true }
 tree-sitter-php         = { version = "0.24", optional = true }
 
