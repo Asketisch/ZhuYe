@@ -1,0 +1,18 @@
+[package]
+name = "zhuye-audit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: 审计日志(JSONL,同事务语义 + 递归脱敏 + SHA-256 指纹)"
+
+[dependencies]
+chrono         = { workspace = true }
+parking_lot    = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+sha2           = { workspace = true }
+thiserror      = { workspace = true }
+zhuye-sanitize = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
