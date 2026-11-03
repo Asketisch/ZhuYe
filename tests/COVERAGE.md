@@ -379,6 +379,7 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 | `rust/integrations.sh` | 44 断言 |
 | `rust/cli_modules.sh` | 46 断言 |
 | `rust/examples_e2e.sh` | 10 断言 |
+| `rust/env_lock_stress.sh` | zhuye-config env 竞态回归门禁,两层:①**结构门禁**(确定性)`paths::env_lock_discipline_is_structurally_enforced` 用 include_str 机械校验改 env 与读 env 测试同持 `paths::ENV_LOCK`,破坏状态实证确定性失败;②**行为压测**(概率放大)满载连跑 20 轮 lib 二进制采样调度器(`44ae3da`) |
 | 另有 cargo test --workspace / clippy / fmt / doc | 既有基线 |
 
 ## 8. 未覆盖项(诚实清单)
