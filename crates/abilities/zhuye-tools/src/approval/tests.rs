@@ -1137,10 +1137,8 @@ async fn approval_ttl_expires_to_deny() {
     // S6:审批超时 —— 共享绝对死线到点,等待侧拿到 Deny(过期原因),
     // waiter 条目被租约清理。过期后的审批不可能再执行。
     let (tx, mut rx) = mpsc::channel::<Event>(8);
-    let gate = Arc::new(
-        ApprovalGate::new(tx, "sub-ttl")
-            .with_approval_ttl(Duration::from_millis(80)),
-    );
+    let gate =
+        Arc::new(ApprovalGate::new(tx, "sub-ttl").with_approval_ttl(Duration::from_millis(80)));
     let g = gate.clone();
     let cancel = CancellationToken::new();
     let asker = tokio::spawn(async move {
@@ -1214,9 +1212,7 @@ async fn pending_cap_fail_closed() {
     // 后台持续消费事件(不 complete,让挂起数维持在满额)。
     let drainer = tokio::spawn(async move {
         let mut rx = rx;
-        while let Some(_ev) = rx.recv().await {
-            /* 只消费,不回决策 */
-        }
+        while let Some(_ev) = rx.recv().await { /* 只消费,不回决策 */ }
     });
     let mut askers = Vec::new();
     for _ in 0..MAX_PENDING {

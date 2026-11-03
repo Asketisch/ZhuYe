@@ -253,8 +253,7 @@ impl ApprovalGate {
 
     /// v1.9 S6:共享绝对死线(`None` = 未启用 TTL)。
     fn absolute_deadline(&self) -> Option<std::time::Instant> {
-        self.approval_ttl
-            .map(|ttl| self.created_at + ttl)
+        self.approval_ttl.map(|ttl| self.created_at + ttl)
     }
 
     /// v1.9 S6:清扫全部挂起审批 —— 统一以 Deny(过期)裁决。返回
@@ -265,10 +264,15 @@ impl ApprovalGate {
         let mut map = self.waiters.lock();
         let n = map.len();
         for (_, tx) in map.drain() {
-            let _ = tx.send(ReviewDecision::Deny { reason: reason.clone() });
+            let _ = tx.send(ReviewDecision::Deny {
+                reason: reason.clone(),
+            });
         }
         if n > 0 {
-            tracing::warn!(expired = n, "approval gate: TTL sweep expired pending approvals");
+            tracing::warn!(
+                expired = n,
+                "approval gate: TTL sweep expired pending approvals"
+            );
         }
         n
     }
@@ -489,12 +493,11 @@ impl ApprovalGate {
         // v1.9 S6:共享绝对死线(TTL 未启用时用 pending 永挂,交给
         // cancel / interrupt / decision 分支)。Box<dyn Future> 是 Unpin,
         // select! 里以 `&mut` 等待。
-        let mut ttl_fut: std::pin::Pin<
-            Box<dyn std::future::Future<Output = ()> + Send>,
-        > = match self.ttl_sleep() {
-            Some(d) => Box::pin(tokio::time::sleep(d)),
-            None => Box::pin(std::future::pending()),
-        };
+        let mut ttl_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            match self.ttl_sleep() {
+                Some(d) => Box::pin(tokio::time::sleep(d)),
+                None => Box::pin(std::future::pending()),
+            };
 
         tokio::select! {
             biased;
@@ -569,12 +572,11 @@ impl ApprovalGate {
         }
 
         // v1.9 S6:共享绝对死线(同 ask_tool)。
-        let mut ttl_fut: std::pin::Pin<
-            Box<dyn std::future::Future<Output = ()> + Send>,
-        > = match self.ttl_sleep() {
-            Some(d) => Box::pin(tokio::time::sleep(d)),
-            None => Box::pin(std::future::pending()),
-        };
+        let mut ttl_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            match self.ttl_sleep() {
+                Some(d) => Box::pin(tokio::time::sleep(d)),
+                None => Box::pin(std::future::pending()),
+            };
 
         tokio::select! {
             biased;
