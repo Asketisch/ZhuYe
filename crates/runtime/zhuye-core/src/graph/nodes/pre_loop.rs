@@ -240,7 +240,16 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // 收割放在 compact 之后:注入内容属于「最新指示」,不应被本轮压缩
     // 修剪。上限 `MAX_MID_TURN_STEERING` 防外部无限投喂;注入的消息同步
     // 落盘(recorder),否则 resume 时丢失这段中途指示。
-    inject_mid_turn_steering(state, ctx).await;
+    //
+    // v1.9 C6:两级队列 —— turn 起始(`iteration == 0`,首个 model_call
+    // 之前)只收 turn 级(Now/Attachment);step 回环(`iteration >= 1`)
+    // 额外收 step 级(`SteeringPriority::Step`,只属于"当前这一步"的
+    // 补充指令,turn 起始注入会错过语境)。
+    if state.iteration == 0 {
+        inject_turn_boundary_steering(state, ctx).await;
+    } else {
+        inject_step_boundary_steering(state, ctx).await;
+    }
 
     // 3. 按 active_agent_def.memory 作用域加载内存。
     // v1.4 D2:检索化注入 —— 用本轮用户输入作查询,BM25 选相关记忆
@@ -537,21 +546,42 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
 /// v1.4 A2:单 turn 允许注入的回合中途转向消息总数上限。
 const MAX_MID_TURN_STEERING: u32 = 16;
 
-/// v1.4 A2:收割会话级转向队列并注入 `state.messages` 尾部。
+/// v1.9 C6:turn 边界收割(turn 起始,`iteration == 0`)。
 ///
 /// - `Now` 优先级:纯 User 消息(provider 视角 = 用户中途说话,权重最高);
 /// - `Attachment` 优先级:`<system-reminder>` 包裹的 User 消息(补充参考,
 ///   不构成新指令);
-/// - 首次进入 pre_loop(turn 开头)时队列通常已被 submission_loop 的
-///   turn 边界合并清空,本函数自然 no-op;真正生效于 ToolExec 回环。
+/// - **不**收 `Step` 级消息 —— step 指令在 turn 起始注入会错过语境,
+///   留在队列等本 turn 的 ToolExec 回环。
 /// - 注入消息同步写 recorder(`MessageRole::User`),resume 不丢中途指示。
 /// - 超过 `MAX_MID_TURN_STEERING` 的消息丢弃并 warn(防投喂撑爆上下文)。
-async fn inject_mid_turn_steering(state: &mut AgentState, ctx: &NodeContext) {
-    use crate::steering_queue::SteeringPriority;
+///
+/// step 回环入口见 [`inject_step_boundary_steering`]。
+async fn inject_turn_boundary_steering(state: &mut AgentState, ctx: &NodeContext) {
     let Some(sq) = ctx.steering_queue.as_ref() else {
         return;
     };
     let drained = sq.lock().drain_all();
+    inject_steering_messages(state, ctx, drained).await;
+}
+
+/// v1.9 C6:step 边界收割(ToolExec 回环)。step 级优先(只属于当前
+/// 这一步的指令),再普通 turn 级。
+async fn inject_step_boundary_steering(state: &mut AgentState, ctx: &NodeContext) {
+    let Some(sq) = ctx.steering_queue.as_ref() else {
+        return;
+    };
+    let drained = sq.lock().drain_for_step();
+    inject_steering_messages(state, ctx, drained).await;
+}
+
+/// 注入共通实现(消息转换 / 上限 / 落盘)。
+async fn inject_steering_messages(
+    state: &mut AgentState,
+    ctx: &NodeContext,
+    drained: Vec<crate::steering_queue::SteeringMessage>,
+) {
+    use crate::steering_queue::SteeringPriority;
     if drained.is_empty() {
         return;
     }
