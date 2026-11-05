@@ -520,6 +520,12 @@ pub struct OpenAIRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
     stream: bool,
+    /// 流式 usage 必须显式请求:OpenAI 兼容服务端(含 vLLM/各类网关)默认
+    /// **不在**流里下发 usage 帧,缺省时 `token_count` 恒为 0 —— 配额、
+    /// 成本与 GUI 用量面板全部失真。`stream.rs` 的排空逻辑(收 stop 后
+    /// 继续等尾帧 usage)正是为这一帧准备的。不支持该参数的服务端会
+    /// 忽略它,无副作用。
+    stream_options: StreamOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
     /// v1.4 B1:结构化输出(`response_format` 参数)。`None` 不序列化,
@@ -585,10 +591,17 @@ impl From<ChatRequest> for OpenAIRequest {
             top_p: req.top_p,
             stop: req.stop,
             stream: true,
+            stream_options: StreamOptions { include_usage: true },
             reasoning_effort,
             response_format: req.response_format.as_ref().map(openai_response_format),
         }
     }
+}
+
+/// `stream_options` wire 形态 —— 目前只有 `include_usage` 一项。
+#[derive(Debug, Serialize)]
+pub struct StreamOptions {
+    include_usage: bool,
 }
 
 fn push_message(m: ChatMessage, out: &mut Vec<Value>) {
@@ -1071,6 +1084,31 @@ mod tests {
         assert!(
             !body.contains("cache_control"),
             "OpenAI 出站 body 不应含 cache_control,wire 是 no-op;got: {body}"
+        );
+    }
+
+    /// 流式 usage 必须显式请求:缺 `stream_options.include_usage` 时
+    /// OpenAI 兼容服务端不在流里下发 usage 帧 → `token_count` 恒 0
+    /// (GUI 用量/配额/成本全部失真,实机测试在 vLLM 网关上复现)。
+    #[test]
+    fn openai_stream_request_asks_for_usage() {
+        let req = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("hi")],
+            })],
+            ..Default::default()
+        };
+        let v: Value = serde_json::to_value(OpenAIRequest::from(req)).unwrap();
+        assert_eq!(
+            v.get("stream").and_then(Value::as_bool),
+            Some(true),
+            "出站请求应为流式;got: {v}"
+        );
+        assert_eq!(
+            v.pointer("/stream_options/include_usage").and_then(Value::as_bool),
+            Some(true),
+            "流式请求必须带 stream_options.include_usage,否则服务端不下发 usage;got: {v}"
         );
     }
     // ── v1.4 B1:response_format 映射 ─────────────────────────────
