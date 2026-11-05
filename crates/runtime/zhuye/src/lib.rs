@@ -24,14 +24,13 @@
 //!
 //!    ```ignore
 //!    let agent = Zhuye::builder("openai/gpt-4o")   // 指定模型
-//!        .workspace(".")                              // 指定工作目录
-//!        .with_defaults()?    // 压缩器 + 记忆 + 技能 + JSONL recorder
-//!        .build()?;
+//!        .workspace(".");                          // 指定工作目录
+//!    // build() 自带完整 M4(压缩器 + 记忆 + 技能 + JSONL recorder)
 //!    let mut stream = agent.submit(Submission::user_input("hello"));  // 提交输入
 //!    while let Some(event) = stream.next().await { /* 消费事件 */ }
 //!    ```
 //!
-//! 门面映射关系见 `docs/architecture.md §8`。
+//! 门面映射关系见 `docs/architecture.md` 的「门面映射」一节。
 
 pub mod builder;
 pub mod m4_bootstrap;
@@ -40,12 +39,19 @@ pub mod stream;
 // ── Core(保持原状)─────────────────────────────────────────────────────────
 pub use zhuye_core::{AgentConfig, AgentThread, TurnHandle};
 
+// ── Side-channel(用户驱动并发 agent,WP9/13)────────────────────────────
+pub use zhuye_core::side_channel::{
+    MAX_CONCURRENT, SideChannelDriver, SideChannelEvent, SideChannelId, SideChannelInfo,
+    SideChannelRegistry, SideChannelStartError, SideChannelStatus, SideThreadFactory,
+};
+
 // ── LLM ────────────────────────────────────────────────────────────────────
 pub use zhuye_llm::{
     AnthropicClient, AnthropicConfig, Capabilities, ChatEvent, ChatMessage, ChatRequest,
     ContentBlock as LlmContentBlock, CredentialPool, LlmError, ModelClient, ModelRegistry,
-    OllamaClient, OllamaConfig, OpenAIClient, OpenAIConfig, PoolEntry, ProviderKind,
-    SharedModelRegistry, SystemBlocks, ThinkingConfig, providers,
+    OllamaClient, OllamaConfig, OpenAIClient, OpenAIConfig, PoolEntry, ProviderKind, RateCard,
+    SharedModelRegistry, SystemBlocks, ThinkingConfig, price, pricing_for, pricing_table,
+    providers, rate_card, rate_cards,
 };
 
 // ── 协议(Protocol)───────────────────────────────────────────────────────
@@ -109,6 +115,24 @@ pub use zhuye_telemetry::{
 
 // ── Subagent(新暴露)───────────────────────────────────────────────────────
 pub use zhuye_subagent::{CallSubAgentTool, DataTransferConfig, SubAgentFactory, SubAgentSpec};
+
+// ── 审计:Activity 时间线(WP12)────────────────────────────────────────
+pub use zhuye_telemetry::{
+    ActivityEvent, ActivityFilter, ActivityKind, ActivityLevel, ActivityLogger, map_event,
+    pump_events,
+};
+
+// ── 定时:integration 层的 cron / autopilot(WP11)─────────────────────
+pub use zhuye_stream::{
+    AutopilotConfig, AutopilotManager, AutopilotRun, AutopilotRunStatus, CronDriverHandle,
+    CronJobSpec, CronSchedule, CronScheduler, CronStatus, HISTORY_CAP as AUTOPILOT_HISTORY_CAP,
+};
+
+// ── 编排:任务 / 团队 / squad(WP10)───────────────────────────────────
+pub use zhuye_task::{
+    Actor, ActorKind, ActorType, SquadError, SquadManager, SquadMember, SquadSpec, TaskManager,
+    TeamFile, TeamMemberSpec,
+};
 
 // ── 讨论(Discussion,M9 首次暴露,v0.2.3 扩展)──────────────────────────────
 // 顶层 re-export:核心 facade (M9) + LLM 实战集成所需的高级 API (v0.2.3)。

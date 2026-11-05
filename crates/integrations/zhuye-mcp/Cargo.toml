@@ -6,6 +6,7 @@ license.workspace = true
 description = "ZhuYe: MCP (Model Context Protocol) client integration"
 
 [dependencies]
+base64 = "0.22"
 zhuye-protocol  = { workspace = true }
 zhuye-tools     = { workspace = true }
 zhuye-config    = { workspace = true }

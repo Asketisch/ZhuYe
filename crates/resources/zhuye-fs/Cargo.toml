@@ -1,0 +1,16 @@
+[package]
+name = "zhuye-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: 共享文件系统原语(保留 symlink 的原子写)"
+
+[dependencies]
+tempfile = "3"
+dirs = "5"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"

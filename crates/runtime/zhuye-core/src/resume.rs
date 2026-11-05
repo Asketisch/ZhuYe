@@ -82,11 +82,8 @@ pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
                     //   Value::Array  —— 新格式(protocol ContentBlock 数组,
                     //                    Text + ToolUse + ToolResult,完整无损)。
                     //
-                    // 新格式拆分逻辑:Text → AssistantContent.text;ToolUse →
-                    // AssistantContent.tool_calls;ToolResult → 独立 ChatMessage::Tool
-                    // (provider 要求 assistant/tool 角色交替,ToolResult 不能内嵌)。
-                    // 顺序保证:写入侧 latest_content 为 Text→ToolUse→ToolResult,
-                    // 映射时 Assistant(含 ToolUse)先 push、Tool 后 push。
+                    // 新格式按块顺序拆分:工具调用组成助手消息,回执独立输出,
+                    // 回执后的文本和下一轮工具调用留在后续助手消息中。
                     zhuye_protocol::MessageRole::Assistant => match content {
                         serde_json::Value::String(s) => {
                             messages.push(ChatMessage::Assistant(
@@ -100,59 +97,49 @@ pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
                             if let Ok(blocks) =
                                 serde_json::from_value::<Vec<zhuye_protocol::ContentBlock>>(arr.clone())
                             {
-                                let mut text_parts: Vec<String> = Vec::new();
-                                let mut tool_calls: Vec<zhuye_llm::ToolCallRequest> = Vec::new();
-                                // ToolResult 先收集,循环结束后再 push —— 保证
-                                // Assistant(含 ToolUse)在前、Tool(ToolResult)
-                                // 在后的顺序(provider 要求 assistant→tool 交替)。
-                                let mut tool_results: Vec<(String, zhuye_protocol::ToolOutput)> =
-                                    Vec::new();
-                                for b in blocks {
-                                    match b {
-                                        zhuye_protocol::ContentBlock::Text { text }
-                                            if !text.is_empty() =>
-                                        {
-                                            text_parts.push(text);
-                                        }
-                                        zhuye_protocol::ContentBlock::ToolUse { id, name, args } => {
-                                            tool_calls.push(zhuye_llm::ToolCallRequest {
-                                                id,
-                                                name,
-                                                arguments: args,
-                                            });
-                                        }
-                                        zhuye_protocol::ContentBlock::ToolResult {
-                                            call_id,
-                                            output,
-                                        } => {
-                                            tool_results.push((call_id, output));
-                                        }
-                                        // Image / Diff 在 assistant 消息里不常见,
-                                        // 出现则忽略(resume 不注入非文本 assistant 块)。
-                                        _ => {}
+                                fn flush_assistant(
+                                    messages: &mut Vec<ChatMessage>,
+                                    text_parts: &mut Vec<String>,
+                                    tool_calls: &mut Vec<zhuye_llm::ToolCallRequest>,
+                                ) {
+                                    if text_parts.is_empty() && tool_calls.is_empty() {
+                                        return;
                                     }
-                                }
-                                if !text_parts.is_empty() || !tool_calls.is_empty() {
                                     messages.push(ChatMessage::Assistant(
                                         zhuye_llm::AssistantContent {
                                             text: if text_parts.is_empty() {
                                                 None
                                             } else {
-                                                Some(text_parts.join("\n"))
+                                                Some(std::mem::take(text_parts).join("\n"))
                                             },
-                                            tool_calls,
+                                            tool_calls: std::mem::take(tool_calls),
                                             thinking: None,
                                         },
                                     ));
                                 }
-                                // ToolResults 在 Assistant 之后 push(provider
-                                // 要求 assistant→tool 交替)。复用 from_output
-                                // 完成 protocol→llm 层映射(保留 Image 等多模态)。
-                                for (call_id, output) in tool_results {
-                                    messages.push(ChatMessage::Tool(
-                                        zhuye_llm::ToolResult::from_output(call_id, &output),
-                                    ));
+
+                                let mut text_parts = Vec::new();
+                                let mut tool_calls = Vec::new();
+                                for block in blocks {
+                                    match block {
+                                        zhuye_protocol::ContentBlock::Text { text } if !text.is_empty() => {
+                                            text_parts.push(text);
+                                        }
+                                        zhuye_protocol::ContentBlock::ToolUse { id, name, args } => {
+                                            tool_calls.push(zhuye_llm::ToolCallRequest { id, name, arguments: args });
+                                        }
+                                        zhuye_protocol::ContentBlock::ToolResult { call_id, output } => {
+                                            // 工具结果前先完成调用消息;后续文本留在结果之后。
+                                            flush_assistant(&mut messages, &mut text_parts, &mut tool_calls);
+                                            messages.push(ChatMessage::Tool(
+                                                zhuye_llm::ToolResult::from_output(call_id, &output),
+                                            ));
+                                        }
+                                        // 不向助手历史注入图像或差异块。
+                                        _ => {}
+                                    }
                                 }
+                                flush_assistant(&mut messages, &mut text_parts, &mut tool_calls);
                             }
                         }
                         _ => {}
@@ -198,55 +185,71 @@ pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
     repair_orphan_tool_calls(messages)
 }
 
-/// v1.4 A1:孤儿 tool_use 修复。
+/// 修复中断或导入产生的无效工具历史。
 ///
-/// 中断 / 崩溃路径落盘的半截 assistant 内容可能含无 result 的 tool_use
-/// (模型发起了调用但工具未执行完)。Anthropic / OpenAI 会拒绝
-/// 「assistant 含 tool_use 却无对应 tool_result」的消息序列,这里为每个
-/// 孤儿 call_id 合成一条 error ToolResult,保证恢复后的历史角色交替
-/// 完整、可直接送 provider。对存量会话文件(磁盘上已有的半对记录,
-/// 如进程被 kill 的场景)同样是健壮性提升。
+/// 只在对应助手调用后的连续工具消息中匹配回执;缺失回执在下一条
+/// 非工具消息前合成错误结果,重复、孤儿和错位回执被丢弃。
+/// 调用 ID 或工具名为空及同一批次的重复 ID 也会被过滤。
 fn repair_orphan_tool_calls(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     use std::collections::HashSet;
 
-    // 第一遍:收集已有 ToolResult 应答的 call_id 集合。
-    let answered: HashSet<String> = messages
-        .iter()
-        .filter_map(|m| match m {
-            ChatMessage::Tool(result) => Some(result.call_id.clone()),
-            _ => None,
-        })
-        .collect();
+    fn flush_pending(pending: &mut Vec<String>, repaired: &mut Vec<ChatMessage>) {
+        for call_id in pending.drain(..) {
+            repaired.push(ChatMessage::Tool(zhuye_llm::ToolResult {
+                call_id,
+                content: vec![zhuye_llm::ContentBlock::Text {
+                    text: "[interrupted] 工具执行被中断,结果丢失。".to_string(),
+                }],
+                is_error: true,
+            }));
+        }
+    }
 
-    // 第二遍:重建序列,给每个孤儿 tool_use 紧跟着插入合成 error result。
     let mut repaired = Vec::with_capacity(messages.len());
+    let mut pending = Vec::<String>::new();
     let mut changed = false;
     for msg in messages {
         match msg {
-            ChatMessage::Assistant(content) => {
-                let orphans: Vec<String> = content
-                    .tool_calls
-                    .iter()
-                    .filter(|c| !answered.contains(&c.id))
-                    .map(|c| c.id.clone())
-                    .collect();
-                repaired.push(ChatMessage::Assistant(content));
-                for call_id in orphans {
+            ChatMessage::Assistant(mut content) => {
+                changed |= !pending.is_empty();
+                flush_pending(&mut pending, &mut repaired);
+                let mut seen = HashSet::new();
+                content.tool_calls.retain(|call| {
+                    let valid = !call.id.trim().is_empty() && !call.name.trim().is_empty();
+                    let unique = valid && seen.insert(call.id.clone());
+                    changed |= !unique;
+                    unique
+                });
+                pending.extend(content.tool_calls.iter().map(|call| call.id.clone()));
+                if content.text.as_ref().is_some_and(|text| !text.is_empty())
+                    || !content.tool_calls.is_empty()
+                    || content.thinking.is_some()
+                {
+                    repaired.push(ChatMessage::Assistant(content));
+                } else {
                     changed = true;
-                    repaired.push(ChatMessage::Tool(zhuye_llm::ToolResult {
-                        call_id,
-                        content: vec![zhuye_llm::ContentBlock::Text {
-                            text: "[interrupted] 工具执行被中断,结果丢失。".to_string(),
-                        }],
-                        is_error: true,
-                    }));
                 }
             }
-            other => repaired.push(other),
+            ChatMessage::Tool(result) => {
+                if let Some(index) = pending.iter().position(|id| *id == result.call_id) {
+                    pending.remove(index);
+                    repaired.push(ChatMessage::Tool(result));
+                } else {
+                    // 结果必须紧跟对应的 assistant 调用,且同一调用只能应答一次。
+                    changed = true;
+                }
+            }
+            other => {
+                changed |= !pending.is_empty();
+                flush_pending(&mut pending, &mut repaired);
+                repaired.push(other);
+            }
         }
     }
+    changed |= !pending.is_empty();
+    flush_pending(&mut pending, &mut repaired);
     if changed {
-        tracing::debug!("resume:为孤儿 tool_use 合成了 error ToolResult");
+        tracing::debug!("resume:修复未完成、重复或错位的工具调用和结果");
     }
     repaired
 }

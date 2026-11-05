@@ -145,18 +145,36 @@ impl OsSandbox {
     /// `ZHUYE_SANDBOX_OS_LEVEL=1` 加 `ZHUYE_SANDBOX_STRICT=0` 可临时
     /// 回到旧降级语义(用于本地调试 / 过渡期)。
     pub fn from_env() -> Self {
-        let on = std::env::var("ZHUYE_SANDBOX_OS_LEVEL")
-            .ok()
-            .map(|s| {
-                // 显式 "0/false/no/off" 才关闭,空 / 其他值 → 视为开启
-                // (向后兼容 v1.2 的 "设了就开" 语义)。
-                !matches!(
-                    s.trim().to_ascii_lowercase().as_str(),
-                    "" | "0" | "false" | "no" | "off"
-                )
-            })
-            .unwrap_or(true);
-        Self::with_enabled(on)
+        Self::with_enabled(resolve_enabled(
+            std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok().as_deref(),
+            None,
+        ))
+    }
+
+    /// v1.x:env > config > 基线 三段优先级解析出完整沙箱策略。
+    ///
+    /// 收编桌面端 `app-core/src/sandbox.rs` 的纯函数口径(env 优先是
+    /// 运维临时降级的逃生口),并修复核心 CLI 此前的桥接缺口:
+    /// `[sandbox].os_level = Some(false)` **不生效**(headless 只桥接
+    /// `Some(true)`,因为 `from_env()` 未设 env 时默认开启)。
+    ///
+    /// `writable_dirs` / `allow_network` 仅在沙箱启用时有意义(关闭时
+    /// 本就不受限);strict 仍读 env(`ZHUYE_SANDBOX_STRICT`)。
+    pub fn resolve(
+        cfg_os_level: Option<bool>,
+        writable_dirs: Vec<PathBuf>,
+        allow_network: bool,
+    ) -> Self {
+        let on = resolve_enabled(
+            std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok().as_deref(),
+            cfg_os_level,
+        );
+        let mut s = Self::with_enabled(on);
+        if on {
+            s.writable_dirs = writable_dirs;
+            s.allow_network = allow_network;
+        }
+        s
     }
 
     /// v1.5 R1:显式指定开关的构造器 —— `ThreadSettingsOverrides
@@ -511,8 +529,7 @@ impl OsSandbox {
     /// Landlock 规则。闭包限制 workspace 外的写(workspace 内写/读/执行
     /// 全放行;workspace 外读放行、写拒)。
     ///
-    /// 若内核不支持 Landlock(`landlock_create_ruleset` 返回 ENOSYS /
-    /// EOPNOTSUPP),闭包记 warn 后返回 `Ok(())`(降级,不阻塞 exec)。
+    /// 内核不支持时,严格模式返回错误;非严格模式允许降级。
     ///
     /// # Safety
     /// 仅在 `pre_exec`(子进程 fork 后)上下文调用;闭包内只做 async-signal-
@@ -524,7 +541,8 @@ impl OsSandbox {
         workspace: PathBuf,
     ) -> impl FnMut() -> std::io::Result<()> + Send + Sync + 'static {
         let writable = self.writable_dirs.clone();
-        move || apply_landlock(&workspace, &writable)
+        let strict = self.strict;
+        move || apply_landlock(&workspace, &writable, strict)
     }
 }
 
@@ -723,10 +741,32 @@ mod landlock {
         true
     }
 
+    fn may_ignore_unsupported(errno: i32, strict: bool) -> bool {
+        !strict && matches!(errno, 38 | 95)
+    }
+
+    #[cfg(test)]
+    mod failure_policy_tests {
+        use super::may_ignore_unsupported;
+
+        #[test]
+        fn unsupported_backend_only_degrades_when_non_strict() {
+            for error in [38, 95] {
+                assert!(!may_ignore_unsupported(error, true));
+                assert!(may_ignore_unsupported(error, false));
+            }
+            assert!(!may_ignore_unsupported(1, false));
+        }
+    }
+
     /// 在 pre_exec 上下文应用 Landlock。仅 workspace(及其额外可写目录)
     /// 放行全 access;workspace 外的写由内核拒(读 / exec 不受限 —— 与
     /// macOS 策略一致:限制写是核心安全边界)。
-    pub(super) fn apply_landlock(workspace: &Path, writable: &[PathBuf]) -> io::Result<()> {
+    pub(super) fn apply_landlock(
+        workspace: &Path,
+        writable: &[PathBuf],
+        strict: bool,
+    ) -> io::Result<()> {
         // 1. create ruleset(仅 handled_access_fs;net 留 0)。
         let attr = LandlockRulesetAttr {
             handled_access_fs: ACCESS_FS_WRITE_ONLY,
@@ -742,8 +782,8 @@ mod landlock {
         };
         if fd < 0 {
             let e = errno();
-            // ENOSYS / EOPNOTSUPP → 内核不支持,降级(不阻塞)。
-            if e == 38 || e == 95 {
+            // 仅非严格模式可在内核不支持时降级。
+            if may_ignore_unsupported(e, strict) {
                 return Ok(());
             }
             // 带 stage 的错误信息:spawn 失败消息会透传给调用方,便于
@@ -793,8 +833,8 @@ mod landlock {
         unsafe { close(ruleset_fd) };
         if r < 0 {
             let e = errno();
-            if e == 38 || e == 95 {
-                return Ok(()); // 降级
+            if may_ignore_unsupported(e, strict) {
+                return Ok(()); // 非严格模式允许降级
             }
             return Err(io::Error::new(
                 io::Error::from_raw_os_error(e).kind(),
@@ -843,7 +883,7 @@ pub fn probe_landlock_exec() -> bool {
         return false;
     }
     // restrict:复用 apply_landlock(失败 = 环境不支持 → 视作不可用)。
-    if apply_landlock(&cwd, &[]).is_err() {
+    if apply_landlock(&cwd, &[], true).is_err() {
         return false;
     }
     // restrict 成功后 exec 仍须可用(部分受限 runner 上会 EACCES)。
@@ -862,6 +902,75 @@ pub fn probe_landlock_exec() -> bool {
 // 被引用。保留别名让旧代码继续编译,内部映射到新 API。
 #[doc(hidden)]
 pub type OsSandboxStubStatus = OsSandboxStatus;
+
+/// v1.x:解析 `ZHUYE_SANDBOX_OS_LEVEL` 的开关语义(纯函数)。
+///
+/// 显式 `""` / `"0"` / `"false"` / `"no"` / `"off"` 才关闭;其余值
+/// (含 `"1"` / `"true"` / 任意未识别值)视为开启 —— 与 v1.2 "设了就开"
+/// 的向后兼容语义一致。
+pub fn parse_env_os_level(raw: &str) -> bool {
+    !matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
+/// v1.x:env > config > 基线 三段优先级(纯函数,不碰进程 env)。
+///
+/// - env 已设置(`Some`)→ env 说了算(逃生口:运维可临时覆盖配置);
+/// - env 未设置 → 尊重 `[sandbox].os_level` 表态(`None` = 未表态);
+/// - 两者都未表态 → 基线开启(`OsSandbox::default()` = enabled + strict)。
+pub fn resolve_enabled(env_raw: Option<&str>, cfg_os_level: Option<bool>) -> bool {
+    if let Some(raw) = env_raw {
+        return parse_env_os_level(raw);
+    }
+    cfg_os_level.unwrap_or(true)
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn parse_env_os_level_only_explicit_off_disables() {
+        for off in ["", "0", "false", "no", "off", " off ", "FALSE"] {
+            assert!(!parse_env_os_level(off), "{off:?} 应判为关闭");
+        }
+        for on in ["1", "true", "yes", "on", "anything-else"] {
+            assert!(parse_env_os_level(on), "{on:?} 应判为开启");
+        }
+    }
+
+    #[test]
+    fn env_beats_config_beats_baseline() {
+        // env 优先:逃生口可临时覆盖配置(关的 env 压掉开的 config,反之亦然)。
+        assert!(!resolve_enabled(Some("0"), Some(true)));
+        assert!(resolve_enabled(Some("1"), Some(false)));
+        // env 未表态 → 尊重 config。
+        assert!(resolve_enabled(None, Some(true)));
+        assert!(!resolve_enabled(None, Some(false)));
+        // 两者都未表态 → 基线开启。
+        assert!(resolve_enabled(None, None));
+    }
+
+    #[test]
+    fn resolve_carries_writable_dirs_and_network() {
+        let s = OsSandbox::resolve(Some(true), vec![PathBuf::from("/tmp/extra")], true);
+        assert!(s.enabled);
+        assert_eq!(s.writable_dirs, vec![PathBuf::from("/tmp/extra")]);
+        assert!(s.allow_network);
+        // 关闭时沙箱整体透传,writable / network 设置无意义(不受限)。
+        let off = OsSandbox::resolve(Some(false), vec![PathBuf::from("/x")], true);
+        assert!(!off.enabled);
+    }
+
+    #[test]
+    fn resolve_respects_env_escape_hatch() {
+        // env 显式关闭时,即使 config 要求开也关(纯函数口径)。
+        let on = resolve_enabled(Some("0"), Some(true));
+        assert!(!on);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -891,13 +1000,25 @@ mod tests {
 
     #[test]
     fn from_env_defaults_on_and_strict() {
-        // v1.3:未设置 env → 启用 + strict(向后不兼容,但符合
-        // "默认要求 OS sandbox" 的安全基线;设置 ZHUYE_SANDBOX_OS_LEVEL=0
-        // 可显式关闭)。
-        let s = OsSandbox::from_env();
-        // 不强制断言 enabled(可能继承 env),只确保不 panic 且 status 合法。
-        let _ = s.status();
-        let _ = s.strict;
+        // 子进程隔离环境变量,避免与并行测试互相干扰。
+        const CHILD: &str = "ZHUYE_TEST_SANDBOX_DEFAULT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let s = OsSandbox::from_env();
+            assert!(s.enabled, "未设置环境变量时必须启用沙箱");
+            assert!(s.strict, "未设置环境变量时必须启用严格模式");
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "os_sandbox::tests::from_env_defaults_on_and_strict",
+            ])
+            .env(CHILD, "1")
+            .env_remove("ZHUYE_SANDBOX_OS_LEVEL")
+            .env_remove("ZHUYE_SANDBOX_STRICT")
+            .status()
+            .unwrap();
+        assert!(status.success(), "沙箱默认值子进程测试失败");
     }
 
     #[test]
@@ -1174,7 +1295,7 @@ mod tests {
     fn landlock_apply_does_not_panic() {
         // Landlock 在测试机内核不支持时应降级(Ok),支持时也应 Ok。
         let ws = std::env::temp_dir();
-        let r = apply_landlock(&ws, &[]);
+        let r = apply_landlock(&ws, &[], false);
         // 测试进程已应用 landlock 后可能影响后续测试,故只验证不 panic。
         let _ = r;
     }
@@ -1193,7 +1314,7 @@ mod tests {
             return;
         }
         let ws = std::env::temp_dir();
-        if apply_landlock(&ws, &[]).is_err() {
+        if apply_landlock(&ws, &[], false).is_err() {
             std::process::exit(2); // 环境不支持 Landlock → 父进程按 skip 处理
         }
         match std::fs::OpenOptions::new().write(true).open("/dev/null") {

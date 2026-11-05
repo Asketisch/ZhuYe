@@ -214,9 +214,20 @@ class Submission(_SubmissionOptionalFields):
 # ── EventMsg ──────────────────────────────────────────────────────────────
 
 
-class ContentBlock(TypedDict):
-    type: Literal["text"]
+class _ContentBlockOptionalFields(TypedDict, total=False):
     text: str
+    data: list[int]
+    mime_type: str
+    unified_diff: str
+    id: str
+    name: str
+    args: Any
+    call_id: str
+    output: ToolOutput
+
+
+class ContentBlock(_ContentBlockOptionalFields):
+    type: Literal["text", "image", "diff", "tool_use", "tool_result"]
 
 
 class TokenUsage(TypedDict, total=False):

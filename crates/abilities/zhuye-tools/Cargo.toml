@@ -7,6 +7,7 @@ description = "ZhuYe: Tool trait, builtin tools, ToolExecutionQueue"
 
 [dependencies]
 zhuye-protocol = { workspace = true }
+zhuye-fs       = { workspace = true }
 zhuye-prompt   = { workspace = true }
 zhuye-hooks    = { workspace = true }
 # S5a:`ApprovalGate` 注入 `PermissionResolver` 短路 Allow/Deny(详见
@@ -16,6 +17,12 @@ zhuye-permissions = { workspace = true }
 # v1.2 P0-1:`OsSandbox`(macOS Seatbelt / Linux Landlock)给 `BashTool`
 # 提供真实 OS 沙箱。`zhuye-sandbox` 不反向依赖 `zhuye-tools`,无环。
 zhuye-sandbox    = { workspace = true }
+# WP8:checkpoint 原语下沉至 zhuye-git(git 能力族统一家);zhuye-git 只
+# 依赖 serde/tokio,不反向依赖 tools,无环。
+zhuye-git         = { workspace = true }
+# WP8:CheckpointTool / RewindTool 从 zhuye-exec 移入本 crate(它们本就是
+# 工具);rollout 只依赖 protocol/sanitize/fs,无环。
+zhuye-rollout     = { workspace = true }
 async-trait        = { workspace = true }
 futures            = { workspace = true }
 htmd               = { workspace = true }
@@ -23,6 +30,8 @@ ignore             = { workspace = true }
 once_cell          = { workspace = true }
 parking_lot        = { workspace = true }
 regex              = { workspace = true }
+# v1.9 C1/C2:循环失控守卫的调用/输出指纹(SHA-256)。
+sha2               = { workspace = true }
 zhuye-bm25       = { workspace = true }
 reqwest            = { workspace = true }
 serde              = { workspace = true }

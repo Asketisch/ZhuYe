@@ -29,14 +29,10 @@ fn build_manager() -> anyhow::Result<TaskManager> {
 
 /// `~/.zhuye` 根目录 —— 任务 / 团队文件都落这里。
 ///
-/// 镜像 `FileTaskStore::with_default_home` 的 fallback 顺序:优先
-/// `$ZHUYE_HOME`,否则 `$HOME/.zhuye`。
+/// home 口径统一走 [`zhuye_config::data_dir`] —— 与
+/// `FileTaskStore::with_default_home` 同源,不再镜像一份 fallback 顺序。
 fn zhuye_home() -> anyhow::Result<std::path::PathBuf> {
-    if let Some(p) = std::env::var_os("ZHUYE_HOME") {
-        return Ok(std::path::PathBuf::from(p));
-    }
-    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME unset"))?;
-    Ok(std::path::PathBuf::from(home).join(".zhuye"))
+    zhuye_config::data_dir().ok_or_else(|| anyhow!("HOME unset"))
 }
 
 /// `zhuye task ls [--list <id>] [--include-deleted]` —— 列任务。

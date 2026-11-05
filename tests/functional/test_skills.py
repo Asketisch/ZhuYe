@@ -113,3 +113,29 @@ def test_SK3_文件skill不受开关影响(serve_session, mock_script, sandbox: 
     _load_skill(
         serve_session, mock_script, "file-skill", "file-skill-body-marker", expect_error=False
     )
+
+
+def test_SK4_用户技能随数据目录隔离(serve_session, mock_script, sandbox: Sandbox) -> None:
+    """自定义数据目录只加载自身技能，空值回退到默认用户目录。"""
+    require_binary()
+    data_a = sandbox.cwd / "skill-home-a"
+    data_b = sandbox.cwd / "skill-home-b"
+    for home in (data_a, data_b):
+        home.mkdir()
+        (home / "config.toml").write_text('[hooks]\nenabled = []\n')
+    def add_skill(home, marker):
+        directory = home / "skills/isolation-skill"
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(f'---\nname: isolation-skill\ndescription: isolation probe\n---\n{marker}\n')
+    add_skill(data_a, "only-data-a")
+    add_skill(sandbox.home / ".zhuye", "legacy-home")
+    script = mock_script(['{"type":"tool_call","name":"load_skill","args":{"name":"isolation-skill"}}',
+                          '{"type":"text","text":"done"}'])
+    for home, expected in [(str(data_a), "only-data-a"), (str(data_b), None), ("", "legacy-home")]:
+        with serve_session(env=sandbox.mock_env(script, ZHUYE_HOME=home)) as session:
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "加载技能"}]}, timeout=DRAIN_TIMEOUT)
+        end = _tool_end(events)
+        if expected is None:
+            assert end["is_error"] and "skill not found" in _tool_text(end), end
+        else:
+            assert not end["is_error"] and expected in _tool_text(end), end

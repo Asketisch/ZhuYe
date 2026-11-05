@@ -13,10 +13,10 @@
 //! 以 JSONL 流形式向 stdout 输出事件。tracing 日志走 stderr。
 
 mod bootstrap;
-mod checkpoint_tool;
 mod cron_tool;
 mod headless;
 mod jsonl;
+mod memory_tool;
 mod reload;
 mod runtime_config;
 pub mod serve;
@@ -26,9 +26,9 @@ mod tests;
 
 // 重导出,保留历史公共 API 表面积。内部也通过 `crate::` 路径引用这些项。
 pub use bootstrap::ResumeBundle;
-pub use checkpoint_tool::{CheckpointTool, RewindTool};
 pub use cron_tool::CronTool;
 pub use jsonl::JsonlWriter;
+pub use memory_tool::MemoryTool;
 pub use reload::{diff_sections_for_test, handle_reload, spawn_reload_task};
 
 use clap::Args;
@@ -107,7 +107,7 @@ pub struct ExecArgs {
 
 /// `--plan-mode` 下"计划生成失败"的退出码。
 ///
-/// `docs/PLAN_MODE.md:50` 与 `ExecArgs::plan_mode` 的 doc 都承诺了这个
+/// `docs/PLAN_MODE.md` 与 `ExecArgs::plan_mode` 的 doc 都承诺了这个
 /// 退出码,但**全仓库没有任何实现** —— `async_main` 正常路径恒返回
 /// `Ok(())`(exit 0),依赖 122 做重试判断的脚本调用方会永远看到"成功"。
 ///
@@ -197,6 +197,9 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         plan_mode: args.plan_mode,
         // exec 保持既有行为:未配置 [hooks] = 全部启用(仅 serve 收紧)。
         hooks_explicit_only: false,
+        // exec 无 --plugin 旗标:保持 config 驱动(显式插件加载是
+        // SDK 嵌入(serve)场景的能力)。
+        plugins: None,
     };
     let common = headless::bootstrap_common(&hargs).await?;
     let resume_thread_id_str = headless::resolve_resume_thread_id(
@@ -213,9 +216,15 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         let mut handle = session.thread.submit(sub).await;
         let stdout = std::io::stdout();
         let mut writer = JsonlWriter::new(stdout.lock());
+        // v1.x:Activity 审计 tee(WP12)—— 与 stdout 排水同环,不额外
+        // 消费者;record 失败只丢审计不杀会话。
+        let activity = zhuye_telemetry::ActivityLogger::with_default_home();
         let mut plan_produced = false;
         let mut code = 0;
         while let Some(event) = handle.next().await {
+            if let Some(a) = zhuye_telemetry::map_event(&event) {
+                let _ = activity.record(a);
+            }
             if is_plan_ready_event(&event) {
                 plan_produced = true;
             }
@@ -261,9 +270,14 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         zhuye_protocol::Submission::user_input_items(items)
     };
     let mut handle = session.thread.submit(sub).await;
+    // v1.x:Activity 审计 tee(同 resume 分支)。
+    let activity = zhuye_telemetry::ActivityLogger::with_default_home();
     let mut plan_produced = false;
     let mut code = 0;
     while let Some(event) = handle.next().await {
+        if let Some(a) = zhuye_telemetry::map_event(&event) {
+            let _ = activity.record(a);
+        }
         if is_plan_ready_event(&event) {
             plan_produced = true;
         }

@@ -38,6 +38,24 @@ pub enum MemoryError {
     /// scope / agent_type 组合非法。
     #[error("invalid memory configuration: {0}")]
     Invalid(String),
+    /// 条目 key 非法(空 / 带首尾空白 / 含换行)。
+    #[error("invalid memory key: {0:?}")]
+    InvalidKey(String),
+    /// 条目已存在(`create_only` 写入)。
+    #[error("memory entry already exists: {key}")]
+    EntryExists { key: String },
+    /// 同一 key 对应多个标题块,拒绝猜测。
+    #[error("memory entry has ambiguous headings: {key}")]
+    AmbiguousHeadings { key: String },
+    /// 同一 key 的标题块在文件内重复出现。
+    #[error("memory entry has duplicate headings: {key}")]
+    DuplicateHeadings { key: String },
+    /// 原内容已变(乐观锁失败 / 整份替换前置校验失败)。
+    #[error("memory document changed; reload before retrying")]
+    DocumentChanged,
+    /// value 里含 `## ` 标题,会污染条目边界。
+    #[error("memory value cannot contain a level-two heading")]
+    HeadingInValue,
 }
 
 #[cfg(test)]

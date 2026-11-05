@@ -1,0 +1,13 @@
+# KMS 知识库插件 —— 本地多 wiki 知识管理(list / get / search / 读写 / dream 固化)。
+#
+# 使用前必须先构建二进制(装插件 = 授权任意代码执行,二进制由本仓库
+# 源码构建,可信;来源不明的插件请勿安装):
+#   ./scripts/build_kms_plugin.sh
+#   zhuye plugin install plugins/kms --scope user
+#   zhuye plugin enable kms@inline
+name = "kms"
+version = "0.1.0"
+description = "本地知识库 wiki:Markdown 多库分页 + grep 检索 + 洞见固化(dream)。存储于 ~/.zhuye/kms/"
+keywords = ["kms", "knowledge", "wiki", "notes"]
+commands = "./commands"
+mcp_servers = "./.mcp.json"

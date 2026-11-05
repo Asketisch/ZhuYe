@@ -2,9 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::DEFAULT_CONFIG_FILE;
 use crate::error::ConfigError;
 use crate::schema::{CURRENT_CONFIG_VERSION, ReflectConfig};
-use crate::{DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILE};
 
 /// config.toml 的绝对路径。
 ///
@@ -15,15 +15,10 @@ use crate::{DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILE};
 /// 多端点并行)拿不到配置隔离。现在配置读取与数据目录一致:
 /// `ZHUYE_HOME` 指向的目录**就是** `.zhuye` 目录本身(其下直接放
 /// `config.toml`),未设置时回落 `$HOME/.zhuye`。
+///
+/// home 解析统一走 [`crate::paths::data_dir`] —— 全框架唯一口径。
 pub fn default_config_path() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("ZHUYE_HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join(DEFAULT_CONFIG_FILE));
-        }
-    }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|h| h.join(DEFAULT_CONFIG_DIR).join(DEFAULT_CONFIG_FILE))
+    crate::paths::data_dir().map(|dir| dir.join(DEFAULT_CONFIG_FILE))
 }
 
 /// 从任意 TOML 字符串解析;失败转 `ConfigError::Parse`。
@@ -217,11 +212,12 @@ test_command = "cargo test --quiet"
 
     /// `ZHUYE_HOME` 指向的目录放有合法 config.toml 时,
     /// `load_default` 必须读到它(配置与 session-notes 等数据目录同一
-    /// 套 `ZHUYE_HOME` 语义)。env 改写用互斥锁串行化,避免并行测试互踩。
+    /// 套 `ZHUYE_HOME` 语义)。env 改写与读 env 的测试(paths.rs 等)
+    /// 共用 crate 级 `paths::ENV_LOCK` 串行化,避免并行测试互踩 ——
+    /// 函数局部锁只管得了本文件,管不了并行读 env 的其他模块。
     #[test]
     fn zhuye_home_redirects_config_load() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap();
+        let _guard = crate::paths::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let toml = r#"
 [active]

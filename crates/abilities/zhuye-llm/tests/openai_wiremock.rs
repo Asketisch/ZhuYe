@@ -530,6 +530,61 @@ async fn openai_config_defaults_apply_when_request_omits_params() {
     assert_eq!(body["max_tokens"], 123);
 }
 
+/// 自动预算进入请求体,未知型号保留 provider 的原有行为。
+#[tokio::test]
+async fn openai_automatic_output_budget_matches_model_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            "text/event-stream",
+        ))
+        .mount(&server)
+        .await;
+    let client = OpenAIClient::new(OpenAIConfig {
+        api_key: "test-key".into(),
+        base_url: Some(server.uri()),
+        timeout: Duration::from_secs(5),
+        temperature: None,
+        max_tokens: None,
+    })
+    .unwrap();
+    for model in [
+        "gpt-4o",
+        "gpt-4-turbo",
+        "gpt-4o-future",
+        "o3-mini",
+        "o3-mini",
+    ] {
+        let mut request = basic_request();
+        request.model = model.into();
+        request.max_tokens = None;
+        if model == "o3-mini" && server.received_requests().await.unwrap().len() == 4 {
+            request.max_tokens = Some(512);
+        }
+        let mut stream = client
+            .stream(request, CancellationToken::new())
+            .await
+            .unwrap();
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+    }
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies[0]["max_tokens"], 16_384);
+    assert_eq!(bodies[1]["max_tokens"], 4_096);
+    assert!(bodies[2].get("max_tokens").is_none());
+    assert_eq!(bodies[3]["max_completion_tokens"], 32_768);
+    assert_eq!(bodies[4]["max_completion_tokens"], 512);
+    assert!(bodies[3].get("max_tokens").is_none());
+    assert!(bodies[4].get("max_tokens").is_none());
+}
+
 /// base_url 已含版本段(智谱式 `/api/paas/v4`)→ 只追加
 /// `/chat/completions`,不再拼出 `/v4/v1/...`。
 #[tokio::test]

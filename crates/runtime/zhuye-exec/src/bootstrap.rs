@@ -14,6 +14,8 @@ use zhuye_llm::{ChatMessage, SharedModelRegistry};
 use zhuye_lsp::{LspConnectionManager, LspLifecycleEvent, LspTool};
 use zhuye_mcp::{McpConnectionManager, McpLifecycleEvent, McpServerConfig, McpToolAdapter};
 use zhuye_memory::{FileMemoryStore, InMemoryStore, MemoryStore};
+
+use crate::MemoryTool;
 use zhuye_prompt::PromptBuilder;
 use zhuye_protocol::ThreadId;
 use zhuye_rollout::JsonlRolloutWriter;
@@ -112,6 +114,7 @@ fn apply_active_tool_filter(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bootstrap_m4(
     workspace: &std::path::Path,
+    tools: &ToolRegistry,
     agent_name: &str,
     model: &str,
     registry: &SharedModelRegistry,
@@ -121,14 +124,13 @@ pub(crate) fn bootstrap_m4(
     telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
 ) -> Option<zhuye_core::config::M4Deps> {
     // Agent 定义:从 workspace + home agent 目录加载。
-    let home = std::env::var("HOME").unwrap_or_default();
-    let home_path = std::path::Path::new(&home);
+    let user_data_dir = zhuye_config::data_path_or_relative(&[]);
 
     // v1.6:按模型匹配的外置提示词库。home 在前、workspace 在后
     // (workspace 同名层优先),另兼容旧版 `~/.zhuye/prompts.md`。
     let ws_prompts = workspace.join(".zhuye").join("prompts");
-    let home_prompts = home_path.join(".zhuye").join("prompts");
-    let legacy_prompts_md = home_path.join(".zhuye").join("prompts.md");
+    let home_prompts = user_data_dir.join("prompts");
+    let legacy_prompts_md = user_data_dir.join("prompts.md");
     let legacy = std::fs::read_to_string(&legacy_prompts_md).ok();
     if legacy.is_some() {
         tracing::warn!(
@@ -139,7 +141,7 @@ pub(crate) fn bootstrap_m4(
     zhuye_prompt::init_library(&[&home_prompts, &ws_prompts], legacy.as_deref());
 
     let ws_agents = workspace.join(".zhuye").join("agents");
-    let home_agents = home_path.join(".zhuye").join("agents");
+    let home_agents = user_data_dir.join("agents");
     let mut agents = zhuye_agent_def::load_agents_dir(&ws_agents).unwrap_or_default();
     let home_agents_map = zhuye_agent_def::load_agents_dir(&home_agents).unwrap_or_default();
     agents.extend(home_agents_map);
@@ -167,7 +169,7 @@ pub(crate) fn bootstrap_m4(
 
     // Skills:扫描 workspace + home skill 目录。
     let ws_skills = workspace.join(".zhuye").join("skills");
-    let home_skills = home_path.join(".zhuye").join("skills");
+    let home_skills = user_data_dir.join("skills");
     let skill_dirs: Vec<&std::path::Path> = vec![&ws_skills, &home_skills];
     let skills_catalog = SkillsCatalog::new();
     skills_catalog.scan(&skill_dirs);
@@ -186,21 +188,34 @@ pub(crate) fn bootstrap_m4(
     // `FloorEnforcingTool` 包装抬升到 `Prompt`,避免被 plugin / MCP
     // 利用做静态放行。
     let load_skill = Arc::new(zhuye_skills::LoadSkillTool::new(skills_catalog.clone()));
-    tools().register_runtime_tool(load_skill);
+    tools.register_runtime_tool(load_skill);
     // v1.4 D3:附属资源读取(渐进披露第三级)—— 与 load_skill 同源
     // catalog,按需读取 skill 目录下的 scripts / references。
     let read_skill_resource = Arc::new(zhuye_skills::ReadSkillResourceTool::new(
         skills_catalog.clone(),
     ));
-    tools().register_runtime_tool(read_skill_resource);
+    tools.register_runtime_tool(read_skill_resource);
 
     // Memory:project + user 走文件,session 走内存。
     // v1.x:接线 `CompositeMemoryStore`(此前孤儿)—— Session scope 走内存
     // (进程退出即丢,对话历史已在 rollout JSONL),Project/User scope 走文件。
     // 此前用纯 FileMemoryStore,Session scope 也落文件,与设计意图不符。
-    let file_store = Arc::new(FileMemoryStore::new(workspace, home_path));
-    let memory_arc: Arc<dyn MemoryStore> = Arc::new(InMemoryStore::with_fallback(file_store));
+    let file_store = Arc::new(FileMemoryStore::with_user_data_dir(
+        workspace,
+        &user_data_dir,
+    ));
+    let memory_arc: Arc<dyn MemoryStore> =
+        Arc::new(InMemoryStore::with_fallback(file_store.clone()));
     let memory: Arc<dyn MemoryStore> = memory_arc;
+
+    // v1.x:memory 读写工具 —— 写侧与 pre_loop 注入读侧共用同一个
+    // FileMemoryStore(同一 resolve_path 口径);agent_type 取构造时的
+    // 活跃 agent 名(不引入进程级全局,桌面端曾因此出现「GUI 写的记忆
+    // agent 读不到」)。走 register_runtime_tool 应用 Runtime 源安全 floor。
+    tools.register_runtime_tool(Arc::new(
+        MemoryTool::new(file_store, agent_name.to_string())
+            .with_session(zhuye_rollout::path::default_base(), thread_id),
+    ));
 
     // v1.1.0 Phase 6 P0:Session memory notes。
     //
@@ -214,7 +229,7 @@ pub(crate) fn bootstrap_m4(
     let note_tool: Arc<dyn zhuye_tools::Tool> =
         Arc::new(zhuye_notes::AddSessionNoteTool::new(note_store.clone()));
     // v1.3:走 `register_runtime_tool` 应用 Runtime 源安全 floor。
-    tools().register_runtime_tool(note_tool);
+    tools.register_runtime_tool(note_tool);
 
     // v1.1.0 Phase 6 P0:Active File Recovery。post-compact 扫最近
     // write / edit 工具调用,重读文件内容注入 `<system-reminder>`。
@@ -230,8 +245,9 @@ pub(crate) fn bootstrap_m4(
     let subagent_registry = zhuye_recovery::SubagentRegistry::shared();
 
     // Compactor:在有 LLM 客户端时接上 LLM 摘要器。
-    // v1.0 多 Provider 路由:用 registry + policy 注入,`LlmSummarizer` 内
-    // 部走 `Role::Compact` slot 并在失败时跨 credential failover。
+    // 先把 Compact primary 拷进 spec(空则用主模型),再把这份真实 policy
+    // 和 spec 一起交给 LlmSummarizer。摘要器不读 compact.fallbacks,
+    // 失败只在该 spec 的凭据池里切换。
     let summarizer: Arc<dyn Summarizer> = {
         let policy = cfg.routing_policy_with(model);
         // 选 compact slot 的 primary 作 spec 起点(向后兼容 model)
@@ -366,10 +382,8 @@ pub(crate) fn bootstrap_m5(
     // v1.x 功能 2:合并 subagent spec —— 优先级
     // TOML `[[subagents]]` > workspace `.zhuye/subagents/*.md`
     // > home `~/.zhuye/subagents/*.md` > 硬编码 explorer(仅当全部为空时)。
-    let home = std::env::var("HOME").unwrap_or_default();
-    let home_path = std::path::Path::new(&home);
     let ws_subagents = workspace.join(".zhuye").join("subagents");
-    let home_subagents = home_path.join(".zhuye").join("subagents");
+    let home_subagents = zhuye_config::data_path_or_relative(&["subagents"]);
     let home_md = zhuye_subagent::load_subagents_dir(&home_subagents).unwrap_or_default();
     let ws_md = zhuye_subagent::load_subagents_dir(&ws_subagents).unwrap_or_default();
     let toml_specs = initial_cfg.subagents.clone();

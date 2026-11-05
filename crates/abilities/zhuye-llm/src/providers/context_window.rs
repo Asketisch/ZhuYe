@@ -28,7 +28,6 @@ const CONTEXT_WINDOW_TABLE: &[(&str, u32)] = &[
     ("gpt-4o", 128_000),
     ("gpt-4o-mini", 128_000),
     ("gpt-4-turbo", 128_000),
-    ("gpt-4", 128_000),
     ("o3-mini", 200_000),
     // ── Ollama 本地模型(128k 通用;以主流 config 为准) ────────────────
     ("llama3.3", 128_000),
@@ -72,6 +71,9 @@ pub fn context_window_for(model_spec: &str) -> Option<u32> {
     let needle = no_tag.trim().to_ascii_lowercase();
     if needle.is_empty() {
         return None;
+    }
+    if matches!(needle.as_str(), "gpt-4" | "gpt-4-0314" | "gpt-4-0613") {
+        return Some(8_192);
     }
     CONTEXT_WINDOW_TABLE
         .iter()
@@ -121,6 +123,9 @@ mod tests {
     #[test]
     fn unknown_model_returns_none() {
         assert_eq!(context_window_for("future-model-9000"), None);
+        assert_eq!(context_window_for("gpt-4.1"), None);
+        assert_eq!(context_window_for("gpt-4-32k"), None);
+        assert_eq!(context_window_for("gpt-4-0613"), Some(8_192));
         assert_eq!(context_window_for(""), None);
         assert_eq!(context_window_for("/"), None);
     }

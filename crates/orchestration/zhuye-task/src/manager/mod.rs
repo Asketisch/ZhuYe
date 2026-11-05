@@ -23,7 +23,7 @@ use zhuye_subagent::{SubAgentFactory, SubAgentSpec};
 
 use crate::error::TaskError;
 use crate::model::{ListId, Task, TaskId, TaskStatus, TeamFile};
-use crate::store::TaskStore;
+use crate::store::{TaskStore, validate_list_id};
 use crate::team::validate_team_name;
 use crate::team_store::TeamStore;
 
@@ -88,7 +88,7 @@ pub struct TaskManager {
     /// 事件 sink,仿 `zhuye_discussion::DiscussionOrchestrator::event_sink`。
     /// Phase 0 不发射事件(无消费者);Phase 1 由 `zhuye_exec` 注入真实 sink。
     pub(crate) event_sink: Option<Arc<dyn Fn(zhuye_protocol::EventMsg) + Send + Sync>>,
-    /// `claim_next_available` 用的 per-list 串行化锁。
+    /// 同一 `TaskManager` 内任务写入共用的 per-list 串行化锁。
     ///
     /// 同 list 内多个 worker 并发 claim 时,只有第一个能拿到 `Pending +
     /// !blocked_by` 的任务;后续者等锁释放后再扫一遍(此时第一个已经
@@ -121,25 +121,6 @@ impl TaskManager {
         }
     }
 
-    /// `list` 会成为文件路径的一段，也决定任务输出文件位置；必须在
-    /// TaskManager 边界统一校验，避免 `../`、绝对路径或分隔符逃出任务目录。
-    fn validate_list_id(list: &str) -> Result<(), TaskError> {
-        if list.is_empty() || list.len() > 128 {
-            return Err(TaskError::Invalid(
-                "task list id length must be 1..=128 chars".into(),
-            ));
-        }
-        if !list
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(TaskError::Invalid(
-                "task list id must match [a-z0-9_-]+".into(),
-            ));
-        }
-        Ok(())
-    }
-
     /// 注入钩子引擎。Phase 1 由 `zhuye_exec` 启动时调用。
     pub fn with_hook_engine(mut self, engine: Arc<zhuye_hooks::HookEngine>) -> Self {
         self.hook_engine = Some(engine);
@@ -168,8 +149,14 @@ impl TaskManager {
         owner: Option<String>,
         metadata: serde_json::Value,
     ) -> Result<Task, TaskError> {
-        Self::validate_list_id(list)?;
-        let id = self.task_store.next_id(list).await?;
+        validate_list_id(list)?;
+        let lock = self.lock_for_claim(list).await;
+        let guard = lock.lock().await;
+        let transaction = self.task_store.lock_transaction(list).await?;
+        let id = self
+            .task_store
+            .next_id_transactional(list, transaction.clone())
+            .await?;
         let now = SystemTime::now();
         // 派生 output_path:文件后端落 `<dir>/<id>.output.md`;in-memory
         // 后端落 `<in-memory>/<list>/<id>.output.md` 占位,TaskOutput 不读。
@@ -194,7 +181,11 @@ impl TaskManager {
             created_at: now,
             updated_at: now,
         };
-        self.task_store.save(list, &task).await?;
+        self.task_store
+            .save_transactional(list, &task, transaction.clone())
+            .await?;
+        drop(transaction);
+        drop(guard);
         self.fire_task_created(&task).await;
         Ok(task)
     }
@@ -206,7 +197,7 @@ impl TaskManager {
         id: TaskId,
         include_deleted: bool,
     ) -> Result<Task, TaskError> {
-        Self::validate_list_id(list)?;
+        validate_list_id(list)?;
         let t = self.task_store.load(list, id).await?;
         if !include_deleted && t.status == TaskStatus::Deleted {
             return Err(TaskError::NotFound {
@@ -225,8 +216,41 @@ impl TaskManager {
         id: TaskId,
         patch: TaskPatch,
     ) -> Result<UpdateOutcome, TaskError> {
-        Self::validate_list_id(list)?;
+        self.update_task_inner(list, id, patch, None).await
+    }
+
+    pub(crate) async fn assign_task_actor(
+        &self,
+        list: &ListId,
+        id: TaskId,
+        assignee: Option<String>,
+    ) -> Result<UpdateOutcome, TaskError> {
+        let actor = assignee.as_deref().map(crate::actor::Actor::from_agent_id);
+        let patch = TaskPatch {
+            owner: Some(assignee),
+            ..Default::default()
+        };
+        self.update_task_inner(list, id, patch, Some(actor)).await
+    }
+
+    async fn update_task_inner(
+        &self,
+        list: &ListId,
+        id: TaskId,
+        patch: TaskPatch,
+        actor: Option<Option<crate::actor::Actor>>,
+    ) -> Result<UpdateOutcome, TaskError> {
+        validate_list_id(list)?;
+        let lock = self.lock_for_claim(list).await;
+        let guard = lock.lock().await;
+        let transaction = self.task_store.lock_transaction(list).await?;
         let mut task = self.task_store.load(list, id).await?;
+        if actor.is_some() && task.status == TaskStatus::Deleted {
+            return Err(TaskError::NotFound {
+                list: list.clone(),
+                id,
+            });
+        }
         let mut updated_fields = Vec::new();
         let mut status_change: Option<(TaskStatus, TaskStatus)> = None;
 
@@ -248,6 +272,11 @@ impl TaskManager {
         }
         if let Some(metadata) = patch.metadata {
             task.metadata = metadata;
+            updated_fields.push("metadata".into());
+        }
+        if let Some(actor) = actor {
+            task.metadata =
+                crate::actor::Actor::merge_into_metadata(actor.as_ref(), &task.metadata);
             updated_fields.push("metadata".into());
         }
         if let Some(extra) = patch.add_blocks {
@@ -283,7 +312,11 @@ impl TaskManager {
         }
 
         task.updated_at = SystemTime::now();
-        self.task_store.save(list, &task).await?;
+        self.task_store
+            .save_transactional(list, &task, transaction.clone())
+            .await?;
+        drop(transaction);
+        drop(guard);
 
         // 钩子触发
         if let Some((_, TaskStatus::Completed)) = status_change {
@@ -302,14 +335,19 @@ impl TaskManager {
     /// 软删除(把 status 设为 `Deleted`)。Phase 1 工具层 `TaskUpdate status=deleted`
     /// 走 `update_task` 路径;`delete_task` 保留供 CLI / admin 用。
     pub async fn delete_task(&self, list: &ListId, id: TaskId) -> Result<(), TaskError> {
-        Self::validate_list_id(list)?;
-        self.task_store.delete(list, id).await
+        validate_list_id(list)?;
+        let lock = self.lock_for_claim(list).await;
+        let _guard = lock.lock().await;
+        let transaction = self.task_store.lock_transaction(list).await?;
+        self.task_store
+            .delete_transactional(list, id, transaction)
+            .await
     }
 
     /// 原子认领:在该 list 下找第一个 `status == Pending && blocked_by.is_empty()`
     /// 的任务,把它标 `InProgress` 并写入 `claimed_by` / `claimed_at`。
     ///
-    /// 并发安全:同 list 内多个 worker 并发调用时,通过 `claim_locks` 串行化
+    /// 内置存储支持跨管理器并发:同 list 内多个 worker 通过事务锁串行化
     /// 「find + mutate + save」整段 —— 第一个拿锁的 worker 完成 find 后
     /// 后续者看到的列表里该任务已 `InProgress`,自动跳过。跨 list 完全并行。
     ///
@@ -320,9 +358,10 @@ impl TaskManager {
         list: &ListId,
         claimer: &str,
     ) -> Result<Option<Task>, TaskError> {
-        Self::validate_list_id(list)?;
+        validate_list_id(list)?;
         let lock = self.lock_for_claim(list).await;
-        let _guard = lock.lock().await;
+        let guard = lock.lock().await;
+        let transaction = self.task_store.lock_transaction(list).await?;
 
         // 在锁内做 find:扫描 list,挑第一个 Pending 且 blocked_by 为空的。
         let tasks = self.task_store.list(list).await?;
@@ -344,7 +383,11 @@ impl TaskManager {
         task.claimed_at = Some(now);
         task.updated_at = now;
 
-        self.task_store.save(list, &task).await?;
+        self.task_store
+            .save_transactional(list, &task, transaction.clone())
+            .await?;
+        drop(transaction);
+        drop(guard);
 
         // 钩子触发 —— 把"认领"当成 status 变化(从 Pending → InProgress)
         // 加上 claimed_by 字段填充,复用 `TaskUpdated`。
@@ -373,7 +416,7 @@ impl TaskManager {
         list: &ListId,
         _include_deleted: bool,
     ) -> Result<Vec<Task>, TaskError> {
-        Self::validate_list_id(list)?;
+        validate_list_id(list)?;
         // store 已自动过滤 `status == Deleted`,include_deleted 参数为
         // 预留扩展点 —— 未来如果 store 增加 "include deleted" 模式可透传。
         self.task_store.list(list).await

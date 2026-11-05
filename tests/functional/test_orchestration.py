@@ -15,7 +15,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -216,3 +218,97 @@ def test_O5_goal模式与其他op共存(serve_session, mock_script) -> None:
             timeout=DRAIN_TIMEOUT,
         )
     assert "turn_complete" in msg_types(evs), f"退出 goal 后 turn 未完成:{msg_types(evs)}"
+
+
+def test_O6_任务更新字段一致(serve_session, mock_script, sandbox) -> None:
+    """任务创建、更新和查询保留未修改字段与更新后的结构化元数据。"""
+    require_binary()
+    script = mock_script([
+        '{"type":"tool_call","name":"TaskCreate","args":{"subject":"原题","description":"保留描述","listId":"review","metadata":{"keep":"value"}}}',
+        '{"type":"tool_call","name":"TaskUpdate","args":{"taskId":1,"listId":"review","subject":"新题","owner":"builder@review","status":"in_progress"}}',
+        '{"type":"tool_call","name":"TaskGet","args":{"taskId":1,"listId":"review"}}',
+        '{"type":"text","text":"done"}',
+    ])
+    with serve_session(env=sandbox.mock_env(script)) as session:
+        events = session.submit({"type":"user_input","items":[{"type":"text","text":"更新任务"}]})
+    ends = [event["msg"] for event in events if event["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == 3 and all(not end["is_error"] for end in ends), ends
+    updated = ends[1]["output"]["metadata"]
+    assert set(updated["updatedFields"]) == {"subject", "owner", "status"}, updated
+    task = ends[2]["output"]["metadata"]["task"]
+    assert task["subject"] == "新题"
+    assert task["description"] == "保留描述"
+    assert task["owner"] == "builder@review"
+    assert task["status"] == "in_progress"
+    assert task["metadata"]["keep"] == "value"
+
+
+def test_O7_跨进程并发创建任务(sandbox) -> None:
+    """多个 CLI 进程创建同一列表时,所有任务获得唯一 ID 并完整落盘。"""
+    require_binary()
+    def create(index: int):
+        return run_cli(sandbox, "task", "create", "--list", "parallel", "--subject", f"任务-{index}", env={"ZHUYE_MODEL": "mock"})
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(create, range(12)))
+    assert all(result.returncode == 0 for result in results), [(result.stdout, result.stderr) for result in results]
+    directory = sandbox.home / ".zhuye" / "tasks" / "parallel"
+    tasks = [json.loads(path.read_text()) for path in directory.glob("*.json")]
+    assert sorted(task["id"] for task in tasks) == list(range(1, 13)), tasks
+    assert {task["subject"] for task in tasks} == {f"任务-{index}" for index in range(12)}, tasks
+    assert all(task["status"] == "pending" for task in tasks), tasks
+
+
+def test_O8_任务列表拒绝路径穿越(sandbox) -> None:
+    """非法列表 ID 不得在任务根目录之外创建文件或目录。"""
+    require_binary()
+    outside = sandbox.cwd / "outside-task-list"
+    for name in ("../outside-task-list", str(outside), "nested/list", "nested\\list"):
+        result = run_cli(sandbox, "task", "create", "--list", name, "--subject", "不可创建", env={"ZHUYE_MODEL": "mock"})
+        assert result.returncode != 0, (name, result.stdout, result.stderr)
+    assert not outside.exists()
+    assert not (sandbox.home / ".zhuye" / "outside-task-list").exists()
+
+
+def test_O9_任务高水位损坏与丢失(sandbox) -> None:
+    """损坏高水位不覆盖旧任务;落后或丢失时按现存任务恢复编号。"""
+    require_binary()
+    first = run_cli(sandbox, "task", "create", "--list", "hwm", "--subject", "原任务", env={"ZHUYE_MODEL": "mock"})
+    assert first.returncode == 0, first.stderr
+    directory = sandbox.home / ".zhuye" / "tasks" / "hwm"
+    original = (directory / "1.json").read_bytes()
+    watermark = directory / ".highwatermark"
+    watermark.write_text("损坏")
+    failed = run_cli(sandbox, "task", "create", "--list", "hwm", "--subject", "不应覆盖", env={"ZHUYE_MODEL": "mock"})
+    assert failed.returncode != 0, failed.stdout
+    assert watermark.read_text() == "损坏"
+    assert (directory / "1.json").read_bytes() == original
+    watermark.write_text("0")
+    recovered = run_cli(sandbox, "task", "create", "--list", "hwm", "--subject", "新任务", env={"ZHUYE_MODEL": "mock"})
+    assert recovered.returncode == 0, recovered.stderr
+    assert json.loads((directory / "1.json").read_text())["subject"] == "原任务"
+    assert json.loads((directory / "2.json").read_text())["subject"] == "新任务"
+    watermark.unlink()
+    third = run_cli(sandbox, "task", "create", "--list", "hwm", "--subject", "恢复任务", env={"ZHUYE_MODEL": "mock"})
+    assert third.returncode == 0, third.stderr
+    assert json.loads((directory / "3.json").read_text())["subject"] == "恢复任务"
+
+
+def test_O10_任务输出读取上限(serve_session, mock_script, sandbox) -> None:
+    """超大任务输出返回有限内容及明确的截断元数据。"""
+    require_binary()
+    created = run_cli(sandbox, "task", "create", "--list", "output-limit", "--subject", "大输出", env={"ZHUYE_MODEL": "mock"})
+    assert created.returncode == 0, created.stderr
+    output = sandbox.home / ".zhuye" / "tasks" / "output-limit" / "1.output.md"
+    output.write_text("x" * (1024 * 1024 + 200))
+    script = mock_script([
+        '{"type":"tool_call","name":"TaskOutput","args":{"taskId":1,"listId":"output-limit","block":false}}',
+        '{"type":"text","text":"done"}',
+    ])
+    with serve_session(env=sandbox.mock_env(script)) as session:
+        events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "读取输出"}]}, timeout=DRAIN_TIMEOUT)
+    ends = [event["msg"] for event in events if event["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == 1 and not ends[0]["is_error"]
+    result = ends[0]["output"]
+    assert result["metadata"]["outputTruncated"] is True
+    assert result["metadata"]["contentLength"] == 1024 * 1024
+    assert result["content"][0]["text"] == "x" * (1024 * 1024)

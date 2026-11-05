@@ -123,6 +123,13 @@ pub struct AgentState {
     /// 保护(超限丢弃并 warn)—— 防止外部无限投喂把上下文撑爆。
     /// 每 turn 经 `AgentState::default` 重置。
     pub mid_turn_steering_injected: u32,
+    /// v1.9 C3:本 turn 工具调用总数(tool_exec 在结果循环里累加;
+    /// `AgentState` 每 turn 新建,天然 turn 作用域)。
+    pub turn_tool_calls: u32,
+    /// v1.9 C3:本 turn 工具错误数(`ToolResult.is_error`)。
+    pub turn_tool_errors: u32,
+    /// v1.9 C3:本 turn 工具超时数(结果 metadata 带 `timeout_ms`)。
+    pub turn_tool_timeouts: u32,
 }
 
 /// v1.x progress-nudge:每条 web_fetch 的 URL + 200 字符片段摘要,供

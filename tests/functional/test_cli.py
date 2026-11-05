@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import time
 
 import pytest
@@ -194,3 +195,175 @@ def test_C6_exec_退出码映射(sandbox, mock_script) -> None:
     )
     assert doc.returncode == 0, f"doctor 退出码={doc.returncode}:{doc.stderr[:500]}"
     assert doc.stdout.strip(), "doctor 无输出"
+
+
+def test_C7_hooks启停持久化(sandbox) -> None:
+    """`zhuye hooks disable/enable` 写 `[hooks].disabled` 并生效:
+    disable 后该 hook 不再 veto Stop(会话可正常收尾),enable 后恢复。
+
+    依据:crates/abilities/zhuye-hooks/src/config.rs `build_engine` 的
+    disabled apply + crates/runtime/zhuye-cli/src/hooks.rs。
+    """
+    require_binary()
+    # 沙箱默认 `[hooks] enabled = []`(关全部重 hook);本用例显式启用
+    # verification 一个,验名单增删与状态反映。
+    (sandbox.home / ".zhuye/config.toml").write_text('[hooks]\nenabled = ["verification"]\n')
+
+    # 1) 基线:ls 能列出注册的 hook(默认全启用)。
+    proc = run_cli(sandbox, "hooks", "ls", timeout=30)
+    assert proc.returncode == 0, f"hooks ls 退出码={proc.returncode}:{proc.stderr}"
+    assert "verification" in proc.stdout, f"未列出内置 hook:\n{proc.stdout!r}"
+    assert "disabled" not in proc.stdout, f"默认不应有禁用项:\n{proc.stdout!r}"
+
+    # 2) disable verification → 写进 config.toml#hooks.disabled。
+    proc = run_cli(sandbox, "hooks", "disable", "verification", timeout=30)
+    assert proc.returncode == 0, f"hooks disable 退出码={proc.returncode}:{proc.stderr}"
+    cfg = (sandbox.home / ".zhuye/config.toml").read_text()
+    assert "disabled" in cfg and "verification" in cfg, f"config 未写禁用名单:\n{cfg!r}"
+
+    # 3) ls 反映禁用状态。
+    proc = run_cli(sandbox, "hooks", "ls", timeout=30)
+    assert "disabled" in proc.stdout, f"ls 未反映禁用状态:\n{proc.stdout!r}"
+    verification_line = [ln for ln in proc.stdout.splitlines() if "verification" in ln]
+    assert verification_line and "disabled" in verification_line[0], (
+        f"verification 应显示 disabled:{verification_line!r}"
+    )
+
+    # 4) enable → 从名单移除(幂等)。
+    proc = run_cli(sandbox, "hooks", "enable", "verification", timeout=30)
+    assert proc.returncode == 0, f"hooks enable 退出码={proc.returncode}:{proc.stderr}"
+    cfg = (sandbox.home / ".zhuye/config.toml").read_text()
+    assert "verification" not in cfg.split("disabled")[-1] if "disabled" in cfg else True, (
+        f"enable 后 config 仍含 verification:\n{cfg!r}"
+    )
+    proc = run_cli(sandbox, "hooks", "ls", timeout=30)
+    verification_line = [ln for ln in proc.stdout.splitlines() if "verification" in ln]
+    assert verification_line and "disabled" not in verification_line[0], (
+        f"enable 后 verification 应恢复:{verification_line!r}"
+    )
+
+
+def test_C8_插件hook禁用持久化(sandbox, serve_session, mock_script) -> None:
+    """插件延迟注册时仍遵循禁用配置,重新启用后恢复执行。"""
+    require_binary()
+    plugin_dir = sandbox.cwd / "hookprobe"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text(
+        'name = "hookprobe"\nversion = "0.1.0"\nhooks = "./hooks.json"\n'
+    )
+    marker = sandbox.cwd / "hook-ran"
+    (plugin_dir / "hooks.json").write_text(json.dumps({
+        "hooks": {"PostToolUse": [{"matcher": "*", "hooks": [{
+            "type": "command", "command": f"printf ran >> {shlex.quote(str(marker))}"
+        }]}]}
+    }))
+    installed = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert installed.returncode == 0, installed.stderr + installed.stdout
+    name = "plugin:hookprobe@inline:PostToolUse#0"
+    script = mock_script([
+        '{"type":"tool_call","name":"echo","args":{"text":"hook-check"}}',
+        '{"type":"text","text":"done"}',
+    ])
+
+    def run_turn() -> None:
+        with serve_session(args=["--plugin", "hookprobe@inline"], env=sandbox.mock_env(script)) as session:
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "执行"}]})
+        ends = [event["msg"] for event in events if event["msg"]["type"] == "tool_call_end"]
+        assert ends and ends[0]["is_error"] is False, events
+        assert any(event["msg"]["type"] == "turn_complete" for event in events), events
+
+    run_turn()
+    assert marker.read_text() == "ran"
+    marker.unlink()
+    disabled = run_cli(sandbox, "hooks", "disable", name)
+    assert disabled.returncode == 0, disabled.stderr + disabled.stdout
+    run_turn()
+    assert not marker.exists(), "已禁用的插件 hook 仍然执行"
+    enabled = run_cli(sandbox, "hooks", "enable", name)
+    assert enabled.returncode == 0, enabled.stderr + enabled.stdout
+    run_turn()
+    assert marker.read_text() == "ran"
+
+
+def test_C7b_hooks配置损坏保护与并发更新(sandbox) -> None:
+    """损坏配置保持原样；并发启停保留其它字段和注释。"""
+    from concurrent.futures import ThreadPoolExecutor
+    import tomllib
+
+    require_binary()
+    path = sandbox.home / ".zhuye/config.toml"
+    malformed = '# 原始配置\n[hooks\nenabled = ["verification"]\n'
+    path.write_text(malformed)
+    for args in [("disable", "verification"), ("enable", "verification"), ("ls",)]:
+        result = run_cli(sandbox, "hooks", *args, env={"ZHUYE_HOME": ""}, timeout=30)
+        assert result.returncode != 0, result.stdout
+        assert path.read_text() == malformed
+
+    original = '# 保留的顶层注释\n[hooks]\nenabled = ["verification"] # 原始名单\n\n[future_extension]\nvalue = "keep" # 保留未知字段\n'
+    path.write_text(original)
+    names = [f"plugin:future:Stop#{index}" for index in range(12)]
+    def disable(name: str):
+        return run_cli(sandbox, "hooks", "disable", name, env={"ZHUYE_HOME": ""}, timeout=30)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(disable, names))
+    assert all(result.returncode == 0 for result in results), [result.stderr for result in results]
+    text = path.read_text()
+    config = tomllib.loads(text)
+    assert set(config["hooks"]["disabled"]) == set(names)
+    assert config["hooks"]["enabled"] == ["verification"]
+    assert config["future_extension"]["value"] == "keep"
+    assert '# 保留的顶层注释' in text and '# 原始名单' in text and '# 保留未知字段' in text
+
+    result = run_cli(sandbox, "hooks", "enable", names[0], env={"ZHUYE_HOME": ""}, timeout=30)
+    assert result.returncode == 0, result.stderr
+    updated = tomllib.loads(path.read_text())
+    assert set(updated["hooks"]["disabled"]) == set(names[1:])
+    assert updated["future_extension"]["value"] == "keep"
+
+    path.write_text('hooks = { enabled = ["verification"], custom = 7 }\n')
+    result = run_cli(sandbox, "hooks", "disable", "verification", env={"ZHUYE_HOME": ""}, timeout=30)
+    assert result.returncode == 0, result.stderr
+    inline = tomllib.loads(path.read_text())["hooks"]
+    assert inline == {"enabled": ["verification"], "custom": 7, "disabled": ["verification"]}
+
+
+def test_C9_插件随数据目录隔离(sandbox, serve_session, mock_script) -> None:
+    """插件安装记录、缓存和运行时加载均遵循 ZHUYE_HOME。"""
+    require_binary()
+    home_a = sandbox.cwd / "data-a"
+    home_b = sandbox.cwd / "data-b"
+    for home in (home_a, home_b):
+        home.mkdir()
+        (home / "config.toml").write_text('[hooks]\nenabled = []\n')
+    plugin = sandbox.cwd / "isolated-plugin"
+    plugin.mkdir()
+    (plugin / "plugin.toml").write_text('name = "isolated"\nversion = "0.1.0"\nhooks = "./hooks.json"\n')
+    marker = sandbox.cwd / "isolated-hook-ran"
+    (plugin / "hooks.json").write_text(json.dumps({"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [
+        {"type": "command", "command": f"printf ran >> {shlex.quote(str(marker))}"}
+    ]}]}}))
+    env_a = {"ZHUYE_HOME": str(home_a)}
+    env_b = {"ZHUYE_HOME": str(home_b)}
+    installed = run_cli(sandbox, "plugin", "install", str(plugin), "--scope", "user", env=env_a)
+    assert installed.returncode == 0, installed.stderr + installed.stdout
+    state = json.loads((home_a / "plugins/installed_plugins.json").read_text())
+    assert "isolated@inline" in json.dumps(state), state
+    assert not (home_b / "plugins/installed_plugins.json").exists()
+    assert not (sandbox.home / ".zhuye/plugins/installed_plugins.json").exists()
+    listed_a = run_cli(sandbox, "plugin", "list", env=env_a)
+    listed_b = run_cli(sandbox, "plugin", "list", env=env_b)
+    assert listed_a.returncode == listed_b.returncode == 0
+    assert "isolated@inline" in listed_a.stdout and "isolated@inline" not in listed_b.stdout
+
+    script = mock_script(['{"type":"tool_call","name":"echo","args":{"text":"probe"}}',
+                          '{"type":"text","text":"done"}'])
+    for home, should_run in [(home_a, True), (home_b, False)]:
+        with serve_session(args=["--plugin", "isolated@inline"],
+                           env=sandbox.mock_env(script, ZHUYE_HOME=str(home))) as session:
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "执行"}]})
+        ends = [event["msg"] for event in events if event["msg"]["type"] == "tool_call_end"]
+        assert ends and not ends[0]["is_error"], events
+        assert marker.exists() is should_run
+        if marker.exists():
+            assert marker.read_text() == "ran"
+            marker.unlink()

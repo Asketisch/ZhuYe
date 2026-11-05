@@ -137,8 +137,13 @@ impl CronTool {
         let job = self
             .scheduler
             .create(schedule, prompt, name.map(|s| s.to_string()))
-            .map_err(|e| ToolError::InvalidArgs {
-                message: format!("cron: invalid schedule: {e}"),
+            .map_err(|e| match e {
+                zhuye_stream::CronParseError::StoreUnavailable(_) => {
+                    ToolError::Execution(format!("cron: {e}"))
+                }
+                _ => ToolError::InvalidArgs {
+                    message: format!("cron: invalid schedule: {e}"),
+                },
             })?;
         Ok(job_output(
             "created",
@@ -149,7 +154,10 @@ impl CronTool {
 
     fn exec_delete(&self, args: &serde_json::Value) -> Result<ToolOutput, ToolError> {
         let id = require_str(args, "id")?;
-        let removed = self.scheduler.delete(id);
+        let removed = self
+            .scheduler
+            .try_delete(id)
+            .map_err(|error| ToolError::Execution(format!("cron: {error}")))?;
         Ok(job_output(
             if removed { "deleted" } else { "not_found" },
             None,
@@ -158,6 +166,9 @@ impl CronTool {
     }
 
     fn exec_list(&self) -> Result<ToolOutput, ToolError> {
+        self.scheduler
+            .ensure_store_available()
+            .map_err(|error| ToolError::Execution(format!("cron store unavailable: {error}")))?;
         let jobs = self.scheduler.list();
         Ok(job_output(
             "list",
@@ -171,6 +182,9 @@ impl CronTool {
 
     fn exec_get(&self, args: &serde_json::Value) -> Result<ToolOutput, ToolError> {
         let id = require_str(args, "id")?;
+        self.scheduler
+            .ensure_store_available()
+            .map_err(|error| ToolError::Execution(format!("cron store unavailable: {error}")))?;
         match self.scheduler.get(id) {
             Some(job) => Ok(job_output("get", Some(&job), serde_json::json!({}))),
             None => Ok(job_output(
@@ -196,7 +210,11 @@ impl CronTool {
                 });
             }
         }
-        match self.scheduler.update(id, schedule, prompt, name, enabled) {
+        match self
+            .scheduler
+            .try_update(id, schedule, prompt, name, enabled)
+            .map_err(|error| ToolError::Execution(format!("cron: {error}")))?
+        {
             Some(job) => Ok(job_output(
                 "updated",
                 Some(&job),

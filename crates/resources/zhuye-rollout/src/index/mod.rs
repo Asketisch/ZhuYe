@@ -402,8 +402,9 @@ fn aggregate_token_counts(body: &str) -> (u64, u64, u64, Option<f64>) {
 ///
 /// 实现细节:
 /// - `body` 已由调用方读入内存,本函数仅迭代行,无额外 I/O。
-/// - `content: serde_json::Value` 优先取字符串(`as_str()`);非字符串
-///   (数字 / 数组 / 对象)回退到 `to_string()` 并去掉首尾 `"`。
+/// - `content: serde_json::Value` 的形态提取走 [`extract_message_text`]:
+///   字符串直用;block 数组(`[{"type":"text",...}]`,user 消息的新格式)
+///   拼接所有 text 块;其它(数字 / 对象)回退 `to_string()` 去引号。
 /// - 解析失败的行静默跳过(与 `replay` 一致,不刷屏)。
 /// - 找到首条即返回(短路与);无任何 User 消息 → `None`。
 fn first_user_message_title(body: &str) -> Option<String> {
@@ -420,18 +421,83 @@ fn first_user_message_title(body: &str) -> Option<String> {
             ..
         } = record
         {
-            let text = match &content {
-                serde_json::Value::String(s) => s.clone(),
-                other => {
-                    // 非字符串:去掉 serde_json::to_string 加的引号。
-                    let raw = other.to_string();
-                    raw.trim_matches('"').to_string()
-                }
-            };
-            return zhuye_protocol::derive_title(&text);
+            return zhuye_protocol::derive_title(&extract_message_text(&content));
         }
     }
     None
+}
+
+/// [`first_user_message_title`] 的公开版 —— 供已持有 body 的调用方
+/// (如 `zhuye session show`)复用同一派生口径,不必再扫一遍列表。
+pub fn derive_title_from_body(body: &str) -> Option<String> {
+    first_user_message_title(body)
+}
+
+/// 从 `RolloutRecord::Message.content`(`serde_json::Value`)提取纯文本。
+///
+/// 三种形态:
+/// - `String` —— 旧格式 user 消息,原样返回;
+/// - `Array` —— 新格式 block 数组,取所有 `{"type":"text","text":..}` 块
+///   按序拼接(换行分隔,后续 `derive_title` 会折叠空白)。此前这里走
+///   `to_string()` 把整段 JSON 序列化结果当标题,列表里满屏
+///   `[{"type":"text"...`;
+/// - 其它(数字 / 对象)—— 保持旧回退:`to_string()` 去掉首尾引号。
+fn extract_message_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => {
+            let mut parts: Vec<&str> = Vec::new();
+            for block in blocks {
+                if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                    && let Some(text) = block.get("text").and_then(|t| t.as_str())
+                {
+                    parts.push(text);
+                }
+            }
+            if parts.is_empty() {
+                // 数组里没有 text 块(纯图片 / 工具结果)—— 回退序列化串,
+                // 与旧行为一致(至少不返回空标题)。
+                return content.to_string();
+            }
+            parts.join("\n")
+        }
+        other => {
+            // 非字符串:去掉 serde_json::to_string 加的引号。
+            let raw = other.to_string();
+            raw.trim_matches('"').to_string()
+        }
+    }
+}
+
+/// 解析 session 的**展示标题**:用户 `/rename` 自定义名优先,回退派生标题。
+///
+/// 收编前各客户端(TUI / 桌面端)各自实现"先读 `_names/<id>.name` 再回退
+/// `SessionInfo.title`"的合并逻辑,口径漂移(空文件算不算命名、读失败
+/// 是否阻断列表)。本函数定为框架侧唯一口径:
+/// - `.name` 存在且非空 → 自定义名;
+/// - 否则 → `derived`(通常是 [`SessionInfo::title`](zhuye_protocol::SessionInfo::title),
+///   或 [`derive_title_from_body`] 对单文件的结果);
+/// - `.name` 读取 IO 失败 → 只记 debug 日志,回退派生标题(列表不阻断)。
+///
+/// 返回 `None` = 既未命名也无首条 user 文本(空会话 / 旧文件),调用方
+/// 自行决定回落(如显示 thread id 短前缀)。
+pub fn resolve_display_title(
+    base: &Path,
+    session_id: ThreadId,
+    derived: Option<String>,
+) -> Option<String> {
+    match read_session_name(base, session_id) {
+        Ok(Some(name)) if !name.is_empty() => Some(name),
+        Ok(_) => derived,
+        Err(e) => {
+            tracing::debug!(
+                session = %session_id,
+                error = %e,
+                "read session name failed; falling back to derived title"
+            );
+            derived
+        }
+    }
 }
 
 /// 扫描 `path` 的同级轮转副本(`.1.jsonl` 到 `.MAX_ROTATED_FILES.jsonl`),
@@ -636,6 +702,12 @@ pub fn write_session_sidecar(
     kind: &str,
     content: &[u8],
 ) -> std::io::Result<()> {
+    if !matches!(kind, "name" | "title") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid sidecar kind",
+        ));
+    }
     let sidecar_dir = base.join(format!("_{kind}s"));
     match std::fs::symlink_metadata(&sidecar_dir) {
         Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
@@ -646,7 +718,18 @@ pub fn write_session_sidecar(
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(&sidecar_dir)?;
+            if let Err(error) = std::fs::create_dir(&sidecar_dir) {
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+                let metadata = std::fs::symlink_metadata(&sidecar_dir)?;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "session sidecar directory is not a plain directory",
+                    ));
+                }
+            }
         }
         Err(error) => return Err(error),
     }

@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from sdkharness import drain, make_options, msg_types
+from sdkharness import ZHUYE_BIN, drain, make_options, msg_types
 
 from zhuye import ContentBlock, ZhuyeAgent, ToolOutput
 
@@ -98,6 +98,27 @@ def test_K3_注册工具_本地执行_回执(env_home: Path) -> None:
         evs = drain(agent.submit("调工具"))
         assert calls == [{"q": "ping"}], f"handler 入参异常:{calls!r}"
         assert "turn_complete" in msg_types(evs), f"turn 未收尾:{msg_types(evs)}"
+    finally:
+        agent.close()
+
+
+def test_K13_工具图片回执经SDK往返(env_home: Path) -> None:
+    """SDK 能发送图片工具回执,并在事件迭代器读取同一字节。"""
+    calls = []
+    def handler(args: dict[str, Any]) -> ToolOutput:
+        calls.append(args)
+        return ToolOutput(content=[ContentBlock(type="image", data=[137, 80, 78, 71], mime_type="image/png")], is_error=False, metadata={}, elapsed_ms=0)
+    agent = ZhuyeAgent.spawn(make_options([
+        '{"type":"tool_call","name":"sdk_image","args":{}}',
+        '{"type":"text","text":"done"}',
+    ]))
+    try:
+        agent.register_tool("sdk_image", "图片", {"type":"object"}, handler)
+        events = drain(agent.submit("图片"))
+        assert calls == [{}]
+        end = next(event["msg"] for event in events if event["msg"]["type"] == "tool_call_end")
+        assert end["output"]["content"] == [{"type":"image", "data":[137, 80, 78, 71], "mime_type":"image/png"}]
+        assert "turn_complete" in msg_types(events)
     finally:
         agent.close()
 
@@ -246,5 +267,127 @@ def test_K9_全局事件公开读取口(env_home: Path) -> None:
         event = agent.next_global_event(timeout_secs=5)
         assert event["id"] == ""
         assert event["msg"]["type"] == "permission_mode_changed"
+    finally:
+        agent.close()
+
+
+# ── K9 --plugin 显式插件加载 ─────────────────────────────────────────────
+
+
+def test_K9_plugins选项_显式加载并上报PluginLoaded(env_home: Path) -> None:
+    """`plugins=["demo@inline"]` 经 `--plugin` 传给 serve,启动时上报
+    `plugin_loaded` 全局事件(覆盖 config,而非配置驱动)。
+
+    依据:crates/runtime/zhuye-exec/src/headless.rs resolve_enabled_plugins、
+    sdks/python/zhuye/agent.py _serve_args。
+    """
+    import os
+
+    from zhuye import ZhuyeAgentOptions
+
+    plugin_dir = Path(__file__).resolve().parents[2] / "plugins" / "plugin-demo"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/plugin-demo 不存在(仓库不完整?)")
+
+    # 先把 demo 插件装入隔离 HOME(等价 zhuye plugin install)。
+    subprocess.run(
+        [str(ZHUYE_BIN), "plugin", "install", str(plugin_dir), "--scope", "user"],
+        env=dict(os.environ),
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+    opts = make_options()
+    assert isinstance(opts, ZhuyeAgentOptions)
+    opts.plugins = ["demo@inline"]
+    agent = ZhuyeAgent.spawn(opts)
+    try:
+        # plugin_loaded 在 bootstrap 期发出,轮询全局队列(上限 ~15s)。
+        # next_global_event 超时抛 queue.Empty(而非返回 None),逐次捕获。
+        # 注意:队列里是整条 wire Event,类型在 ev["msg"]["type"]。
+        import queue
+
+        loaded = None
+        for _ in range(15):
+            try:
+                ev = agent.next_global_event(timeout_secs=1)
+            except queue.Empty:
+                continue
+            if ev is None:
+                break
+            if ev.get("msg", {}).get("type") == "plugin_loaded":
+                loaded = ev["msg"]
+                break
+        assert loaded is not None, (
+            f"未收到 plugin_loaded 全局事件:"
+            f"qsize={agent._global_queue.qsize()} "
+            f"reader_alive={agent._reader_thread.is_alive()} "
+            f"proc={agent._proc.poll()}"
+        )
+        assert loaded.get("plugin") == "demo@inline", f"插件 id 不符:{loaded}"
+        assert loaded.get("command_count", 0) >= 1, f"应有 demo:hello 命令:{loaded}"
+    finally:
+        agent.close()
+
+
+# ── K10 side-channel 查询 Op(WP9 新能力面)──────────────────────────────
+
+
+def test_K10_side_channel查询Op_真二进制返回status快照(env_home: Path) -> None:
+    """真二进制:`submit_op({"type":"query_side_channels"})` → 真实 serve
+    回 `side_channel_status`(channels 数组)+ `submission_closed` 收尾。
+
+    与 K4(set_effort 静默)不同:这个 Op 有真实应答事件 —— exec 路径
+    已装配 side-channel driver(WP13),查询不再走 "not configured" Error
+    分支。纯逻辑层同型用例:sdks/python/tests/test_protocol.py(mock)。
+    """
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"t1"}']))
+    try:
+        evs = drain(agent.submit_op({"type": "query_side_channels"}))
+        types = msg_types(evs)
+        assert "side_channel_status" in types, f"缺 status 事件:{types}"
+        status = next(e["msg"] for e in evs if e["msg"]["type"] == "side_channel_status")
+        assert isinstance(status.get("channels"), list), f"channels 应为数组:{status}"
+        assert types[-1] == "submission_closed", f"收尾异常:{types}"
+    finally:
+        agent.close()
+
+
+def test_K11_side_channel终态进入全局事件队列(env_home: Path) -> None:
+    """侧通道终态由 SDK 的全局事件接口读取,不会混入提交迭代器。"""
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"side response"}']))
+    try:
+        agent.next_global_event(timeout_secs=5)
+        events = drain(agent.submit_op({"type": "start_side_channel", "agent": "default", "prompt": "p"}))
+        assert events[-1]["msg"]["type"] == "submission_closed"
+        event = agent.next_global_event(timeout_secs=10)
+        assert event["id"] == ""
+        assert event["msg"]["type"] == "side_channel_finished"
+    finally:
+        agent.close()
+
+
+def test_K12_side_channel审批经全局队列回执(env_home: Path) -> None:
+    """侧通道审批请求通过公开全局队列读取,可用 SDK 审批接口回应。"""
+    config = env_home / ".zhuye/config.toml"
+    config.write_text(config.read_text() + '\n[[permissions.rule]]\ntool = "bash"\naction = "ask"\n')
+    agent = ZhuyeAgent.spawn(make_options([
+        '{"type":"tool_call","name":"bash","args":{"cmd":"echo test"}}',
+        '{"type":"tool_call","name":"ask_user","args":{"prompt":"name?"}}',
+        '{"type":"text","text":"done"}',
+    ], extra_env={"ZHUYE_APPROVALS": "1"}))
+    try:
+        agent.next_global_event(timeout_secs=5)
+        drain(agent.submit_op({"type": "start_side_channel", "agent": "default", "prompt": "p"}))
+        event = agent.next_global_event(timeout_secs=10)
+        assert event["id"] == ""
+        assert event["msg"]["type"] == "approval_request"
+        agent.approve(event["msg"]["request_id"], "approve")
+        question = agent.next_global_event(timeout_secs=10)
+        assert question["msg"]["type"] == "ask_user_input"
+        drain(agent.submit_op({"type": "ask_user_input_response", "id": question["msg"]["request_id"], "text": "answer"}))
+        finished = agent.next_global_event(timeout_secs=15)
+        assert finished["msg"]["type"] == "side_channel_finished"
     finally:
         agent.close()

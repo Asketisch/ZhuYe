@@ -20,6 +20,8 @@ serve 离线路径打不到真实网关,功能层无观测点。
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
@@ -27,6 +29,65 @@ import pytest
 from wire import Sandbox, ServeSession, require_binary, run_cli
 
 pytestmark = pytest.mark.usefixtures("sandbox")
+
+
+@pytest.mark.parametrize("model,configured,expected", [
+    ("gpt-4o", None, 16384),
+    ("gpt-4-turbo", None, 4096),
+    ("gpt-4o", 777, 777),
+    ("gpt-4o-future", None, None),
+    ("o3-mini", None, 32768),
+    ("o3-mini", 777, 777),
+    ("gpt-4", None, "chinese"),
+])
+def test_模型输出预算实际请求字段(sandbox, serve_session, model, configured, expected) -> None:
+    """真实 serve 经本地网关发送模型对应的输出预算,显式配置优先。"""
+    require_binary()
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            body = (b'data: {"id":"test","model":"test","choices":[{"index":0,'
+                    b'"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+                    b'data: [DONE]\n\n')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        limit = f"max_tokens = {configured}\n" if configured is not None else ""
+        sandbox.write_config(
+            f'\n[active]\nprovider = "openai"\n[openai]\napi_key = "test"\n'
+            f'base_url = "http://127.0.0.1:{server.server_port}"\n{limit}'
+        )
+        with serve_session(env={"ZHUYE_MODEL": f"openai/{model}"}) as session:
+            user_text = "中" * 3000 if expected == "chinese" else "hi"
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": user_text}]})
+        assert next(e for e in events if e["msg"]["type"] == "turn_complete")["msg"]["status"] == "success"
+        assert len(received) == 1
+        assert received[0]["model"] == model
+        field = "max_completion_tokens" if model == "o3-mini" else "max_tokens"
+        if expected == "chinese":
+            assert 0 < received[0][field] <= 3233
+        else:
+            assert received[0].get(field) == expected
+        if model == "o3-mini":
+            assert "max_tokens" not in received[0]
+        if expected is None:
+            assert "max_tokens" not in received[0]
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 # ── 观测辅助 ─────────────────────────────────────────────────────────────
@@ -319,3 +380,36 @@ def test_无脚本时默认回复自带mock标记(serve_session) -> None:
 # `ZHUYE_MODEL` 的 provider 前缀剥离落在 `zhuye-config` crate 单测:
 # `strip_known_provider_prefix`(前缀剥离矩阵)与 `resolve_model_inner`
 # 注入 env 的组合断言(见该 crate 的测试)。
+
+
+def test_提示词与agent定义遵循数据目录(serve_session, mock_script, sandbox) -> None:
+    """用户提示词和 agent 定义从对应 ZHUYE_HOME 加载，切换目录后不串用。"""
+    require_binary()
+    home_a = sandbox.cwd / "prompt-home-a"
+    home_b = sandbox.cwd / "prompt-home-b"
+    for home in (home_a, home_b):
+        home.mkdir()
+        (home / "config.toml").write_text('[hooks]\nenabled = []\n')
+    prompts = home_a / "prompts"
+    prompts.mkdir()
+    (prompts / "default.md").write_text('## system.main\nonly-data-a-prompt\n')
+    agents = home_a / "agents"
+    agents.mkdir()
+    (agents / "isolated.md").write_text('---\nname: isolated\ndescription: 隔离测试\n---\nonly-data-a-agent\n')
+    default_prompts = sandbox.home / ".zhuye/prompts"
+    default_prompts.mkdir(parents=True)
+    (default_prompts / "default.md").write_text('## system.main\nlegacy-home-prompt\n')
+    script = mock_script(['{"type":"request_echo"}'])
+    for home, expected, forbidden in [(home_a, "only-data-a-prompt", "legacy-home-prompt"),
+                                      (home_b, None, "only-data-a-prompt")]:
+        with serve_session(env=sandbox.mock_env(script, ZHUYE_HOME=str(home))) as session:
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "测试提示词"}]})
+        text = "\n".join(_request_echo_payload(events)["system"])
+        assert forbidden not in text and "legacy-home-prompt" not in text
+        if expected:
+            assert expected in text
+    for home, should_find in [(home_a, True), (home_b, False)]:
+        with serve_session(args=["--agent", "isolated"], env=sandbox.mock_env(script, ZHUYE_HOME=str(home))) as session:
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "测试代理"}]})
+        text = "\n".join(_request_echo_payload(events)["system"])
+        assert ("only-data-a-agent" in text) is should_find

@@ -62,6 +62,39 @@ async fn ask_tool_emits_event_and_waits_for_decision() {
 }
 
 #[tokio::test]
+async fn policy_ask_overrides_cached_session_allow() {
+    let (gate, mut events) = make_gate();
+    gate.allow_for_session("echo");
+    let gate = Arc::new(gate);
+    let task_gate = gate.clone();
+    let task = tokio::spawn(async move {
+        task_gate
+            .ask_tool_with_policy(
+                "echo",
+                &serde_json::json!({}),
+                RiskLevel::Low,
+                &CancellationToken::new(),
+                Some(zhuye_permissions::RuleMatch::Ask),
+            )
+            .await
+    });
+    let event = timeout(Duration::from_secs(2), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let EventMsg::ApprovalRequest(request) = event.msg else {
+        panic!("策略要求询问时必须发审批请求")
+    };
+    assert!(gate.complete(
+        &request.request_id,
+        ReviewDecision::Deny {
+            reason: "拒绝".into()
+        }
+    ));
+    assert!(matches!(task.await.unwrap(), ReviewDecision::Deny { .. }));
+}
+
+#[tokio::test]
 async fn cancel_short_circuits_to_deny() {
     let (gate, _rx) = make_gate();
     let cancel = CancellationToken::new();
@@ -147,6 +180,7 @@ fn make_gate_with_resolver(
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         };
         futures::executor::block_on(store.add(rule)).unwrap();
     }
@@ -775,6 +809,7 @@ fn make_ask_user_gate_with_resolver(
             action,
             tool_glob: None,
             shell_pattern: None,
+            resource_glob: None,
         };
         futures::executor::block_on(store.add(rule)).unwrap();
     }
@@ -1128,4 +1163,192 @@ async fn turn_cancel_short_circuits_approval_wait() {
     assert!(gate_arc.waiters().lock().is_empty());
     // 会话级令牌**未**受影响。
     assert!(!session_cancel.is_cancelled());
+}
+
+// ── v1.9 S6+S7:fail-closed 不变量 ────────────────────────────────────
+
+#[tokio::test]
+async fn approval_ttl_expires_to_deny() {
+    // S6:审批超时 —— 共享绝对死线到点,等待侧拿到 Deny(过期原因),
+    // waiter 条目被租约清理。过期后的审批不可能再执行。
+    let (tx, mut rx) = mpsc::channel::<Event>(8);
+    let gate =
+        Arc::new(ApprovalGate::new(tx, "sub-ttl").with_approval_ttl(Duration::from_millis(80)));
+    let g = gate.clone();
+    let cancel = CancellationToken::new();
+    let asker = tokio::spawn(async move {
+        g.ask_tool("bash", &serde_json::json!({}), RiskLevel::Low, &cancel)
+            .await
+    });
+    // 消费 emit 的事件(避免 channel 阻塞),提取 request_id 后**不**complete。
+    let ev = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let request_id = match ev.msg {
+        EventMsg::ApprovalRequest(req) => req.request_id,
+        other => panic!("expected ApprovalRequest, got {other:?}"),
+    };
+    let decision = timeout(Duration::from_secs(2), asker)
+        .await
+        .unwrap()
+        .unwrap();
+    match decision {
+        ReviewDecision::Deny { reason } => {
+            assert!(
+                reason.contains("approval expired"),
+                "过期应报 approval expired,实际:{reason}"
+            );
+        }
+        other => panic!("expected Deny(expired), got {other:?}"),
+    }
+    // 迟到的 complete 打不到死条目(fail-closed:过期后不可执行)。
+    assert!(!gate.complete(&request_id, ReviewDecision::Approve));
+    assert!(gate.waiters().lock().is_empty());
+}
+
+#[tokio::test]
+async fn expire_pending_approvals_sweeps_and_denies() {
+    // S6:清扫接口 —— submission_loop 周期调用,统一 Deny 全部挂起。
+    let (tx, mut rx) = mpsc::channel::<Event>(8);
+    let gate = Arc::new(ApprovalGate::new(tx, "sub-sweep").without_approval_ttl());
+    let g = gate.clone();
+    let cancel = CancellationToken::new();
+    let asker = tokio::spawn(async move {
+        g.ask_tool("bash", &serde_json::json!({}), RiskLevel::Low, &cancel)
+            .await
+    });
+    let _ev = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let expired = gate.expire_pending_approvals();
+    assert_eq!(expired, 1, "应清扫 1 条挂起");
+    // 再扫一次:已空。
+    assert_eq!(gate.expire_pending_approvals(), 0);
+    let decision = timeout(Duration::from_secs(2), asker)
+        .await
+        .unwrap()
+        .unwrap();
+    match decision {
+        ReviewDecision::Deny { reason } => assert!(reason.contains("approval expired")),
+        other => panic!("expected Deny(expired), got {other:?}"),
+    }
+    assert!(gate.waiters().lock().is_empty());
+}
+
+#[tokio::test]
+async fn pending_cap_fail_closed() {
+    // S7:全局挂起上限 —— 第 MAX+1 个请求直接 Deny,不注册。
+    let (tx, rx) = mpsc::channel::<Event>(MAX_PENDING + 16);
+    let gate = Arc::new(ApprovalGate::new(tx, "sub-cap").without_approval_ttl());
+    const MAX_PENDING: usize = 64;
+    // 后台持续消费事件(不 complete,让挂起数维持在满额)。
+    let drainer = tokio::spawn(async move {
+        let mut rx = rx;
+        while let Some(_ev) = rx.recv().await { /* 只消费,不回决策 */ }
+    });
+    let mut askers = Vec::new();
+    for _ in 0..MAX_PENDING {
+        let g = gate.clone();
+        let cancel = CancellationToken::new();
+        askers.push(tokio::spawn(async move {
+            g.ask_tool("bash", &serde_json::json!({}), RiskLevel::Low, &cancel)
+                .await
+        }));
+    }
+    // 第 MAX+1 个:应立即(≤1s)拿到 cap Deny。
+    let g = gate.clone();
+    let cancel = CancellationToken::new();
+    let over = tokio::spawn(async move {
+        g.ask_tool("bash", &serde_json::json!({}), RiskLevel::Low, &cancel)
+            .await
+    });
+    let decision = timeout(Duration::from_secs(3), over)
+        .await
+        .unwrap()
+        .unwrap();
+    match decision {
+        ReviewDecision::Deny { reason } => {
+            assert!(reason.contains("cap"), "超限应报 cap,实际:{reason}");
+        }
+        other => panic!("expected Deny(cap), got {other:?}"),
+    }
+    // 挂起数恒等于上限,不增长。
+    assert_eq!(gate.waiters().lock().len(), MAX_PENDING);
+    // 清理:全部过期,askers 拿到 Deny;drainer 退出。
+    gate.expire_pending_approvals();
+    for a in askers {
+        let d = timeout(Duration::from_secs(2), a).await.unwrap().unwrap();
+        assert!(matches!(d, ReviewDecision::Deny { .. }));
+    }
+    drainer.abort();
+}
+
+#[tokio::test]
+async fn abort_safe_lease_cleans_waiter_on_future_drop() {
+    // S7:abort-safe 租约 —— 等待 future 被 abort(drop)后,waiter
+    // 条目必须消失(不留占挂起名额的死条目)。
+    let (tx, mut rx) = mpsc::channel::<Event>(8);
+    let gate = Arc::new(ApprovalGate::new(tx, "sub-lease").without_approval_ttl());
+    let g = gate.clone();
+    let cancel = CancellationToken::new();
+    let asker = tokio::spawn(async move {
+        g.ask_tool("bash", &serde_json::json!({}), RiskLevel::Low, &cancel)
+            .await
+    });
+    let _ev = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    // 给注册一点余量。
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(gate.waiters().lock().len(), 1);
+    // abort:future 直接 drop,没有 select 分支执行。
+    asker.abort();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        gate.waiters().lock().is_empty(),
+        "abort 后租约必须清理 waiter 条目"
+    );
+}
+
+#[tokio::test]
+async fn closed_channel_early_exit_cleans_lease() {
+    // S7:线断即拒 + 租约清理 —— 事件发送失败路径同样不留条目。
+    let (tx, rx) = mpsc::channel::<Event>(8);
+    drop(rx);
+    let gate = ApprovalGate::new(tx, "sub-broken");
+    let cancel = CancellationToken::new();
+    let d = gate
+        .ask_tool("bash", &serde_json::json!({}), RiskLevel::Low, &cancel)
+        .await;
+    match d {
+        ReviewDecision::Deny { reason } => {
+            assert!(reason.contains("channel closed"), "实际:{reason}")
+        }
+        other => panic!("expected Deny(channel closed), got {other:?}"),
+    }
+    assert!(gate.waiters().lock().is_empty());
+}
+
+#[tokio::test]
+async fn full_event_queue_does_not_prevent_approval_expiry() {
+    let (tx, _rx) = mpsc::channel::<Event>(1);
+    let _permit = tx.reserve().await.unwrap();
+    let gate = ApprovalGate::new(tx.clone(), "sub").with_approval_ttl(Duration::from_millis(30));
+    let decision = timeout(
+        Duration::from_secs(1),
+        gate.ask_tool(
+            "bash",
+            &serde_json::json!({}),
+            RiskLevel::Low,
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("满事件队列不应阻止审批过期");
+    assert!(matches!(decision, ReviewDecision::Deny { .. }));
+    assert!(gate.waiters().lock().is_empty());
 }

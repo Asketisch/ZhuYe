@@ -1,7 +1,7 @@
 //! 库门面 M4 依赖接线。
 //!
-//! 把 `zhuye-exec::bootstrap_m4` 的核心逻辑下沉一份到库 crate,
-//! 让 `ZhuyeBuilder::with_defaults()` 在不依赖 `zhuye-exec` 私有
+//! 把 `zhuye-exec::bootstrap_m4` 的核心逻辑下沉一份到库 crate,让
+//! `ZhuyeBuilder::build()` / `build_async()` 在不依赖 `zhuye-exec` 私有
 //! helper 的情况下,也能拿到一份完整的 M4 依赖(compactor / memory /
 //! skills / prompt builder / agent def / recorder / note store / file
 //! recovery / subagent registry)。
@@ -67,19 +67,18 @@ pub fn build_default_m4_with_prompts(
     rollout_base: Option<&std::path::Path>,
 ) -> anyhow::Result<M4Deps> {
     let _ = model; // model spec 由 model_call 每请求解析,此处不再消费
-    let home = std::env::var("HOME").unwrap_or_default();
-    let home_path = std::path::Path::new(&home);
+    let user_data_dir = zhuye_config::data_path_or_relative(&[]);
 
     // ── 提示词库(按模型匹配,v1.6)──────────────────────────
     let ws_prompts = workspace.join(".zhuye").join("prompts");
-    let home_prompts = home_path.join(".zhuye").join("prompts");
+    let home_prompts = user_data_dir.join("prompts");
     let mut prompt_dirs: Vec<std::path::PathBuf> = vec![home_prompts, ws_prompts];
     prompt_dirs.extend(extra_prompt_dirs.iter().cloned());
     let prompt_dir_refs: Vec<&std::path::Path> = prompt_dirs.iter().map(|p| p.as_path()).collect();
     zhuye_prompt::init_library(&prompt_dir_refs, None);
     // ── Agent 定义 ────────────────────────────────────────────
     let ws_agents = workspace.join(".zhuye").join("agents");
-    let home_agents = home_path.join(".zhuye").join("agents");
+    let home_agents = user_data_dir.join("agents");
     let mut agents = zhuye_agent_def::load_agents_dir(&ws_agents).unwrap_or_default();
     let home_agents_map = zhuye_agent_def::load_agents_dir(&home_agents).unwrap_or_default();
     agents.extend(home_agents_map);
@@ -100,7 +99,7 @@ pub fn build_default_m4_with_prompts(
     // 配置加载上提到此处:skills 开关与 compactor 都读同一份 config。
     let cfg = zhuye_config::load_default();
     let ws_skills = workspace.join(".zhuye").join("skills");
-    let home_skills = home_path.join(".zhuye").join("skills");
+    let home_skills = user_data_dir.join("skills");
     let skill_dirs: Vec<&std::path::Path> = vec![&ws_skills, &home_skills];
     let skills_catalog = SkillsCatalog::new();
     skills_catalog.scan(&skill_dirs);
@@ -113,7 +112,10 @@ pub fn build_default_m4_with_prompts(
     let skills_catalog = Arc::new(skills_catalog);
 
     // ── Memory:CompositeMemoryStore(Session 内存 + Project/User 文件) ──
-    let file_store = Arc::new(FileMemoryStore::new(workspace, home_path));
+    let file_store = Arc::new(FileMemoryStore::with_user_data_dir(
+        workspace,
+        &user_data_dir,
+    ));
     let memory: Arc<dyn MemoryStore> = Arc::new(InMemoryStore::with_fallback(file_store));
 
     // ── Session notes(落盘失败 → 内存 fallback) ──────────────
@@ -133,6 +135,9 @@ pub fn build_default_m4_with_prompts(
             if p.is_empty() { model.to_string() } else { p }
         };
         if registry.next_for(&spec, &[]).is_some() {
+            // 库门面传 default policy(compact.primary 为空)。
+            // 上面已经把 Compact primary 拷进 spec,摘要器会退回这个 model_name。
+            // 不读 compact.fallbacks。
             Arc::new(LlmSummarizer::new(
                 registry.clone(),
                 Arc::new(RoutingPolicy::default()),
@@ -188,7 +193,6 @@ pub fn build_default_m4_with_prompts(
 
 /// 在无法走完整 bootstrap(没有 LLM provider、纯单测场景)时,
 /// 返回一份不带 compactor / 不带 LLM summarizer 的最小 M4Deps。
-/// 用于 `with_defaults` 内部"软退化"路径。
 #[allow(dead_code)]
 pub fn build_minimal_m4(agent_name: &str) -> M4Deps {
     default_m4_deps(agent_name)

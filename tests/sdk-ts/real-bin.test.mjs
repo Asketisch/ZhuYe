@@ -24,8 +24,8 @@
 // 运行:tests/run_all.sh sdk-ts,或
 //   ZHUYE_BIN=... node --test tests/sdk-ts/real-bin.test.mjs
 
-import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -120,6 +120,28 @@ describe('TS SDK 绑定层 × 真二进制', () => {
     }
   });
 
+  it('K13: 工具图片回执经 SDK 往返', async () => {
+    const calls = [];
+    const agent = await ZhuyeAgent.spawn(makeOptions([
+      '{"type":"tool_call","name":"sdk_image","args":{}}',
+      '{"type":"text","text":"done"}',
+    ]));
+    try {
+      await agent.registerTool('sdk_image', '图片', { type: 'object' }, (args) => {
+        calls.push(args);
+        return { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: {}, elapsed_ms: 0 };
+      });
+      const events = [];
+      for await (const event of await agent.submit('图片')) events.push(event);
+      assert.deepEqual(calls, [{}]);
+      const end = events.find((event) => event.msg.type === 'tool_call_end');
+      assert.deepEqual(end?.msg.output.content, [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }]);
+      assert.ok(events.some((event) => event.msg.type === 'turn_complete'));
+    } finally {
+      await agent.close();
+    }
+  });
+
   it('K4: 非 turn op 的迭代器以 submission_closed 收尾', async () => {
     // 没有 submission_closed,SDK 迭代器会永久挂起(v1.3 起 serve 在
     // per-turn 通道排空后发这条收尾标记)。
@@ -132,6 +154,78 @@ describe('TS SDK 绑定层 × 真二进制', () => {
         types.push(ev.msg.type);
       }
       assert.deepEqual(types, ['submission_closed'], `收尾异常:${types}`);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('K10: side-channel 查询 Op 返回 status 快照 + submission_closed 收尾', async () => {
+    // WP9 新能力面:exec 已装配 side-channel driver(WP13),查询有真实
+    // 应答(与 K4 的 set_effort 静默不同)。纯逻辑层同型用例在
+    // sdks/typescript/tests/protocol.test.ts(mock serve)。
+    const agent = await ZhuyeAgent.spawn(
+      makeOptions(['{"type":"text","text":"t1"}'])
+    );
+    try {
+      const types = [];
+      let status;
+      for await (const ev of await agent.submit({ type: 'query_side_channels' })) {
+        types.push(ev.msg.type);
+        if (ev.msg.type === 'side_channel_status') status = ev.msg;
+      }
+      assert.equal(types.at(-1), 'submission_closed', `收尾异常:${types}`);
+      assert.ok(Array.isArray(status?.channels), `channels 应为数组:${JSON.stringify(status)}`);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('K11: side-channel 终态进入全局事件队列', async () => {
+    const agent = await ZhuyeAgent.spawn(makeOptions(['{"type":"text","text":"side response"}']));
+    try {
+      await agent.nextGlobalEvent({ timeoutMs: 5000 });
+      const events = [];
+      for await (const event of await agent.submit({ type: 'start_side_channel', agent: 'default', prompt: 'p' })) {
+        events.push(event);
+      }
+      assert.equal(events.at(-1).msg.type, 'submission_closed');
+      const event = await agent.nextGlobalEvent({ timeoutMs: 10000 });
+      assert.equal(event.id, '');
+      assert.equal(event.msg.type, 'side_channel_finished');
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('K12: 侧通道审批经全局队列和 SDK 回执', async () => {
+    const isolatedHome = mkdtempSync(join(tmpdir(), 'zhuye-ts-approval.'));
+    mkdirSync(join(isolatedHome, '.zhuye'), { recursive: true });
+    writeFileSync(join(isolatedHome, '.zhuye', 'config.toml'),
+      '[hooks]\nenabled = []\n[[permissions.rule]]\ntool = "bash"\naction = "ask"\n');
+    const opts = makeOptions([
+      '{"type":"tool_call","name":"bash","args":{"cmd":"echo test"}}',
+      '{"type":"tool_call","name":"ask_user","args":{"prompt":"name?"}}',
+      '{"type":"text","text":"done"}',
+    ]);
+    opts.env.HOME = isolatedHome;
+    opts.env.ZHUYE_APPROVALS = '1';
+    const agent = await ZhuyeAgent.spawn(opts);
+    try {
+      await agent.nextGlobalEvent({ timeoutMs: 5000 });
+      for await (const _event of await agent.submit({ type: 'start_side_channel', agent: 'default', prompt: 'p' })) {
+        // 排空提交事件,审批请求从全局队列读取。
+      }
+      const approval = await agent.nextGlobalEvent({ timeoutMs: 10000 });
+      assert.equal(approval.id, '');
+      assert.equal(approval.msg.type, 'approval_request');
+      await agent.approve(approval.msg.request_id, 'approve');
+      const question = await agent.nextGlobalEvent({ timeoutMs: 10000 });
+      assert.equal(question.msg.type, 'ask_user_input');
+      for await (const _event of await agent.submit({ type: 'ask_user_input_response', id: question.msg.request_id, text: 'answer' })) {
+        // 排空回执。
+      }
+      const finished = await agent.nextGlobalEvent({ timeoutMs: 15000 });
+      assert.equal(finished.msg.type, 'side_channel_finished');
     } finally {
       await agent.close();
     }
@@ -292,6 +386,55 @@ describe('TS SDK 绑定层 × 真二进制', () => {
       const event = await agent.nextGlobalEvent({ timeoutMs: 5000 });
       assert.equal(event.id, '');
       assert.equal(event.msg.type, 'permission_mode_changed');
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('K10: plugins 选项显式加载插件并上报 plugin_loaded', async () => {
+    // `plugins: ['demo@inline']` 经 --plugin 传给 serve(覆盖 config,
+    // 而非配置驱动);启动时上报 plugin_loaded 全局事件。
+    // 依据:crates/runtime/zhuye-exec/src/headless.rs resolve_enabled_plugins、
+    // sdks/typescript/src/agent.ts serveArgs。
+    const pluginDir = join(ROOT, 'plugins', 'plugin-demo');
+    if (!existsSync(pluginDir)) {
+      // 仓库不完整时跳过(node:test 无原生 skip,以断言占位)。
+      assert.ok(true, 'plugins/plugin-demo 不存在,跳过');
+      return;
+    }
+    // 先把 demo 插件装入隔离 HOME(等价 zhuye plugin install)。
+    const install = spawnSync(ZHUYE_BIN, [
+      'plugin',
+      'install',
+      pluginDir,
+      '--scope',
+      'user',
+    ]);
+    assert.equal(
+      install.status,
+      0,
+      `plugin install 失败:${install.stderr?.toString()}`
+    );
+
+    const agent = await ZhuyeAgent.spawn({
+      ...makeOptions(),
+      plugins: ['demo@inline'],
+    });
+    try {
+      // plugin_loaded 在 bootstrap 期发出,轮询全局队列(上限 ~15s)。
+      let loaded = null;
+      for (let i = 0; i < 15 && loaded === null; i++) {
+        const ev = await agent
+          .nextGlobalEvent({ timeoutMs: 1000 })
+          .catch(() => null);
+        if (ev && ev.msg.type === 'plugin_loaded') loaded = ev.msg;
+      }
+      assert.ok(loaded, '未收到 plugin_loaded 全局事件');
+      assert.equal(loaded.plugin, 'demo@inline', `插件 id 不符:${JSON.stringify(loaded)}`);
+      assert.ok(
+        (loaded.command_count ?? 0) >= 1,
+        `应有 demo:hello 命令:${JSON.stringify(loaded)}`
+      );
     } finally {
       await agent.close();
     }

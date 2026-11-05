@@ -158,3 +158,179 @@ fn audit_records_ignored() {
 fn empty_input_empty_output() {
     assert!(records_to_preload(&[]).is_empty());
 }
+
+#[test]
+fn missing_result_is_repaired_before_next_message_even_when_id_is_reused() {
+    let call = ContentBlock::ToolUse {
+        id: "shared".into(),
+        name: "echo".into(),
+        args: serde_json::json!({}),
+    };
+    let records = vec![
+        msg(
+            MessageRole::Assistant,
+            serde_json::to_value(vec![call.clone()]).unwrap(),
+        ),
+        msg(MessageRole::User, serde_json::json!("下一问")),
+        msg(
+            MessageRole::Assistant,
+            serde_json::to_value(vec![
+                call,
+                ContentBlock::ToolResult {
+                    call_id: "shared".into(),
+                    output: tool_output("真实结果"),
+                },
+                ContentBlock::ToolResult {
+                    call_id: "shared".into(),
+                    output: tool_output("重复结果"),
+                },
+                ContentBlock::ToolResult {
+                    call_id: "orphan".into(),
+                    output: tool_output("孤儿结果"),
+                },
+            ])
+            .unwrap(),
+        ),
+    ];
+    let out = records_to_preload(&records);
+    assert_eq!(out.len(), 5, "{out:?}");
+    assert!(matches!(&out[0], ChatMessage::Assistant(a) if a.tool_calls.len() == 1));
+    assert!(matches!(&out[1], ChatMessage::Tool(t) if t.call_id == "shared" && t.is_error));
+    assert!(matches!(&out[2], ChatMessage::User(_)));
+    assert!(matches!(&out[3], ChatMessage::Assistant(a) if a.tool_calls.len() == 1));
+    assert!(matches!(&out[4], ChatMessage::Tool(t) if t.call_id == "shared" && !t.is_error));
+}
+
+#[test]
+fn partial_tool_batch_keeps_results_contiguous_before_user() {
+    let records = vec![
+        msg(
+            MessageRole::Assistant,
+            serde_json::to_value(vec![
+                ContentBlock::ToolUse {
+                    id: "one".into(),
+                    name: "echo".into(),
+                    args: serde_json::json!({}),
+                },
+                ContentBlock::ToolUse {
+                    id: "two".into(),
+                    name: "echo".into(),
+                    args: serde_json::json!({}),
+                },
+                ContentBlock::ToolResult {
+                    call_id: "two".into(),
+                    output: tool_output("完成"),
+                },
+            ])
+            .unwrap(),
+        ),
+        msg(MessageRole::User, serde_json::json!("继续")),
+    ];
+    let out = records_to_preload(&records);
+    assert_eq!(out.len(), 4, "{out:?}");
+    assert!(matches!(&out[0], ChatMessage::Assistant(a) if a.tool_calls.len() == 2));
+    assert!(matches!(&out[1], ChatMessage::Tool(t) if t.call_id == "two" && !t.is_error));
+    assert!(matches!(&out[2], ChatMessage::Tool(t) if t.call_id == "one" && t.is_error));
+    assert!(matches!(&out[3], ChatMessage::User(_)));
+}
+
+#[test]
+fn invalid_tool_calls_and_their_results_are_removed() {
+    let records = vec![msg(
+        MessageRole::Assistant,
+        serde_json::to_value(vec![
+            ContentBlock::ToolUse {
+                id: "".into(),
+                name: "echo".into(),
+                args: serde_json::json!({}),
+            },
+            ContentBlock::ToolResult {
+                call_id: "".into(),
+                output: tool_output("无 ID"),
+            },
+            ContentBlock::ToolUse {
+                id: "valid-id".into(),
+                name: " ".into(),
+                args: serde_json::json!({}),
+            },
+            ContentBlock::ToolResult {
+                call_id: "valid-id".into(),
+                output: tool_output("无工具名"),
+            },
+            ContentBlock::Text {
+                text: "保留文本".into(),
+            },
+        ])
+        .unwrap(),
+    )];
+    let out = records_to_preload(&records);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert!(
+        matches!(&out[0], ChatMessage::Assistant(a) if a.text.as_deref() == Some("保留文本") && a.tool_calls.is_empty())
+    );
+}
+
+#[test]
+fn assistant_text_after_tool_result_stays_after_result() {
+    let records = vec![msg(
+        MessageRole::Assistant,
+        serde_json::to_value(vec![
+            ContentBlock::Text {
+                text: "先查询".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "echo".into(),
+                args: serde_json::json!({}),
+            },
+            ContentBlock::ToolResult {
+                call_id: "c1".into(),
+                output: tool_output("查询结果"),
+            },
+            ContentBlock::Text {
+                text: "查询结论".into(),
+            },
+        ])
+        .unwrap(),
+    )];
+    let out = records_to_preload(&records);
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert!(
+        matches!(&out[0], ChatMessage::Assistant(a) if a.text.as_deref() == Some("先查询") && a.tool_calls.len() == 1)
+    );
+    assert!(matches!(&out[1], ChatMessage::Tool(t) if t.call_id == "c1"));
+    assert!(
+        matches!(&out[2], ChatMessage::Assistant(a) if a.text.as_deref() == Some("查询结论") && a.tool_calls.is_empty())
+    );
+}
+
+#[test]
+fn consecutive_tool_rounds_keep_their_own_results() {
+    let call = ContentBlock::ToolUse {
+        id: "same".into(),
+        name: "echo".into(),
+        args: serde_json::json!({}),
+    };
+    let records = vec![msg(
+        MessageRole::Assistant,
+        serde_json::to_value(vec![
+            call.clone(),
+            ContentBlock::ToolResult {
+                call_id: "same".into(),
+                output: tool_output("第一轮"),
+            },
+            call,
+            ContentBlock::ToolResult {
+                call_id: "same".into(),
+                output: tool_output("第二轮"),
+            },
+        ])
+        .unwrap(),
+    )];
+    let out = records_to_preload(&records);
+    assert_eq!(out.len(), 4, "{out:?}");
+    assert!(matches!(&out[0], ChatMessage::Assistant(a) if a.tool_calls.len() == 1));
+    assert!(matches!(&out[1], ChatMessage::Tool(t) if t.call_id == "same" && !t.is_error));
+    assert!(matches!(&out[2], ChatMessage::Assistant(a) if a.tool_calls.len() == 1));
+    assert!(matches!(&out[3], ChatMessage::Tool(t) if t.call_id == "same" && !t.is_error));
+}

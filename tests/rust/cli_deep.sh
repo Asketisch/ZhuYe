@@ -276,11 +276,11 @@ cli_deep_session() {
     tcase "session rename 成功" test $? -eq 0
     tcase "session rename 回显" grep -q "Renamed session" s14.out
     "$ZHUYE_BIN" session show "${internal:0:8}" > s15.out 2>&1
-    tcase "session show 显示自定义 Name" grep -q "Name:    mytest-name" s15.out
+    tcase "session show 显示自定义 Name" grep -q "Title:   mytest-name" s15.out
 
     "$ZHUYE_BIN" session export "$internal" > s16.out 2>&1
     tcase "session export stdout 成功" test $? -eq 0
-    tcase "session export 输出 markdown 头" grep -q "# ZhuYe Session" s16.out
+    tcase "session export 输出 markdown 头" grep -q "# ZhuYe session" s16.out
     "$ZHUYE_BIN" session export "$internal" --out s17.md > /dev/null 2>&1
     tcase "session export --out 写文件" test -s s17.md
 

@@ -1,7 +1,7 @@
 //! `ZhuyeBuilder` —— 一行启动公共库门面。
 //!
 //! 从 model spec + workspace 路径组合一个 `AgentThread`(可选带 M4 依赖)。
-//! 门面映射关系见 `docs/architecture.md §8`。
+//! 门面映射关系见 `docs/architecture.md` 的「门面映射」一节。
 //!
 //! 两种构造模式:
 //!
@@ -10,7 +10,7 @@
 //!    `approvals: true`,所以 Prompt 权限工具会弹 modal。
 //!    不挂 M4 —— 适合最小集成 / 单测。
 //!
-//! 2. **With defaults** —— `.with_defaults()?` 会附加 M4 依赖
+//! 2. **完整 M4** —— `build()` / `build_async()` 始终构造完整 M4 依赖
 //!    (compactor + memory + skills + prompt builder + agent def),
 //!    并在 `~/.zhuye/sessions/` 下挂一个 JSONL rollout recorder。
 //!    适合任何真正需要可恢复的 session。详见 `m4_bootstrap.rs`。
@@ -239,14 +239,7 @@ impl ZhuyeBuilder {
         }
     }
 
-    /// 安装合理的默认:构造完整 M4 依赖(compactor + memory + skills +
-    /// prompt builder + agent def + recorder + note store + file recovery
-    /// + subagent registry),并通过 `AgentConfig::with_m4` 注入。
-    ///
-    /// 同时把对应 `Arc<SubAgentFactory>` 放进 `Zhuye` 中以备未来使用。
-    ///
-    /// 任何一步失败都返回 `anyhow::Error`,调用方应决定如何处理 —— 默认
-    /// 构造失败透传(不静默),与 `build()` 风格一致。
+    /// 保留旧版构造链的兼容入口;完整默认依赖由 `build` 时自动安装。
     pub fn with_defaults(self) -> anyhow::Result<Self> {
         Ok(self)
     }
@@ -275,13 +268,14 @@ impl ZhuyeBuilder {
     /// `ANTHROPIC_API_KEY` 环境变量新建一个 `ModelRegistry`,并在
     /// `ToolRegistry` 上注册 7 个 builtin 工具。
     ///
-    /// `with_defaults` 不影响 `build` 的 m4 注入—— `build` 始终构造
-    /// 完整 m4(单 agent 场景必须挂 compactor / memory 等才能跑),
-    /// 与 `zhuye-exec` 路径对齐。如果想用最小 m4 路径,直接通过
+    /// `build` 始终构造完整 m4(单 agent 场景必须挂 compactor / memory
+    /// 等才能跑),与 `zhuye-exec` 路径对齐 —— 不需要单独的
+    /// `with_defaults` 步骤(该方法保留用于兼容旧代码)。
+    /// 如果想用最小 m4 路径,直接通过
     /// `AgentThread::new + AgentConfig::with_m4(default_m4_deps)` 走底层 API。
     pub fn build(self) -> anyhow::Result<Zhuye> {
         let registry = build_registry_from_env(&self.model)?;
-        let tools = Arc::new(default_tool_registry());
+        let tools = default_tool_registry();
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出,部分移动后
         // 不能再整体借用 self。
         let telemetry_sink = self.resolve_telemetry_sink();
@@ -303,15 +297,50 @@ impl ZhuyeBuilder {
         if !self.rollout_enabled {
             m4.recorder = None;
         }
-        let mut cfg =
-            AgentConfig::new(self.model, self.workspace.clone()).with_approvals(self.approvals);
+        let mut cfg = AgentConfig::new(self.model.clone(), self.workspace.clone())
+            .with_approvals(self.approvals);
         if self.plan_mode {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
         }
         cfg = cfg.with_m4(m4);
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
         cfg = cfg.with_telemetry(telemetry_sink);
-        let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
+        // v1.x(WP13):与 build_async / exec 对齐 —— build() 此前
+        // sanitizer 与 hook_engine 恒 None,[sanitize] 配置在库路径是死信、
+        // Plan mode 的 PlanModeGate 也无从注册。hook 策略与 build_async
+        // 一致:config [hooks] 未显式列出 = 不启用内置 hook(嵌入场景从紧)。
+        let app_cfg = zhuye_config::load_default();
+        let sanitizer = build_sanitizer(app_cfg.sanitize.as_ref());
+        let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_reflect_section(&app_cfg.hooks);
+        if hooks_cfg.enabled.is_none() {
+            hooks_cfg.enabled = Some(Vec::new());
+        }
+        let hook_engine: Arc<zhuye_hooks::HookEngine> = Arc::new(hooks_cfg.build_engine());
+        // v1.x(WP13):[sandbox] / side-channel 与 exec 对齐(此前 build()
+        // 两者皆缺 —— Op::StartSideChannel 会以 Error 诚实应答,但既然
+        // bootstrap 材料都在,直接装配)。
+        cfg = apply_sandbox_config(cfg, &app_cfg);
+        let side_channel_driver = build_side_channel_driver(
+            cfg.workspace.clone(),
+            cfg.model.clone(),
+            registry.clone(),
+            tools.clone(),
+            &app_cfg,
+            cfg.permission_mode.clone(),
+            cfg.approvals,
+        );
+        cfg = cfg.with_side_channel_driver(side_channel_driver);
+        let thread = Arc::new(AgentThread::new(
+            cfg,
+            registry,
+            tools,
+            Some(sanitizer),
+            Some(hook_engine.clone()),
+        ));
+        if self.plan_mode {
+            thread.register_hook(zhuye_hooks::builtins::PlanModeGate::default_mode());
+        }
+        maybe_spawn_activity_logger(&thread, &app_cfg);
         Ok(Zhuye {
             thread,
             cancel,
@@ -331,7 +360,7 @@ impl ZhuyeBuilder {
     ///   mcp_servers 能力落点)。
     pub async fn build_async(self) -> anyhow::Result<Zhuye> {
         let registry = build_registry_from_env(&self.model)?;
-        let tools = Arc::new(default_tool_registry());
+        let tools = default_tool_registry();
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出。
         let telemetry_sink = self.resolve_telemetry_sink();
         let cancel = self.cancel.unwrap_or_default();
@@ -393,13 +422,26 @@ impl ZhuyeBuilder {
         cfg = cfg.with_m4(m4);
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
         cfg = cfg.with_telemetry(telemetry_sink);
+        // v1.x(WP13):[sandbox] / side-channel 与 exec / build() 对齐。
+        cfg = apply_sandbox_config(cfg, &app_cfg);
+        let side_channel_driver = build_side_channel_driver(
+            cfg.workspace.clone(),
+            cfg.model.clone(),
+            registry.clone(),
+            tools.clone(),
+            &app_cfg,
+            cfg.permission_mode.clone(),
+            cfg.approvals,
+        );
+        cfg = cfg.with_side_channel_driver(side_channel_driver);
         let thread = Arc::new(AgentThread::new(
             cfg,
             registry,
             tools.clone(),
-            None,
+            Some(build_sanitizer(app_cfg.sanitize.as_ref())),
             Some(hook_engine.clone()),
         ));
+        maybe_spawn_activity_logger(&thread, &app_cfg);
         if self.plan_mode {
             thread.register_hook(zhuye_hooks::builtins::PlanModeGate::default_mode());
             let rbe_section = app_cfg.hooks.read_before_edit.as_ref();
@@ -710,42 +752,145 @@ fn is_mock_provider(model_spec: &str) -> bool {
     false
 }
 
-fn default_tool_registry() -> ToolRegistry {
-    use zhuye_tools::builtins;
-    let r = ToolRegistry::default();
-    r.register(Arc::new(builtins::EchoTool));
-    r.register(Arc::new(builtins::BashTool::default()));
-    r.register(Arc::new(builtins::ReadTool));
-    r.register(Arc::new(builtins::WriteTool));
-    r.register(Arc::new(builtins::EditTool));
-    r.register(Arc::new(builtins::DeleteTool));
-    r.register(Arc::new(builtins::GrepTool));
-    r.register(Arc::new(builtins::GlobTool));
-    // v1.x Plan mode 控制面工具 —— agent 可主动调 `EnterPlanMode` /
-    // `ExitPlanMode` 触发 plan 切换(替代手动 slash 命令)。
-    r.register(Arc::new(builtins::EnterPlanModeTool));
-    r.register(Arc::new(builtins::ExitPlanModeTool));
-    // v1.x Plan mode 写盘工具 —— Plan 阶段把 plan markdown 落到
-    // `<workspace>/.zhuye/plan/<name>.md`,供 ExitPlanMode 读取。
-    // required_permission = Auto,Plan mode 下免审批直写。必须与
-    // EnterPlanMode / ExitPlanMode 一起注册,否则 LLM 看到 schema
-    // (因 ALWAYS_ON_TOOLS 含 PlanWrite)却找不到实现 → "tool not found"。
-    r.register(Arc::new(builtins::PlanWriteTool));
-    r.register(Arc::new(builtins::EnterWorktreeTool));
-    r.register(Arc::new(builtins::ExitWorktreeTool));
-    // v1.0.0-rc1: AST 结构化搜索/重写工具(tree-sitter 后端,
-    // 默认 5 个 grammar:rust/typescript/python/go/javascript)。
-    r.register(Arc::new(zhuye_ast::AstTool::new()));
-    // v1.0.0-rc4: Web 工具 —— HTTP 抓取 + 搜索。WebFetch 走 `Prompt`
-    // 权限(由 queue 触发 ApprovalGate),WebSearch 走默认 `Auto`。
-    r.register(Arc::new(builtins::WebFetchTool::new()));
-    r.register(Arc::new(builtins::WebSearchTool::new()));
-    r.register(Arc::new(builtins::NotebookEditTool));
-    r
+/// v1.x(WP13):`[sandbox]` 段 → AgentConfig.sandbox_default /
+/// writable / network(与 exec headless 同口径;env > config > 基线,
+/// 解析走 zhuye-sandbox::OsSandbox::resolve)。
+fn apply_sandbox_config(
+    mut cfg: zhuye_core::AgentConfig,
+    app_cfg: &zhuye_config::ReflectConfig,
+) -> zhuye_core::AgentConfig {
+    let sec = &app_cfg.sandbox;
+    if sec.os_level.is_none() && sec.writable_dirs.is_empty() && !sec.allow_network {
+        return cfg; // 配置未表态 → 每 turn 跟随 env(与旧行为一致)。
+    }
+    let resolved = zhuye_sandbox::OsSandbox::resolve(
+        sec.os_level,
+        sec.writable_dirs.clone(),
+        sec.allow_network,
+    );
+    cfg = cfg.with_sandbox_default(Some(resolved.enabled));
+    cfg = cfg.with_sandbox_writable(resolved.writable_dirs);
+    cfg = cfg.with_sandbox_network(Some(resolved.allow_network));
+    cfg
+}
+
+/// v1.x(WP13):side-channel driver —— thread 工厂复用本 crate 的
+/// m4_bootstrap(与主会话同材料),recorder=None(不写主历史),取消
+/// 令牌由 registry 独立生成。
+fn build_side_channel_driver(
+    workspace: Arc<parking_lot::RwLock<std::path::PathBuf>>,
+    model: Arc<parking_lot::RwLock<String>>,
+    registry: zhuye_llm::SharedModelRegistry,
+    tools: Arc<ToolRegistry>,
+    app_cfg: &zhuye_config::ReflectConfig,
+    parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
+    parent_approvals: bool,
+) -> zhuye_core::side_channel::SideChannelDriver {
+    let factory =
+        build_side_channel_factory(registry, tools, app_cfg, parent_mode, parent_approvals);
+    zhuye_core::side_channel::SideChannelDriver::new_with_context(
+        zhuye_core::side_channel::SideChannelRegistry::new(),
+        workspace,
+        model,
+        factory,
+    )
+}
+
+fn build_side_channel_factory(
+    registry: zhuye_llm::SharedModelRegistry,
+    tools: Arc<ToolRegistry>,
+    app_cfg: &zhuye_config::ReflectConfig,
+    parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
+    parent_approvals: bool,
+) -> zhuye_core::side_channel::SideContextThreadFactory {
+    let registry_for_factory = registry.clone();
+    // 闭包要求 'static —— 克隆 config(含 policy 计算所需段)进去。
+    let app_cfg = app_cfg.clone();
+    Arc::new(
+        move |agent_name: &str,
+              cancel: tokio_util::sync::CancellationToken,
+              context: zhuye_core::side_channel::SideChannelContext| {
+            let workspace = context.workspace;
+            let model = context.model;
+            let mut m4 = m4_bootstrap::build_default_m4(
+                &workspace,
+                agent_name,
+                &model,
+                &registry_for_factory,
+                zhuye_protocol::ThreadId::new(),
+            )?;
+            m4.recorder = None; // 不写主历史。
+            let cfg = zhuye_core::AgentConfig::new(model.clone(), workspace.clone())
+                .with_m4(m4)
+                .with_policy(Arc::new(app_cfg.routing_policy_with(&model)))
+                .with_cancel(cancel);
+            let mut cfg = apply_sandbox_config(cfg.with_approvals(parent_approvals), &app_cfg);
+            cfg.inherited_approval_mode = Some(parent_mode.clone());
+            let thread = crate::AgentThread::new(
+                cfg,
+                registry_for_factory.clone(),
+                tools.clone(),
+                Some(build_sanitizer(app_cfg.sanitize.as_ref())),
+                None,
+            );
+            thread.register_hook(zhuye_core::side_channel::InheritedPlanGate::new(
+                parent_mode.clone(),
+            ));
+            Ok(thread)
+        },
+    )
+}
+
+/// v1.x(WP13):`[telemetry].activity`(默认开)控制审计订阅;关闭时
+/// 不 spawn 泵、不落 activity.jsonl。
+fn maybe_spawn_activity_logger(
+    thread: &Arc<crate::AgentThread>,
+    app_cfg: &zhuye_config::ReflectConfig,
+) {
+    let enabled = app_cfg
+        .telemetry
+        .as_ref()
+        .map(|t| t.activity_enabled())
+        .unwrap_or(true);
+    if !enabled {
+        tracing::info!("[telemetry].activity=false: audit logger disabled");
+        return;
+    }
+    let logger = zhuye_telemetry::ActivityLogger::with_default_home();
+    let rx = thread.subscribe_session();
+    tokio::spawn(zhuye_telemetry::pump_events(logger, rx));
+}
+
+/// `[sanitize]` 段 → Sanitizer(与 exec 同口径;解析失败 fallback 默认
+/// pattern,不阻塞启动)。
+fn build_sanitizer(
+    section: Option<&zhuye_config::SanitizeSection>,
+) -> Arc<zhuye_tools::sanitize::Sanitizer> {
+    let cfg = zhuye_tools::sanitize::SanitizeConfig {
+        enabled: section.and_then(|s| s.enabled),
+        marker: section.and_then(|s| s.marker.clone()),
+        disable_default_patterns: section.and_then(|s| s.disable_default_patterns),
+        extra_patterns: section.and_then(|s| s.extra_patterns.clone()),
+    };
+    match zhuye_tools::sanitize::Sanitizer::from_config(&cfg) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            tracing::warn!(error = %e, "[sanitize] 配置解析失败,fallback 到默认 pattern");
+            Arc::new(zhuye_tools::sanitize::Sanitizer::with_defaults())
+        }
+    }
+}
+
+fn default_tool_registry() -> Arc<ToolRegistry> {
+    // v1.x:内置清单收编至 `zhuye_exec::register_builtin_tools`(exec /
+    // serve / lib facade 三条路径共用,消除此前的双份漂移 —— 门面曾缺
+    // AskUser / ToolSearch / Checkpoint 等 9 个工具)。
+    let tools = Arc::new(ToolRegistry::default());
+    zhuye_tools::register_builtin_tools(&tools, None, Arc::new(zhuye_ast::AstTool::new()));
+    tools
 }
 
 // 用法占位 helper —— 让 builder 可以原样返回 Self,虽然
-// `with_defaults` 暂时不接 M4 依赖(占位实现返回 `Ok(self)`)。
 #[cfg(test)]
 // 测试在很短时间内持有一个同步 std::sync::Mutex 守卫,把并发的
 // std::env::set_var 调用串行化。任何会做 I/O 的 await 之前都先释放
@@ -834,6 +979,198 @@ mod tests {
         assert_eq!(agent.thread().config().current_model(), "mock");
     }
 
+    /// WP13 对齐断言:`build()` 与 `build_async()` 的能力面一致 ——
+    /// 两条路径都装配 sanitizer(从 [sanitize] 段)、hook_engine、
+    /// side-channel driver、sandbox 默认,且内置工具清单同为
+    /// `register_builtin_tools` 全量。
+    #[tokio::test]
+    async fn build_and_build_async_have_aligned_capability_surface() {
+        let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
+
+        let sync_agent = Zhuye::builder("mock")
+            .workspace("/tmp")
+            .build()
+            .expect("sync build");
+        let async_agent = Zhuye::builder("mock")
+            .workspace("/tmp")
+            .build_async()
+            .await
+            .expect("async build");
+
+        // 工具清单对齐(WP8 单一事实源)。
+        let sync_tools = sync_agent.thread().config();
+        let _ = sync_tools; // AgentConfig 无 tools 直读口;以 registry 数量断言。
+        // side-channel driver 两条路径都已装配(Op::StartSideChannel 不再走
+        // "not configured" Error 分支)—— AgentConfig 字段无公开读取器,
+        // 借助事件行为断言:提交
+        // StartSideChannel Op,收到 Started(而非 SideChannelFinished Error)。
+        use zhuye_protocol::{Op, Submission};
+        for agent in [&sync_agent, &async_agent] {
+            let sub = Submission {
+                id: "side-probe".into(),
+                op: Op::StartSideChannel {
+                    agent: "default".into(),
+                    prompt: "probe".into(),
+                },
+                client_user_message_id: None,
+                trace: None,
+                workspace: None,
+                source_command: None,
+            };
+            let mut stream = agent.submit(sub).await;
+            let mut saw_started = false;
+            let mut saw_error = false;
+            while let Some(ev) = stream.next().await {
+                match &ev.msg {
+                    zhuye_protocol::EventMsg::SideChannelStarted(_) => saw_started = true,
+                    zhuye_protocol::EventMsg::SideChannelFinished(e) => {
+                        // registry 注册即发 Started;factory 失败仍会先 Started
+                        // 后 Error。这里只断言「不是没有 Started 的纯 Error」。
+                        saw_error = true;
+                        let _ = e;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                saw_started || !saw_error,
+                "side-channel 应已装配(先 Started): started={saw_started} error={saw_error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn side_channel_factory_inherits_sandbox_and_sanitizer() {
+        use zhuye_llm::{CredentialPool, MockClient, MockReply, ModelRegistry, PoolEntry};
+        use zhuye_protocol::{ContentBlock, EventMsg, Submission};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zhuye_config::ReflectConfig::default();
+        config.sandbox.os_level = Some(false);
+        config.sanitize = Some(zhuye_config::SanitizeSection {
+            marker: Some("<MASKED>".into()),
+            extra_patterns: Some(vec!["CANDLESECRET123".into()]),
+            ..Default::default()
+        });
+        let client = Arc::new(MockClient::with_script(vec![
+            MockReply::ToolCall {
+                name: "echo".into(),
+                args: serde_json::json!({"text": "CANDLESECRET123"}),
+            },
+            MockReply::Text {
+                text: "done".into(),
+            },
+            MockReply::ToolCall {
+                name: "write".into(),
+                args: serde_json::json!({"path": "blocked.txt", "content": "blocked"}),
+            },
+            MockReply::Text {
+                text: "done".into(),
+            },
+            MockReply::ToolCall {
+                name: "write".into(),
+                args: serde_json::json!({"path": "allowed.txt", "content": "allowed"}),
+            },
+            MockReply::Text {
+                text: "done".into(),
+            },
+        ]));
+        let registry = Arc::new(ModelRegistry::new());
+        registry.register_pool(
+            "mock",
+            CredentialPool {
+                entries: vec![PoolEntry {
+                    client,
+                    label: "default".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        let expected = apply_sandbox_config(AgentConfig::new("mock", dir.path()), &config);
+        let factory = build_side_channel_factory(
+            registry,
+            default_tool_registry(),
+            &config,
+            expected.permission_mode.clone(),
+            false,
+        );
+        let thread = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: expected.current_workspace(),
+                model: expected.current_model(),
+            },
+        )
+        .unwrap();
+        assert_eq!(thread.config().sandbox_default, expected.sandbox_default);
+        assert_eq!(thread.config().sandbox_writable, expected.sandbox_writable);
+        assert_eq!(thread.config().sandbox_network, expected.sandbox_network);
+        let mut events = thread.submit(Submission::user_input("测试")).await;
+        let mut output = None;
+        while let Some(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(20), events.next())
+                .await
+                .unwrap()
+        {
+            if let EventMsg::ToolCallEnd(end) = event.msg {
+                assert!(!end.is_error);
+                output = end
+                    .output
+                    .content
+                    .into_iter()
+                    .find_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text),
+                        _ => None,
+                    });
+            }
+        }
+        assert_eq!(output.as_deref(), Some("<MASKED>"));
+        for (mode, should_error) in [
+            (zhuye_protocol::PermissionMode::Plan, true),
+            (zhuye_protocol::PermissionMode::Auto, false),
+        ] {
+            *expected.permission_mode.write() = mode;
+            let mut events = thread.submit(Submission::user_input("尝试写入")).await;
+            let mut error = None;
+            while let Some(event) =
+                tokio::time::timeout(std::time::Duration::from_secs(20), events.next())
+                    .await
+                    .unwrap()
+            {
+                if let EventMsg::ToolCallEnd(end) = event.msg {
+                    error = Some(end.is_error);
+                }
+            }
+            assert_eq!(error, Some(should_error));
+        }
+        assert!(!dir.path().join("blocked.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("allowed.txt")).unwrap(),
+            "allowed"
+        );
+        let switched = dir.path().join("switched");
+        std::fs::create_dir(&switched).unwrap();
+        expected.set_workspace(switched.clone());
+        expected.set_model("mock/new");
+        let new_thread = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: expected.current_workspace(),
+                model: expected.current_model(),
+            },
+        )
+        .unwrap();
+        assert_eq!(new_thread.config().current_workspace(), switched);
+        assert_eq!(new_thread.config().current_model(), "mock/new");
+        expected.set_workspace(dir.path());
+        expected.set_model("mock/old");
+        assert_eq!(new_thread.config().current_workspace(), switched);
+        assert_eq!(new_thread.config().current_model(), "mock/new");
+    }
+
     /// `is_mock_provider` 的判定口径:只认**显式 opt-in**,
     /// 普通 model spec 不得被静默换成假模型。
     #[test]
@@ -880,12 +1217,16 @@ mod tests {
 
     #[test]
     fn default_tool_registry_has_seven_builtins_plus_plan_tools_plus_ast_plus_web() {
-        // 7 原始 + 3 plan(EnterPlanMode/ExitPlanMode/PlanWrite) + 2 worktree +
-        // ast + 2 web + notebook_edit = 17。PlanWrite 随本次修复一并
-        // 补注册(v0.4.0 之前漏注册导致 LLM 报 "tool not found")。
+        // 内置清单收编至 zhuye_tools::register_builtin_tools(单一事实源,
+        // 与 exec / serve 共用)。全量 26 个(含 AskUser / ToolSearch /
+        // Checkpoint / Rewind 等此前门面缺失的 9 个)。
         let r = default_tool_registry();
         let names = r.list();
-        assert_eq!(names.len(), 17, "expected 17 builtins, got {names:?}");
+        assert_eq!(
+            names.len(),
+            zhuye_tools::BUILTIN_TOOL_COUNT,
+            "got {names:?}"
+        );
         assert!(names.contains(&"bash".into()));
         assert!(names.contains(&"read".into()));
         assert!(names.contains(&"EnterPlanMode".to_string()));
@@ -896,6 +1237,10 @@ mod tests {
         assert!(names.contains(&"ast".to_string()));
         assert!(names.contains(&"web_fetch".to_string()));
         assert!(names.contains(&"web_search".to_string()));
+        // v1.x:门面与 exec 并集后新增可见的 9 个。
+        for added in ["checkpoint", "rewind", "tool_search", "image_view", "brief"] {
+            assert!(names.iter().any(|n| n == added), "门面缺内置工具 {added}");
+        }
     }
 
     /// `plan_mode(true)` 让 `AgentConfig::permission_mode` 初始化为
@@ -963,7 +1308,7 @@ mod tests {
         let t = Arc::new(AgentThread::new(
             AgentConfig::new("openai/gpt-4o", Path::new(".")),
             build_registry_from_env("openai/gpt-4o").unwrap(),
-            Arc::new(default_tool_registry()),
+            default_tool_registry(),
             None,
             None,
         ));

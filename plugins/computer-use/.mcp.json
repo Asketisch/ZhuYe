@@ -1,0 +1,6 @@
+{
+  "computer": {
+    "command": "${PLUGIN_ROOT}/bin/zhuye-computer-use-server",
+    "timeout_secs": 60
+  }
+}

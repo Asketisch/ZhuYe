@@ -78,6 +78,21 @@ function spawnMockServe(): ChildProcessWithoutNullStreams {
       if (opType === 'register_tools' || opType === 'tool_execution_response') {
         return;
       }
+      // v1.x:side-channel 查询 Op(非 turn)—— 回 status 快照后收尾。
+      if (opType === 'query_side_channels') {
+        process.stdout.write(JSON.stringify({
+          id: sub.id, msg: {
+            type: 'side_channel_status', channels: [
+              { id: 'side-00000001', agentName: 'a', prompt: 'p',
+                startedAtMs: 1, status: 'running', durationMs: null },
+            ],
+          },
+        }) + '\\n');
+        process.stdout.write(JSON.stringify({
+          id: sub.id, msg: { type: 'submission_closed' },
+        }) + '\\n');
+        return;
+      }
       if (opType === 'user_input' || opType === 'interrupt') {
         process.stdout.write(JSON.stringify({
           id: sub.id, msg: { type: 'turn_started', turn_id: 't', user_message_id: 'm' },
@@ -93,6 +108,10 @@ function spawnMockServe(): ChildProcessWithoutNullStreams {
         }) + '\\n');
         process.stdout.write(JSON.stringify({
           id: sub.id, msg: { type: 'tool_call_output_delta', call_id: 'c1', delta: 'preview', is_stderr: true },
+        }) + '\\n');
+        process.stdout.write(JSON.stringify({
+          id: sub.id, msg: { type: 'tool_call_end', call_id: 'image-call', is_error: false,
+            output: { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: {}, elapsed_ms: 0 } },
         }) + '\\n');
         process.stdout.write(JSON.stringify({
           id: sub.id, msg: {
@@ -135,6 +154,18 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
     expect(await agent.prompt('hi')).toBe('mock-reply');
   }, 10_000);
 
+  it('工具图片事件透传原始字节', async () => {
+    const events = [];
+    for await (const event of await agent.submit({ type: 'user_input', items: [{ type: 'text', text: 'hi' }] })) {
+      events.push(event);
+    }
+    const end = events.find((event) => event.msg.type === 'tool_call_end');
+    expect(end?.msg.type).toBe('tool_call_end');
+    if (end?.msg.type !== 'tool_call_end') throw new Error('缺少工具结果');
+    expect(end.msg.output.content).toEqual([{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }]);
+    expect(events.at(-1)?.msg.type).toBe('turn_complete');
+  }, 10_000);
+
   it('registerTools 静默接受(不污染 turn 事件流)', async () => {
     await agent.registerTool('foo', 'd', { type: 'object' }, () => ({
       content: [{ type: 'text', text: 'x' }],
@@ -156,6 +187,21 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
     expect(code).toBe(0);
   }, 10_000);
 
+  it('query_side_channels Op → side_channel_status 透传 + submission_closed 收尾', async () => {
+    // 非 turn Op:迭代器必须收尾(v1.3 起 serve 排空 per-turn 通道后发
+    // submission_closed);新事件 side_channel_status 原样透传。
+    const stream = await agent.submit({ type: 'query_side_channels' } as never);
+    const events: Event[] = [];
+    for await (const ev of stream) events.push(ev);
+    const types = events.map((e) => e.msg.type);
+    expect(types).toContain('side_channel_status');
+    const status = events.find((e) => e.msg.type === 'side_channel_status')!.msg as unknown as {
+      channels: Array<{ id: string; status: string }>;
+    };
+    expect(status.channels[0]).toMatchObject({ id: 'side-00000001', status: 'running' });
+    expect(types.at(-1)).toBe('submission_closed');
+  }, 10_000);
+
   it('UnknownEventMsg 降级不抛错', async () => {
     // 每个 SDK 实例独占输入输出流,避免两个消费者争抢同一子进程的握手。
     const stdin = new PassThrough();
@@ -171,12 +217,19 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
         { submissionId: 'unknown-probe' },
       );
       stdout.write(JSON.stringify({ id: 'unknown-probe', msg: { type: 'telemetry_event', payload: { x: 1 } } }) + '\n');
+      // v1.x additive 变体:side-channel(WP9)—— 真实新事件名,SDK 原样透传。
+      stdout.write(JSON.stringify({ id: 'unknown-probe', msg: {
+        type: 'side_channel_started', kind: 'started', id: 'side-00000001',
+        agent_name: 'a', prompt: 'p', started_at_ms: 1,
+      } }) + '\n');
       stdout.write(JSON.stringify({ id: 'unknown-probe', msg: {
         type: 'turn_complete', turn_id: 't', status: 'success', usage: {},
       } }) + '\n');
       const events: Event[] = [];
       for await (const event of stream) events.push(event);
       expect(events[0].msg).toEqual({ type: 'telemetry_event', payload: { x: 1 } });
+      expect(events[1].msg.type).toBe('side_channel_started');
+      expect((events[1].msg as Record<string, unknown>).id).toBe('side-00000001');
       expect(events.at(-1)?.msg.type).toBe('turn_complete');
     } finally {
       await customAgent.close();

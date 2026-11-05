@@ -1,0 +1,6 @@
+{
+  "shell": {
+    "command": "${PLUGIN_ROOT}/bin/zhuye-shell-server",
+    "timeout_secs": 60
+  }
+}

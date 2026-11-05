@@ -116,10 +116,11 @@ pub enum Op {
     /// `SetPermissionMode { mode: current.next_in_ui_cycle() }`。
     CyclePermissionMode,
 
-    /// v1.2 P1:目标模式。设定目标 + 可选命令
-    /// 校验 + token 预算。submission_loop 收到后构造 `GoalController` 放入
-    /// `NodeContext.goal`,后续每轮 turn 结束由 controller 自校验(LM judge)
-    /// + 可选命令,未完成则推 steering 续作,完成则退出。
+    /// v1.2 P1:目标模式。设定目标 + 可选命令校验 + token 预算。
+    /// submission_loop 收到后构造 `GoalController` 放入 `NodeContext.goal`,
+    /// 后续每轮 turn 结束由 controller 自校验(LM judge)+ 可选命令。
+    /// 未完成则把续作文本推进 steering 队列,等下一条 `UserInput` 合并,
+    /// 不自行提交新回合。完成则退出。
     EnterGoalMode {
         goal: String,
         #[serde(default)]
@@ -129,7 +130,7 @@ pub enum Op {
     },
 
     /// v1.2 P1:退出目标模式(`/goal clear`)。submission_loop 收到后清空
-    /// `NodeContext.goal`,停止自动续作。
+    /// `NodeContext.goal`,不再产生续作文本。
     ExitGoalMode,
 
     /// v1.6.1:提示词层管理(`/prompt` slash,TUI/GUI 选择提示词)。
@@ -177,6 +178,32 @@ pub enum Op {
     QuerySubagents {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         child_id: Option<String>,
+    },
+
+    /// v1.x:启动 side-channel agent(用户驱动、与主 agent 并发的独立
+    /// agent 运行)。引擎经 `SideChannelDriver` 注册并注入 prompt,应答
+    /// 为 `EventMsg::SideChannelStarted`(per-turn 通道 + 会话扇出)。
+    ///
+    /// 与 `Task` 工具的区别:side-channel 由**用户**触发、不阻塞主
+    /// 轮次、独立取消令牌、事件不进主历史。driver 未配置(库路径默认)
+    /// 时返回 `SideChannelError`。
+    StartSideChannel {
+        /// agent 定义名(workspace + home agents 目录解析)。
+        agent: String,
+        /// 初始 prompt。
+        prompt: String,
+    },
+
+    /// v1.x:取消 side-channel(只触发该 id 的独立令牌,不影响主 agent
+    /// 与其它 side-channel)。未知 / 已终态 id → noop(不回错误)。
+    CancelSideChannel { id: String },
+
+    /// v1.x:查询 side-channel 快照。`id = None` 列出全部;
+    /// `Some(id)` 只查指定(未知 id 返回空列表)。应答为
+    /// `EventMsg::SideChannelStatus`。
+    QuerySideChannels {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
 }
 
@@ -226,6 +253,9 @@ impl Op {
             Op::ToolExecutionResponse { .. } => "tool_execution_response",
             Op::Steer { .. } => "steer",
             Op::QuerySubagents { .. } => "query_subagents",
+            Op::StartSideChannel { .. } => "start_side_channel",
+            Op::CancelSideChannel { .. } => "cancel_side_channel",
+            Op::QuerySideChannels { .. } => "query_side_channels",
         }
     }
 }

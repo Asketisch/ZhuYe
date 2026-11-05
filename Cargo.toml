@@ -17,6 +17,7 @@ members = [
     "crates/abilities/zhuye-recovery",
     "crates/abilities/zhuye-notes",
     "crates/abilities/zhuye-sanitize",
+    "crates/abilities/zhuye-kms",
 
     # ── resources ── 配置/权限/插件/可观测性
     "crates/resources/zhuye-config",
@@ -25,6 +26,10 @@ members = [
     "crates/resources/zhuye-rollout",
     "crates/resources/zhuye-telemetry",
     "crates/resources/zhuye-sandbox",
+    "crates/resources/zhuye-audit",
+    "crates/resources/zhuye-secrets",
+    "crates/resources/zhuye-fs",
+    "crates/resources/zhuye-git",
     "crates/resources/zhuye-ast",
 
     # ── orchestration ── 多 agent 编排层
@@ -39,6 +44,10 @@ members = [
     "crates/integrations/zhuye-lsp",
     "crates/integrations/zhuye-integration",
     "crates/integrations/zhuye-stream",
+    "crates/integrations/zhuye-import",
+    "crates/integrations/zhuye-computer-use",
+    "crates/integrations/zhuye-shell",
+    "crates/integrations/zhuye-git-tools",
 
     # ── runtime ── 运行时与入口
     # 注:zhuye-tui 已拆分至独立仓库 Reflect-TUI(https://cnb.cool/Demon1019/Reflect-CLI),
@@ -73,6 +82,7 @@ zhuye-compact    = { path = "crates/abilities/zhuye-compact" }
 zhuye-recovery   = { path = "crates/abilities/zhuye-recovery" }
 zhuye-notes      = { path = "crates/abilities/zhuye-notes" }
 zhuye-sanitize   = { path = "crates/abilities/zhuye-sanitize" }
+zhuye-kms        = { path = "crates/abilities/zhuye-kms" }
 
 # ── resources ── 配置/权限/插件/可观测性
 zhuye-config      = { path = "crates/resources/zhuye-config" }
@@ -81,6 +91,10 @@ zhuye-plugin      = { path = "crates/resources/zhuye-plugin" }
 zhuye-rollout     = { path = "crates/resources/zhuye-rollout" }
 zhuye-telemetry   = { path = "crates/resources/zhuye-telemetry" }
 zhuye-sandbox     = { path = "crates/resources/zhuye-sandbox" }
+zhuye-audit       = { path = "crates/resources/zhuye-audit" }
+zhuye-secrets     = { path = "crates/resources/zhuye-secrets" }
+zhuye-fs          = { path = "crates/resources/zhuye-fs" }
+zhuye-git         = { path = "crates/resources/zhuye-git" }
 zhuye-ast         = { path = "crates/resources/zhuye-ast" }
 
 # ── orchestration ── 多 agent 编排层
@@ -95,6 +109,10 @@ zhuye-mcp         = { path = "crates/integrations/zhuye-mcp" }
 zhuye-lsp         = { path = "crates/integrations/zhuye-lsp" }
 zhuye-integration = { path = "crates/integrations/zhuye-integration" }
 zhuye-stream      = { path = "crates/integrations/zhuye-stream" }
+zhuye-import      = { path = "crates/integrations/zhuye-import" }
+zhuye-computer-use = { path = "crates/integrations/zhuye-computer-use" }
+zhuye-shell      = { path = "crates/integrations/zhuye-shell" }
+zhuye-git-tools  = { path = "crates/integrations/zhuye-git-tools" }
 
 # ── runtime ── 运行时与入口
 zhuye-core = { path = "crates/runtime/zhuye-core" }
@@ -158,6 +176,14 @@ zhuye-bm25 = { path = "crates/abilities/zhuye-bm25" }
 htmd        = "0.5"
 # 通用 lazy container(`WebSearchTool` 等延迟初始化的场景)。
 once_cell   = "1"
+# v1.9:输入侧提示注入检测(zhuye-sanitize::prompt_guard)的 SHA-256 指纹,
+# 与审计日志(zhuye-audit)的指纹算法保持一致。
+sha2        = "0.10"
+# v1.9 S8:密钥加密存储(zhuye-secrets)。AES-256-GCM 认证加密 +
+# HKDF-SHA256 每条目派生(per-entry salt),getrandom 由 aes-gcm 默认
+# feature 提供(Nonce/Key 生成用 OsRng)。
+aes-gcm     = "0.10"
+hkdf        = "0.12"
 
 # Prompt 构建
 minijinja = "2"
@@ -167,6 +193,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # 记忆(M4 可能切换到 rusqlite)
 sled = "0.34"
+
+# 会话导入(zhuye-import):ZCode 历史存于 SQLite;bundled 自带 C 源,
+# 免系统依赖。仅 zhuye-import 消费,不进 SDK facade。
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 # 并发原语
 parking_lot = "0.12"

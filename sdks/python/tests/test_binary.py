@@ -44,3 +44,36 @@ def test_bundled_binary_仓库源码树默认无内嵌() -> None:
     由 CI 打进 wheel,不得入库。
     """
     assert _bundled_binary() is None
+
+
+# ── serve argv:--plugin 显式插件选项映射 ──────────────────────────────
+
+
+def test_serve_args_无插件时纯serve() -> None:
+    """plugins 缺省 / 空列表 = 纯 `serve`(配置驱动)。"""
+    from zhuye.agent import ZhuyeAgentOptions, _serve_args
+
+    assert _serve_args(ZhuyeAgentOptions()) == ["serve"]
+    assert _serve_args(ZhuyeAgentOptions(plugins=[])) == ["serve"]
+
+
+def test_serve_args_每个插件一对flag() -> None:
+    """每个插件 id 展开为一对 `--plugin <id>`,顺序保持。"""
+    from zhuye.agent import ZhuyeAgentOptions, _serve_args
+
+    assert _serve_args(
+        ZhuyeAgentOptions(plugins=["harness-import@inline", "demo@inline"])
+    ) == ["serve", "--plugin", "harness-import@inline", "--plugin", "demo@inline"]
+
+
+def test_新增插件选项不改变既有位置参数() -> None:
+    """旧版位置参数仍分别绑定 stderr 回调与转发开关。"""
+    from zhuye.agent import ZhuyeAgentOptions, _serve_args
+
+    def callback(chunk: bytes) -> None:
+        pass
+    options = ZhuyeAgentOptions("zhuye", None, None, 10.0, callback, False)
+    assert options.on_stderr is callback
+    assert options.forward_stderr is False
+    assert options.plugins is None
+    assert _serve_args(options) == ["serve"]

@@ -56,6 +56,11 @@ struct HookCommandEntry {
     command: Option<String>,
     #[serde(default)]
     timeout: Option<u64>,
+    /// hooks.json 可声明 `env: ["NAME", ...]` 显式放行本应被 secret
+    /// 剔除的环境变量(白名单优先)。此前本字段缺失 —— `expand` 重建
+    /// command JSON 时静默丢弃,loader 读到的永远是空白名单,声明了也不生效。
+    #[serde(default)]
+    env: Option<Vec<String>>,
 }
 
 pub fn load(spec: &HookSpec, plugin_root: &Path) -> Result<Vec<LoadedHook>> {
@@ -129,6 +134,7 @@ fn expand(
                     "type": cmd.kind,
                     "command": command,
                     "timeout": cmd.timeout,
+                    "env": cmd.env,
                 });
                 out.push(LoadedHook {
                     source: source.to_string(),
@@ -192,6 +198,35 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].event, "Stop");
         assert_eq!(out[0].matcher, None);
+    }
+
+    /// v1.x 回归:hooks.json 的 `env: ["NAME"]` 白名单必须透传到
+    /// `LoadedHook.command` —— 此前 `HookCommandEntry` 没有 env 字段,
+    /// expand 重建 JSON 时静默丢弃,loader 读到的永远是空白名单。
+    #[test]
+    fn load_preserves_env_allowlist() {
+        let json = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "bash", "hooks": [
+                        { "type": "command", "command": "blocked",
+                          "timeout": 5, "env": ["INTERNAL_API_KEY", "HOME"] }
+                    ] }
+                ]
+            }
+        });
+        let out = load(&HookSpec::Inline(json), Path::new("/")).unwrap();
+        assert_eq!(out.len(), 1);
+        let env = out[0]
+            .command
+            .get("env")
+            .and_then(|v| v.as_array())
+            .expect("env allowlist must survive expand");
+        let names: Vec<&str> = env.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(names, vec!["INTERNAL_API_KEY", "HOME"]);
+        // 其余字段不受影响。
+        assert!(out[0].command["command"] == "blocked");
+        assert!(out[0].command["timeout"] == 5);
     }
 
     #[test]
