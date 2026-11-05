@@ -1,8 +1,8 @@
 //! v1.6.1:提示词层管理(`/prompt` slash)的协议载荷。
 //!
-//! `Op::PromptCommand` 的 action 在此定义;应答事件体 `PromptListEvent` /
-//! `PromptSwitchedEvent` 定义在 [`crate::event_msg::config`](同 EventMsg
-//! 家族一处),经 crate 根 re-export。
+//! `Op::PromptCommand` 的 action 在此定义;应答事件体
+//! [`crate::event_msg::PromptListEvent`] / [`crate::event_msg::PromptSwitchedEvent`]
+//! 经 crate 根重新导出。
 
 use serde::{Deserialize, Serialize};
 

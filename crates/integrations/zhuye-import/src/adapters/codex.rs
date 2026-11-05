@@ -35,6 +35,7 @@
 
 use std::path::PathBuf;
 
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use zhuye_protocol::ThreadId;
@@ -111,17 +112,28 @@ impl HarnessAdapter for CodexAdapter {
     }
 }
 
-/// 递归收集 rollout-*.jsonl(目录按日期分层,深度不定,直接递归)。
+/// 收集各级 JSONL；同一真实目录只遍历一次，避免符号链接形成环。
 fn collect_rollout_files(dir: &std::path::Path, out: &mut Vec<ImportSource>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            collect_rollout_files(&p, out);
-        } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            out.push(ImportSource::JsonlFile(p));
+    let mut pending = vec![dir.to_path_buf()];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(real_dir) = dir.canonicalize() else {
+            continue;
+        };
+        if !visited.insert(real_dir) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        paths.sort();
+        for path in paths.into_iter().rev() {
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                out.push(ImportSource::JsonlFile(path));
+            }
         }
     }
 }
@@ -224,7 +236,13 @@ pub(crate) fn parse_lines(
                                     pending.push(text);
                                     continue;
                                 }
-                                if text.is_empty() {
+                                let user_blocks = user_content_blocks(
+                                    &payload,
+                                    display,
+                                    lineno + 1,
+                                    &mut warnings,
+                                );
+                                if user_blocks.is_empty() {
                                     continue;
                                 }
                                 // 真实用户输入 → 开新 turn(前置挂缓冲的注入
@@ -239,7 +257,7 @@ pub(crate) fn parse_lines(
                                 for ctx in pending.drain(..) {
                                     turn.user.push(UserBlock::Text { text: ctx });
                                 }
-                                turn.user.push(UserBlock::Text { text });
+                                turn.user.extend(user_blocks);
                                 current = Some(turn);
                             }
                             "assistant" => {
@@ -434,6 +452,78 @@ fn join_content_text(payload: &Value) -> Option<String> {
     }
 }
 
+/// 按源顺序保留文本和内嵌图片；无法恢复的图片显式告警。
+fn user_content_blocks(
+    payload: &Value,
+    display: &str,
+    lineno: usize,
+    warnings: &mut Vec<ImportWarning>,
+) -> Vec<UserBlock> {
+    let Some(content) = payload.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut blocks = Vec::new();
+    for item in content {
+        match item.get("type").and_then(Value::as_str) {
+            Some("input_text" | "text") => {
+                if let Some(text) = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    blocks.push(UserBlock::Text {
+                        text: text.to_string(),
+                    });
+                }
+            }
+            Some("input_image" | "local_image") => {
+                let url = item.get("image_url").and_then(|value| {
+                    value
+                        .as_str()
+                        .or_else(|| value.get("url").and_then(Value::as_str))
+                });
+                let image = url.and_then(|url| {
+                    let (header, encoded) = url.strip_prefix("data:")?.split_once(',')?;
+                    let mime = header.strip_suffix(";base64")?;
+                    if !mime.starts_with("image/") || encoded.is_empty() {
+                        return None;
+                    }
+                    let data = base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .or_else(|_| {
+                            base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded)
+                        })
+                        .ok()?;
+                    Some(UserBlock::Image {
+                        data,
+                        mime_type: mime.to_string(),
+                    })
+                });
+                if let Some(image) = image {
+                    blocks.push(image);
+                } else {
+                    warnings.push(ImportWarning::new(
+                        "unsupported-image",
+                        format!("{display}:{lineno} 图片不是有效的内嵌 base64 数据,已跳过"),
+                    ));
+                }
+            }
+            _ => {
+                if let Some(text) = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    blocks.push(UserBlock::Text {
+                        text: text.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    blocks
+}
+
 /// 工具输出统一文本化:字符串直取;对象优先 `content` 字段,否则紧凑 JSON。
 fn output_to_text(v: Option<&Value>) -> String {
     match v {
@@ -475,6 +565,65 @@ fn extract_usage(payload: &Value) -> Option<ImportedUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_handles_directory_link_cycles_and_aliases() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("2026/11");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rollout.jsonl"), "{}").unwrap();
+        symlink(root.path(), dir.join("cycle")).unwrap();
+        symlink(root.path().join("2026"), root.path().join("alias")).unwrap();
+
+        let mut sources = Vec::new();
+        collect_rollout_files(root.path(), &mut sources);
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].display().ends_with("rollout.jsonl"));
+    }
+
+    #[test]
+    fn imports_user_images_and_warns_for_unavailable_sources() {
+        let content = concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"01a18f63-104f-7021-b325-72f576186023\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"前\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,aGk=\"},{\"type\":\"input_text\",\"text\":\"后\"}]}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":{\"url\":\"data:image/jpeg;base64,AQI\"}}]}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"local_image\",\"path\":\"/missing\"}]}}"
+        );
+        let session = parse_lines(content, "rollout.jsonl", &ImportOptions::default()).unwrap();
+        assert_eq!(session.turn_count(), 2);
+        let Entry::Turn(first) = &session.entries[0] else {
+            panic!("缺少首轮")
+        };
+        assert_eq!(
+            first.user,
+            vec![
+                UserBlock::Text { text: "前".into() },
+                UserBlock::Image {
+                    data: b"hi".to_vec(),
+                    mime_type: "image/png".into()
+                },
+                UserBlock::Text { text: "后".into() },
+            ]
+        );
+        let Entry::Turn(second) = &session.entries[1] else {
+            panic!("缺少第二轮")
+        };
+        assert_eq!(
+            second.user,
+            vec![UserBlock::Image {
+                data: vec![1, 2],
+                mime_type: "image/jpeg".into()
+            }]
+        );
+        assert!(
+            session
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "unsupported-image")
+        );
+    }
 
     const FIXTURE: &str = r#"
 {"timestamp":"2026-10-31T00:36:36.637Z","ordinal":1,"type":"session_meta","payload":{"session_id":"01a18f63-104f-7021-b325-72f576186023","id":"01a18f63-104f-7021-b325-72f576186023","timestamp":"2026-10-31T00:36:36.584Z","cwd":"/work/cx","originator":"Codex Desktop","cli_version":"0.166.0","model_provider":"openai"}}

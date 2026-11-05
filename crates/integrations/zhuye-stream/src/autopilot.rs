@@ -9,7 +9,7 @@
 //! - `schedule` 字段统一走本 crate 的 [`crate::cron::CronSchedule`]
 //!   (同一套 5 字段解析,不再各写一套 cron 口径);
 //! - [`AutopilotManager::should_run`] 按 cron 到期判定:距上次触发
-//!   (`history[0].executed_at_ms`,无历史取当前时刻为起点)的
+//!   (`history[0].executed_at_ms`,无历史取配置文件修改时间为起点)的
 //!   `next_after` 已过 → 到期;
 //! - [`fire_if_due`] 把 `task_template` 作为
 //!   `Submission::user_input` 注入 agent loop 并落一条 `InProgress`
@@ -186,7 +186,7 @@ impl AutopilotManager {
     /// 按 cron 到期判定是否应执行(真闭环,取代桌面端的布尔摆设):
     /// enabled + schedule 可解析 + 距上次触发的 next_after 已过。
     ///
-    /// 无历史记录时以**当前时刻**为起点(首次保存配置后不会立即连发,
+    /// 无历史记录时以**配置文件修改时间**为起点(首次保存配置后不会立即连发,
     /// 从下一个 schedule 点开始)。配置 / 历史文件坏 → 透传 `InvalidData`。
     pub fn should_run(&self) -> io::Result<bool> {
         let config = self.load_config()?;
@@ -196,14 +196,52 @@ impl AutopilotManager {
         let Ok(parsed) = CronSchedule::parse(&config.schedule) else {
             return Ok(false);
         };
-        let last = self
-            .load_history()?
-            .first()
-            .map(|r| ms_to_datetime(r.executed_at_ms))
-            .unwrap_or_else(Utc::now);
-        Ok(parsed
+        let history = self.load_history()?;
+        self.is_due(&parsed, &history)
+    }
+
+    fn is_due(&self, schedule: &CronSchedule, history: &[AutopilotRun]) -> io::Result<bool> {
+        let last = match history.first() {
+            Some(run) => ms_to_datetime(run.executed_at_ms),
+            None => self.config_path.metadata()?.modified()?.into(),
+        };
+        Ok(schedule
             .next_after(last)
             .is_some_and(|next| next <= Utc::now()))
+    }
+
+    fn reserve_due_run(&self) -> io::Result<Option<(AutopilotConfig, AutopilotRun)>> {
+        let _guard = self.history_lock.lock();
+        let config = self.load_config()?;
+        if !config.enabled || config.schedule.is_empty() {
+            return Ok(None);
+        }
+        let Ok(schedule) = CronSchedule::parse(&config.schedule) else {
+            return Ok(None);
+        };
+        let mut history: Vec<AutopilotRun> = read_json_or_default(&self.history_path)?;
+        if !self.is_due(&schedule, &history)? {
+            return Ok(None);
+        }
+        let active = history
+            .iter()
+            .filter(|r| r.status == AutopilotRunStatus::InProgress)
+            .count();
+        let run = AutopilotRun {
+            id: uuid::Uuid::new_v4().to_string(),
+            executed_at_ms: now_ms(),
+            task_id: None,
+            status: if active >= config.max_concurrent {
+                AutopilotRunStatus::Skipped
+            } else {
+                AutopilotRunStatus::InProgress
+            },
+            error: None,
+        };
+        history.insert(0, run.clone());
+        history.truncate(HISTORY_CAP);
+        self.write_history(&history)?;
+        Ok(Some((config, run)))
     }
 
     fn write_history(&self, history: &[AutopilotRun]) -> io::Result<()> {
@@ -219,29 +257,28 @@ impl AutopilotManager {
 /// `InProgress` 运行。返回触发的运行记录;未到期 / 未启用 → `None`。
 ///
 /// 并发保护:同一 manager 串行(内部锁),多调用方共享 `Arc` 时由
-/// `should_run` + `add_run` 的锁序保证不会双发(先占历史头位再发送)。
+/// 检查到期与占位在同一把锁内完成,避免双发。
 pub async fn fire_if_due(
     manager: &AutopilotManager,
     sub_tx: &Option<tokio::sync::mpsc::Sender<Submission>>,
 ) -> io::Result<Option<AutopilotRun>> {
-    if !manager.should_run()? {
+    let Some((config, mut run)) = manager.reserve_due_run()? else {
         return Ok(None);
-    }
-    let config = manager.load_config()?;
-    let now_ms = now_ms();
-    let run = AutopilotRun {
-        id: uuid::Uuid::new_v4().to_string(),
-        executed_at_ms: now_ms,
-        task_id: None,
-        status: AutopilotRunStatus::InProgress,
-        error: None,
     };
-    // 先落历史(占位,防并发双发),再注入。
-    manager.add_run(run.clone())?;
-    if let Some(tx) = sub_tx {
-        let _ = tx
-            .send(Submission::user_input(config.task_template.clone()))
-            .await;
+    if run.status == AutopilotRunStatus::InProgress {
+        let sent = match sub_tx {
+            Some(tx) => tx
+                .send(Submission::user_input(config.task_template))
+                .await
+                .is_ok(),
+            None => false,
+        };
+        if !sent {
+            let error = "autopilot submission channel unavailable".to_string();
+            manager.finalize_run(&run.id, AutopilotRunStatus::Failed, Some(error.clone()))?;
+            run.status = AutopilotRunStatus::Failed;
+            run.error = Some(error);
+        }
     }
     Ok(Some(run))
 }
@@ -458,7 +495,7 @@ mod tests {
         let mut enabled = config.clone();
         enabled.enabled = true;
         manager.save_config(&enabled).unwrap();
-        // 首次无历史 → 以当前时刻为起点,每分钟 schedule 的下一次还没到。
+        // 首次无历史 → 以配置修改时间为起点,每分钟 schedule 的下一次还没到。
         assert!(!manager.should_run().unwrap(), "未到期 → false");
 
         // 伪造 2 小时前的一次历史 → next_after(last) 已过 → 到期。
@@ -472,6 +509,108 @@ mod tests {
             })
             .unwrap();
         assert!(manager.should_run().unwrap(), "距上次触发超一个周期 → true");
+    }
+
+    #[tokio::test]
+    async fn first_run_and_concurrent_reservations() {
+        let dir = TempDir::new().unwrap();
+        let manager = Arc::new(AutopilotManager::new_with_root(dir.path().to_path_buf()));
+        manager
+            .save_config(&AutopilotConfig {
+                enabled: true,
+                schedule: "* * * * *".into(),
+                task_template: "首次任务".into(),
+                ..AutopilotConfig::default()
+            })
+            .unwrap();
+        let config_file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.path().join("config.json"))
+            .unwrap();
+        config_file
+            .set_times(
+                std::fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(120),
+                ),
+            )
+            .unwrap();
+        assert!(manager.should_run().unwrap());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let manager = Arc::clone(&manager);
+            let tx = tx.clone();
+            tasks.push(tokio::spawn(async move {
+                fire_if_due(&manager, &Some(tx)).await.unwrap()
+            }));
+        }
+        let mut fired = 0;
+        for task in tasks {
+            fired += usize::from(task.await.unwrap().is_some());
+        }
+        assert_eq!(fired, 1);
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(manager.load_history().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_limit_records_skipped_run() {
+        let manager = fresh_manager();
+        manager
+            .save_config(&AutopilotConfig {
+                enabled: true,
+                schedule: "* * * * *".into(),
+                task_template: "任务".into(),
+                max_concurrent: 1,
+                ..AutopilotConfig::default()
+            })
+            .unwrap();
+        manager
+            .add_run(AutopilotRun {
+                id: "active".into(),
+                executed_at_ms: 0,
+                task_id: None,
+                status: AutopilotRunStatus::InProgress,
+                error: None,
+            })
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let run = fire_if_due(&manager, &Some(tx)).await.unwrap().unwrap();
+        assert_eq!(run.status, AutopilotRunStatus::Skipped);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            manager.load_history().unwrap()[0].status,
+            AutopilotRunStatus::Skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_channel_marks_run_failed() {
+        let manager = fresh_manager();
+        manager
+            .save_config(&AutopilotConfig {
+                enabled: true,
+                schedule: "* * * * *".into(),
+                task_template: "任务".into(),
+                ..AutopilotConfig::default()
+            })
+            .unwrap();
+        manager
+            .add_run(AutopilotRun {
+                id: "seed".into(),
+                executed_at_ms: 0,
+                task_id: None,
+                status: AutopilotRunStatus::Success,
+                error: None,
+            })
+            .unwrap();
+        let run = fire_if_due(&manager, &None).await.unwrap().unwrap();
+        assert_eq!(run.status, AutopilotRunStatus::Failed);
+        assert_eq!(
+            manager.load_history().unwrap()[0].status,
+            AutopilotRunStatus::Failed
+        );
     }
 
     #[test]

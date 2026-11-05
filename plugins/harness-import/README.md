@@ -33,6 +33,7 @@ MCP 工具:
 
 - `import_session(path, source_kind?, dry_run?, include_thinking?, force?)`
   —— 导入文件或目录(目录递归收集 `.jsonl` 逐个嗅探);
+  `force` 覆盖同 ID 会话时沿用原文件位置,并替换其旧轮转分片;
 - `list_importable(source_kind)` —— 扫描该 Harness 本机默认安装位置。
 
 直跑模式示例:
@@ -51,12 +52,13 @@ bin/zhuye-import --from zcode ...                                # ZCode 见下
   Harness 注入的环境脚手架(`keep_injected` / `--keep-injected` 保留;
   保留时**前置到紧随的真实用户输入所在轮**,不独立成轮)、
   Claude Code 子代理轨迹(`--include-sidechain` 保留)。
-- ZCode:历史存于 `~/.zcode/cli/db/db.sqlite`,导入时先拷贝到临时
-  目录只读解析,不写源库;MCP 工具入口不暴露 SQLite 路径,批量导入
-  ZCode 请用直跑模式的 `list_importable` + 单会话导入流程。
+- ZCode:历史存于 `~/.zcode/cli/db/db.sqlite`,导入时在临时目录生成
+  一致的 SQLite 在线备份后只读解析,不写源库;MCP 工具入口不暴露 SQLite
+  路径,批量导入 ZCode 请用直跑模式的 `list_importable` + 单会话导入流程。
 
 ## 已知限制
 
 - DeepSeek Harness 暂未支持(架构已留 adapter 位,见
   `zhuye-import/src/adapter.rs`)。
 - Codex 加密 reasoning 无法解密,记 warning 跳过。
+- Codex 内嵌 base64 图片会保留原始字节和 MIME;无法恢复的本地或远程图片记 warning 跳过。

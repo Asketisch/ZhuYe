@@ -1,12 +1,12 @@
 //! `image_view` — 读取本地图片,以 `ContentBlock::Image` 供多模态 LLM 消费。
 
-use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::sandbox::resolve_sandbox_path;
+use crate::sandbox::{open_readonly, resolve_sandbox_path};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// 单张图片软上限(10 MiB),超出拒绝以防 OOM。
@@ -73,8 +73,12 @@ impl Tool for ImageViewTool {
         let path = Path::new(path_str);
         let abs = resolve_sandbox_path(&ctx.workspace_path(), path)?;
 
-        let meta =
-            fs::metadata(&abs).map_err(|e| ToolError::Io(format!("stat {path_str}: {e}")))?;
+        let mut pinned =
+            open_readonly(&abs).map_err(|e| ToolError::Io(format!("open {path_str}: {e}")))?;
+        let meta = pinned
+            .file
+            .metadata()
+            .map_err(|e| ToolError::Io(format!("stat {path_str}: {e}")))?;
         if !meta.is_file() {
             return Err(ToolError::InvalidArgs {
                 message: format!("'{path_str}' is not a file"),
@@ -95,8 +99,22 @@ impl Tool for ImageViewTool {
             ),
         })?;
 
-        let data =
-            fs::read(&abs).map_err(|e| ToolError::Io(format!("read image {path_str}: {e}")))?;
+        // 同一句柄上重新限定字节数，防止检查后文件被追加。
+        let mut data = Vec::new();
+        pinned
+            .file
+            .by_ref()
+            .take(MAX_IMAGE_BYTES.saturating_add(1))
+            .read_to_end(&mut data)
+            .map_err(|e| ToolError::Io(format!("read image {path_str}: {e}")))?;
+        if data.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(ToolError::InvalidArgs {
+                message: format!(
+                    "image too large (over {MAX_IMAGE_BYTES} bytes; max {MAX_IMAGE_BYTES})"
+                ),
+            });
+        }
+        let bytes = data.len() as u64;
 
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::Image {
@@ -106,7 +124,7 @@ impl Tool for ImageViewTool {
             is_error: false,
             metadata: serde_json::json!({
                 "path": path_str,
-                "bytes": meta.len(),
+                "bytes": bytes,
                 "mime_type": mime_type,
             }),
             elapsed_ms: 0,
@@ -117,6 +135,7 @@ impl Tool for ImageViewTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[tokio::test]
     async fn reads_png_as_image_block() {

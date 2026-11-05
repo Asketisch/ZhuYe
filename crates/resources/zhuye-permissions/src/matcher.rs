@@ -54,9 +54,19 @@ pub fn evaluate_full(
     bash_command: Option<&str>,
     resource: Option<&str>,
 ) -> RuleMatch {
+    evaluate_resources(rules, tool_name, bash_command, resource.as_slice())
+}
+
+/// 同一资源的多个等价表示按同一条规则匹配,不改变规则优先级。
+pub(crate) fn evaluate_resources(
+    rules: &[PermissionRule],
+    tool_name: &str,
+    bash_command: Option<&str>,
+    resources: &[&str],
+) -> RuleMatch {
     let mut matched = RuleMatch::NoMatch;
     for rule in rules {
-        if let Some(m) = match_rule_full(rule, tool_name, bash_command, resource) {
+        if let Some(m) = match_rule_full(rule, tool_name, bash_command, resources) {
             if m == RuleMatch::Deny {
                 return RuleMatch::Deny;
             }
@@ -74,75 +84,56 @@ pub(crate) fn match_rule_for_engine(
     rule: &PermissionRule,
     tool_name: &str,
     bash_command: Option<&str>,
-    resource: Option<&str>,
+    resources: &[&str],
 ) -> Option<RuleMatch> {
-    match_rule_full(rule, tool_name, bash_command, resource)
+    match_rule_full(rule, tool_name, bash_command, resources)
 }
 
 fn match_rule_full(
     rule: &PermissionRule,
     tool_name: &str,
     bash_command: Option<&str>,
-    resource: Option<&str>,
+    resources: &[&str],
 ) -> Option<RuleMatch> {
-    // 资源维度预检:v1.9(1.5)。带 resource_glob 的规则只在资源命中时
-    // 生效;无资源上下文时 Deny fail-closed、Allow/Ask 不参与
-    // (与 shell_pattern 的 0.4 语义一致)。
-    if let Some(pat) = rule.resource_glob.as_deref() {
-        let glob = Glob::new(pat).ok()?;
-        let matcher = glob.compile_matcher();
-        match resource {
-            Some(r) if matcher.is_match(r) => {}
-            Some(_) => return None,
-            None => {
-                return match rule.action {
-                    PermissionAction::Deny => Some(RuleMatch::Deny),
-                    _ => None,
-                };
-            }
+    // 先确认工具维度匹配,再对缺失资源执行 fail-closed。
+    // 否则某个工具的资源拒绝规则会错误拦截所有其他工具。
+    let tool_matches = if rule.shell_pattern.is_some() {
+        tool_names_equal(&rule.tool, tool_name)
+    } else if let Some(pattern) = rule.tool_glob.as_deref() {
+        Glob::new(pattern)
+            .ok()?
+            .compile_matcher()
+            .is_match(tool_name)
+    } else {
+        tool_names_equal(&rule.tool, tool_name)
+    };
+    if !tool_matches {
+        return None;
+    }
+    // 已知维度必须全部匹配;仅在工具及其他已知维度匹配后,
+    // 缺失上下文才对 Deny 规则采用 fail-closed。
+    if let Some(pattern) = rule.shell_pattern.as_deref() {
+        match bash_command {
+            Some(cmd) if !shell_pattern_matches(pattern, cmd, rule.action) => return None,
+            None if rule.action != PermissionAction::Deny => return None,
+            _ => {}
         }
     }
-    // shell 规则优先。
-    if let Some(pat) = rule.shell_pattern.as_deref() {
-        if !tool_names_equal(&rule.tool, tool_name) {
+    if let Some(pattern) = rule.resource_glob.as_deref() {
+        let matcher = match Glob::new(pattern) {
+            Ok(glob) => glob.compile_matcher(),
+            Err(_) if rule.action == PermissionAction::Deny => return Some(RuleMatch::Deny),
+            Err(_) => return None,
+        };
+        if resources.is_empty() {
+            if rule.action != PermissionAction::Deny {
+                return None;
+            }
+        } else if !resources.iter().any(|value| matcher.is_match(value)) {
             return None;
         }
-        // 0.4(1):Deny 规则 fail-closed。调用方没提供命令上下文时,不能
-        // 因为"没法匹配"就 silently 放过 —— 那会让
-        // `{tool="Bash", shell_pattern="rm -rf *", action="deny"}`
-        // 在任何忘记传 cmd 的调用点上完全失效。
-        let Some(cmd) = bash_command else {
-            return match rule.action {
-                PermissionAction::Deny => Some(RuleMatch::Deny),
-                // Allow / Ask 需要看到命令才能判断是否放行;无上下文时
-                // 保守地不匹配(落到工具的 required_permission 默认行为)。
-                _ => None,
-            };
-        };
-        if shell_pattern_matches(pat, cmd, rule.action) {
-            return Some(action_to_match(rule.action));
-        }
-        return None;
     }
-
-    // tool_glob 规则。
-    if let Some(glob_str) = rule.tool_glob.as_deref() {
-        let glob = Glob::new(glob_str).ok()?;
-        if glob.compile_matcher().is_match(tool_name) {
-            return Some(action_to_match(rule.action));
-        }
-        return None;
-    }
-
-    // 精确 tool 匹配(v1.x 行为)。
-    // 大小写不敏感:与 shell_pattern 分支(tool_names_equal)及模块文档
-    // 声明("忽略大小写")保持一致,让 `allow = ["Bash"]` 能匹配工具上报的
-    // `"bash"`(反之亦然)。原 `==` 比较是大小写敏感,导致纯工具名放行规则
-    // 对实际工具名(`"bash"`)静默失配。
-    if tool_names_equal(&rule.tool, tool_name) {
-        return Some(action_to_match(rule.action));
-    }
-    None
+    Some(action_to_match(rule.action))
 }
 
 /// `shell_pattern` 是否命中整条命令。
@@ -213,6 +204,63 @@ mod tests {
             shell_pattern: None,
             resource_glob: None,
         }
+    }
+
+    #[test]
+    fn resource_deny_without_context_only_applies_to_matching_tools() {
+        let mut rule = rule("read", PermissionAction::Deny);
+        rule.resource_glob = Some("/private/**".into());
+        assert_eq!(
+            evaluate_full(&[rule.clone()], "write", None, None),
+            RuleMatch::NoMatch
+        );
+        assert_eq!(
+            evaluate_full(&[rule.clone()], "read", None, None),
+            RuleMatch::Deny
+        );
+        rule.tool_glob = Some("Web*".into());
+        assert_eq!(
+            evaluate_full(&[rule.clone()], "bash", None, None),
+            RuleMatch::NoMatch
+        );
+        assert_eq!(
+            evaluate_full(&[rule], "WebFetch", None, None),
+            RuleMatch::Deny
+        );
+        let mut bash_rule = PermissionRule {
+            tool: "bash".into(),
+            action: PermissionAction::Deny,
+            tool_glob: None,
+            shell_pattern: None,
+            resource_glob: Some("/private/**".into()),
+        };
+        bash_rule.shell_pattern = Some("git *".into());
+        assert_eq!(
+            evaluate_full(&[bash_rule.clone()], "bash", Some("echo ok"), None),
+            RuleMatch::NoMatch
+        );
+        assert_eq!(
+            evaluate_full(&[bash_rule.clone()], "bash", None, Some("/other")),
+            RuleMatch::NoMatch
+        );
+        assert_eq!(
+            evaluate_full(&[bash_rule], "bash", Some("git status"), None),
+            RuleMatch::Deny
+        );
+    }
+
+    #[test]
+    fn invalid_resource_deny_fails_closed_only_for_matching_tool() {
+        let mut rule = rule("read", PermissionAction::Deny);
+        rule.resource_glob = Some("[".into());
+        assert_eq!(
+            evaluate_full(&[rule.clone()], "read", None, Some("file")),
+            RuleMatch::Deny
+        );
+        assert_eq!(
+            evaluate_full(&[rule], "write", None, Some("file")),
+            RuleMatch::NoMatch
+        );
     }
 
     #[test]

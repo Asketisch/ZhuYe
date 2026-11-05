@@ -25,7 +25,7 @@ use zhuye_protocol::{
 use crate::approval::ApprovalGate;
 use crate::builtins::bash::{BashCommandClass, classify_command};
 use crate::registry::ToolRegistry;
-use crate::sanitize::{Sanitizer, sanitize_output};
+use crate::sanitize::{Sanitizer, sanitize_output, sanitize_text};
 use crate::tool::ToolContext;
 
 /// 单次工具调用的请求。由 graph 的 `model_call` 节点生成,由
@@ -64,6 +64,68 @@ impl ToolResult {
     }
 }
 
+/// 从常用工具参数中提取权限规则的资源维度。
+pub(crate) fn permission_resource(args: &Value) -> Option<&str> {
+    ["path", "file_path", "url"]
+        .iter()
+        .find_map(|key| args.get(key).and_then(Value::as_str))
+}
+
+/// 对路径同时检查原始写法、工作区绝对路径和可解析的符号链接目标。
+fn permission_resources(args: &Value, workspace: &std::path::Path) -> Vec<String> {
+    let Some(raw) = permission_resource(args) else {
+        return Vec::new();
+    };
+    let mut resources = vec![raw.to_string()];
+    if args.get("path").and_then(Value::as_str).is_none()
+        && args.get("file_path").and_then(Value::as_str).is_none()
+    {
+        return resources;
+    }
+    let input = std::path::Path::new(raw);
+    let absolute = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        workspace.join(input)
+    };
+    let mut logical = std::path::PathBuf::new();
+    let mut physical = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                logical.pop();
+                physical.pop();
+            }
+            other => {
+                logical.push(other.as_os_str());
+                physical.push(other.as_os_str());
+                if let Ok(canonical) = physical.canonicalize() {
+                    physical = canonical;
+                }
+            }
+        }
+    }
+    // workspace 自身可能是符号链接(如 macOS 的 /var → /private/var)。
+    // 对指向 workspace 内的目标也保留调用方使用的工作区前缀。
+    let workspace_alias = workspace.canonicalize().ok().and_then(|root| {
+        physical
+            .strip_prefix(root)
+            .ok()
+            .map(|relative| workspace.join(relative))
+    });
+    for path in [Some(logical), Some(physical), workspace_alias]
+        .into_iter()
+        .flatten()
+    {
+        let path = path.to_string_lossy().into_owned();
+        if !resources.contains(&path) {
+            resources.push(path);
+        }
+    }
+    resources
+}
+
 /// `ToolContext` 未设置时的单工具默认执行超时。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -97,6 +159,7 @@ pub struct ToolExecutionQueue {
     /// 用句柄当前值覆盖 `ctx.permission_mode`,让 hook 拿到实时模式。
     /// `None`(未注入)时维持旧行为,向后兼容。
     session_permission_mode: Option<Arc<parking_lot::RwLock<PermissionMode>>>,
+    permission_resolver: Option<Arc<dyn zhuye_permissions::PermissionResolver>>,
 }
 
 impl ToolExecutionQueue {
@@ -122,6 +185,7 @@ impl ToolExecutionQueue {
             max_concurrency: std::sync::Mutex::new(max),
             sanitizer: Arc::new(Sanitizer::with_defaults()),
             session_permission_mode: None,
+            permission_resolver: None,
         }
     }
 
@@ -192,6 +256,14 @@ impl ToolExecutionQueue {
     /// `ApprovalGate` 同源的句柄。
     pub fn set_session_permission_mode(&mut self, mode: Arc<parking_lot::RwLock<PermissionMode>>) {
         self.session_permission_mode = Some(mode);
+    }
+
+    /// 在工具执行前检查权限策略,包括没有交互审批门的调用。
+    pub fn set_permission_resolver(
+        &mut self,
+        resolver: Option<Arc<dyn zhuye_permissions::PermissionResolver>>,
+    ) {
+        self.permission_resolver = resolver;
     }
 
     pub fn registry(&self) -> &Arc<ToolRegistry> {
@@ -425,11 +497,42 @@ impl ToolExecutionQueue {
             };
         }
 
+        // 显式拒绝和强制询问对所有工具生效,不能因 Auto 或无审批门绕过。
+        let policy_decision = if let Some(resolver) = &self.permission_resolver {
+            let resources = permission_resources(&effective_args, &ctx.workspace_path());
+            let resources: Vec<&str> = resources.iter().map(String::as_str).collect();
+            Some(
+                resolver
+                    .resolve_with_resources(
+                        &call.name,
+                        crate::bash_command::resolve_bash_command(&effective_args),
+                        &resources,
+                    )
+                    .await,
+            )
+        } else {
+            None
+        };
+        if policy_decision == Some(zhuye_permissions::RuleMatch::Deny)
+            || (policy_decision == Some(zhuye_permissions::RuleMatch::Ask) && gate.is_none())
+        {
+            return ToolResult {
+                call_id: call.id,
+                content: vec![ContentBlock::text(format!(
+                    "denied by rule for {}",
+                    call.name
+                ))],
+                is_error: true,
+                elapsed_ms: 0,
+                metadata: serde_json::json!({"approval": "denied"}),
+            };
+        }
+
         // M6:审批 gate。两类触发:
         //   1. 工具本身要求 `Prompt` 权限,且用户未在本会话内放行。
         //   2. `PreToolUse` hook 返回了 `HookDecision::Ask`。
-        // 无 gate 时(headless `zhuye-exec`),两者都是 no-op ——
-        // 工具不经提示直接执行,与 M6 之前的行为一致。
+        // 无 gate 时无法弹出交互审批;上方策略的显式 Ask 已拒绝,
+        // 工具自身的 Prompt 与 hook Ask 仍保留既有 headless 行为。
         //
         // v1.0.0-rc1+:多 action tool (`ast` / `lsp`) 走 per-action 路由
         // `tool.action_permission(&effective_args)`,默认 fallback 到
@@ -445,7 +548,6 @@ impl ToolExecutionQueue {
                 })
                 .flatten();
             let dangerous_bash = bash_class == Some(BashCommandClass::Dangerous);
-            let session_allowed = gate_ref.is_session_allowed(&call.name) && !dangerous_bash;
             // v1.x Plan mode 特例:PlanModeGate 已把 bash 按 `classify_command`
             // 分级 —— Safe 放行、Risky/Dangerous 直接 Deny(走不到这里)。
             // 因此到达本审批阶段的 Plan-mode bash 必然是 Safe 只读命令,
@@ -455,9 +557,8 @@ impl ToolExecutionQueue {
             let plan_safe_bash = ctx.permission_mode == PermissionMode::Plan
                 && call.name == "bash"
                 && bash_class == Some(BashCommandClass::Safe);
-            let tool_requires_prompt = (matches!(effective_perm, PermissionMode::Prompt)
-                && !session_allowed)
-                && !plan_safe_bash;
+            let tool_requires_prompt =
+                matches!(effective_perm, PermissionMode::Prompt) && !plan_safe_bash;
             let risk = tool_risk_level(&call.name, &effective_args);
             // v1.3 safety baseline (plan §五):the previous "Auto + classify Safe ⇒
             // skip ApprovalGate" 的后门已**删除**。现在每次 bash 调用都
@@ -465,9 +566,12 @@ impl ToolExecutionQueue {
             // `dangerous_bash` 无论何种模式都要求显式审批;Safe bash
             // 至少会把请求送进 gate(resolver 或用户仍可通过配置的
             // Allow 规则隐式自动批准,但启发式不再静默放行)。
-            let bash_must_approve =
-                call.name == "bash" && bash_class == Some(BashCommandClass::Dangerous);
-            if tool_requires_prompt || hook_ask_reason.is_some() || bash_must_approve {
+            let bash_must_approve = call.name == "bash" && dangerous_bash;
+            if tool_requires_prompt
+                || hook_ask_reason.is_some()
+                || bash_must_approve
+                || policy_decision == Some(zhuye_permissions::RuleMatch::Ask)
+            {
                 let decision = if let Some(reason) = hook_ask_reason.clone() {
                     // Hook 级别的审批 —— 通过 `ApprovalKind::Hook` 渲染。
                     gate_ref
@@ -475,7 +579,13 @@ impl ToolExecutionQueue {
                         .await
                 } else {
                     gate_ref
-                        .ask_tool(&call.name, &effective_args, risk, &ctx.cancel)
+                        .ask_tool_with_policy(
+                            &call.name,
+                            &effective_args,
+                            risk,
+                            &ctx.cancel,
+                            policy_decision,
+                        )
                         .await
                 };
                 match decision {
@@ -507,7 +617,11 @@ impl ToolExecutionQueue {
             let decision = {
                 let mut g = guard_arc.lock().expect("loop guard poisoned");
                 let preview = {
-                    let raw = serde_json::to_string(&effective_args).unwrap_or_default();
+                    // 先脱敏再截断,避免截断导致密钥无法被完整识别。
+                    let raw = sanitize_text(
+                        &serde_json::to_string(&effective_args).unwrap_or_default(),
+                        &self.sanitizer,
+                    );
                     let cfg_max = g.config.preview_chars;
                     // 复用模块内截断(按字符截断,不切多字节)。
                     if raw.chars().count() <= cfg_max {
@@ -693,6 +807,40 @@ mod tests {
     use zhuye_hooks::HookEngine;
     #[allow(unused_imports)] // pre-M5
     use zhuye_protocol::{PermissionMode, ThreadId};
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_resources_keep_workspace_alias_for_symlink_target() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir_all(real.join("private")).unwrap();
+        let workspace = root.path().join("workspace-link");
+        symlink(&real, &workspace).unwrap();
+        symlink(real.join("private"), real.join("alias")).unwrap();
+        let args = serde_json::json!({"path": "alias/new.txt"});
+        let resources = permission_resources(&args, &workspace);
+        assert!(
+            resources.contains(
+                &workspace
+                    .join("private/new.txt")
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            "{resources:?}"
+        );
+        assert!(
+            resources.contains(
+                &real
+                    .canonicalize()
+                    .unwrap()
+                    .join("private/new.txt")
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            "{resources:?}"
+        );
+    }
 
     struct StubTool {
         name: String,
@@ -1327,6 +1475,51 @@ mod loop_guard_queue_tests {
     }
 
     #[tokio::test]
+    async fn repeated_call_messages_redact_argument_secrets() {
+        let (queue, _) = queue_with_guard();
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+        for i in 0..6 {
+            let results = queue.execute_all(vec![req(&format!("c{i}"), secret)]).await;
+            let text = match &results[0].content[0] {
+                ContentBlock::Text { text } => text,
+                _ => panic!("应返回文本"),
+            };
+            assert!(!text.contains(secret), "结果包含密钥:{text}");
+            if i == 2 || i == 5 {
+                assert!(text.contains("[REDACTED"), "预览应脱敏:{text}");
+            }
+            if i == 5 {
+                assert!(results[0].is_error);
+                assert!(text.contains("[loop-guard] blocked"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn argument_preview_uses_custom_sanitizer_before_truncation() {
+        use crate::sanitize::SanitizeConfig;
+
+        let (mut queue, _) = queue_with_guard();
+        let cfg = SanitizeConfig {
+            marker: Some("[MASKED]".into()),
+            extra_patterns: Some(vec!["CUSTOMSECRET[0-9]+".into()]),
+            ..Default::default()
+        };
+        queue.sanitizer = Arc::new(Sanitizer::from_config(&cfg).unwrap());
+        let text = format!("{}CUSTOMSECRET123456789", "x".repeat(180));
+        for i in 0..3 {
+            let results = queue.execute_all(vec![req(&format!("c{i}"), &text)]).await;
+            if i == 2 {
+                let ContentBlock::Text { text } = &results[0].content[0] else {
+                    panic!("应返回文本");
+                };
+                assert!(text.contains("[MASKED]"), "预览应使用自定义脱敏规则:{text}");
+                assert!(!text.contains("CUSTOMSECRET"), "预览不应泄露密钥:{text}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn progressing_outputs_never_block() {
         // 同参调用但输出变化:每次执行产生不同输出 → 永不阻断。
         // 注意:echo 工具同 args 输出必然相同,这里用 guard 直接登记
@@ -1374,6 +1567,35 @@ mod loop_guard_queue_tests {
                 .get("loop_guard")
                 .and_then(|v| v.as_str()),
             Some("blocked")
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_blocks_again_after_progress_stalls() {
+        let (queue, guard) = queue_with_guard();
+        let args = serde_json::json!({"text": "poll"});
+        for hash in [
+            "first", "changed", "changed", "changed", "changed", "changed",
+        ] {
+            let mut guard = guard.lock().unwrap();
+            let decision = guard.observe("echo_guarded", &args);
+            assert!(!matches!(
+                decision,
+                crate::loop_guard::GuardDecision::Block { .. }
+            ));
+            guard.record_result("echo_guarded", &args, hash);
+        }
+        let results = queue.execute_all(vec![req("stalled", "poll")]).await;
+        assert!(results[0].is_error);
+        assert_eq!(
+            results[0]
+                .metadata
+                .get("loop_guard")
+                .and_then(Value::as_str),
+            Some("blocked")
+        );
+        assert!(
+            matches!(&results[0].content[0], ContentBlock::Text { text } if text.contains("[loop-guard] blocked"))
         );
     }
 

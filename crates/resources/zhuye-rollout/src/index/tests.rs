@@ -648,6 +648,59 @@ fn rename_session_round_trip() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn rename_session_replaces_sidecar_links_without_following_them() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("protected");
+    std::fs::write(&victim, "original").unwrap();
+
+    let names = dir.path().join("_names");
+    symlink(&victim, &names).unwrap();
+    assert!(rename_session(dir.path(), ThreadId::new(), "name").is_err());
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+    std::fs::remove_file(&names).unwrap();
+
+    std::fs::create_dir(&names).unwrap();
+    let target = names.join(format!("{}.name", ThreadId::new()));
+    symlink(&victim, &target).unwrap();
+    let id = target.file_stem().unwrap().to_str().unwrap();
+    let id = ThreadId::parse_str(id).unwrap();
+    rename_session(dir.path(), id, "name").unwrap();
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+    assert!(
+        !std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn session_sidecar_writer_replaces_links_without_following_them() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("protected");
+    std::fs::write(&victim, "original").unwrap();
+    let titles = dir.path().join("_titles");
+    std::fs::create_dir(&titles).unwrap();
+    let id = ThreadId::new();
+    symlink(&victim, titles.join(format!("{id}.title"))).unwrap();
+
+    crate::index::write_session_sidecar(dir.path(), id, "title", b"generated").unwrap();
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+    assert_eq!(
+        std::fs::read_to_string(titles.join(format!("{id}.title"))).unwrap(),
+        "generated"
+    );
+}
+
 /// `rename_session` 拒空名字 —— 避免写出空文件让 read 误判。
 #[test]
 fn rename_session_rejects_empty_name() {

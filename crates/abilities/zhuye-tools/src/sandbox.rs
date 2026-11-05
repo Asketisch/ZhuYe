@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 
 use crate::tool::ToolError;
 
+mod safe_file;
+mod safe_write;
+pub use safe_file::{PinnedFile, open_readonly};
+pub(crate) use safe_write::PinnedWrite;
+
 /// 把 `path` 解析到 `workspace` 下,确保结果位于 workspace 内。
 /// 若越界则返回 `ToolError::PathEscape`。
 pub fn resolve_sandbox_path(workspace: &Path, path: &Path) -> Result<PathBuf, ToolError> {

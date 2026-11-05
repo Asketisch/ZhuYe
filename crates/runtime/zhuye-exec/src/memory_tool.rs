@@ -64,11 +64,9 @@ impl MemoryTool {
     fn session_file(&self, ctx: &ToolContext) -> Option<std::path::PathBuf> {
         let (base, tid) = self.session.clone().unwrap_or_else(|| {
             let base = std::env::var_os("ZHUYE_ROLLOUT_BASE")
+                .filter(|value| !value.is_empty())
                 .map(std::path::PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("HOME")
-                        .map(|h| std::path::PathBuf::from(h).join(".zhuye").join("sessions"))
-                })
+                .or_else(|| zhuye_config::data_path(&["sessions"]))
                 .unwrap_or_default();
             (base, ctx.session_id)
         });

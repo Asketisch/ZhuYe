@@ -47,7 +47,9 @@ export type Op =
 export interface UserInputItem {
   type: 'text' | 'image';
   text?: string;
-  // image 字段依 Rust 协议类型当前不向 SDK 暴露,留待后续协议变体。
+  /** 图片字节与 MIME 类型;仅在 type 为 image 时使用。 */
+  data?: number[];
+  mime_type?: string;
 }
 
 export interface ThreadSettings {
@@ -101,10 +103,12 @@ export interface ToolOutput {
   elapsed_ms?: number;
 }
 
-export interface ContentBlock {
-  type: 'text';
-  text: string;
-}
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: number[]; mime_type: string }
+  | { type: 'diff'; unified_diff: string }
+  | { type: 'tool_use'; id: string; name: string; args: unknown }
+  | { type: 'tool_result'; call_id: string; output: ToolOutput };
 
 /**
  * Event —— core → client 的状态单元。`id` 与 `Submission.id` 对齐;

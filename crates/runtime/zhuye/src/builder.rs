@@ -239,6 +239,11 @@ impl ZhuyeBuilder {
         }
     }
 
+    /// 保留旧版构造链的兼容入口;完整默认依赖由 `build` 时自动安装。
+    pub fn with_defaults(self) -> anyhow::Result<Self> {
+        Ok(self)
+    }
+
     /// 当前 model spec(只读)。
     pub fn model_spec(&self) -> &str {
         &self.model
@@ -265,7 +270,7 @@ impl ZhuyeBuilder {
     ///
     /// `build` 始终构造完整 m4(单 agent 场景必须挂 compactor / memory
     /// 等才能跑),与 `zhuye-exec` 路径对齐 —— 不需要单独的
-    /// `with_defaults` 步骤(旧占位实现返回 `Ok(self)`,是空操作,已删)。
+    /// `with_defaults` 步骤(该方法保留用于兼容旧代码)。
     /// 如果想用最小 m4 路径,直接通过
     /// `AgentThread::new + AgentConfig::with_m4(default_m4_deps)` 走底层 API。
     pub fn build(self) -> anyhow::Result<Zhuye> {
@@ -316,11 +321,13 @@ impl ZhuyeBuilder {
         // bootstrap 材料都在,直接装配)。
         cfg = apply_sandbox_config(cfg, &app_cfg);
         let side_channel_driver = build_side_channel_driver(
-            self.workspace.clone(),
-            self.model.clone(),
+            cfg.workspace.clone(),
+            cfg.model.clone(),
             registry.clone(),
             tools.clone(),
             &app_cfg,
+            cfg.permission_mode.clone(),
+            cfg.approvals,
         );
         cfg = cfg.with_side_channel_driver(side_channel_driver);
         let thread = Arc::new(AgentThread::new(
@@ -418,18 +425,20 @@ impl ZhuyeBuilder {
         // v1.x(WP13):[sandbox] / side-channel 与 exec / build() 对齐。
         cfg = apply_sandbox_config(cfg, &app_cfg);
         let side_channel_driver = build_side_channel_driver(
-            self.workspace.clone(),
-            self.model.clone(),
+            cfg.workspace.clone(),
+            cfg.model.clone(),
             registry.clone(),
             tools.clone(),
             &app_cfg,
+            cfg.permission_mode.clone(),
+            cfg.approvals,
         );
         cfg = cfg.with_side_channel_driver(side_channel_driver);
         let thread = Arc::new(AgentThread::new(
             cfg,
             registry,
             tools.clone(),
-            None,
+            Some(build_sanitizer(app_cfg.sanitize.as_ref())),
             Some(hook_engine.clone()),
         ));
         maybe_spawn_activity_logger(&thread, &app_cfg);
@@ -769,17 +778,40 @@ fn apply_sandbox_config(
 /// m4_bootstrap(与主会话同材料),recorder=None(不写主历史),取消
 /// 令牌由 registry 独立生成。
 fn build_side_channel_driver(
-    workspace: std::path::PathBuf,
-    model: String,
+    workspace: Arc<parking_lot::RwLock<std::path::PathBuf>>,
+    model: Arc<parking_lot::RwLock<String>>,
     registry: zhuye_llm::SharedModelRegistry,
     tools: Arc<ToolRegistry>,
     app_cfg: &zhuye_config::ReflectConfig,
+    parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
+    parent_approvals: bool,
 ) -> zhuye_core::side_channel::SideChannelDriver {
+    let factory =
+        build_side_channel_factory(registry, tools, app_cfg, parent_mode, parent_approvals);
+    zhuye_core::side_channel::SideChannelDriver::new_with_context(
+        zhuye_core::side_channel::SideChannelRegistry::new(),
+        workspace,
+        model,
+        factory,
+    )
+}
+
+fn build_side_channel_factory(
+    registry: zhuye_llm::SharedModelRegistry,
+    tools: Arc<ToolRegistry>,
+    app_cfg: &zhuye_config::ReflectConfig,
+    parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
+    parent_approvals: bool,
+) -> zhuye_core::side_channel::SideContextThreadFactory {
     let registry_for_factory = registry.clone();
     // 闭包要求 'static —— 克隆 config(含 policy 计算所需段)进去。
     let app_cfg = app_cfg.clone();
-    let factory = Arc::new(
-        move |agent_name: &str, cancel: tokio_util::sync::CancellationToken| {
+    Arc::new(
+        move |agent_name: &str,
+              cancel: tokio_util::sync::CancellationToken,
+              context: zhuye_core::side_channel::SideChannelContext| {
+            let workspace = context.workspace;
+            let model = context.model;
             let mut m4 = m4_bootstrap::build_default_m4(
                 &workspace,
                 agent_name,
@@ -792,18 +824,20 @@ fn build_side_channel_driver(
                 .with_m4(m4)
                 .with_policy(Arc::new(app_cfg.routing_policy_with(&model)))
                 .with_cancel(cancel);
-            Ok(crate::AgentThread::new(
+            let mut cfg = apply_sandbox_config(cfg.with_approvals(parent_approvals), &app_cfg);
+            cfg.inherited_approval_mode = Some(parent_mode.clone());
+            let thread = crate::AgentThread::new(
                 cfg,
                 registry_for_factory.clone(),
                 tools.clone(),
+                Some(build_sanitizer(app_cfg.sanitize.as_ref())),
                 None,
-                None,
-            ))
+            );
+            thread.register_hook(zhuye_core::side_channel::InheritedPlanGate::new(
+                parent_mode.clone(),
+            ));
+            Ok(thread)
         },
-    );
-    zhuye_core::side_channel::SideChannelDriver::new(
-        zhuye_core::side_channel::SideChannelRegistry::new(),
-        factory,
     )
 }
 
@@ -1004,6 +1038,137 @@ mod tests {
                 "side-channel 应已装配(先 Started): started={saw_started} error={saw_error}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn side_channel_factory_inherits_sandbox_and_sanitizer() {
+        use zhuye_llm::{CredentialPool, MockClient, MockReply, ModelRegistry, PoolEntry};
+        use zhuye_protocol::{ContentBlock, EventMsg, Submission};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zhuye_config::ReflectConfig::default();
+        config.sandbox.os_level = Some(false);
+        config.sanitize = Some(zhuye_config::SanitizeSection {
+            marker: Some("<MASKED>".into()),
+            extra_patterns: Some(vec!["CANDLESECRET123".into()]),
+            ..Default::default()
+        });
+        let client = Arc::new(MockClient::with_script(vec![
+            MockReply::ToolCall {
+                name: "echo".into(),
+                args: serde_json::json!({"text": "CANDLESECRET123"}),
+            },
+            MockReply::Text {
+                text: "done".into(),
+            },
+            MockReply::ToolCall {
+                name: "write".into(),
+                args: serde_json::json!({"path": "blocked.txt", "content": "blocked"}),
+            },
+            MockReply::Text {
+                text: "done".into(),
+            },
+            MockReply::ToolCall {
+                name: "write".into(),
+                args: serde_json::json!({"path": "allowed.txt", "content": "allowed"}),
+            },
+            MockReply::Text {
+                text: "done".into(),
+            },
+        ]));
+        let registry = Arc::new(ModelRegistry::new());
+        registry.register_pool(
+            "mock",
+            CredentialPool {
+                entries: vec![PoolEntry {
+                    client,
+                    label: "default".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        let expected = apply_sandbox_config(AgentConfig::new("mock", dir.path()), &config);
+        let factory = build_side_channel_factory(
+            registry,
+            default_tool_registry(),
+            &config,
+            expected.permission_mode.clone(),
+            false,
+        );
+        let thread = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: expected.current_workspace(),
+                model: expected.current_model(),
+            },
+        )
+        .unwrap();
+        assert_eq!(thread.config().sandbox_default, expected.sandbox_default);
+        assert_eq!(thread.config().sandbox_writable, expected.sandbox_writable);
+        assert_eq!(thread.config().sandbox_network, expected.sandbox_network);
+        let mut events = thread.submit(Submission::user_input("测试")).await;
+        let mut output = None;
+        while let Some(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(20), events.next())
+                .await
+                .unwrap()
+        {
+            if let EventMsg::ToolCallEnd(end) = event.msg {
+                assert!(!end.is_error);
+                output = end
+                    .output
+                    .content
+                    .into_iter()
+                    .find_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text),
+                        _ => None,
+                    });
+            }
+        }
+        assert_eq!(output.as_deref(), Some("<MASKED>"));
+        for (mode, should_error) in [
+            (zhuye_protocol::PermissionMode::Plan, true),
+            (zhuye_protocol::PermissionMode::Auto, false),
+        ] {
+            *expected.permission_mode.write() = mode;
+            let mut events = thread.submit(Submission::user_input("尝试写入")).await;
+            let mut error = None;
+            while let Some(event) =
+                tokio::time::timeout(std::time::Duration::from_secs(20), events.next())
+                    .await
+                    .unwrap()
+            {
+                if let EventMsg::ToolCallEnd(end) = event.msg {
+                    error = Some(end.is_error);
+                }
+            }
+            assert_eq!(error, Some(should_error));
+        }
+        assert!(!dir.path().join("blocked.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("allowed.txt")).unwrap(),
+            "allowed"
+        );
+        let switched = dir.path().join("switched");
+        std::fs::create_dir(&switched).unwrap();
+        expected.set_workspace(switched.clone());
+        expected.set_model("mock/new");
+        let new_thread = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: expected.current_workspace(),
+                model: expected.current_model(),
+            },
+        )
+        .unwrap();
+        assert_eq!(new_thread.config().current_workspace(), switched);
+        assert_eq!(new_thread.config().current_model(), "mock/new");
+        expected.set_workspace(dir.path());
+        expected.set_model("mock/old");
+        assert_eq!(new_thread.config().current_workspace(), switched);
+        assert_eq!(new_thread.config().current_model(), "mock/new");
     }
 
     /// `is_mock_provider` 的判定口径:只认**显式 opt-in**,

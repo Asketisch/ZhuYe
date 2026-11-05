@@ -32,6 +32,8 @@ pub struct AgentConfig {
     /// `PlanModeGate`)和 tool queue 通过 [`Self::permission_mode`]
     /// 读到最新 mode。默认 `PermissionMode::Auto`(普通执行模式)。
     pub permission_mode: Arc<RwLock<PermissionMode>>,
+    /// 侧通道审批仅读取父会话模式,不允许侧通道修改父会话状态。
+    pub inherited_approval_mode: Option<Arc<RwLock<PermissionMode>>>,
     /// 工作区根路径 —— 各工具相对该路径操作。
     ///
     /// v1.x Git worktree:`EnterWorktreeTool` / `ExitWorktreeTool` 通过
@@ -217,6 +219,7 @@ impl AgentConfig {
         Self {
             model: Arc::new(RwLock::new(model.into())),
             permission_mode: Arc::new(RwLock::new(PermissionMode::Auto)),
+            inherited_approval_mode: None,
             workspace: Arc::new(RwLock::new(workspace.into())),
             worktree: Arc::new(RwLock::new(None)),
             cancel: CancellationToken::new(),
@@ -341,6 +344,7 @@ impl AgentConfig {
             Arc::clone(&self.workspace),
             Arc::clone(&self.worktree),
         );
+        ctx.session_id = self.session_id.unwrap_or_default();
         // v1.2 P1-12:共享会话用量 / 预算 / 上下文窗口句柄,让
         // `get_context_remaining` 工具读到 `model_call` 实时累加的值
         // (同 `workspace` 共享 pattern)。

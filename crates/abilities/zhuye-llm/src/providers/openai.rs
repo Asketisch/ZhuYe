@@ -516,6 +516,8 @@ pub struct OpenAIRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
@@ -553,7 +555,7 @@ impl From<ChatRequest> for OpenAIRequest {
         if let Some(sys) = req.system.as_single_string() {
             messages.push(serde_json::json!({"role": "system", "content": sys}));
         }
-        for m in req.messages {
+        for m in crate::request::lift_tool_images(req.messages) {
             push_message(m, &mut messages);
         }
         let tools: Vec<Value> = req
@@ -576,12 +578,27 @@ impl From<ChatRequest> for OpenAIRequest {
             }
             _ => None,
         };
+        let model = req.model.rsplit('/').next().unwrap_or(&req.model);
+        let reasoning_model = model.strip_prefix('o').is_some_and(|suffix| {
+            let mut chars = suffix.chars();
+            chars.next().is_some_and(|c| c.is_ascii_digit())
+                && matches!(chars.next(), None | Some('-'))
+        });
         Self {
             model: req.model,
             messages,
             tools,
             temperature: req.temperature,
-            max_tokens: req.max_tokens,
+            max_tokens: if reasoning_model {
+                None
+            } else {
+                req.max_tokens
+            },
+            max_completion_tokens: if reasoning_model {
+                req.max_tokens
+            } else {
+                None
+            },
             top_p: req.top_p,
             stop: req.stop,
             stream: true,
@@ -902,6 +919,52 @@ mod tests {
             !events
                 .iter()
                 .any(|e| matches!(e, ChatEvent::ThinkingDelta(_)))
+        );
+    }
+
+    #[test]
+    fn tool_images_follow_the_complete_tool_result_batch() {
+        use crate::request::{
+            AssistantContent, ChatMessage, ChatRequest, ContentBlock, ToolCallRequest, ToolResult,
+        };
+        let call = |id: &str| ToolCallRequest {
+            id: id.into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({}),
+        };
+        let req = ChatRequest {
+            messages: vec![
+                ChatMessage::Assistant(AssistantContent {
+                    tool_calls: vec![call("a"), call("b")],
+                    ..Default::default()
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "a".into(),
+                    content: vec![ContentBlock::Image {
+                        data: vec![0x89, b'P', b'N', b'G'],
+                        mime_type: "image/png".into(),
+                    }],
+                    is_error: false,
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "b".into(),
+                    content: vec![ContentBlock::text("完成")],
+                    is_error: false,
+                }),
+            ],
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(OpenAIRequest::from(req)).unwrap();
+        let roles: Vec<_> = wire["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["assistant", "tool", "tool", "user"]);
+        assert_eq!(
+            wire["messages"][3]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw=="
         );
     }
 

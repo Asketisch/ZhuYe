@@ -10,6 +10,7 @@
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
+use base64::Engine as _;
 use serde_json::{Value, json};
 use zhuye_computer_use::{ComputerUseAction, MediaError};
 
@@ -20,7 +21,7 @@ fn tools_json() -> Value {
         "tools": [
             {
                 "name": "computer_screenshot",
-                "description": "截取主显示器屏幕,返回 PNG(含 data URL 提示)。需要屏幕录制权限。",
+                "description": "截取主显示器屏幕,返回 PNG 图片。需要屏幕录制权限。",
                 "inputSchema": {"type": "object", "properties": {}}
             },
             {
@@ -138,46 +139,39 @@ fn dispatch_tool(
     backend: &dyn zhuye_computer_use::backend::ComputerBackend,
 ) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if !args.is_object() {
+        return json!({"content": [{"type": "text", "text": "arguments 必须是对象"}], "isError": true});
+    }
     // 统一 MediaError → String(错误文案给 LLM 看,含能力名与原因)。
     let result: Result<String, String> = match name {
-        "computer_screenshot" => backend
-            .screenshot()
-            .map(|png| {
-                // 不内嵌 bytes——字节量对 LLM 上下文不友好;给元信息,宿主可
-                // 落盘后经 image_view 查看。
-                format!(
-                    "screenshot captured: {} bytes (PNG);可让宿主保存为文件后经 image_view 查看",
-                    png.len()
-                )
-            })
-            .map_err(|e| e.to_string()),
-        "computer_click" => parse_click(&args).and_then(|a| {
-            backend
-                .execute(&a)
-                .map_err(|e| e.to_string())
-                .map(|_| "clicked".to_string())
-        }),
+        "computer_screenshot" => match backend.screenshot() {
+            Ok(png) => {
+                return json!({
+                    "content": [{"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(png), "mimeType": "image/png"}],
+                    "isError": false,
+                });
+            }
+            Err(error) => Err(error.to_string()),
+        },
+        "computer_click" => {
+            parse_click(&args).and_then(|action| execute_action(backend, action, "clicked"))
+        }
         "computer_type" => str_arg(&args, "text").and_then(|t| {
             backend
                 .execute(&ComputerUseAction::KeyType { text: t })
                 .map_err(|e| e.to_string())
                 .map(|_| "typed".to_string())
         }),
-        "computer_key" => str_arg(&args, "keys").and_then(|k| {
-            backend
-                .execute(&ComputerUseAction::KeyCombo { keys: k })
-                .map_err(|e| e.to_string())
-                .map(|_| "pressed".to_string())
+        "computer_key" => str_arg(&args, "keys").and_then(|keys| {
+            execute_action(backend, ComputerUseAction::KeyCombo { keys }, "pressed")
         }),
-        "computer_scroll" => {
-            let dx = args.get("dx").and_then(Value::as_i64).unwrap_or(0) as i32;
-            let dy = args.get("dy").and_then(Value::as_i64).unwrap_or(0) as i32;
-            backend
-                .execute(&ComputerUseAction::Scroll { dx, dy })
-                .map_err(|e| e.to_string())
-                .map(|_| "scrolled".to_string())
-        }
+        "computer_scroll" => optional_i32(&args, "dx")
+            .and_then(|dx| optional_i32(&args, "dy").map(|dy| ComputerUseAction::Scroll { dx, dy }))
+            .and_then(|action| execute_action(backend, action, "scrolled")),
         other => Err(format!("unknown tool: {other}")),
     };
     match result {
@@ -199,14 +193,41 @@ fn str_arg(args: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("缺少 {key} 参数"))
 }
 
+fn execute_action(
+    backend: &dyn zhuye_computer_use::backend::ComputerBackend,
+    action: ComputerUseAction,
+    success: &str,
+) -> Result<String, String> {
+    action.validate().map_err(|error| error.to_string())?;
+    backend
+        .execute(&action)
+        .map_err(|error| error.to_string())?;
+    Ok(success.to_string())
+}
+
+fn required_i32(args: &Value, key: &str) -> Result<i32, String> {
+    let value = args
+        .get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{key} 必须是整数"))?;
+    i32::try_from(value).map_err(|_| format!("{key} 超出支持范围"))
+}
+
+fn optional_i32(args: &Value, key: &str) -> Result<i32, String> {
+    if args.get(key).is_none() {
+        Ok(0)
+    } else {
+        required_i32(args, key)
+    }
+}
+
 fn parse_click(args: &Value) -> Result<ComputerUseAction, String> {
-    let x = args.get("x").and_then(Value::as_i64).ok_or("缺少 x 参数")? as i32;
-    let y = args.get("y").and_then(Value::as_i64).ok_or("缺少 y 参数")? as i32;
-    let button = args
-        .get("button")
-        .and_then(Value::as_str)
-        .unwrap_or("left")
-        .to_string();
+    let x = required_i32(args, "x")?;
+    let y = required_i32(args, "y")?;
+    let button = match args.get("button") {
+        None => "left".to_string(),
+        Some(value) => value.as_str().ok_or("button 必须是字符串")?.to_string(),
+    };
     Ok(ComputerUseAction::MouseClick { x, y, button })
 }
 
@@ -214,4 +235,89 @@ fn parse_click(args: &Value) -> Result<ComputerUseAction, String> {
 #[allow(dead_code)]
 fn _err_display(e: &MediaError) -> String {
     e.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use zhuye_computer_use::{BackendCapability, backend::ComputerBackend};
+
+    #[derive(Default)]
+    struct RecordingBackend(Mutex<Vec<ComputerUseAction>>);
+    impl ComputerBackend for RecordingBackend {
+        fn capability(&self) -> BackendCapability {
+            BackendCapability::Full
+        }
+        fn screenshot(&self) -> Result<Vec<u8>, MediaError> {
+            Ok(vec![0x89, b'P', b'N', b'G'])
+        }
+        fn execute(&self, action: &ComputerUseAction) -> Result<(), MediaError> {
+            self.0.lock().unwrap().push(action.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn screenshot_returns_mcp_image_with_original_png_bytes() {
+        let backend = RecordingBackend::default();
+        let response = dispatch_tool(
+            &json!({"name": "computer_screenshot", "arguments": {}}),
+            &backend,
+        );
+        assert_eq!(response["isError"], false);
+        assert_eq!(response["content"][0]["type"], "image");
+        assert_eq!(response["content"][0]["mimeType"], "image/png");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(response["content"][0]["data"].as_str().unwrap())
+                .unwrap(),
+            [0x89, b'P', b'N', b'G']
+        );
+    }
+
+    #[test]
+    fn invalid_arguments_never_reach_backend() {
+        let backend = RecordingBackend::default();
+        for (name, args) in [
+            ("computer_click", json!({"x": 4294967296i64, "y": 0})),
+            ("computer_click", json!({"x": 1, "y": 2, "button": "rgiht"})),
+            ("computer_click", json!({"x": 1, "y": 2, "button": null})),
+            ("computer_scroll", json!({"dy": 2147483648i64})),
+            ("computer_scroll", json!({"dx": "5"})),
+            ("computer_key", json!({"keys": "ctrl+escapee"})),
+            ("computer_key", json!({"keys": "ctrl++a"})),
+            ("computer_click", json!(null)),
+        ] {
+            let response = dispatch_tool(&json!({"name": name, "arguments": args}), &backend);
+            assert_eq!(response["isError"], true, "{name}: {response}");
+        }
+        assert!(backend.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn valid_arguments_reach_backend_without_conversion_loss() {
+        let backend = RecordingBackend::default();
+        for (name, args) in [
+            (
+                "computer_click",
+                json!({"x": -42, "y": 99, "button": "right"}),
+            ),
+            ("computer_scroll", json!({"dx": i32::MIN, "dy": i32::MAX})),
+            ("computer_key", json!({"keys": "ctrl+shift+p"})),
+        ] {
+            let response = dispatch_tool(&json!({"name": name, "arguments": args}), &backend);
+            assert_eq!(response["isError"], false, "{response}");
+        }
+        let actions = backend.0.lock().unwrap();
+        assert!(
+            matches!(&actions[0], ComputerUseAction::MouseClick { x: -42, y: 99, button } if button == "right")
+        );
+        assert!(
+            matches!(&actions[1], ComputerUseAction::Scroll { dx, dy } if *dx == i32::MIN && *dy == i32::MAX)
+        );
+        assert!(
+            matches!(&actions[2], ComputerUseAction::KeyCombo { keys } if keys == "ctrl+shift+p")
+        );
+    }
 }

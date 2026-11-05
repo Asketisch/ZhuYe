@@ -5,6 +5,34 @@ use crate::AgentThread;
 use crate::config::AgentConfig;
 use std::sync::atomic::AtomicUsize;
 
+#[tokio::test]
+async fn context_is_snapshotted_before_background_factory_runs() {
+    let workspace = Arc::new(parking_lot::RwLock::new(std::path::PathBuf::from(
+        "/before",
+    )));
+    let model = Arc::new(parking_lot::RwLock::new("mock/old".to_string()));
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sender = Mutex::new(Some(sender));
+    let factory: SideContextThreadFactory = Arc::new(move |_, _, context| {
+        if let Some(sender) = sender.lock().take() {
+            let _ = sender.send(context);
+        }
+        Err(anyhow::anyhow!("测试工厂"))
+    });
+    let driver = SideChannelDriver::new_with_context(
+        SideChannelRegistry::new(),
+        workspace.clone(),
+        model.clone(),
+        factory,
+    );
+    driver.start("agent", "prompt").unwrap();
+    *workspace.write() = "/after".into();
+    *model.write() = "mock/new".into();
+    let context = receiver.await.unwrap();
+    assert_eq!(context.workspace, std::path::PathBuf::from("/before"));
+    assert_eq!(context.model, "mock/old");
+}
+
 /// 计数工厂:记录被构造次数(经 oneshot 通知,测试确定性等待),并返回
 /// 可提交的 AgentThread。
 fn counting_factory(
@@ -50,6 +78,24 @@ async fn start_registers_and_drives_thread() {
 }
 
 #[tokio::test]
+async fn model_failure_marks_error_terminal() {
+    let registry = SideChannelRegistry::new();
+    let (factory, _) = counting_factory(Arc::default());
+    let driver = SideChannelDriver::new(registry, factory);
+    let (id, _) = driver.start("agent", "prompt").unwrap();
+    for _ in 0..100 {
+        if let Some(info) = driver.registry().get(&id) {
+            if info.status == "error" {
+                return;
+            }
+            assert_ne!(info.status, "done", "模型失败不应报告成功");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("模型失败后必须进入 error 终态");
+}
+
+#[tokio::test]
 async fn factory_failure_marks_error_terminal() {
     let reg = SideChannelRegistry::new();
     let factory: SideThreadFactory =
@@ -72,6 +118,47 @@ async fn factory_failure_marks_error_terminal() {
     );
 }
 
+#[test]
+fn dropped_task_guard_marks_error_and_releases_slot() {
+    let registry = SideChannelRegistry::new();
+    let (id, _) = registry.start("agent".into(), "prompt".into());
+    let counter = Arc::new(AtomicUsize::new(1));
+    let routes = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, _rx) = mpsc::channel(1);
+    routes.lock().insert(
+        (InteractionKind::Approval, "request".into()),
+        (id.clone(), tx),
+    );
+    drop(InFlightGuard {
+        in_flight: counter.clone(),
+        registry: registry.clone(),
+        id: id.clone(),
+        approval_routes: routes.clone(),
+    });
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+    assert_eq!(registry.get(&id).unwrap().status, "error");
+    assert!(routes.lock().is_empty());
+}
+
+#[tokio::test]
+async fn factory_panic_marks_error_terminal() {
+    let registry = SideChannelRegistry::new();
+    let factory: SideThreadFactory = Arc::new(|_, _| panic!("测试工厂异常"));
+    let driver = SideChannelDriver::new(registry, factory);
+    let (id, _) = driver.start("agent", "prompt").unwrap();
+    for _ in 0..100 {
+        if driver
+            .registry()
+            .get(&id)
+            .is_some_and(|info| info.status == "error")
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("工厂异常后必须进入 error 终态");
+}
+
 #[tokio::test]
 async fn busy_when_concurrency_exhausted() {
     let reg = SideChannelRegistry::new();
@@ -83,6 +170,37 @@ async fn busy_when_concurrency_exhausted() {
     assert_eq!(err, SideChannelStartError::Busy);
     // registry 未被污染(Busy 发生在注册前)。
     assert_eq!(reg.running_count(), 0);
+}
+
+#[tokio::test]
+async fn concurrent_start_respects_limit() {
+    let driver = SideChannelDriver::without_factory(SideChannelRegistry::new());
+    driver
+        .in_flight
+        .store(MAX_CONCURRENT - 1, Ordering::Relaxed);
+    // 暂停后台任务,使成功取得的额度保持占用,只验证并发入场。
+    let barrier = Arc::new(std::sync::Barrier::new(17));
+    let runtime = tokio::runtime::Handle::current();
+    let success = std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..16 {
+            let driver = driver.clone();
+            let barrier = barrier.clone();
+            let runtime = runtime.clone();
+            workers.push(scope.spawn(move || {
+                let _entered = runtime.enter();
+                barrier.wait();
+                driver.start("agent", "prompt").is_ok()
+            }));
+        }
+        barrier.wait();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|success| *success)
+            .count()
+    });
+    assert_eq!(success, 1);
 }
 
 #[tokio::test]

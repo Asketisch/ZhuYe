@@ -12,6 +12,54 @@ fn mgr() -> TaskManager {
 }
 
 #[tokio::test]
+async fn memory_manager_rejects_unsafe_list_paths() {
+    let manager = mgr();
+    for list in [
+        "",
+        "..",
+        "../outside",
+        "/outside",
+        "nested/list",
+        "nested\\list",
+    ] {
+        let list = list.to_string();
+        assert!(matches!(
+            manager
+                .create_task(
+                    &list,
+                    "测试".into(),
+                    String::new(),
+                    None,
+                    None,
+                    serde_json::json!({})
+                )
+                .await,
+            Err(TaskError::Invalid(_))
+        ));
+        assert!(matches!(
+            manager.get_task(&list, 1, false).await,
+            Err(TaskError::Invalid(_))
+        ));
+        assert!(matches!(
+            manager.update_task(&list, 1, TaskPatch::default()).await,
+            Err(TaskError::Invalid(_))
+        ));
+        assert!(matches!(
+            manager.delete_task(&list, 1).await,
+            Err(TaskError::Invalid(_))
+        ));
+        assert!(matches!(
+            manager.claim_next_available(&list, "agent").await,
+            Err(TaskError::Invalid(_))
+        ));
+        assert!(matches!(
+            manager.list_tasks(&list, false).await,
+            Err(TaskError::Invalid(_))
+        ));
+    }
+}
+
+#[tokio::test]
 async fn create_get_update_delete_flow() {
     let m = mgr();
     let t = m
@@ -639,4 +687,119 @@ async fn claim_next_available_isolated_per_list() {
     .unwrap();
     let claimed = m.claim_next_available(&"L2".into(), "w@x").await.unwrap();
     assert!(claimed.is_none(), "L2 空 list 不该拿到 L1 的任务");
+}
+
+#[tokio::test]
+async fn task_process_worker() {
+    let Some(dir) = std::env::var_os("ZHUYE_TASK_TEST_DIR") else {
+        return;
+    };
+    let phase = std::env::var("ZHUYE_TASK_TEST_PHASE").unwrap();
+    let worker = std::env::var("ZHUYE_TASK_TEST_WORKER").unwrap();
+    let manager = TaskManager::new(
+        Arc::new(crate::store::FileTaskStore::new(dir)),
+        Arc::new(InMemoryTeamStore::new()),
+    );
+    let list = "concurrent".to_string();
+    for index in 0..12 {
+        if phase == "create" {
+            manager
+                .create_task(
+                    &list,
+                    format!("{worker}-{index}"),
+                    String::new(),
+                    None,
+                    None,
+                    serde_json::json!({}),
+                )
+                .await
+                .unwrap();
+        } else {
+            assert!(
+                manager
+                    .claim_next_available(&list, &worker)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+}
+
+#[test]
+fn file_store_serializes_creates_and_claims_across_processes() {
+    let dir = tempfile::tempdir().unwrap();
+    let executable = std::env::current_exe().unwrap();
+    for phase in ["create", "claim"] {
+        let mut children: Vec<_> = (0..4)
+            .map(|worker| {
+                std::process::Command::new(&executable)
+                    .args(["--exact", "manager::tests::task_process_worker"])
+                    .env("ZHUYE_TASK_TEST_DIR", dir.path())
+                    .env("ZHUYE_TASK_TEST_PHASE", phase)
+                    .env("ZHUYE_TASK_TEST_WORKER", format!("worker-{worker}"))
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for child in &mut children {
+            assert!(child.wait().unwrap().success(), "阶段 {phase} 失败");
+        }
+    }
+    let path = dir.path().join("tasks").join("concurrent");
+    let mut tasks: Vec<Task> = std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .map(|path| serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap())
+        .collect();
+    tasks.sort_by_key(|task| task.id);
+    assert_eq!(tasks.len(), 48);
+    assert!(
+        tasks
+            .iter()
+            .enumerate()
+            .all(|(index, task)| task.id == index as u32 + 1)
+    );
+    assert!(
+        tasks
+            .iter()
+            .all(|task| task.status == TaskStatus::InProgress && task.claimed_by.is_some())
+    );
+}
+
+#[tokio::test]
+async fn file_store_rejects_list_paths_outside_task_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = TaskManager::new(
+        Arc::new(crate::store::FileTaskStore::new(dir.path())),
+        Arc::new(InMemoryTeamStore::new()),
+    );
+    for list in [
+        "../escaped",
+        "/tmp/escaped",
+        "nested/list",
+        "nested\\list",
+        ".",
+        "",
+    ] {
+        let result = manager
+            .create_task(
+                &list.to_string(),
+                "x".into(),
+                "".into(),
+                None,
+                None,
+                serde_json::json!({}),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(TaskError::Invalid(_))),
+            "列表 {list:?} 应拒绝"
+        );
+    }
+    assert!(!dir.path().join("escaped").exists());
 }

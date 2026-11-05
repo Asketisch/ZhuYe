@@ -1460,6 +1460,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3639,6 +3649,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulldown-cmark"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
+dependencies = [
+ "bitflags 2.13.0",
+ "memchr",
+ "unicase",
+]
+
+[[package]]
 name = "pulp"
 version = "0.22.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5618,6 +5639,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unicase"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6043,6 +6070,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6050,6 +6093,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"
@@ -6938,6 +6987,7 @@ name = "zhuye-audit"
 version = "0.1.8"
 dependencies = [
  "chrono",
+ "fs2",
  "parking_lot",
  "serde",
  "serde_json",
@@ -6960,11 +7010,13 @@ version = "0.1.8"
 dependencies = [
  "anyhow",
  "clap",
+ "fs2",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
+ "toml_edit 0.22.27",
  "tracing",
  "uuid",
  "wiremock",
@@ -7013,6 +7065,7 @@ dependencies = [
 name = "zhuye-computer-use"
 version = "0.1.8"
 dependencies = [
+ "base64",
  "enigo",
  "image",
  "serde",
@@ -7046,6 +7099,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "wiremock",
+ "zhuye-fs",
  "zhuye-llm",
  "zhuye-permissions",
 ]
@@ -7164,6 +7218,8 @@ dependencies = [
 name = "zhuye-fs"
 version = "0.1.8"
 dependencies = [
+ "dirs",
+ "rustix 1.1.4",
  "tempfile",
 ]
 
@@ -7171,7 +7227,9 @@ dependencies = [
 name = "zhuye-git"
 version = "0.1.8"
 dependencies = [
+ "libc",
  "pretty_assertions",
+ "pulldown-cmark",
  "serde",
  "serde_json",
  "tempfile",
@@ -7239,6 +7297,7 @@ dependencies = [
 name = "zhuye-import"
 version = "0.1.8"
 dependencies = [
+ "base64",
  "chrono",
  "clap",
  "rusqlite",
@@ -7285,6 +7344,7 @@ version = "0.1.8"
 dependencies = [
  "async-stream",
  "async-trait",
+ "base64",
  "chrono",
  "eventsource-stream",
  "futures",
@@ -7300,6 +7360,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+ "zhuye-fs",
  "zhuye-protocol",
 ]
 
@@ -7329,6 +7390,7 @@ name = "zhuye-mcp"
 version = "0.1.8"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
  "parking_lot",
  "reqwest 0.13.4",
@@ -7384,6 +7446,7 @@ name = "zhuye-permissions"
 version = "0.1.8"
 dependencies = [
  "async-trait",
+ "fs2",
  "globset",
  "parking_lot",
  "serde",
@@ -7393,6 +7456,7 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tracing",
+ "zhuye-fs",
  "zhuye-protocol",
 ]
 
@@ -7438,6 +7502,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "wiremock",
+ "zhuye-fs",
  "zhuye-hooks",
  "zhuye-llm",
  "zhuye-mcp",
@@ -7515,6 +7580,7 @@ dependencies = [
  "chrono",
  "filetime",
  "parking_lot",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -7569,6 +7635,7 @@ dependencies = [
 name = "zhuye-shell"
 version = "0.1.8"
 dependencies = [
+ "libc",
  "parking_lot",
  "serde",
  "serde_json",
@@ -7653,6 +7720,7 @@ name = "zhuye-task"
 version = "0.1.8"
 dependencies = [
  "async-trait",
+ "fs2",
  "parking_lot",
  "serde",
  "serde_json",
@@ -7676,6 +7744,7 @@ version = "0.1.8"
 dependencies = [
  "anyhow",
  "chrono",
+ "fs2",
  "parking_lot",
  "reqwest 0.12.28",
  "serde",
@@ -7703,6 +7772,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "reqwest 0.12.28",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",
@@ -7714,7 +7784,9 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zhuye-bm25",
+ "zhuye-fs",
  "zhuye-git",
  "zhuye-hooks",
  "zhuye-permissions",

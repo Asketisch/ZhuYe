@@ -280,13 +280,21 @@ impl LspPeer {
     /// 路径(那些需要真 child)。
     #[cfg(test)]
     pub fn stub_for_tests() -> Self {
-        let (writer_tx, _writer_rx) = mpsc::channel::<JsonRpcMessage>(1);
-        Self {
-            writer_tx,
-            next_id: Mutex::new(1),
-            inflight: Arc::new(Mutex::new(HashMap::new())),
-            cancel: CancellationToken::new(),
-        }
+        Self::recording_stub_for_tests().0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recording_stub_for_tests() -> (Self, mpsc::Receiver<JsonRpcMessage>) {
+        let (writer_tx, writer_rx) = mpsc::channel::<JsonRpcMessage>(1);
+        (
+            Self {
+                writer_tx,
+                next_id: Mutex::new(1),
+                inflight: Arc::new(Mutex::new(HashMap::new())),
+                cancel: CancellationToken::new(),
+            },
+            writer_rx,
+        )
     }
 
     /// `initialize` 握手(必须最先调用)。

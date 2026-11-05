@@ -37,6 +37,25 @@ fn create_returns_none_without_changes() {
 }
 
 #[test]
+fn ensure_returns_a_rewindable_checkpoint_for_clean_user_commit() {
+    let Some(dir) = temp_repo("ensure-clean") else {
+        return;
+    };
+    std::fs::write(dir.join("a.txt"), "user").unwrap();
+    run_git(&dir, &["add", "-A"]).unwrap();
+    run_git(&dir, &["commit", "-m", "ordinary commit"]).unwrap();
+    let original = current_sha(&dir).unwrap();
+    let checkpoint = ensure(&dir, "safe").unwrap();
+    assert_ne!(checkpoint.sha, original);
+    assert_eq!(
+        find_checkpoint(&dir, &checkpoint.sha, 50).unwrap(),
+        checkpoint
+    );
+    assert_eq!(ensure(&dir, "ignored").unwrap().sha, checkpoint.sha);
+    rewind(&dir, &checkpoint.sha).unwrap();
+}
+
+#[test]
 fn list_only_reports_own_commits() {
     let Some(dir) = temp_repo("list") else {
         return;
@@ -102,6 +121,55 @@ fn rewind_on_dirty_tree_snapshots_uncommitted_work() {
 }
 
 #[test]
+fn rewind_on_clean_user_commit_preserves_that_commit() {
+    let Some(dir) = temp_repo("clean-user") else {
+        return;
+    };
+    std::fs::write(dir.join("a.txt"), "v1").unwrap();
+    let first = create(&dir, "v1").unwrap().unwrap();
+    std::fs::write(dir.join("a.txt"), "user commit").unwrap();
+    run_git(&dir, &["add", "-A"]).unwrap();
+    run_git(&dir, &["commit", "-m", "user commit"]).unwrap();
+    let (_, safety) = rewind(&dir, &first.sha).unwrap();
+    let safety = safety.expect("非 checkpoint 的干净提交也必须保留");
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "v1");
+    rewind(&dir, &safety.sha).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "user commit"
+    );
+}
+
+#[test]
+fn rewind_from_subdirectory_snapshots_the_entire_repository() {
+    let Some(dir) = temp_repo("subdirectory") else {
+        return;
+    };
+    let sub = dir.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(dir.join("root.txt"), "old root").unwrap();
+    std::fs::write(sub.join("nested.txt"), "old nested").unwrap();
+    let target = create(&dir, "initial").unwrap().unwrap();
+    std::fs::write(dir.join("root.txt"), "new root").unwrap();
+    std::fs::write(sub.join("nested.txt"), "new nested").unwrap();
+    let (_, safety) = rewind(&sub, &target.sha).unwrap();
+    let safety = safety.expect("必须保存整个仓库的修改");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("root.txt")).unwrap(),
+        "old root"
+    );
+    rewind(&sub, &safety.sha).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("root.txt")).unwrap(),
+        "new root"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sub.join("nested.txt")).unwrap(),
+        "new nested"
+    );
+}
+
+#[test]
 fn rewind_rejects_non_checkpoint_and_malformed_sha() {
     let Some(dir) = temp_repo("reject") else {
         return;
@@ -125,6 +193,32 @@ fn rewind_rejects_non_checkpoint_and_malformed_sha() {
         rewind(&dir, "deadbeef"),
         Err(GitError::NotACheckpoint(_))
     ));
+    assert!(matches!(rewind(&dir, ""), Err(GitError::NotACheckpoint(_))));
+    assert!(list(&dir, 0).unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn rewind_does_not_reset_if_safety_tag_creation_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(dir) = temp_repo("tag-failure") else {
+        return;
+    };
+    std::fs::write(dir.join("a.txt"), "original").unwrap();
+    let target = create(&dir, "original").unwrap().unwrap();
+    let hook = dir.join(".git/hooks/reference-transaction");
+    std::fs::write(&hook, "#!/bin/sh\nwhile read old new ref; do\n case \"$ref\" in refs/tags/zhuye-cp/*) exit 1;; esac\ndone\nexit 0\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(dir.join("a.txt"), "unsaved changes").unwrap();
+    let error = rewind(&dir, &target.sha).unwrap_err().to_string();
+    assert!(error.contains("标签创建失败"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "unsaved changes"
+    );
+    let head = current_sha(&dir).unwrap();
+    assert_ne!(head, target.sha);
+    assert!(error.contains(&head));
 }
 
 #[test]

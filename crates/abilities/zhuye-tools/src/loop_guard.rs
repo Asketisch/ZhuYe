@@ -40,7 +40,7 @@ pub struct LoopGuardConfig {
     pub block_threshold: usize,
     /// advisory 里参数预览的最大字符数。
     pub preview_chars: usize,
-    /// 滑动窗口大小(最近 N 次工具调用)。
+    /// 滑动窗口大小(最近 N 次工具调用);0 表示不记录历史。
     pub window: usize,
 }
 
@@ -76,8 +76,6 @@ struct FpState {
     last_result_hash: Option<String>,
     /// 连续同参调用且输出一致的次数(无进展连击)。
     same_result_streak: u32,
-    /// 历史上是否见过不同输出(有进展证据,阻断条件放宽)。
-    ever_progressed: bool,
 }
 
 /// 按字符数截断(不切多字节字符),超长加省略号。
@@ -139,6 +137,9 @@ impl LoopGuard {
         args_hash: &str,
         preview: Option<&str>,
     ) -> GuardDecision {
+        if self.config.window == 0 {
+            return GuardDecision::Proceed;
+        }
         let fp = Self::fingerprint(tool, args_hash);
 
         // 窗口推进 + 驱逐。
@@ -154,7 +155,6 @@ impl LoopGuard {
                     preview: preview.unwrap_or_default().to_string(),
                     last_result_hash: None,
                     same_result_streak: 0,
-                    ever_progressed: false,
                 },
             );
         }
@@ -178,24 +178,24 @@ impl LoopGuard {
         }
 
         let count = self.states.get(&fp).map(|s| s.count).unwrap_or(1);
-        let (same_streak, ever_progressed, preview) = self
+        let (same_streak, preview) = self
             .states
             .get(&fp)
-            .map(|s| (s.same_result_streak, s.ever_progressed, s.preview.clone()))
-            .unwrap_or((0, false, String::new()));
+            .map(|s| (s.same_result_streak, s.preview.clone()))
+            .unwrap_or((0, String::new()));
         let preview_line = if preview.is_empty() {
             String::new()
         } else {
             format!("\n参数预览: {preview}")
         };
 
-        // 硬档:重复达硬线 且 无进展证据(同参调用输出一致过 ≥1 次,
-        // 且从未见过输出变化)。
-        if count >= self.config.block_threshold && !ever_progressed && same_streak >= 1 {
+        // 决策发生在本次执行前；硬线为 N 时，前 N-1 次执行的输出需一致。
+        let required_streak = self.config.block_threshold.saturating_sub(2).max(1);
+        if count >= self.config.block_threshold && (same_streak as usize) >= required_streak {
             return GuardDecision::Block {
                 message: format!(
                     "[loop-guard] blocked: {tool} 已用完全相同的参数被调用 {count} 次\
-                     (窗口 {w}),且每次输出一致 —— 没有任何进展证据。{preview_line}\
+                     (窗口 {w}),且最近输出反复一致 —— 没有新的进展证据。{preview_line}\
                      继续重复只会得到相同结果。请改变参数、换一个工具、\
                      或先向用户说明卡点。",
                     w = self.config.window
@@ -226,7 +226,7 @@ impl LoopGuard {
     }
 
     /// 执行后调用:登记输出指纹(进度证据)。同参调用输出一致 →
-    /// 无进展连击 +1;不一致 → 清零并标记"有进展"。
+    /// 无进展连击 +1;不一致 → 清零，之后可重新累计。
     pub fn record_result(&mut self, tool: &str, args: &serde_json::Value, result_hash: &str) {
         let h = Self::canonical_args_hash(args);
         self.record_result_hashed(tool, &h, result_hash)
@@ -243,7 +243,6 @@ impl LoopGuard {
                 Some(_) => {
                     // 输出变了:有进展证据。
                     state.same_result_streak = 0;
-                    state.ever_progressed = true;
                 }
                 None => {}
             }
@@ -382,6 +381,24 @@ mod tests {
     }
 
     #[test]
+    fn zero_window_never_retains_or_warns_about_calls() {
+        let mut guard = LoopGuard::new(LoopGuardConfig {
+            warn_threshold: 0,
+            block_threshold: 0,
+            preview_chars: 200,
+            window: 0,
+        });
+        for i in 0..1000 {
+            let args = json!({"value": i});
+            assert_eq!(guard.observe("echo", &args), GuardDecision::Proceed);
+            guard.record_result("echo", &args, "same");
+        }
+        assert!(guard.ring.is_empty());
+        assert!(guard.states.is_empty());
+        assert_eq!(guard.max_repeat_in_window(), 0);
+    }
+
+    #[test]
     fn reset_clears_everything() {
         let mut g = guard();
         let args = json!({"cmd": "x"});
@@ -453,23 +470,24 @@ mod tests {
 
     #[test]
     fn ever_progressed_then_stuck_needs_streak_again() {
-        // 先有进展,后来开始输出一致:阻断需要新的无进展连击,
-        // 且 ever_progressed 已标记 → 本实现中不再 Block(宽松侧)。
-        // 文档化:进度证据是"见过变化即视为在推进",保守放宽阻断。
+        // 先有进展，后续稳定输出应重新累计无进展连击。
         let mut g = guard();
         let args = json!({"cmd": "watch"});
         g.observe("bash", &args);
         g.record_result("bash", &args, "out-v1");
         g.observe("bash", &args);
         g.record_result("bash", &args, "out-v2"); // 有进展
-        for _ in 0..10 {
-            g.observe("bash", &args);
+        for _ in 0..4 {
+            assert!(!matches!(
+                g.observe("bash", &args),
+                GuardDecision::Block { .. }
+            ));
             g.record_result("bash", &args, "out-v2");
         }
         let d = g.observe("bash", &args);
         assert!(
-            matches!(d, GuardDecision::Advise { .. }),
-            "有过进展证据的重复保持 advisory(不 Block),实际 {d:?}"
+            matches!(d, GuardDecision::Block { .. }),
+            "输出再次停滞后应阻断,实际 {d:?}"
         );
     }
 }

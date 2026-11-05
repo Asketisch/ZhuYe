@@ -60,14 +60,11 @@ pub fn state_now() -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now()
 }
 
-/// `~/.zhuye/plugins` —— `PluginManager` 默认根目录。
+/// 用户数据目录下的 `plugins` —— `PluginManager` 默认根目录。
 ///
-/// `HOME` 未设置时返回 `None` —— 调用方应把 `None` 当成"无法定位 plugins 目录"
-/// 而不是 panic(避免 init 进程 + daemon 进程对 `$HOME` 的不一致预期)。
+/// 优先使用非空 `ZHUYE_HOME`，否则回退到用户主目录下的 `.zhuye`。
 pub fn default_plugins_root() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .map(|h| h.join(".zhuye").join("plugins"))
+    zhuye_fs::data_dir().map(|dir| dir.join("plugins"))
 }
 
 /// `~/.zhuye/plugins/marketplaces.json` —— known marketplaces 持久化点。

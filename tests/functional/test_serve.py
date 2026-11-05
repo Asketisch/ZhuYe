@@ -175,6 +175,30 @@ def test_D9_工具参数增量事件字段完整(serve_session, mock_script) -> 
     )
 
 
+def test_D10_中毒错误窗口随空工具回合推进(serve_session, mock_script) -> None:
+    """旧工具失败会按回合过期；窗口内连续失败仍触发中毒事件。"""
+    require_binary()
+    failed_calls = [json.dumps({"type": "tool_call", "name": f"missing_{i}", "args": {}}) for i in range(5)]
+    last_call = json.dumps({"type": "tool_call", "name": "missing_last", "args": {}})
+    for gap, should_poison in [(10, False), (0, True)]:
+        lines = failed_calls + [json.dumps({"type": "text", "text": "首轮结束"})]
+        lines += [json.dumps({"type": "text", "text": f"正常答复 {i}"}) for i in range(gap)]
+        lines += [last_call, json.dumps({"type": "text", "text": "最后结束"})]
+        script = mock_script(lines)
+        with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+            first = session.submit({"type": "user_input", "items": [{"type": "text", "text": "先执行工具"}]}, timeout=DRAIN_TIMEOUT)
+            ends = [event["msg"] for event in first if event["msg"]["type"] == "tool_call_end"]
+            assert len(ends) == 5 and all(end["is_error"] for end in ends), ends
+            for i in range(gap):
+                session.submit({"type": "user_input", "items": [{"type": "text", "text": f"正常回合 {i}"}]}, timeout=DRAIN_TIMEOUT)
+            final = session.submit({"type": "user_input", "items": [{"type": "text", "text": "再执行工具"}]}, timeout=DRAIN_TIMEOUT)
+        errors = [event["msg"] for event in final if event["msg"]["type"] == "error" and event["msg"].get("code") == "session_poisoned"]
+        assert bool(errors) is should_poison, final
+        if should_poison:
+            assert errors[0]["details"]["poison_class"] == "error", errors
+        assert "turn_complete" in msg_types(final)
+
+
 def test_D5_终态语义_turn后不再有事件(serve_session, mock_script) -> None:
     """turn 类 submission 以 `turn_complete` 收尾;非 turn 类以 `submission_closed` 收尾。
 
@@ -619,6 +643,7 @@ def test_A13_side_channel启动查询取消(serve_session, mock_script) -> None:
         )
         m = first_event(evs, "side_channel_started")
         assert m is not None, f"未见 side_channel_started:{msg_types(evs)}"
+        assert msg_types(evs).count("side_channel_started") == 1, msg_types(evs)
         started = m["msg"]
         for f in ("id", "agent_name", "prompt", "started_at_ms"):
             assert f in started, f"started 缺 {f}:{started}"
@@ -630,6 +655,7 @@ def test_A13_side_channel启动查询取消(serve_session, mock_script) -> None:
         evs = s.submit({"type": "query_side_channels"})
         m = first_event(evs, "side_channel_status")
         assert m is not None, f"未见 side_channel_status:{msg_types(evs)}"
+        assert msg_types(evs).count("side_channel_status") == 1, msg_types(evs)
         channels = m["msg"].get("channels")
         assert isinstance(channels, list), f"channels 应为数组:{m['msg']}"
         ids = [c.get("id") for c in channels]
@@ -642,6 +668,324 @@ def test_A13_side_channel启动查询取消(serve_session, mock_script) -> None:
         evs = s.submit({"type": "query_side_channels"})
         m = first_event(evs, "side_channel_status")
         assert m is not None, f"取消后会话应仍可查询:{msg_types(evs)}"
+
+
+def test_A15_side_channel完成事件包含完整回复(serve_session, mock_script) -> None:
+    """独立任务结束后,会话事件流必须收到带完整回复和任务 ID 的终态。"""
+    script = mock_script(['{"type":"text","text":"side complete response"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        events = s.submit({"type": "start_side_channel", "agent": "default", "prompt": "side prompt"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        finished = s.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=30)
+        assert finished["msg"]["kind"] == "done", finished
+        assert finished["msg"]["summary"] == "side complete response", finished
+        assert isinstance(finished["msg"]["finished_at_ms"], int), finished
+
+
+def test_A16_side_channel取消发送终态(serve_session, mock_script) -> None:
+    """取消独立任务后,全局终态携带对应 ID 和 cancelled 类型。"""
+    script = mock_script([
+        '{"type":"tool_call","name":"bash","args":{"cmd":"sleep 10"}}',
+        '{"type":"text","text":"done"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        events = s.submit({"type": "start_side_channel", "agent": "default", "prompt": "等待"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        s.submit({"type": "cancel_side_channel", "id": sid})
+        finished = s.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=10)
+        assert finished["msg"]["kind"] == "cancelled", finished
+        assert isinstance(finished["msg"]["finished_at_ms"], int), finished
+
+
+def test_A17_side_channel继承权限拒绝(serve_session, mock_script, sandbox) -> None:
+    """侧通道使用主会话的权限规则,无审批门时也不能执行被拒命令。"""
+    import json
+    import shlex
+
+    sandbox.write_config('''
+[[permissions.rule]]
+tool = "bash"
+action = "deny"
+shell_pattern = "touch *"
+''')
+    marker = sandbox.cwd / "side-must-not-write"
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "bash", "args": {"cmd": f"touch {shlex.quote(str(marker))}"}}),
+        '{"type":"text","text":"side-finished"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "测试权限继承"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=30)
+        assert finished["msg"]["kind"] == "done", finished
+        assert finished["msg"]["summary"] == "side-finished", finished
+        assert not marker.exists(), "侧通道绕过权限规则执行了命令"
+    # 移除拒绝规则后,相同命令必须真的运行,排除工具缺失等假阳性。
+    (sandbox.home / ".zhuye" / "config.toml").write_text("[hooks]\nenabled = []\n")
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "验证命令可执行"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=30)
+        assert finished["msg"]["kind"] == "done", finished
+        assert marker.exists(), "无拒绝规则时命令应能创建文件"
+
+
+def test_A24_side_channel使用热重载后的模型(serve_session, sandbox) -> None:
+    """配置热重载后,新侧通道使用更新后的模型名。"""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    received = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            payload = {"id": "test", "model": "test", "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}]}
+            body = ("data: " + json.dumps(payload) + "\n\ndata: [DONE]\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        sandbox.write_config(
+            f'\n[active]\nprovider = "openai"\n[openai]\napi_key = "test"\n'
+            f'base_url = "http://127.0.0.1:{server.server_port}"\nmodel = "gpt-4o"\n'
+        )
+        with serve_session(env={"ZHUYE_MODEL": "", "ZHUYE_PROVIDER": ""}) as session:
+            def run_side():
+                events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "测试模型"})
+                started = first_event(events, "side_channel_started")
+                assert started is not None, msg_types(events)
+                sid = started["msg"]["id"]
+                finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=30)
+                assert finished["msg"]["kind"] == "done", finished
+            run_side()
+            config = sandbox.home / ".zhuye/config.toml"
+            config.write_text(config.read_text().replace('model = "gpt-4o"', 'model = "gpt-4o-mini"'))
+            session.wait_global(lambda e: e.get("msg", {}).get("type") == "session_configured" and e["msg"].get("model") == "openai/gpt-4o-mini", timeout=30)
+            run_side()
+        assert [request["model"] for request in received] == ["gpt-4o", "gpt-4o-mini"]
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_A23_side_channel使用当前worktree(serve_session, mock_script, sandbox) -> None:
+    """主会话切入 worktree 后,新侧通道写入新工作区而非原仓库。"""
+    import subprocess
+    from pathlib import Path
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=sandbox.cwd, capture_output=True, text=True, check=True)
+
+    git("init", "-q")
+    git("config", "user.email", "test@localhost")
+    git("config", "user.name", "test")
+    (sandbox.cwd / "base.txt").write_text("base\n")
+    git("add", "base.txt")
+    git("commit", "-q", "-m", "base")
+    script = mock_script([
+        '{"type":"tool_call","name":"EnterWorktree","args":{"branch":"side-worktree"}}',
+        '{"type":"text","text":"entered"}',
+        '{"type":"tool_call","name":"write","args":{"path":"side-output.txt","content":"side"}}',
+        '{"type":"text","text":"side done"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "进入 worktree"}]})
+        end = first_event(events, "tool_call_end")
+        assert end is not None and end["msg"]["is_error"] is False, events
+        worktree = Path(end["msg"]["output"]["metadata"]["worktree_path"])
+        assert worktree != sandbox.cwd.resolve()
+        events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "写文件"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=30)
+        assert finished["msg"]["kind"] == "done", finished
+        assert finished["msg"]["summary"] == "side done"
+        assert (worktree / "side-output.txt").read_text() == "side"
+        assert not (sandbox.cwd / "side-output.txt").exists()
+
+
+def test_A22_side_channel提问与计划审批回执(serve_session, mock_script) -> None:
+    """侧通道的文本提问、选择题和计划审批都可经主会话响应。"""
+    script = mock_script([
+        '{"type":"tool_call","name":"ask_user","args":{"prompt":"你的称呼?"}}',
+        json.dumps({"type": "tool_call", "name": "ask_user_question", "args": {"questions": [{"header": "选择", "question": "选哪项?", "options": [{"label": "甲", "description": "第一项"}, {"label": "乙", "description": "第二项"}], "multi_select": False}]}}),
+        '{"type":"tool_call","name":"EnterPlanMode","args":{"task":"计划任务"}}',
+        '{"type":"tool_call","name":"ExitPlanMode","args":{}}',
+        '{"type":"text","text":"interactions done"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script), "ZHUYE_APPROVALS": "1"}) as session:
+        events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "依次提问并制定计划"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        question = session.wait_global(lambda e: e.get("msg", {}).get("type") == "ask_user_input", timeout=20)["msg"]
+        assert question["prompt"] == "你的称呼?"
+        session.submit({"type": "ask_user_input_response", "id": question["request_id"], "text": "小烛"})
+        choice = session.wait_global(lambda e: e.get("msg", {}).get("type") == "ask_user_question", timeout=20)["msg"]
+        assert choice["questions"][0]["question"] == "选哪项?"
+        session.submit({"type": "ask_user_question_response", "id": choice["request_id"], "answers": {"answers": [{"selected": [0]}]}})
+        plan = session.wait_global(lambda e: e.get("msg", {}).get("type") == "plan_request", timeout=20)["msg"]
+        assert plan["task"] == "计划任务"
+        session.submit({"type": "plan_approval", "id": plan["plan_id"], "choice": "manual_approve"})
+        ready = session.wait_global(lambda e: e.get("msg", {}).get("type") == "plan_ready", timeout=20)["msg"]
+        assert ready["plan_id"]
+        session.submit({"type": "plan_approval", "id": ready["plan_id"], "choice": "manual_approve"})
+        finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=20)
+        assert finished["msg"]["kind"] == "done", finished
+        assert finished["msg"]["summary"] == "interactions done"
+        approved = session.wait_global(lambda e: e.get("msg", {}).get("type") == "plan_approved" and e["msg"].get("plan_id") == ready["plan_id"], timeout=5)
+        assert approved["id"] == ""
+
+
+def test_A21_side_channel继承Deny模式(serve_session, mock_script, sandbox) -> None:
+    """主会话拒绝审批时,侧通道不得绕过会话模式执行写入。"""
+    script = mock_script([
+        '{"type":"tool_call","name":"write","args":{"path":"denied-mode.txt","content":"blocked"}}',
+        '{"type":"text","text":"done"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script), "ZHUYE_APPROVALS": "1"}) as session:
+        session.submit({"type": "set_permission_mode", "mode": "deny"})
+        events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "尝试写入"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=20)
+        assert finished["msg"]["kind"] == "done", finished
+        assert finished["msg"]["summary"] == "done", finished
+        assert not (sandbox.cwd / "denied-mode.txt").exists()
+        assert not any(e.get("msg", {}).get("type") == "approval_request" for e in session.all_events())
+
+
+def test_A20_side_channel审批请求与回执(serve_session, mock_script, sandbox) -> None:
+    """侧通道审批请求进入主会话,拒绝与批准分别控制实际写入。"""
+    sandbox.write_config('''
+[[permissions.rule]]
+tool = "write"
+action = "ask"
+''')
+    script = mock_script([
+        '{"type":"tool_call","name":"write","args":{"path":"denied-side.txt","content":"denied"}}',
+        '{"type":"text","text":"denied done"}',
+        '{"type":"tool_call","name":"write","args":{"path":"approved-side.txt","content":"approved"}}',
+        '{"type":"text","text":"approved done"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script), "ZHUYE_APPROVALS": "1"}) as session:
+        for name, decision, summary in [
+            ("denied-side.txt", {"deny": {"reason": "not allowed"}}, "denied done"),
+            ("approved-side.txt", "approve", "approved done"),
+        ]:
+            events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "测试审批"})
+            started = first_event(events, "side_channel_started")
+            assert started is not None, msg_types(events)
+            sid = started["msg"]["id"]
+            approval = session.wait_global(lambda e: e.get("msg", {}).get("type") == "approval_request" and e["msg"].get("kind", {}).get("args", {}).get("path") == name, timeout=20)
+            request = approval["msg"]
+            assert request["kind"]["type"] == "tool"
+            assert request["kind"]["tool_name"] == "write"
+            assert request["request_id"]
+            assert not (sandbox.cwd / name).exists()
+            session.submit({"type": "tool_approval", "id": request["request_id"], "decision": decision})
+            finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=20)
+            assert finished["msg"]["kind"] == "done", finished
+            assert finished["msg"]["summary"] == summary, finished
+        assert not (sandbox.cwd / "denied-side.txt").exists()
+        assert (sandbox.cwd / "approved-side.txt").read_text() == "approved"
+
+
+def test_A19_side_channel实时继承Plan限制(serve_session, mock_script, sandbox) -> None:
+    """主会话切到 Plan 后拒绝侧通道写入,切回 Auto 后允许正常写入。"""
+    script = mock_script([
+        '{"type":"tool_call","name":"write","args":{"path":"plan-denied.txt","content":"blocked"}}',
+        '{"type":"text","text":"first done"}',
+        '{"type":"tool_call","name":"write","args":{"path":"auto-allowed.txt","content":"allowed"}}',
+        '{"type":"text","text":"second done"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        for mode, expected in [("plan", "first done"), ("auto", "second done")]:
+            session.submit({"type": "set_permission_mode", "mode": mode})
+            events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "尝试写入"})
+            started = first_event(events, "side_channel_started")
+            assert started is not None, msg_types(events)
+            sid = started["msg"]["id"]
+            finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=30)
+            assert finished["msg"]["kind"] == "done", finished
+            assert finished["msg"]["summary"] == expected, finished
+        assert not (sandbox.cwd / "plan-denied.txt").exists()
+        assert (sandbox.cwd / "auto-allowed.txt").read_text() == "allowed"
+
+
+def test_A18_side_channel继承自定义脱敏(serve_session, sandbox) -> None:
+    """侧通道工具结果发回模型前必须应用用户配置的脱敏规则。"""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            received.append(request)
+            if len(received) == 1:
+                delta = {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "echo", "arguments": json.dumps({"text": "CANDLESECRET123"})}}]}
+                finish = "tool_calls"
+            else:
+                delta = {"content": "done"}
+                finish = "stop"
+            payload = {"id": "test", "model": "gpt-4o", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            body = ("data: " + json.dumps(payload) + "\n\ndata: [DONE]\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        sandbox.write_config(
+            f'\n[active]\nprovider = "openai"\n[openai]\napi_key = "test"\n'
+            f'base_url = "http://127.0.0.1:{server.server_port}"\n'
+            "[sanitize]\nmarker = '<MASKED>'\nextra_patterns = ['CANDLESECRET123']\n"
+        )
+        with serve_session(env={"ZHUYE_MODEL": "openai/gpt-4o"}) as session:
+            events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "测试脱敏"})
+            started = first_event(events, "side_channel_started")
+            assert started is not None, msg_types(events)
+            sid = started["msg"]["id"]
+            finished = session.wait_global(lambda e: e.get("msg", {}).get("type") == "side_channel_finished" and e["msg"].get("id") == sid, timeout=30)
+            assert finished["msg"]["kind"] == "done", finished
+        assert len(received) == 2, received
+        results = [m for m in received[1]["messages"] if m.get("role") == "tool"]
+        assert len(results) == 1, results
+        assert results[0]["tool_call_id"] == "call_1"
+        assert results[0]["content"] == "<MASKED>"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 def test_A14_activity审计落盘(serve_session, mock_script, sandbox) -> None:
@@ -672,3 +1016,57 @@ def test_A14_activity审计落盘(serve_session, mock_script, sandbox) -> None:
     for f in ("id", "tsMs", "actor", "summary", "level"):
         assert f in started, f"activity 记录缺 {f}:{started}"
     assert started["actor"]["actorId"] == "user", f"turn 应归 user actor:{started}"
+
+
+def test_A25_activity轮转保留记录(serve_session, mock_script, sandbox) -> None:
+    """多次达到轮转阈值后,各归档与新写入事件均可解析。"""
+    require_binary()
+    directory = sandbox.home / ".zhuye" / "activity"
+    directory.mkdir(parents=True, exist_ok=True)
+    active = directory / "activity.jsonl"
+    script = mock_script(['{"type":"text","text":"audit"}'])
+    for marker in ("archive-one", "archive-two"):
+        with active.open("a") as file:
+            file.write(json.dumps({"kind": "other", "summary": marker, "padding": "x" * (1024 * 1024)}) + "\n")
+        with serve_session(env=sandbox.mock_env(script)) as session:
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "审计"}]})
+            assert first_event(events, "turn_complete") is not None, msg_types(events)
+    archives = sorted(directory.glob("activity.*.jsonl"))
+    assert len(archives) == 2, archives
+    rows = [[json.loads(line) for line in path.read_text().splitlines()] for path in archives]
+    assert {row.get("summary") for group in rows for row in group} >= {"archive-one", "archive-two"}
+    assert all(any(row.get("kind") == "session_configured" for row in group) for group in rows)
+
+
+def test_A26_activity关闭不写审计(serve_session, mock_script, sandbox) -> None:
+    """关闭审计时,serve 的全部事件路径均不写入审计文件。"""
+    require_binary()
+    sandbox.write_config("\n[telemetry]\nactivity = false\n")
+    script = mock_script(['{"type":"text","text":"done"}'])
+    with serve_session(env=sandbox.mock_env(script)) as session:
+        events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "审计关闭"}]})
+        assert first_event(events, "turn_complete") is not None, msg_types(events)
+    assert not (sandbox.home / ".zhuye" / "activity" / "activity.jsonl").exists()
+
+
+def test_A27_activity跨进程轮转(serve_session, mock_script, sandbox) -> None:
+    """并发进程轮转后都继续写入当前文件,且依据文件实际长度轮转。"""
+    require_binary()
+    script = mock_script(['{"type":"text","text":"warmup"}', '{"type":"text","text":"done"}'])
+    directory = sandbox.home / ".zhuye" / "activity"
+    with serve_session(env=sandbox.mock_env(script)) as first, serve_session(env=sandbox.mock_env(script)) as second:
+        for session in (first, second):
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "预热"}]})
+            assert first_event(events, "turn_complete") is not None, msg_types(events)
+        active = directory / "activity.jsonl"
+        with active.open("a") as file:
+            file.write(json.dumps({"kind": "other", "summary": "并发标记", "padding": "x" * (1024 * 1024)}) + "\n")
+        for session in (first, second):
+            events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "并发"}]})
+            assert first_event(events, "turn_complete") is not None, msg_types(events)
+    archives = list(directory.glob("activity.*.jsonl"))
+    assert len(archives) == 1, archives
+    archived = [json.loads(line) for line in archives[0].read_text().splitlines()]
+    current = [json.loads(line) for line in active.read_text().splitlines()]
+    assert any(row.get("summary") == "并发标记" for row in archived)
+    assert any(row.get("kind") == "turn_started" for row in current), current

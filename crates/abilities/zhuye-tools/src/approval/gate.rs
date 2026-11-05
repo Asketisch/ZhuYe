@@ -124,12 +124,16 @@ impl WaiterLease {
         map: &ApprovalWaiters,
         request_id: String,
         tx: oneshot::Sender<ReviewDecision>,
-    ) -> WaiterLease {
-        map.lock().insert(request_id.clone(), tx);
-        WaiterLease {
+    ) -> Option<WaiterLease> {
+        let mut waiters = map.lock();
+        if waiters.len() >= MAX_PENDING_APPROVALS {
+            return None;
+        }
+        waiters.insert(request_id.clone(), tx);
+        Some(WaiterLease {
             map: std::sync::Arc::clone(map),
             request_id,
-        }
+        })
     }
 }
 
@@ -277,6 +281,25 @@ impl ApprovalGate {
         n
     }
 
+    async fn send_approval_event(
+        &self,
+        event: Event,
+        cancel: &CancellationToken,
+    ) -> Result<(), ReviewDecision> {
+        let ttl: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            match self.ttl_sleep() {
+                Some(d) => Box::pin(tokio::time::sleep(d)),
+                None => Box::pin(std::future::pending()),
+            };
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(ReviewDecision::Deny { reason: "cancelled".into() }),
+            _ = self.wait_turn_cancel() => Err(ReviewDecision::Deny { reason: "turn interrupted".into() }),
+            _ = ttl => Err(ReviewDecision::Deny { reason: super::expired_reason() }),
+            result = self.event_tx.send(event) => result.map_err(|_| ReviewDecision::Deny { reason: "approval channel closed".into() }),
+        }
+    }
+
     /// v1.9 S6:剩余到死线的等待时长(`None` = 未启用 TTL)。
     fn ttl_sleep(&self) -> Option<std::time::Duration> {
         self.absolute_deadline()
@@ -371,6 +394,19 @@ impl ApprovalGate {
         risk: RiskLevel,
         cancel: &CancellationToken,
     ) -> ReviewDecision {
+        self.ask_tool_with_policy(tool_name, args, risk, cancel, None)
+            .await
+    }
+
+    /// 队列已判定策略要求询问时,不能再被会话模式或分类器自动放行。
+    pub(crate) async fn ask_tool_with_policy(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        risk: RiskLevel,
+        cancel: &CancellationToken,
+        policy_decision: Option<zhuye_permissions::RuleMatch>,
+    ) -> ReviewDecision {
         // 0. v1.5 R1:回合级 deny-all(`approval_policy = deny`)最优先。
         if self.deny_all.load(std::sync::atomic::Ordering::SeqCst) {
             return ReviewDecision::Deny {
@@ -385,24 +421,27 @@ impl ApprovalGate {
         // `command` / `cmdline` 三个别名),不能只读 `args["cmd"]` ——
         // 否则模型发 `{"command": "rm -rf /"}` 时 bash_cmd 为 None,
         // 所有 shell_pattern 规则(含 Deny)被整体跳过。
-        let mut force_modal = false;
-        if let Some(resolver) = &self.permission_resolver {
+        let decision = if let Some(decision) = policy_decision {
+            decision
+        } else if let Some(resolver) = &self.permission_resolver {
             let bash_cmd = crate::bash_command::resolve_bash_command(args);
-            match resolver.resolve_with_context(tool_name, bash_cmd).await {
-                zhuye_permissions::RuleMatch::Allow => {
-                    return ReviewDecision::Approve;
-                }
-                zhuye_permissions::RuleMatch::Deny => {
-                    return ReviewDecision::Deny {
-                        reason: format!("denied by rule for {tool_name}"),
-                    };
-                }
-                zhuye_permissions::RuleMatch::Ask => {
-                    force_modal = true;
-                }
-                zhuye_permissions::RuleMatch::NoMatch => {}
+            let resource = crate::queue::permission_resource(args);
+            resolver
+                .resolve_with_resource(tool_name, bash_cmd, resource)
+                .await
+        } else {
+            zhuye_permissions::RuleMatch::NoMatch
+        };
+        let force_modal = match decision {
+            zhuye_permissions::RuleMatch::Allow => return ReviewDecision::Approve,
+            zhuye_permissions::RuleMatch::Deny => {
+                return ReviewDecision::Deny {
+                    reason: format!("denied by rule for {tool_name}"),
+                };
             }
-        }
+            zhuye_permissions::RuleMatch::Ask => true,
+            zhuye_permissions::RuleMatch::NoMatch => false,
+        };
 
         // 2. 会话 `PermissionMode` 短路(AcceptEdits / Bubble / Deny)。
         // 显式 `RuleMatch::Ask` 规则优先,不覆盖。
@@ -422,12 +461,17 @@ impl ApprovalGate {
                         reason: "session permission mode is deny".into(),
                     };
                 }
+                if risk != RiskLevel::High && self.is_session_allowed(tool_name) {
+                    return ReviewDecision::Approve;
+                }
                 if risk != RiskLevel::High && mode.auto_approves_tool(tool_name) {
                     if mode == PermissionMode::Bubble {
                         self.emit_permission_bubble(tool_name, args, risk).await;
                     }
                     return ReviewDecision::Approve;
                 }
+            } else if risk != RiskLevel::High && self.is_session_allowed(tool_name) {
+                return ReviewDecision::Approve;
             }
         }
 
@@ -454,21 +498,16 @@ impl ApprovalGate {
             }
         }
 
-        // v1.9 S7:全局挂起上限 —— 超限 fail-closed 直接 Deny,不注册
-        // (不让 waiter map 在 UI 客户端失联 / 死循环时无界增长)。
-        if self.waiters.lock().len() >= MAX_PENDING_APPROVALS {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel::<ReviewDecision>();
+        // 检查上限与注册必须在同一把锁内完成。
+        let Some(_lease) = WaiterLease::register(&self.waiters, request_id.clone(), tx) else {
             return ReviewDecision::Deny {
                 reason: format!(
                     "approval gate: pending approvals at cap ({MAX_PENDING_APPROVALS}); fail-closed deny"
                 ),
             };
-        }
-
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let (tx, rx) = oneshot::channel::<ReviewDecision>();
-        // v1.9 S7:abort-safe 租约 —— lease 持有期间条目必在;lease drop
-        // (任何退出路径)即清理。事件发送失败等早期退出同样覆盖。
-        let _lease = WaiterLease::register(&self.waiters, request_id.clone(), tx);
+        };
 
         let ev = Event::new(
             self.sub_id.clone(),
@@ -482,12 +521,9 @@ impl ApprovalGate {
             }),
         );
 
-        if self.event_tx.send(ev).await.is_err() {
-            // Receiver 已 drop —— 没有消费者,无法拿到决策,自动拒绝
-            // (线断即拒;lease drop 清理 waiter 条目)。
-            return ReviewDecision::Deny {
-                reason: "approval channel closed".into(),
-            };
+        // 发送事件也受取消和共享死线约束，避免满队列使审批永久挂起。
+        if let Err(decision) = self.send_approval_event(ev, cancel).await {
+            return decision;
         }
 
         // v1.9 S6:共享绝对死线(TTL 未启用时用 pending 永挂,交给
@@ -539,19 +575,15 @@ impl ApprovalGate {
                 reason: "approval_policy = deny(本回合拒绝所有需审批的工具)".into(),
             };
         }
-        // v1.9 S7:挂起上限(hook 审批同样受限)。
-        if self.waiters.lock().len() >= MAX_PENDING_APPROVALS {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel::<ReviewDecision>();
+        let Some(_lease) = WaiterLease::register(&self.waiters, request_id.clone(), tx) else {
             return ReviewDecision::Deny {
                 reason: format!(
                     "approval gate: pending approvals at cap ({MAX_PENDING_APPROVALS}); fail-closed deny"
                 ),
             };
-        }
-
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let (tx, rx) = oneshot::channel::<ReviewDecision>();
-        // v1.9 S7:abort-safe 租约(同 ask_tool)。
-        let _lease = WaiterLease::register(&self.waiters, request_id.clone(), tx);
+        };
 
         let ev = Event::new(
             self.sub_id.clone(),
@@ -565,10 +597,8 @@ impl ApprovalGate {
             }),
         );
 
-        if self.event_tx.send(ev).await.is_err() {
-            return ReviewDecision::Deny {
-                reason: "approval channel closed".into(),
-            };
+        if let Err(decision) = self.send_approval_event(ev, cancel).await {
+            return decision;
         }
 
         // v1.9 S6:共享绝对死线(同 ask_tool)。
@@ -883,5 +913,43 @@ impl ApprovalGate {
                 "ask_user: unexpected wait outcome: {other}"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn concurrent_registration_respects_cap() {
+        let map: ApprovalWaiters = Default::default();
+        let mut held = Vec::new();
+        for i in 0..MAX_PENDING_APPROVALS - 1 {
+            let (tx, _rx) = oneshot::channel();
+            held.push(WaiterLease::register(&map, i.to_string(), tx).unwrap());
+        }
+        let barrier = Arc::new(Barrier::new(9));
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let map = Arc::clone(&map);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let (tx, _rx) = oneshot::channel();
+                    barrier.wait();
+                    let lease = WaiterLease::register(&map, format!("concurrent-{i}"), tx);
+                    barrier.wait();
+                    lease
+                })
+            })
+            .collect();
+        barrier.wait();
+        barrier.wait();
+        let leases: Vec<_> = threads
+            .into_iter()
+            .filter_map(|t| t.join().unwrap())
+            .collect();
+        assert_eq!(leases.len(), 1);
+        assert_eq!(map.lock().len(), MAX_PENDING_APPROVALS);
     }
 }

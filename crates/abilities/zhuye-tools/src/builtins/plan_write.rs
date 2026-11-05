@@ -27,13 +27,13 @@
 //! - `path` 参数只接受文件名或相对子路径;工具内部拼到 `.zhuye/plan/`
 //!   下,调用方无需感知目录约定。
 
-use std::fs;
 use std::path::{Component, Path};
 
 use async_trait::async_trait;
 use serde_json::Value;
 use zhuye_protocol::{PermissionMode, ToolError, ToolOutput};
 
+use crate::sandbox::PinnedWrite;
 use crate::tool::{Tool, ToolContext};
 
 /// Plan 文档落盘根目录(workspace 下的相对路径)。
@@ -125,48 +125,24 @@ impl Tool for PlanWriteTool {
             .map_err(|e| ToolError::Io(format!("workspace: {e}")))?;
         let plan_dir = canonical_workspace.join(PLAN_DIR_REL);
 
-        // 幂等创建 plan 目录。
-        fs::create_dir_all(&plan_dir)
-            .map_err(|e| ToolError::Io(format!("mkdir {}: {e}", plan_dir.display())))?;
-
         // 拼接最终路径。`rel` 已剔除 `..` 与绝对路径,这里用逐 component
         // 拼接(而非 `plan_dir.join(path_str)` 字符串拼接)以保留规范化语义。
         let mut final_path = plan_dir.clone();
         for component in rel.components() {
             final_path.push(component);
         }
-        // 嵌套相对路径(如 `sub/p.md`)需要先创建其父目录。
-        if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| ToolError::Io(format!("mkdir {}: {e}", parent.display())))?;
-        }
 
-        // 二次校验:canonicalize 已存在部分 + 最终落点必须在 plan_dir 之内。
-        // 逐 component 推进,对已存在的中间段 canonicalize,堵住符号链接逃逸。
-        let canonical_plan_dir = plan_dir.canonicalize().unwrap_or_else(|_| plan_dir.clone());
-        let mut probe = canonical_plan_dir.clone();
-        for component in rel.components() {
-            probe.push(component);
-            if probe.exists() {
-                if let Ok(c) = probe.canonicalize() {
-                    probe = c;
-                }
-            }
-        }
-        if !probe.starts_with(&canonical_plan_dir) {
-            return Err(ToolError::PathEscape {
-                path: rel.to_path_buf(),
-            });
-        }
-
-        // 写盘(final_path 此时可能含未规范化的最后一段 —— 那正是要创建的文件,
-        // 直接写即可;parent 已由 create_dir_all 保证存在)。
-        fs::write(&final_path, content)
+        // 固定父目录并拒绝符号链接；PlanWrite 是 Auto 权限，尤其不能在
+        // 检查后让 `.zhuye/plan` 或目标文件被替换成外部链接。
+        let target = PinnedWrite::prepare(&final_path)
+            .map_err(|e| ToolError::Io(format!("prepare {}: {e}", final_path.display())))?;
+        target
+            .replace(content.as_bytes())
             .map_err(|e| ToolError::Io(format!("write {}: {e}", final_path.display())))?;
 
         // 返回写入路径(规范化后的 plan_dir 前缀 + 相对段),供观测/ExitPlanMode
         // 链路确认。`read_latest_plan_file` 会按 mtime 重新扫描,不依赖此值。
-        let written_display = canonical_plan_dir.join(rel);
+        let written_display = final_path;
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::text(format!(
                 "wrote plan to {} ({} bytes)",

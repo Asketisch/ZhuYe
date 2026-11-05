@@ -8,7 +8,7 @@
 
 | 层 | 位置 | 测谁 | 依赖 SDK? | 规模 |
 |---|---|---|---|---|
-| **能力覆盖层**(主) | `tests/functional/` | **Rust 代码在真产物上的行为**(原始 JSONL wire) | ❌ | 54 条 |
+| **能力覆盖层**(主) | `tests/functional/` | **Rust 代码在真产物上的行为**(原始 JSONL wire) | ❌ | 154 条 |
 | CLI 参数面 | `tests/rust/*.sh` | 17 个子命令的参数矩阵与输出契约 | ❌ | 320+ 断言 |
 | SDK 绑定层 | `tests/sdk-python/`、`tests/sdk-ts/` | 两个**客户端自己**的行为 | ✅ | Python 10 条 / TS 10 条 |
 | SDK 单测 | `sdks/*/tests/` | SDK 纯逻辑(mock serve),随包发布 | ✅ | Python 18 / TS 21 条 |
@@ -28,29 +28,45 @@
 
 | 能力域 | 能力覆盖层 | CLI 参数面 | SDK 绑定层 | crate 单测 | 实模型层 |
 |---|---|---|---|---|---|
-| 基础通信(握手/单轮/多轮/事件流/终态/工具参数增量) | D1–D5、D9 | cli_core | K1–K2、K5 | ✅(build/build_async 对齐断言) | L1–L4 |
+| 基础通信(握手/单轮/多轮/事件流/终态/工具参数增量) | D1–D5、D9–D10 | cli_core | K1–K2、K5 | ✅(build/build_async 对齐断言) | L1–L4 |
+| 会话中毒检测(输出、错误率、超时及传输异常) | D10 | — | — | ✅(完整文本指纹、回合滑动窗口及迭代上限) | — |
 | 并发与路由 | S1–S3 | — | — | — | — |
-| 内置工具调用与 OS 沙箱 | T1–T2、T8–T12 | tools_drive | — | ✅ | T1–T3 |
-| 技能面(内置包开关 / 文件 skill 激活) | SK1–SK3 | integrations | — | ✅ | — |
-| 远程工具(注册/往返/失败/超时) | T3–T4、X4 | serve_ops | K3、K8 | ✅ | — |
+| 内置工具调用与 OS 沙箱 | T1–T2、T8–T27 | tools_drive | — | ✅(路径固定与文件替换) | T1–T3 |
+| 文件句柄与 LSP 路径 | T24 | — | — | ✅(目录替换、读取大小上限、越界链接及 LSP 文档内容) | — |
+| 技能面(内置包开关 / 文件 skill 激活) | SK1–SK4 | integrations | — | ✅ | — |
+| 远程工具(注册/往返/失败/超时/MCP 图片) | T3–T4、T21、T23、X4 | serve_ops | K3、K8、K13(双 SDK 图片) | ✅ | — |
 | 审批交互(approve / deny / bubble / shell 规则) | T5–T7 | integrations | — | ✅ | — |
-| 会话状态 Op(22 Op)+ Activity 审计落盘 | A1–A14 | serve_ops | K4、K9 | ✅(activity 7 例) | — |
-| 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R5 | cli_core(exec --resume) | — | ✅ | P2 |
+| 会话状态 Op(22 Op)+ Activity 审计落盘和轮转 | A1–A17、A25–A27 | serve_ops | K4、K9 | ✅(activity 7 例) | — |
+| 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R6 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
-| 持久化(rollout / 截断 / 索引 / 标题 / 导出 / cron store) | P1–P8 | cli_deep(session) | — | ✅ | P1–P2 |
-| 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
+| 持久化(rollout / 截断 / 索引 / 标题 / 导出 / cron store) | P1–P13 | cli_deep(session) | — | ✅ | P1–P2 |
+| 循环守卫参数预览脱敏与停滞阻断(库调用方注入) | —(CLI 未暴露配置) | — | — | ✅(提醒、阻断、进展后再次停滞及零长度窗口) | — |
+| 独立审计库(跨进程记录、顺序与损坏文件保护) | —(库接口无 serve 入口) | — | — | ✅(多进程及自定义 sink) | — |
+| 加密密钥存储(损坏字段处理) | — | — | — | ✅(zhuye-secrets) | — |
+| 文件权限规则并发持久化 | —(库接口无 serve 入口) | — | — | ✅(多实例并发更新) | — |
+| Autopilot 调度(首次到期 / 并发占位 / 发送失败) | — | — | — | ✅(zhuye-stream) | — |
+| 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11、I20–I28 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | KMS 知识库插件(install → serve --plugin → MCP 读写 → 磁盘落盘) | I12 | —(独立二进制 `zhuye-kms-server`) | — | ✅(zhuye-kms 28 例) | — |
-| Computer Use 插件(headless 降级 Unavailable 不 panic / 会话存活;真机截屏走 real feature 手动验) | I13 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
-| Shell 会话插件(run → read → kill 生命周期;增量游标 / 非 UTF-8 容错 / env_clear 由 crate 单测锁定) | I14 | —(独立二进制 `zhuye-shell-server`) | — | ✅(zhuye-shell 5 例) | — |
+| Computer Use 插件(headless 降级及无效输入拒绝;真机截屏走 real feature 手动验) | I13、I23 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
+| Shell 会话插件(run → read → kill 生命周期及后台子进程清理) | I14、I16 | —(独立二进制 `zhuye-shell-server`) | — | ✅(zhuye-shell 7 例) | — |
 | Git 工作流插件(分支/PR 探测 + tag checkpoint + Stop 自动 checkpoint hook 永远退出 0) | I15 | —(独立二进制 `zhuye-git-tools-server` + `zhuye-cp-hook`) | — | ✅(zhuye-git 21 例 + git-tools 11 例) | — |
+| Markdown Git 指令与字面代码隔离 | —(库接口无 serve 入口) | — | — | ✅(代码块、行内代码、链接与引用定义、转义和参数校验) | — |
+| Git 后台命令输出上限与超时 | I15(大仓库截断时统计不可用) | — | — | ✅(双输出流有界读取及超时终止) | — |
+| Git checkpoint 标签失败与回退安全快照 | I15、T20(子目录快照、干净提交可回退、安全快照失败停止) | — | — | ✅(拒绝回退、保留普通提交及子目录回退恢复) | — |
+| 插件 Hook 持久化禁用及恢复 | C8 | — | — | ✅(延迟注册及重新注册) | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS,plugins) | — | — |
-| SDK 新能力面(side-channel 查询 Op:`side_channel_status` 快照 + `submission_closed` 收尾;mock 层与真二进制层双侧) | A13 | — | K10(side-channel,双侧) | — | — |
-| 编排(子代理/讨论/任务/团队/squad 委派/流水线/goal) | O1–O5 | cli_modules、cli_deep | — | ✅(squad / actor 22 例) | — |
-| CLI 能力面 | C1–C6 | cli_deep(194 断言) | — | — | — |
+| Python SDK 选项位置参数兼容性 | — | — | ✅(原参数顺序及新增插件选项的 SDK 单测) | — | — |
+| Rust Builder 旧版 `with_defaults` 构造链 | —(库接口无 serve 入口) | — | — | ✅(公开接口集成测试) | — |
+| Rust 同步与异步 Builder 的脱敏配置 | —(库接口无 serve 入口) | — | — | ✅(真实工具输出及自定义脱敏标记) | — |
+| SDK 新能力面(side-channel 查询、终态及交互;双 SDK 真二进制绑定) | A13、A15–A24 | — | K10(查询)、K11(终态)、K12(审批和提问),双侧 | ✅(侧通道继承沙箱、脱敏、权限模式、分类器、启动上下文及回执清理) | — |
+| 编排(子代理/讨论/任务/团队/squad 委派/流水线/goal) | O1–O10 | cli_modules、cli_deep | — | ✅(squad / actor、跨进程认领与任务并发更新) | — |
+| CLI 能力面 | C1–C9 | cli_deep(194 断言) | — | — | — |
 | 模型发现(清单接口 / 免费判定 / 动态 model) | — | models_* | — | ✅ | — |
 | 模型计价(费率表公开 / 费率卡 / cost 聚合) | — | — | — | zhuye-llm pricing(6 例) | — |
 | git 能力族(checkpoint tag+安全快照 / 分支 PR 探测 / 指令解析) | — | — | — | zhuye-git(16 例)+ zhuye-tools builtin_tools(1 例) | — |
 | 缺陷修复回归(预算耗尽显性化 / 配置隔离 / 工具裁切 / 提示词关闭 / mock 显性化) | ✔(12 条,见 `test_bugfixes.py`) | config(show 的 ZHUYE_HOME 断言) | — | ✅(provider 层非 SSE 校验 / 版本段拼接 / 采样参数默认值有 wiremock 回归) | — |
+| 模型自动输出预算与配置优先级 | ✔(本地 HTTP 网关断言模型、输出字段、中文输入余量,见 `test_bugfixes.py`) | — | — | ✅(模型上限、余量、未知型号及请求体) | — |
+| 提示注入检测库(凭据外传规则) | —(尚无运行时入口) | — | — | ✅(zhuye-sanitize 检测及误报边界) | — |
 
 ## 2. 能力覆盖层明细(`tests/functional/`)
 
@@ -98,9 +114,32 @@
 - **T11** 内置 `memory` 工具 write → read → remove 全链路:`MEMORY.md` 的
   `## <key>` 条目块落盘、读回正文、删除后条目消失;rollout 追加
   `MemoryAccess::Write` 审计记录(agent_type / turn_id 字段级)。
+- **T11 整份记忆保护**:旧格式或无法拆分的文档拒绝条目写入和删除,断言工具错误与文件原文不变。
 - **T12** `[sandbox].os_level = false` 显式关闭端到端生效(此前只桥接
   `Some(true)`,用户关不掉);env `ZHUYE_SANDBOX_OS_LEVEL=1` 逃生口压掉
   config。目标取 OS 可写但沙箱 allow 列表外的路径(macOS /Users/Shared)。
+
+- **T13** 未设置沙箱开关时,模型命令对工作区外可写路径的写入被拒,断言错误标记、退出码和文件不存在。
+
+- **T14** 不可信命令的沙箱初始化失败时,即使关闭严格开关也拒绝执行,断言错误与无副作用。
+
+- **T15** 资源拒绝规则仅拒绝匹配 URL,不匹配时仍进入审批并透传拒绝理由。
+
+- **T16** 会话级放行后,匹配资源拒绝规则的同一工具仍被拒绝。
+
+- **T17** 无交互审批门时,无关工具正常执行,资源拒绝、强制询问及默认风险硬拒仍生效。
+
+- **T18** 绝对路径拒绝规则覆盖相对路径与符号链接,同时不阻止无关路径。
+
+- **T19** 资源拒绝规则的 glob 无效时匹配工具失败关闭,无关工具不受影响。
+
+- **T24** 文件工具拒绝指向工作区外的符号链接,断言错误事件及外部文件内容不变。
+
+- **T25** 用户级权限文件遵循 `ZHUYE_HOME` 隔离，空值回退 `HOME`，断言实际工具拒绝或放行结果。
+
+- **T26** 用户权限文件损坏时拒绝工具，文件修复后恢复按规则执行。
+
+- **T27** 不同 `ZHUYE_HOME` 的用户记忆分别读写，不使用默认用户目录或另一数据目录的内容。
 
 ### SK 组 技能面(`test_skills.py`)
 - **SK1** 默认配置(不写 `[active] bundled_skills`)→ 内置 skill 不在
@@ -110,6 +149,7 @@
   输出含正文标记(`thorough code reviewer`)。
 - **SK3** 默认配置下 workspace 文件 skill(`.zhuye/skills/file-skill/`)
   依旧可加载(正文标记命中)—— 开关只作用于编译期内置包。
+- **SK4** 用户技能随 `ZHUYE_HOME` 隔离，空值回退默认用户目录。
 
 ### A 组 会话状态 Op(`test_serve.py`)
 `user_input`+`thread_settings`(四字段) / `set_effort`(静默) / 权限模式切换
@@ -118,13 +158,15 @@
 (`context_compacted`) / goal 模式(进出静默) / plan 模式(`plan_request` →
 `plan_ready` → 切权限模式)/ 四种孤儿回执(不崩、收尾、会话存活) /
 `steer`(静默,消息合并进下一轮 user message)/ `query_subagents`
-(`subagent_status`)/ `prompt_command`(`prompt_list` / `prompt_switched`)。
+(`subagent_status`)/ `prompt_command`(`prompt_list` / `prompt_switched`);
+A15–A24 覆盖 side-channel 终态、权限、审批、工作目录及配置继承;A25–A27 覆盖审计轮转、关闭配置及跨进程写入。
 
 ### R 组 重连与恢复(`test_recovery.py`)
 - **R1 `--resume <thread id>`**:恢复会话并**续写同一份** rollout(历史仍在)。
 - **R2 `-c`** / **R3 `-r 1`**:续最近一次会话。
 - **R4 进程崩溃**:挂起的 submission **收不到终态事件** —— 客户端靠 stdout
   EOF 感知断开(wire 上没有"会话结束"事件,SDK 层负责兜底)。
+- **R6 resume 侧通道**:恢复后的会话仍能启动侧通道并收到完整完成事件。
 - **R5 stdin EOF**:进程退出码 0(EOF 等价于 shutdown)。
 
 ### X 组 容错(`test_recovery.py`)
@@ -139,9 +181,14 @@ rewind 物理截断(记录减少 + `.rewind-<ts>.bak` 备份)/ `zhuye session ls
 能列出该会话。P5 覆盖旧日期会话通过 thread id、内部 session id、`-c`、`-r 1` 恢复后续写原文件。
 P6 覆盖标题精化:block 数组 content(`[{"type":"text",...}]`)提取 text 块派生
 标题(不再泄漏 JSON 键名),`session rename` 自定义名经 `resolve_display_title`
-优先于派生标题(`session show` 的 `Title:` 行字段级断言)。P7 覆盖 `session
+优先于派生标题(`session show` 的 `Title:` 行字段级断言)。P6b 验证改名不会跟随侧写符号链接并修改外部文件。P7 覆盖 `session
 export` 完整转写稿:13 变体渲染 + 文末 Usage 段(per-model 表 / token 总量),
-不经 4000 字符截断;`--out` 原子写落盘。
+不经 4000 字符截断;`--out` 原子写落盘。P7b 验证目标为命名管道时及时报错，且原管道不变。
+P9 覆盖损坏的 cron 存储在创建失败后仍保留原内容;P10 覆盖禁用任务跨进程
+恢复后重新启用时重新计算并持久化下一次触发时间;P11 覆盖写盘失败时创建
+返回错误并回滚内存状态。
+P12 覆盖 cron 超大步长和非法范围,断言工具结果及登记任务数。
+P13 验证 `ZHUYE_HOME` 隔离会话文件、列表和恢复续写。
 
 ### I 组 会话导入(`test_import.py`)
 独立二进制 `zhuye-import`(crate `crates/integrations/zhuye-import`,
@@ -170,15 +217,28 @@ export` 完整转写稿:13 变体渲染 + 文末 Usage 段(per-model 表 / token
   `--include-sidechain`(Claude 子代理行默认跳过 / 开启后成轮);
 - **I10 `--all` discover**:claude-code(`~/.claude/projects/*`)与
   codex(`~/.codex/sessions/**` 递归)目录扫描各自导入成功,重复 `--all`
-  全部 skipped 且退出码 0;
+  全部 skipped 且退出码 0;I24 覆盖符号链接环和目录别名,断言自动发现、目录导入及 MCP 扫描均只返回一个会话;
 - **I11 MCP 与批量语义**:直连 `zhuye-import mcp` 调 `list_importable`
   成功返回来源清单;全失败 → 退出码 1,部分失败 → 退出码 0 且 failed
-  行可见(批量语义)。
+  行可见(批量语义);
+- **I16 shell 进程组清理**:通过插件启动后台子进程,终止后断言工具回执与子进程无后续文件副作用。
+
+- **I20 跨日期强制导入**:同一会话更正日期后替换已有文件并清理旧轮转分片,记录字段更新且不产生重复会话。
+
+- **I21 ZCode 在线快照**:源库 WAL 正在写入时只导入已提交数据,不读未提交事务。
+- **I25 Codex 图片导入**:图文和纯图片回合保留内容顺序、MIME 与字节,无法恢复的图片产生告警。
+- **I26 大图片自动识别**:首行超过 64 KiB 时仍能识别 Claude 会话并完整导入图片字节。
+- **I27 损坏图片编码**:Claude 图片 base64 无效时保留文本、报告告警且不生成损坏图片。
+- **I28 导入目录隔离**:导入器与 session 命令共用 `ZHUYE_HOME/sessions`。
+- **I22 工具历史恢复**:过滤重复及跨回合工具回执,断言恢复时模型请求中的调用和回执顺序。
+- **I23 Computer Use 参数校验**:拒绝溢出坐标、未知鼠标按钮和无效组合键。
 
 ### O 组 编排(`test_orchestration.py`)
 子代理 `call_explorer`(子代理执行 → 回执进历史)/ 讨论编排(transcript +
 Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路径
 (no runner / team not found)/ goal 模式与其他 op 共存。
+O6 验证任务更新后的字段与元数据;O7 验证跨进程并发创建的 ID 和文件;
+O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存后端);O9 验证损坏、落后或丢失的高水位不会覆盖旧任务;O10 验证超大任务输出的读取上限和截断字段。
 
 ### 缺陷修复回归(`test_bugfixes.py`)
 - **预算耗尽显性化(P-13)**:迭代预算 / token 预算耗尽且**零文本**时,
@@ -213,6 +273,8 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 `session ls` + `show` 报错路径 / `doctor` + `version` 输出契约 /
 `session search` 跨会话全文搜索(命中 / 未命中 / `--json` 字段)/
 `exec` 退出码映射(成功 0 / turn 失败 1 / plan mode 未产出计划 122)。
+C7b 覆盖 hook 启停对损坏配置的保护、未知字段与注释保留,以及并发更新；
+C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 
 ## 3. CLI 子命令(17 个,不含 help)
 
@@ -384,16 +446,16 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 
 | 文件 | 规模 |
 |---|---|
-| `functional/test_serve.py` | 24 条(D6 + S3 + A13) |
-| `functional/test_tools.py` | 13 条(T1–T12) |
-| `functional/test_skills.py` | 3 条(SK1–SK3) |
-| `functional/test_recovery.py` | 11 条(R5 + X6) |
-| `functional/test_persistence.py` | 11 条(P1–P8) |
-| `functional/test_import.py` | 18 条(I1–I15) |
-| `functional/test_orchestration.py` | 5 条(O5) |
-| `functional/test_cli.py` | 7 条(C1–C7) |
-| `functional/test_bugfixes.py` | 12 条(缺陷修复回归) |
-| **能力覆盖层合计** | **102 条** |
+| `functional/test_serve.py` | 38 条(D、S、A 组) |
+| `functional/test_tools.py` | 29 条(T 组) |
+| `functional/test_skills.py` | 4 条(SK1–SK4) |
+| `functional/test_recovery.py` | 12 条(R6 + X6) |
+| `functional/test_persistence.py` | 18 条(P1–P13) |
+| `functional/test_import.py` | 31 条(I 组) |
+| `functional/test_orchestration.py` | 10 条(O 组) |
+| `functional/test_cli.py` | 10 条(C1–C9) |
+| `functional/test_bugfixes.py` | 19 条(缺陷修复回归) |
+| **能力覆盖层合计** | **171 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |
@@ -412,6 +474,10 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 
 ## 8. 未覆盖项(诚实清单)
 
+- **提示注入检测的运行时接线**:`PromptGuard` 目前为独立库能力,serve/CLI 未调用,因此能力覆盖层尚无法验证其运行时拦截行为。
+
+- **加密密钥存储能力覆盖层**:当前仅提供 Rust crate 接口,没有 serve 或 CLI
+  入口;损坏密文的错误处理由 `zhuye-secrets` 单测覆盖。
 - **TUI 交互面**(modal / 按键 / 渲染):本仓库已不含 TUI 子命令,无对象。
 - **真实 LLM provider 的流式/重试/限流路径**:mock provider 覆盖协议
   语义,真实 provider 行为(429 退避、连接中断重试)需要网络,不在离线
@@ -421,6 +487,7 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
   的**跨进程持久化**已覆盖(P8:create → 落盘 → resume 后 list 可见);
   tick 到期逻辑由 zhuye-stream 单测覆盖(注入时钟不可控,功能层不做
   长时等待)。
+- **Autopilot 调度能力覆盖层**:当前只有 Rust 库接口,serve / CLI 没有触发入口;首次到期、并发占位与通道失败由 `zhuye-stream` 单测覆盖。
 - **OTLP telemetry 真实上报**:本地文件 trace(traces 子命令)已覆盖;
   OTLP exporter 只验启动不报错。
 - **并行远程工具调用**:mock provider 每次模型回复只发一个 tool_call,

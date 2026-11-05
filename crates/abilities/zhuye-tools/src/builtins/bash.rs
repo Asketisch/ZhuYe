@@ -373,15 +373,18 @@ impl Tool for BashTool {
             .unwrap_or(zhuye_sandbox::CommandOrigin::ModelAuthored);
         let gate = zhuye_sandbox::UntrustedGate::from_env();
         match gate.decide(origin) {
-            zhuye_sandbox::GateDecision::ForceSandbox if !sandbox.is_active() => {
-                // 后端可用但全局开关关闭:开关对不可信来源无效,重建为
-                // 启用 + 严格(保留 ctx 透传的可写目录 / 网络配置)。
-                warn!(origin = ?origin, "untrusted gate: forcing sandbox despite global off-switch");
-                let mut forced =
-                    zhuye_sandbox::OsSandbox::enabled(std::mem::take(&mut sandbox.writable_dirs));
-                forced.allow_network = sandbox.allow_network;
-                forced.strict = true;
-                sandbox = forced;
+            zhuye_sandbox::GateDecision::ForceSandbox => {
+                if !sandbox.is_active() {
+                    // 全局关闭时重建沙箱,保留可写目录与网络配置。
+                    warn!(origin = ?origin, "untrusted gate: forcing sandbox despite global off-switch");
+                    let mut forced = zhuye_sandbox::OsSandbox::enabled(std::mem::take(
+                        &mut sandbox.writable_dirs,
+                    ));
+                    forced.allow_network = sandbox.allow_network;
+                    sandbox = forced;
+                }
+                // 即使沙箱原本已启用,初始化失败也不能降级为裸执行。
+                sandbox.strict = true;
             }
             zhuye_sandbox::GateDecision::Reject { reason } => {
                 warn!(origin = ?origin, "untrusted gate: rejecting bare exec");

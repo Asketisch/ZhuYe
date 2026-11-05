@@ -12,6 +12,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// 一条待执行命令(argv + cwd + env + 超时 + 输出上限)。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,46 +119,87 @@ impl CommandRunner for LocalCommandRunner {
                 .current_dir(&cmd.cwd)
                 .env_clear()
                 .envs(cmd.env.iter().cloned())
+                .kill_on_drop(true)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
-            let child = command
+            #[cfg(unix)]
+            command.process_group(0);
+            let mut child = command
                 .spawn()
                 .map_err(|e| WorkspaceCommandError::Unavailable(e.to_string()))?;
-            // 超时即 kill(用 start_kill 而非 kill_on_timeout —— 后者需要
-            // tokio 的 "process" + "time" feature 组合,且 wait_with_output
-            // 已持有 child;这里显式 kill 更直接)。
-            let out = match tokio::time::timeout(cmd.timeout, child.wait_with_output()).await {
-                Ok(out) => out.map_err(|e| WorkspaceCommandError::Failed(e.to_string()))?,
-                Err(_) => {
-                    return Ok(CommandOutput {
-                        exit_code: -1,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        truncated: false,
-                        timed_out: true,
-                    });
+            #[cfg(unix)]
+            let group = ProcessGroupGuard(child.id());
+            let stdout = child.stdout.take().expect("stdout 已配置为管道");
+            let stderr = child.stderr.take().expect("stderr 已配置为管道");
+            let cap = cmd.max_output_bytes;
+            // 同时排空两个管道,只保留上限内的数据,避免子进程阻塞或内存无限增长。
+            // 超时丢弃 future 时终止子进程;Unix 下同时清理其进程组。
+            let wait = async move {
+                #[cfg(unix)]
+                let mut group = group;
+                let result = tokio::try_join!(
+                    child.wait(),
+                    read_capped(stdout, cap),
+                    read_capped(stderr, cap)
+                );
+                #[cfg(unix)]
+                if result.is_ok() {
+                    group.0 = None;
                 }
+                result
             };
-            let mut truncated = false;
-            let stdout = take_capped(&out.stdout, cmd.max_output_bytes, &mut truncated);
-            let stderr = take_capped(&out.stderr, cmd.max_output_bytes, &mut truncated);
+            let (status, (stdout, stdout_truncated), (stderr, stderr_truncated)) =
+                match tokio::time::timeout(cmd.timeout, wait).await {
+                    Ok(out) => out.map_err(|e| WorkspaceCommandError::Failed(e.to_string()))?,
+                    Err(_) => {
+                        return Ok(CommandOutput {
+                            exit_code: -1,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            truncated: false,
+                            timed_out: true,
+                        });
+                    }
+                };
             Ok(CommandOutput {
-                exit_code: out.status.code().unwrap_or(-1),
-                stdout,
-                stderr,
-                truncated,
+                exit_code: status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                truncated: stdout_truncated || stderr_truncated,
                 timed_out: false,
             })
         })
     }
 }
 
-fn take_capped(bytes: &[u8], cap: usize, truncated: &mut bool) -> String {
-    if bytes.len() > cap {
-        *truncated = true;
-        String::from_utf8_lossy(&bytes[..cap]).into_owned()
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
+#[cfg(unix)]
+struct ProcessGroupGuard(Option<u32>);
+
+#[cfg(unix)]
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.and_then(|pid| i32::try_from(pid).ok()) {
+            // 该进程是新进程组组长;取消或超时时终止组内普通子进程。
+            unsafe { libc::kill(-pid, libc::SIGKILL) };
+        }
+    }
+}
+
+async fn read_capped(
+    mut reader: impl AsyncRead + Unpin,
+    cap: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::new();
+    let mut truncated = false;
+    let mut buffer = [0; 8192];
+    loop {
+        let n = reader.read(&mut buffer).await?;
+        if n == 0 {
+            return Ok((output, truncated));
+        }
+        let retained = n.min(cap.saturating_sub(output.len()));
+        output.extend_from_slice(&buffer[..retained]);
+        truncated |= retained < n;
     }
 }
 
@@ -198,6 +240,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timed_out_process_cannot_write_after_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let cmd = WorkspaceCommand::new(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "sh -c 'sleep 1; printf late > \"$MARKER\"' & wait".into(),
+            ],
+            dir.path().to_string_lossy().into_owned(),
+        )
+        .with_env(vec![(
+            "MARKER".into(),
+            marker.to_string_lossy().into_owned(),
+        )])
+        .with_timeout(Duration::from_millis(100));
+        let out = LocalCommandRunner.run(&cmd).await.unwrap();
+        assert!(out.timed_out);
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
     async fn output_over_cap_is_truncated_and_flagged() {
         // 产出 4KB,上限 64 字节 → 截断 + 标记。
         let cmd = WorkspaceCommand::new(
@@ -218,6 +283,25 @@ mod tests {
         let out2 = LocalCommandRunner.run(&cmd).await.unwrap();
         assert!(!out2.truncated);
         assert!(out2.stdout.len() >= 4096);
+    }
+
+    #[tokio::test]
+    async fn drains_both_streams_after_reaching_cap() {
+        let mut cmd = WorkspaceCommand::new(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2".into(),
+            ],
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        );
+        cmd.max_output_bytes = 64;
+        let out = LocalCommandRunner.run(&cmd).await.unwrap();
+        assert!(out.success());
+        assert!(!out.timed_out);
+        assert!(out.truncated);
+        assert_eq!(out.stdout.len(), 64);
+        assert_eq!(out.stderr.len(), 64);
     }
 
     #[tokio::test]

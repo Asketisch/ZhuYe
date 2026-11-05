@@ -182,8 +182,22 @@ impl PolicyEngine {
         bash_command: Option<&str>,
         resource: Option<&str>,
     ) -> Decision {
-        // 1. 风险标签分类 + 硬拒(eigent 语义:先于一切规则)。
-        let labels = classify_risk(tool_name, bash_command, resource);
+        self.evaluate_resources(rules, tool_name, bash_command, resource.as_slice())
+    }
+
+    /// 同一资源的多个等价表示共同参与匹配,规则顺序只评估一次。
+    pub fn evaluate_resources(
+        &self,
+        rules: &[PermissionRule],
+        tool_name: &str,
+        bash_command: Option<&str>,
+        resources: &[&str],
+    ) -> Decision {
+        // 原始参数和解析路径均需参与风险识别。
+        let mut labels = classify_risk(tool_name, bash_command, None);
+        for resource in resources {
+            labels.extend(classify_risk(tool_name, None, Some(resource)));
+        }
         for label in &labels {
             if self.config.deny_labels.iter().any(|d| d == label) {
                 return Decision {
@@ -196,10 +210,10 @@ impl PolicyEngine {
         // 2. 规则匹配(按 precedence)。
         let action = match self.config.precedence {
             Precedence::DenyWins => {
-                matcher::evaluate_full(rules, tool_name, bash_command, resource)
+                matcher::evaluate_resources(rules, tool_name, bash_command, resources)
             }
-            Precedence::FirstMatch => first_match(rules, tool_name, bash_command, resource),
-            Precedence::LastMatch => last_match(rules, tool_name, bash_command, resource),
+            Precedence::FirstMatch => first_match(rules, tool_name, bash_command, resources),
+            Precedence::LastMatch => last_match(rules, tool_name, bash_command, resources),
         };
 
         // 3. 缺配置默认值。
@@ -230,9 +244,16 @@ impl PolicyEngine {
             && action == RuleMatch::Allow
             && is_control_plane_tool(tool_name)
         {
-            return Decision {
-                action: RuleMatch::Ask,
-                reason: DecisionReason::ControlPlaneSelfProtection,
+            return if self.config.unattended {
+                Decision {
+                    action: RuleMatch::Deny,
+                    reason: DecisionReason::UnattendedAskDenied,
+                }
+            } else {
+                Decision {
+                    action: RuleMatch::Ask,
+                    reason: DecisionReason::ControlPlaneSelfProtection,
+                }
             };
         }
 
@@ -252,10 +273,10 @@ fn first_match(
     rules: &[PermissionRule],
     tool_name: &str,
     bash_command: Option<&str>,
-    resource: Option<&str>,
+    resources: &[&str],
 ) -> RuleMatch {
     for rule in rules {
-        if let Some(m) = matcher::match_rule_for_engine(rule, tool_name, bash_command, resource) {
+        if let Some(m) = matcher::match_rule_for_engine(rule, tool_name, bash_command, resources) {
             return m;
         }
     }
@@ -268,11 +289,11 @@ fn last_match(
     rules: &[PermissionRule],
     tool_name: &str,
     bash_command: Option<&str>,
-    resource: Option<&str>,
+    resources: &[&str],
 ) -> RuleMatch {
     let mut result = RuleMatch::NoMatch;
     for rule in rules {
-        if let Some(m) = matcher::match_rule_for_engine(rule, tool_name, bash_command, resource) {
+        if let Some(m) = matcher::match_rule_for_engine(rule, tool_name, bash_command, resources) {
             result = m;
         }
     }
@@ -515,6 +536,41 @@ mod tests {
             None,
         );
         assert_eq!(d.action, RuleMatch::Allow, "永久删除默认不硬拒(仅标注)");
+    }
+
+    #[test]
+    fn equivalent_resources_preserve_last_match_order() {
+        let mut deny = rule("write", PermissionAction::Deny);
+        deny.resource_glob = Some("/workspace/private/*".into());
+        let mut allow = rule("write", PermissionAction::Allow);
+        allow.resource_glob = Some("private/*".into());
+        let engine = PolicyEngine::new(PolicyConfig {
+            precedence: Precedence::LastMatch,
+            ..PolicyConfig::default()
+        });
+        let result = engine.evaluate_resources(
+            &[deny, allow],
+            "write",
+            None,
+            &["private/file", "/workspace/private/file"],
+        );
+        assert_eq!(result.action, RuleMatch::Allow);
+    }
+
+    #[test]
+    fn unattended_denies_control_plane_approval() {
+        let engine = PolicyEngine::new(PolicyConfig {
+            unattended: true,
+            ..PolicyConfig::default()
+        });
+        let decision = engine.evaluate(
+            &[rule("config", PermissionAction::Allow)],
+            "config",
+            None,
+            None,
+        );
+        assert_eq!(decision.action, RuleMatch::Deny);
+        assert_eq!(decision.reason, DecisionReason::UnattendedAskDenied);
     }
 
     #[test]

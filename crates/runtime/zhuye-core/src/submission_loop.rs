@@ -34,6 +34,33 @@ use crate::graph::StateGraph;
 use crate::graph::state::AgentState;
 use crate::steering_queue::{SteeringPriority, SteeringQueue};
 
+fn poison_evidence(state: &AgentState, user_cancelled: bool) -> crate::poisoned::TurnEvidence {
+    crate::poisoned::TurnEvidence {
+        output_hash: crate::poisoned::output_blocks_fingerprint(&state.latest_content),
+        tool_calls: state.turn_tool_calls,
+        tool_errors: state.turn_tool_errors,
+        tool_timeouts: state.turn_tool_timeouts,
+        completed_with_outcome: state.completed_normally
+            || state.budget_exceeded
+            || state.hit_max_iterations
+            || user_cancelled,
+    }
+}
+
+#[cfg(test)]
+mod poison_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn iteration_limit_and_user_cancellation_are_not_transport_failures() {
+        let mut state = AgentState::default();
+        assert!(!poison_evidence(&state, false).completed_with_outcome);
+        assert!(poison_evidence(&state, true).completed_with_outcome);
+        state.hit_max_iterations = true;
+        assert!(poison_evidence(&state, false).completed_with_outcome);
+    }
+}
+
 /// 传递给每个图节点的轻量 clone 的回合级上下文。
 #[derive(Clone)]
 pub struct NodeContext {
@@ -583,7 +610,11 @@ pub async fn submission_loop(
                             cfg.permission_resolver.clone(),
                             Some(question_waiters.clone()),
                             Some(user_input_waiters.clone()),
-                            Some(cfg.permission_mode.clone()),
+                            Some(
+                                cfg.inherited_approval_mode
+                                    .clone()
+                                    .unwrap_or_else(|| cfg.permission_mode.clone()),
+                            ),
                         )
                         // 挂上本回合的**回合级**取消令牌:`Op::Interrupt`
                         // 取消的是它,而 gate 的等待此前只观察会话级令牌
@@ -751,21 +782,8 @@ pub async fn submission_loop(
                         // - Transport:有结论(自然结束/预算耗尽/MaxIterations)
                         //   重置连击;异常终止(give-up,用户取消除外)累加。
                         {
-                            let output_hash = if last_assistant_text.is_empty() {
-                                None
-                            } else {
-                                Some(crate::poisoned::output_fingerprint(&last_assistant_text))
-                            };
                             let user_cancelled = turn_cancel_clone.is_cancelled();
-                            let evidence = crate::poisoned::TurnEvidence {
-                                output_hash,
-                                tool_calls: final_state.turn_tool_calls,
-                                tool_errors: final_state.turn_tool_errors,
-                                tool_timeouts: final_state.turn_tool_timeouts,
-                                completed_with_outcome: final_state.completed_normally
-                                    || final_state.budget_exceeded
-                                    || user_cancelled,
-                            };
+                            let evidence = poison_evidence(&final_state, user_cancelled);
                             // 注意:guard 必须在 await 前释放(parking_lot
                             // MutexGuard 非 Send,跨 await 会破坏 spawn)。
                             let poison_verdict =
@@ -1150,8 +1168,13 @@ pub async fn submission_loop(
                     fan_out_session(&session_subs, &ev);
                     continue;
                 };
+                // 必须在启动前订阅,以免任务立即结束时丢失终态。
+                let mut side_events = driver.registry().subscribe_events();
+                let mut side_approvals = driver.subscribe_approvals();
+                let mut side_interactions = driver.subscribe_interactions();
                 match driver.start(&agent, &prompt) {
                     Ok((id, _cancel)) => {
+                        let side_id = id.clone();
                         tracing::info!(%id, %agent, "side-channel started");
                         let ev = Event::new(
                             sub.id.clone(),
@@ -1166,6 +1189,61 @@ pub async fn submission_loop(
                         );
                         let _ = turn_tx.send(ev.clone()).await;
                         fan_out_session(&session_subs, &ev);
+                        let subscribers = session_subs.clone();
+                        let session_cancel = cfg.cancel.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                tokio::select! {
+                                    _ = session_cancel.cancelled() => break,
+                                    approval = side_approvals.recv() => {
+                                        match approval {
+                                            Ok((id, request)) if id == side_id => {
+                                                let event = Event::new(zhuye_protocol::EVENT_ID_NONE, EventMsg::ApprovalRequest(request));
+                                                fan_out_session(&subscribers, &event);
+                                            }
+                                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                            _ => {}
+                                        }
+                                    }
+                                    interaction = side_interactions.recv() => {
+                                        match interaction {
+                                            Ok((id, msg)) if id == side_id => {
+                                                let event = Event::new(zhuye_protocol::EVENT_ID_NONE, msg);
+                                                fan_out_session(&subscribers, &event);
+                                            }
+                                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                            _ => {}
+                                        }
+                                    }
+                                    event = side_events.recv() => {
+                                        use crate::side_channel::SideChannelEvent as CoreEvent;
+                                        let payload = match event {
+                                            Ok(CoreEvent::Done { id, finished_at_ms, summary }) if id == side_id => Some(zhuye_protocol::SideChannelEvent::Done { id, finished_at_ms, summary }),
+                                            Ok(CoreEvent::Cancelled { id, finished_at_ms }) if id == side_id => Some(zhuye_protocol::SideChannelEvent::Cancelled { id, finished_at_ms }),
+                                            Ok(CoreEvent::Error { id, finished_at_ms, message }) if id == side_id => Some(zhuye_protocol::SideChannelEvent::Error { id, finished_at_ms, message }),
+                                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                            _ => None,
+                                        };
+                                        if let Some(payload) = payload {
+                                            // 终态与交互事件走独立广播,收尾前排空已发送事件以免竞争丢失。
+                                            while let Ok((id, msg)) = side_interactions.try_recv() {
+                                                if id == side_id {
+                                                    fan_out_session(&subscribers, &Event::new(zhuye_protocol::EVENT_ID_NONE, msg));
+                                                }
+                                            }
+                                            while let Ok((id, request)) = side_approvals.try_recv() {
+                                                if id == side_id {
+                                                    fan_out_session(&subscribers, &Event::new(zhuye_protocol::EVENT_ID_NONE, EventMsg::ApprovalRequest(request)));
+                                                }
+                                            }
+                                            let event = Event::new(zhuye_protocol::EVENT_ID_NONE, EventMsg::SideChannelFinished(payload));
+                                            fan_out_session(&subscribers, &event);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        });
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "side-channel start failed");
@@ -1210,7 +1288,10 @@ pub async fn submission_loop(
             | zhuye_protocol::Op::HookApproval { id, decision } => {
                 // M6:把用户裁决交给等待中的 ApprovalGate。
                 // 若 waiter 已被移除(超时 / 取消)则返回 false —— 静默丢弃。
-                let resolved = complete_approval(&approval_waiters, &id, decision);
+                let mut resolved = complete_approval(&approval_waiters, &id, decision.clone());
+                if !resolved && let Some(driver) = cfg.side_channel_driver.as_ref() {
+                    resolved = driver.resolve_approval(&id, decision).await;
+                }
                 if !resolved {
                     tracing::debug!(
                         request_id = %id,
@@ -1266,8 +1347,11 @@ pub async fn submission_loop(
                 choice,
             } => match plan_id_str.parse::<PlanId>() {
                 Ok(plan_id) => {
-                    let resolved =
+                    let mut resolved =
                         complete_plan_approval(plan_approval_gate.waiters(), &plan_id, choice);
+                    if !resolved && let Some(driver) = cfg.side_channel_driver.as_ref() {
+                        resolved = driver.resolve_plan(&plan_id_str, choice).await;
+                    }
                     if !resolved {
                         tracing::debug!(plan_id = %plan_id, "plan approval reply arrived but no waiter; dropping");
                     }
@@ -1297,7 +1381,11 @@ pub async fn submission_loop(
             // `PendingQuestion.selected` + `custom` 序列化得到,用户按 Esc 时
             // 为空 `AskUserAnswer`。
             zhuye_protocol::Op::AskUserQuestionResponse { id, answers } => {
-                let resolved = complete_ask_user_question(&question_waiters, &id, answers);
+                let mut resolved =
+                    complete_ask_user_question(&question_waiters, &id, answers.clone());
+                if !resolved && let Some(driver) = cfg.side_channel_driver.as_ref() {
+                    resolved = driver.resolve_question(&id, answers).await;
+                }
                 if !resolved {
                     tracing::debug!(
                         request_id = %id,
@@ -1306,7 +1394,10 @@ pub async fn submission_loop(
                 }
             }
             zhuye_protocol::Op::AskUserInputResponse { id, text } => {
-                let resolved = complete_ask_user_input(&user_input_waiters, &id, text);
+                let mut resolved = complete_ask_user_input(&user_input_waiters, &id, text.clone());
+                if !resolved && let Some(driver) = cfg.side_channel_driver.as_ref() {
+                    resolved = driver.resolve_input(&id, text).await;
+                }
                 if !resolved {
                     tracing::debug!(
                         request_id = %id,

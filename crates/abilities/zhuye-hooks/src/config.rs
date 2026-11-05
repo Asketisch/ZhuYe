@@ -177,11 +177,11 @@ impl HooksConfig {
             let cfg = self.langfuse_tracker.clone().unwrap_or_default();
             engine.register(LangfuseTracker::new(cfg));
         }
-        // v1.x:持久化的禁用状态统一 apply —— 必须先注册后禁用
-        // (`HookEngine::disable` 要求 hook 已注册;未注册的名字静默无效,
-        // 插件 hook 未加载时同样安全)。
+        // 插件 hook 在构建引擎之后才注册,需提前保存其禁用状态。
         for name in self.disabled.iter().flatten() {
-            if !engine.disable(name) {
+            if name.starts_with("plugin:") {
+                engine.disable_on_registration(name);
+            } else if !engine.disable(name) {
                 tracing::debug!(hook = %name, "hooks: disabled name not registered (no-op)");
             }
         }
@@ -221,8 +221,38 @@ mod tests {
         assert_eq!(engine.len(), 5, "禁用不注销 hook,只关行为");
         assert!(engine.is_disabled("search_budget"));
         assert!(!engine.is_disabled("verification"));
-        // 未注册的名字静默无效(插件 hook 未加载时同样安全)。
+        // 未注册的普通 hook 名字静默无效。
         assert!(!engine.is_disabled("not_registered"));
+    }
+
+    #[test]
+    fn disabled_plugin_is_preserved_before_registration() {
+        use crate::event::HookEventKind;
+        use crate::shell::ShellHook;
+        use std::time::Duration;
+
+        let name = "plugin:example@inline:PostToolUse#0";
+        let cfg = HooksConfig {
+            disabled: Some(vec![name.into()]),
+            ..Default::default()
+        };
+        let engine = cfg.build_engine();
+        let register = || {
+            engine.register(ShellHook::new(
+                name,
+                HookEventKind::PostToolUse,
+                None,
+                "true",
+                Duration::from_secs(1),
+            ));
+        };
+        register();
+        assert!(engine.is_disabled(name));
+        assert!(engine.unregister(name));
+        register();
+        assert!(engine.is_disabled(name));
+        assert!(engine.enable(name));
+        assert!(!engine.is_disabled(name));
     }
 
     #[test]

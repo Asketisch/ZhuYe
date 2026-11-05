@@ -13,6 +13,7 @@ zhuye-subagent = { workspace = true }
 zhuye-config   = { workspace = true }
 zhuye-prompt   = { workspace = true }
 async-trait        = { workspace = true }
+fs2                = "0.4"
 parking_lot        = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }

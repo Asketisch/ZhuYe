@@ -324,7 +324,8 @@ pub(crate) struct ReloadRxHandle(pub(crate) mpsc::Receiver<Event>);
 /// 优先级(链式 first-match-wins,更具体的作用域在前):
 /// config.toml `[permissions]`(会话) > project
 /// (`<workspace>/.zhuye/permissions.toml`) > 用户级
-/// (`~/.zhuye/permissions.toml`)。`add` / `remove` 委托链尾的用户级
+/// (`$ZHUYE_HOME/permissions.toml`,默认 `~/.zhuye/permissions.toml`)。
+/// `add` / `remove` 委托链尾的用户级
 /// file store,运行时写入照旧落盘到用户文件;project 文件手工维护,
 /// 随工作区签入。
 ///
@@ -336,40 +337,80 @@ pub(crate) struct ReloadRxHandle(pub(crate) mpsc::Receiver<Event>);
 /// - **recorder = None** —— side-channel 不写主会话 rollout(「事件不进
 ///   主历史」的承诺在这里落地);
 /// - **取消令牌由 registry 生成**(参数传入),不是主 token 的子级。
+struct SideChannelSecurity {
+    permission_resolver: Option<Arc<dyn zhuye_permissions::PermissionResolver>>,
+    yolo_classifier: Option<Arc<dyn zhuye_permissions::YoloClassifier>>,
+    yolo_threshold: f32,
+    parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
+    approvals: bool,
+    sandbox_default: Option<bool>,
+    sandbox_writable: Vec<std::path::PathBuf>,
+    sandbox_network: Option<bool>,
+}
+
 fn build_side_channel_factory(
-    workspace: std::path::PathBuf,
-    model: String,
     registry: zhuye_llm::SharedModelRegistry,
     tools: Arc<ToolRegistry>,
     cfg: zhuye_config::ReflectConfig,
     telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
-) -> zhuye_core::side_channel::SideThreadFactory {
-    Arc::new(move |agent_name: &str, cancel: CancellationToken| {
-        let mut m4 = bootstrap_m4(
-            &workspace,
-            agent_name,
-            &model,
-            &registry,
-            ThreadId::new(),
-            None,
-            &cfg,
-            telemetry.clone(),
-        )
-        .ok_or_else(|| anyhow::anyhow!("side-channel: agent `{agent_name}` bootstrap failed"))?;
-        // 不写主历史:摘掉 recorder。
-        m4.recorder = None;
-        let thread_cfg = AgentConfig::new(model.clone(), workspace.clone())
-            .with_m4(m4)
-            .with_policy(Arc::new(cfg.routing_policy_with(&model)))
-            .with_cancel(cancel);
-        Ok(AgentThread::new(
-            thread_cfg,
-            registry.clone(),
-            tools.clone(),
-            None,
-            None,
-        ))
-    })
+    security: SideChannelSecurity,
+) -> zhuye_core::side_channel::SideContextThreadFactory {
+    Arc::new(
+        move |agent_name: &str,
+              cancel: CancellationToken,
+              context: zhuye_core::side_channel::SideChannelContext| {
+            let workspace = context.workspace;
+            let model = context.model;
+            // 独立注册表避免侧通道的 session 工具覆盖主会话工具。
+            let side_tools = Arc::new(ToolRegistry::new());
+            for (name, source) in tools.list_with_source() {
+                if let Some(tool) = tools.get(&name) {
+                    side_tools.register_with_source(source, tool);
+                }
+            }
+            let mut m4 = bootstrap_m4(
+                &workspace,
+                &side_tools,
+                agent_name,
+                &model,
+                &registry,
+                ThreadId::new(),
+                None,
+                &cfg,
+                telemetry.clone(),
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!("side-channel: agent `{agent_name}` bootstrap failed")
+            })?;
+            // 不写主历史:摘掉 recorder。
+            m4.recorder = None;
+            let mut thread_cfg = AgentConfig::new(model.clone(), workspace.clone())
+                .with_m4(m4)
+                .with_policy(Arc::new(cfg.routing_policy_with(&model)))
+                .with_sandbox_default(security.sandbox_default)
+                .with_sandbox_writable(security.sandbox_writable.clone())
+                .with_sandbox_network(security.sandbox_network)
+                .with_approvals(security.approvals)
+                .with_cancel(cancel);
+            thread_cfg.inherited_approval_mode = Some(security.parent_mode.clone());
+            thread_cfg.yolo_classifier = security.yolo_classifier.clone();
+            thread_cfg.yolo_threshold = security.yolo_threshold;
+            if let Some(resolver) = &security.permission_resolver {
+                thread_cfg = thread_cfg.with_permission_resolver(resolver.clone());
+            }
+            let thread = AgentThread::new(
+                thread_cfg,
+                registry.clone(),
+                side_tools,
+                Some(build_sanitizer(cfg.sanitize.as_ref())),
+                None,
+            );
+            thread.register_hook(zhuye_core::side_channel::InheritedPlanGate::new(
+                security.parent_mode.clone(),
+            ));
+            Ok(thread)
+        },
+    )
 }
 
 /// 权限规则与 YOLO 分类器。
@@ -378,11 +419,14 @@ async fn apply_permission_layers(
     initial_cfg: &zhuye_config::ReflectConfig,
     workspace: &std::path::Path,
 ) -> AgentConfig {
-    let Ok(file_store) = zhuye_permissions::FilePermissionStore::with_default_home() else {
-        cfg.yolo_classifier = Some(Arc::new(zhuye_permissions::HeuristicYoloClassifier));
-        return cfg;
-    };
-    let file_store: Arc<dyn zhuye_permissions::PermissionStore> = Arc::new(file_store);
+    let file_store: Arc<dyn zhuye_permissions::PermissionStore> =
+        match zhuye_permissions::FilePermissionStore::with_default_home() {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::warn!(%error, "无法确定用户权限文件路径，仍应用会话与项目规则");
+                Arc::new(zhuye_permissions::InMemoryPermissionStore::new())
+            }
+        };
     let cfg_store: Arc<dyn zhuye_permissions::PermissionStore> =
         Arc::new(zhuye_permissions::InMemoryPermissionStore::new());
     if let Some(sec) = &initial_cfg.permissions {
@@ -454,6 +498,7 @@ pub async fn bootstrap_normal(
     let telemetry_sink = build_telemetry_sink(&initial_cfg);
     let m4 = bootstrap_m4(
         &workspace,
+        &tools,
         args.agent.as_deref().unwrap_or("default"),
         &model,
         &registry,
@@ -527,26 +572,11 @@ pub async fn bootstrap_normal(
             }
         }
     }
-    // v1.x:side-channel driver —— thread 工厂用与主会话同一套 bootstrap
-    // (agent 定义 / 工具 / memory),但 recorder=None(不写主历史)且取消
-    // 令牌由 registry 独立生成(主会话 Op::Interrupt 不误杀)。
-    let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new(
-        zhuye_core::side_channel::SideChannelRegistry::new(),
-        build_side_channel_factory(
-            workspace.clone(),
-            model.clone(),
-            registry.clone(),
-            tools.clone(),
-            initial_cfg.clone(),
-            telemetry_sink.clone(),
-        ),
-    );
 
     let mut cfg = AgentConfig::new(model.clone(), workspace.clone())
         .with_sandbox_default(sandbox_default)
         .with_sandbox_writable(sandbox_writable.clone())
         .with_sandbox_network(sandbox_network)
-        .with_side_channel_driver(side_channel_driver)
         .with_m4(m4)
         .with_policy(policy)
         .with_token_budget(token_budget)
@@ -555,6 +585,7 @@ pub async fn bootstrap_normal(
         .with_tool_env(tool_env)
         .with_telemetry(telemetry_sink.clone())
         .with_cancel(cancel.clone())
+        .with_session_id(thread_id)
         .with_subagent_runtime(subagent_runtime.clone())
         .with_context_window_overrides(
             initial_cfg
@@ -569,6 +600,29 @@ pub async fn bootstrap_normal(
             zhuye_protocol::PermissionMode::Auto
         });
     cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    // 侧通道复用主会话策略,避免独立执行绕过权限规则。
+    let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
+        zhuye_core::side_channel::SideChannelRegistry::new(),
+        cfg.workspace.clone(),
+        cfg.model.clone(),
+        build_side_channel_factory(
+            registry.clone(),
+            tools.clone(),
+            initial_cfg.clone(),
+            telemetry_sink.clone(),
+            SideChannelSecurity {
+                permission_resolver: cfg.permission_resolver.clone(),
+                yolo_classifier: cfg.yolo_classifier.clone(),
+                yolo_threshold: cfg.yolo_threshold,
+                parent_mode: cfg.permission_mode.clone(),
+                approvals: cfg.approvals,
+                sandbox_default,
+                sandbox_writable: sandbox_writable.clone(),
+                sandbox_network,
+            },
+        ),
+    );
+    cfg = cfg.with_side_channel_driver(side_channel_driver);
     let cfg_for_reload = cfg.clone(); // 共享 model Arc<RwLock>
     let thread = Arc::new(AgentThread::new(
         cfg,
@@ -748,6 +802,7 @@ pub async fn bootstrap_resumed(
     // 的 `resume_recorder` 等价。
     let m4 = bootstrap_m4(
         &workspace,
+        &tools,
         args.agent.as_deref().unwrap_or("default"),
         &model,
         &registry,
@@ -781,7 +836,7 @@ pub async fn bootstrap_resumed(
         .with_sandbox_network(sandbox_network)
         .with_m4(m4)
         .with_policy(Arc::new(initial_cfg.routing_policy_with(&model)))
-        .with_telemetry(telemetry_sink)
+        .with_telemetry(telemetry_sink.clone())
         .with_cancel(cancel.clone())
         // 回填 session_id:submission_loop 每轮 `rec.replay(cfg.session_id)`
         // 重建历史 —— 未设置时是随机新 uuid,永远命不中原文件,恢复的
@@ -792,6 +847,28 @@ pub async fn bootstrap_resumed(
     // 与 normal 分支同权:权限三层装配(config > project > user)+ YOLO
     // 分类器。此前 resume 分支漏装,resume 会话会绕过权限规则。
     let cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
+        zhuye_core::side_channel::SideChannelRegistry::new(),
+        cfg.workspace.clone(),
+        cfg.model.clone(),
+        build_side_channel_factory(
+            registry.clone(),
+            tools.clone(),
+            initial_cfg.clone(),
+            telemetry_sink.clone(),
+            SideChannelSecurity {
+                permission_resolver: cfg.permission_resolver.clone(),
+                yolo_classifier: cfg.yolo_classifier.clone(),
+                yolo_threshold: cfg.yolo_threshold,
+                parent_mode: cfg.permission_mode.clone(),
+                approvals: cfg.approvals,
+                sandbox_default,
+                sandbox_writable: sandbox_writable.clone(),
+                sandbox_network,
+            },
+        ),
+    );
+    let cfg = cfg.with_side_channel_driver(side_channel_driver);
     // 0.5:resume 分支此前完全忽略 `--plan-mode` —— 既不设
     // `PermissionMode::Plan` 也不注册 `PlanModeGate`,于是
     // `zhuye exec --plan-mode --resume <id>` 直接是 Auto 模式 + 无
@@ -1034,6 +1111,68 @@ pub fn load_image_item(path: &str) -> anyhow::Result<zhuye_protocol::UserInputIt
         data,
         mime_type: mime.to_string(),
     })
+}
+
+#[cfg(test)]
+mod side_channel_security_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn side_channel_inherits_classifier_and_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let classifier: Arc<dyn zhuye_permissions::YoloClassifier> =
+            Arc::new(zhuye_permissions::HeuristicYoloClassifier);
+        let workspace = Arc::new(parking_lot::RwLock::new(dir.path().to_path_buf()));
+        let factory = build_side_channel_factory(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(ToolRegistry::new()),
+            zhuye_config::ReflectConfig::default(),
+            None,
+            SideChannelSecurity {
+                permission_resolver: None,
+                yolo_classifier: Some(classifier.clone()),
+                yolo_threshold: 0.93,
+                parent_mode: Arc::new(parking_lot::RwLock::new(
+                    zhuye_protocol::PermissionMode::Auto,
+                )),
+                approvals: true,
+                sandbox_default: None,
+                sandbox_writable: Vec::new(),
+                sandbox_network: None,
+            },
+        );
+        let thread = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: workspace.read().clone(),
+                model: "mock".into(),
+            },
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(
+            thread.config().yolo_classifier.as_ref().unwrap(),
+            &classifier
+        ));
+        assert_eq!(thread.config().yolo_threshold, 0.93);
+        assert!(thread.config().approvals);
+        let switched = dir.path().join("switched");
+        std::fs::create_dir(&switched).unwrap();
+        *workspace.write() = switched.clone();
+        let side = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: workspace.read().clone(),
+                model: "mock/new".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(side.config().current_workspace(), switched);
+        assert_eq!(side.config().current_model(), "mock/new");
+        *workspace.write() = dir.path().to_path_buf();
+        assert_eq!(side.config().current_workspace(), switched);
+    }
 }
 
 #[cfg(test)]

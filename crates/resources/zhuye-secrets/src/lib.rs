@@ -35,7 +35,8 @@
 //! ## 并发
 //!
 //! 每次 set/delete 重新读盘 → 修改 → 原子写(tmp + rename),
-//! 单进程内由内部 `Mutex` 串行化。
+//! 同一进程内的所有存储实例由共享 `Mutex` 串行化;跨进程并发写入
+//! 不受此锁保护。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,8 @@ const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 /// 每条目 HKDF salt 字节数。
 const SALT_LEN: usize = 16;
+/// 同进程的不同实例可能指向同一目录,必须共享读改写锁。
+static STORE_IO_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
@@ -94,8 +97,6 @@ struct EncryptedEntry {
 pub struct SecretStore {
     dir: PathBuf,
     machine_key: [u8; KEY_LEN],
-    /// 单进程内 set/delete/list 串行化(读盘-改-原子写)。
-    io_lock: Mutex<()>,
 }
 
 /// 手写 Debug:**绝不**输出 machine key 字节。
@@ -111,6 +112,7 @@ impl std::fmt::Debug for SecretStore {
 impl SecretStore {
     /// 打开(必要时生成 machine key)。unix 上校验已有 key 文件权限。
     pub fn open(dir: impl AsRef<Path>) -> Result<SecretStore, SecretError> {
+        let _guard = STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)?;
         let key_path = dir.join(".machine.key");
@@ -126,11 +128,7 @@ impl SecretStore {
             write_new_0600(&key_path, &bytes)?;
             bytes
         };
-        Ok(SecretStore {
-            dir,
-            machine_key,
-            io_lock: Mutex::new(()),
-        })
+        Ok(SecretStore { dir, machine_key })
     }
 
     /// 存一条密钥(覆盖同名)。
@@ -138,7 +136,7 @@ impl SecretStore {
         if name.is_empty() {
             return Err(SecretError::Corrupt("entry name must not be empty".into()));
         }
-        let _g = self.io_lock.lock();
+        let _guard = STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut store = self.read_store()?;
         // 每条目独立 salt + nonce:同明文两次写入密文无关。
         let mut salt = [0u8; SALT_LEN];
@@ -172,7 +170,7 @@ impl SecretStore {
 
     /// 取一条密钥;不存在 → `Ok(None)`;认证失败 → Err。
     pub fn get(&self, name: &str) -> Result<Option<String>, SecretError> {
-        let _g = self.io_lock.lock();
+        let _guard = STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = self.read_store()?;
         let Some(entry) = store.entries.get(name) else {
             return Ok(None);
@@ -209,17 +207,18 @@ impl SecretStore {
 
     /// 删除一条;返回是否存在。
     pub fn delete(&self, name: &str) -> Result<bool, SecretError> {
-        let _g = self.io_lock.lock();
+        let _guard = STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut store = self.read_store()?;
-        Ok(store
-            .entries
-            .remove(name)
-            .is_some_and(|_| self.write_store(&store).is_ok()))
+        if store.entries.remove(name).is_none() {
+            return Ok(false);
+        }
+        self.write_store(&store)?;
+        Ok(true)
     }
 
     /// 列出全部条目名(排序)。
     pub fn list(&self) -> Result<Vec<String>, SecretError> {
-        let _g = self.io_lock.lock();
+        let _guard = STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = self.read_store()?;
         Ok(store.entries.keys().cloned().collect())
     }
@@ -255,28 +254,25 @@ impl SecretStore {
     fn write_store(&self, store: &StoreFile) -> Result<(), SecretError> {
         let raw = serde_json::to_string_pretty(store)?;
         let path = self.store_path();
-        // 原子写:tmp + rename(避免半截 JSON)。
-        let tmp = path.with_extension("json.tmp");
-        {
-            use std::io::Write;
-            #[cfg(unix)]
-            let mut f = {
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&tmp)?
-            };
-            #[cfg(not(unix))]
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp)?;
-            f.write_all(raw.as_bytes())?;
-            f.flush()?;
+        // 同目录唯一临时文件避免中断后残留文件阻塞后续写入。
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.permissions().readonly() => {
+                return Err(SecretError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "secrets store is read-only",
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(SecretError::Io(error)),
         }
-        std::fs::rename(&tmp, &path)?;
+        let mut file = tempfile::NamedTempFile::new_in(&self.dir)?;
+        use std::io::Write;
+        file.write_all(raw.as_bytes())?;
+        file.flush()?;
+        file.as_file().sync_all()?;
+        file.persist(&path)
+            .map_err(|error| SecretError::Io(error.error))?;
         Ok(())
     }
 }
@@ -302,6 +298,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn hex_decode(s: &str, what: &str) -> Result<Vec<u8>, SecretError> {
     if s.len() & 1 == 1 {
         return Err(SecretError::Corrupt(format!("{what} hex odd length")));
+    }
+    // 两字节切片只对 ASCII 安全;损坏的 UTF-8 字段必须返回错误。
+    if !s.is_ascii() {
+        return Err(SecretError::Corrupt(format!("{what} hex invalid")));
     }
     (0..s.len())
         .step_by(2)
@@ -361,6 +361,32 @@ mod tests {
     }
 
     #[test]
+    fn separate_instances_serialize_concurrent_open_and_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(12));
+        std::thread::scope(|scope| {
+            for i in 0..12 {
+                let barrier = barrier.clone();
+                let path = dir.path();
+                scope.spawn(move || {
+                    barrier.wait();
+                    let store = SecretStore::open(path).unwrap();
+                    store
+                        .set(&format!("key-{i}"), &format!("value-{i}"))
+                        .unwrap();
+                });
+            }
+        });
+        let store = SecretStore::open(dir.path()).unwrap();
+        for i in 0..12 {
+            assert_eq!(
+                store.get(&format!("key-{i}")).unwrap(),
+                Some(format!("value-{i}"))
+            );
+        }
+    }
+
+    #[test]
     fn set_get_roundtrip() {
         let (_d, store) = tmp_store();
         store.set("openai", "sk-abcdefghijklmnopqrstuv").unwrap();
@@ -374,6 +400,46 @@ mod tests {
     fn get_missing_returns_none() {
         let (_d, store) = tmp_store();
         assert_eq!(store.get("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn delete_reports_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::open(dir.path()).unwrap();
+        store.set("key", "value").unwrap();
+        let path = dir.path().join("secrets.json");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert!(store.delete("key").is_err());
+        assert_eq!(store.get("key").unwrap().as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn stale_temporary_file_does_not_block_writes() {
+        let (dir, store) = tmp_store();
+        let stale = dir.path().join("secrets.json.tmp");
+        std::fs::write(&stale, "旧临时文件").unwrap();
+        store.set("key", "value").unwrap();
+        assert_eq!(store.get("key").unwrap().as_deref(), Some("value"));
+        assert_eq!(std::fs::read_to_string(stale).unwrap(), "旧临时文件");
+    }
+
+    #[test]
+    fn non_ascii_hex_fields_return_corrupt_error() {
+        for field in ["salt", "nonce", "ct"] {
+            let (dir, store) = tmp_store();
+            store.set("key", "value").unwrap();
+            let path = dir.path().join("secrets.json");
+            let mut data: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            data["entries"]["key"][field] = serde_json::json!("中a");
+            std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+            assert!(
+                matches!(store.get("key"), Err(SecretError::Corrupt(_))),
+                "{field} 的非 ASCII 数据应返回损坏错误"
+            );
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::{Actor, actor_from_team_member};
 use crate::error::TaskError;
-use crate::manager::{TaskManager, TaskPatch};
+use crate::manager::TaskManager;
 use crate::model::{Task, TaskId, TeamFile, TeamMemberSpec};
 use crate::team::{lead_agent_id_for, validate_team_name};
 
@@ -293,23 +293,10 @@ impl SquadManager {
         task_id: TaskId,
         assignee_actor_id: Option<String>,
     ) -> Result<Task, SquadError> {
-        let actor = assignee_actor_id.as_deref().map(Actor::from_agent_id);
         let list = squad_name.to_string();
-        let current = self
-            .task_manager
-            .get_task(&list, task_id, false)
-            .await
-            .map_err(tm_err)?;
-        let merged = Actor::merge_into_metadata(actor.as_ref(), &current.metadata);
-        // owner 三态:Some(Some(v)) 设值 / Some(None) 清空。
-        let patch = TaskPatch {
-            owner: Some(assignee_actor_id),
-            metadata: Some(merged),
-            ..Default::default()
-        };
         let outcome = self
             .task_manager
-            .update_task(&list, task_id, patch)
+            .assign_task_actor(&list, task_id, assignee_actor_id)
             .await
             .map_err(tm_err)?;
         Ok(outcome.task)

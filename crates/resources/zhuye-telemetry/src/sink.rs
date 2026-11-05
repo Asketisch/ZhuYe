@@ -362,16 +362,12 @@ impl TelemetrySink {
     }
 }
 
-/// 解析 `$HOME` 下的默认 trace 目录。供引擎构造 sink 用。
+/// 解析用户数据目录下的默认 trace 目录。供引擎构造 sink 用。
 pub fn resolve_traces_dir(config_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = config_dir {
         return dir.join("traces");
     }
-    // fallback: $HOME/.zhuye/traces
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(DEFAULT_TRACES_DIR);
-    }
-    PathBuf::from(DEFAULT_TRACES_DIR)
+    zhuye_config::data_path(&["traces"]).unwrap_or_else(|| PathBuf::from(DEFAULT_TRACES_DIR))
 }
 
 #[cfg(test)]

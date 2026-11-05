@@ -30,7 +30,7 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 与 `default_config_path` 同语义；空值按未设置处理。拿不到任何 home
 /// 时返回 `None`，调用方按各自的降级策略处理（不要 panic）。
 pub fn data_dir() -> Option<PathBuf> {
-    resolve_data_dir(std::env::var_os("ZHUYE_HOME"), std::env::var_os("HOME"))
+    zhuye_fs::data_dir()
 }
 
 /// [`data_dir`] 的纯函数版（不碰进程 env，便于确定性测试）。
@@ -39,12 +39,7 @@ pub fn data_dir() -> Option<PathBuf> {
 /// 退回 `HOME`，再退回 `dirs::home_dir()`（getpwuid 兜底，覆盖
 /// launchd 等不设 `HOME` 的启动场景）。
 pub fn resolve_data_dir(zhuye_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    if let Some(dir) = zhuye_home.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(dir));
-    }
-    home.map(PathBuf::from)
-        .or_else(dirs::home_dir)
-        .map(|dir| dir.join(DEFAULT_CONFIG_DIR))
+    zhuye_fs::resolve_data_dir(zhuye_home, home)
 }
 
 /// 用户级数据目录下的子路径，例如 `data_path(&["kms"])` → `~/.zhuye/kms`。

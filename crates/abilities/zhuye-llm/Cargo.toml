@@ -6,7 +6,9 @@ license.workspace = true
 description = "ZhuYe: ModelClient trait + OpenAI / Anthropic providers"
 
 [dependencies]
+base64 = "0.22"
 zhuye-protocol = { workspace = true }
+zhuye-fs       = { workspace = true }
 async-stream       = "0.3"
 async-trait        = { workspace = true }
 chrono             = { workspace = true }

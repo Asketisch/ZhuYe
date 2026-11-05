@@ -13,9 +13,7 @@
 //! action = "deny"                      # 动作:allow / deny / ask
 //! ```
 //!
-//! v1.x 简化:无 lock / 并发写。如果并发 TUI + CLI 同时 add,最后写者
-//! 覆盖(同 `zhuye-rollout::path` 风格)。`add` 内部 read-modify-write
-//! 保证已有 rules 不丢。
+//! 文件修改使用跨进程锁保护读取、修改和写入，避免并发更新丢失规则。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,7 +41,7 @@ pub enum PermissionsError {
     Parse(#[from] toml::de::Error),
     #[error("serialize toml: {0}")]
     Serialize(#[from] toml::ser::Error),
-    #[error("HOME env var not set")]
+    #[error("cannot determine user data directory")]
     NoHome,
 }
 
@@ -172,19 +170,17 @@ impl PermissionStore for ChainedPermissionStore {
 
 // ── FilePermissionStore(文件权限存储)────────────────────────────────
 
-/// TOML 文件持久化,默认路径 `~/.zhuye/permissions.toml`。
+/// TOML 文件持久化,默认路径为用户数据目录下的 `permissions.toml`。
 #[derive(Debug)]
 pub struct FilePermissionStore {
     path: PathBuf,
 }
 
 impl FilePermissionStore {
-    /// 用 `~/.zhuye/permissions.toml`(HOME 不存在 → `Err(NoHome)`)。
+    /// 优先使用 `ZHUYE_HOME`，否则使用 `HOME/.zhuye` 或系统用户目录。
     pub fn with_default_home() -> Result<Self, PermissionsError> {
-        let home = std::env::var_os("HOME").ok_or(PermissionsError::NoHome)?;
-        Ok(Self::with_path(
-            PathBuf::from(home).join(".zhuye/permissions.toml"),
-        ))
+        let home = zhuye_fs::data_dir().ok_or(PermissionsError::NoHome)?;
+        Ok(Self::with_path(home.join("permissions.toml")))
     }
 
     /// 测试用 —— 直接给路径,跳过 HOME env 依赖。
@@ -195,6 +191,31 @@ impl FilePermissionStore {
     /// 暴露路径,给 Pill 输出提示用(让用户知道 rules 存在哪)。
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    async fn write_lock(&self) -> Result<std::fs::File, PermissionsError> {
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut lock_path = self.path.as_os_str().to_os_string();
+        lock_path.push(".lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)?;
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(file),
+                Err(error)
+                    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     /// 同步读 + 解析。文件不存在 → `Ok(default())`(让 `list` 起点是空,
@@ -218,9 +239,8 @@ impl FilePermissionStore {
     ///
     /// 0.11:此前是裸 `std::fs::write` —— 它先截断目标再写入,进程在写入
     /// 中途崩溃(或磁盘满)会把 `permissions.toml` 留成半截 TOML。而
-    /// `StorePermissionResolver` 对解析失败是 **fail-open**(返回 NoMatch,
-    /// 让上层按默认行为走),所以一个截断的权限文件会让**所有工具**的
-    /// 规则静默失效 —— 包括用户配的 Deny 规则。
+    /// 此前解析失败会被当成空规则集,截断的权限文件会让拒绝规则静默失效。
+    /// 现在解析失败会拒绝工具,原子写仍避免正常写入时产生损坏文件。
     ///
     /// 改为 temp + rename:同目录保证同一文件系统,`rename` 在其上是原子的,
     /// 读者只会看到旧内容或新内容,绝不会看到半截。与
@@ -253,6 +273,7 @@ impl PermissionStore for FilePermissionStore {
     }
 
     async fn add(&self, rule: PermissionRule) -> Result<(), PermissionsError> {
+        let _lock = self.write_lock().await?;
         let mut file = self.read()?;
         // "first match wins" + 用户 add 顺序隐式定 precedence → 不去重
         // 同名(tool 一致 + action 不同也算合法,后写的在尾部不影响 evaluate)。
@@ -265,6 +286,7 @@ impl PermissionStore for FilePermissionStore {
     }
 
     async fn remove(&self, tool: &str) -> Result<(), PermissionsError> {
+        let _lock = self.write_lock().await?;
         let mut file = self.read()?;
         let before = file.rules.len();
         file.rules.retain(|r| r.tool != tool);
@@ -287,6 +309,34 @@ mod tests {
             tool_glob: None,
             shell_pattern: None,
             resource_glob: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_file_stores_preserve_all_rules() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("permissions.toml");
+        let mut jobs = Vec::new();
+        for index in 0..40 {
+            let store = FilePermissionStore::with_path(path.clone());
+            jobs.push(tokio::spawn(async move {
+                store
+                    .add(rule(&format!("tool-{index}"), PermissionAction::Deny))
+                    .await
+                    .unwrap();
+            }));
+        }
+        for job in jobs {
+            job.await.unwrap();
+        }
+        let rules = FilePermissionStore::with_path(path).list().await.unwrap();
+        assert_eq!(rules.len(), 40);
+        for index in 0..40 {
+            assert!(
+                rules
+                    .iter()
+                    .any(|item| item.tool == format!("tool-{index}"))
+            );
         }
     }
 
@@ -396,7 +446,7 @@ mod tests {
         std::fs::write(&p, "not = valid toml :::").unwrap();
         let s = FilePermissionStore::with_path(p);
         // 解析失败 → Err(Parse),让上层决定 fallback(当前 resolver 把
-        // 错误降级为 NoMatch)。
+        // 错误必须交给 resolver 处理)。
         let r = s.list().await;
         assert!(r.is_err());
     }

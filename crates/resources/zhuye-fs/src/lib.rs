@@ -15,10 +15,29 @@
 //!   不被替换成普通文件(运维常用 symlink 把状态文件挂到别处)。
 //! - **权限不放大**:继承目标原有 mode;只读目标直接拒绝,不被静默
 //!   覆盖(原子重命名只看目录权限,不查目标权限,必须自己查)。
+//! - **普通文件**:已存在的目标必须是普通文件，拒绝管道等特殊文件。
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// 解析用户数据目录，确保配置与依赖配置的底层资源使用同一口径。
+pub fn resolve_data_dir(
+    zhuye_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(dir) = zhuye_home.filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    home.map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .map(|dir| dir.join(".zhuye"))
+}
+
+/// 按当前进程环境解析用户数据目录。
+pub fn data_dir() -> Option<PathBuf> {
+    resolve_data_dir(std::env::var_os("ZHUYE_HOME"), std::env::var_os("HOME"))
+}
 
 /// 覆盖式原子写:把 `content` 作为完整内容替换 `path`。
 pub fn write_atomic(path: &Path, content: &[u8]) -> io::Result<()> {
@@ -47,6 +66,12 @@ pub fn write_atomic_with(
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     match std::fs::metadata(&target) {
         Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "state file is not a regular file",
+                ));
+            }
             if metadata.permissions().readonly() {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -54,8 +79,29 @@ pub fn write_atomic_with(
                 ));
             }
             // 原子重命名只看目录权限,这里额外确认目标本身可写。
-            std::fs::OpenOptions::new().write(true).open(&target)?;
-            temp.as_file().set_permissions(metadata.permissions())?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+            }
+            let opened = options.open(&target)?;
+            let opened_metadata = opened.metadata()?;
+            if !opened_metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "state file is not a regular file",
+                ));
+            }
+            if opened_metadata.permissions().readonly() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "state file is read-only",
+                ));
+            }
+            temp.as_file()
+                .set_permissions(opened_metadata.permissions())?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
@@ -78,6 +124,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         (dir, path)
+    }
+
+    #[test]
+    fn data_directory_prefers_nonempty_override() {
+        assert_eq!(
+            resolve_data_dir(Some("custom".into()), Some("home".into())),
+            Some(PathBuf::from("custom"))
+        );
+        assert_eq!(
+            resolve_data_dir(Some("".into()), Some("home".into())),
+            Some(PathBuf::from("home/.zhuye"))
+        );
     }
 
     #[test]
@@ -114,6 +172,16 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         // 重命名只查目录权限:只读目标必须原样保留,不能被静默覆盖。
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+    }
+
+    #[test]
+    fn directory_target_is_rejected_and_temporary_file_removed() {
+        let (dir, path) = temp_path();
+        std::fs::create_dir(&path).unwrap();
+        let error = write_atomic(&path, b"new").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(path.is_dir());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[cfg(unix)]

@@ -5,9 +5,8 @@
 //! 但进程退出即丢;桌面端自己存了一份 `~/.zhuye/hook_state.json`
 //! (`HashMap<String, bool>`),于是 hook 配置出现第三处口径。
 //!
-//! 本模块把状态收进统一配置的 `[hooks].disabled`(名单形式),写回复用
-//! `login::write_config_to`(与 `plugin enable` 同路径 —— 单一 config
-//! 写入口)。hook 名口径:
+//! 本模块把状态收进统一配置的 `[hooks].disabled`(名单形式),只修改
+//! 该字段,保留其它配置和注释。hook 名口径:
 //! - 内置 hook:短名(`search_budget` / `test_runner` / `plan_completion` /
 //!   `verification` / `langfuse_tracker`);
 //! - 插件 hook:`plugin:<插件id>:<事件>#<序号>`(挂载时由 loader 生成,
@@ -17,12 +16,13 @@
 //! 与实际运行期同一 `build_engine` 路径,口径不会漂移。
 
 use anyhow::{Context, Result};
-use zhuye_config::{default_config_path, load_default};
+use zhuye_config::default_config_path;
 use zhuye_hooks::config::HooksConfig;
 
 /// `zhuye hooks ls` —— 列全部已注册 hook 与启停状态。
 pub fn ls() -> Result<()> {
-    let cfg = load_default();
+    let path = default_config_path().context("cannot locate config.toml")?;
+    let (_, cfg) = read_config(&path)?;
     let engine = HooksConfig::from_reflect_section(&cfg.hooks).build_engine();
     let names = engine.hook_names();
     if names.is_empty() {
@@ -44,48 +44,82 @@ pub fn ls() -> Result<()> {
 
 /// `zhuye hooks disable <name>` —— 把 hook 名加入 `[hooks].disabled`。
 pub fn disable(name: &str) -> Result<()> {
-    let mut cfg = load_default();
-    let section = &mut cfg.hooks;
-    let list = section.disabled.get_or_insert_with(Vec::new);
-    if list.iter().any(|n| n == name) {
+    if !change_disabled(name, true)? {
         println!("hook `{name}` already disabled (no-op)");
         return Ok(());
     }
-    list.push(name.to_string());
-    save(&cfg)?;
     println!("disabled hook `{name}` (config.toml#hooks.disabled)");
     Ok(())
 }
 
 /// `zhuye hooks enable <name>` —— 从 `[hooks].disabled` 移除(幂等)。
 pub fn enable(name: &str) -> Result<()> {
-    let mut cfg = load_default();
-    let before = cfg
-        .hooks
-        .disabled
-        .as_ref()
-        .map(|l| l.len())
-        .unwrap_or_default();
-    if let Some(list) = cfg.hooks.disabled.as_mut() {
-        list.retain(|n| n != name);
-    }
-    let after = cfg
-        .hooks
-        .disabled
-        .as_ref()
-        .map(|l| l.len())
-        .unwrap_or_default();
-    if before == after {
+    if !change_disabled(name, false)? {
         println!("hook `{name}` not disabled (no-op)");
         return Ok(());
     }
-    save(&cfg)?;
     println!("enabled hook `{name}` (removed from config.toml#hooks.disabled)");
     Ok(())
 }
 
-fn save(cfg: &zhuye_config::ReflectConfig) -> Result<()> {
-    let path = default_config_path().context("HOME unset; cannot locate config.toml")?;
-    crate::login::write_config_to(cfg, &path)?;
-    Ok(())
+fn read_config(path: &std::path::Path) -> Result<(String, zhuye_config::ReflectConfig)> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let config = zhuye_config::load_from_str(&text)
+        .with_context(|| format!("invalid config: {}", path.display()))?;
+    Ok((text, config))
+}
+
+/// 通过锁保护读取、修改与写入，避免多个 hook 命令互相覆盖。
+fn change_disabled(name: &str, disabled: bool) -> Result<bool> {
+    let path = default_config_path().context("cannot locate config.toml")?;
+    let parent = path.parent().context("config.toml has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    fs2::FileExt::lock_exclusive(&lock).context("cannot lock config.toml")?;
+    let (text, _) = read_config(&path)?;
+    let mut document = text
+        .parse::<toml_edit::DocumentMut>()
+        .context("cannot edit config.toml")?;
+    if document.get("hooks").is_none() {
+        if !disabled {
+            return Ok(false);
+        }
+        document["hooks"] = toml_edit::table();
+    }
+    let hooks = document["hooks"]
+        .as_table_like_mut()
+        .context("hooks must be a table")?;
+    if hooks.get("disabled").is_none() {
+        if !disabled {
+            return Ok(false);
+        }
+        hooks.insert("disabled", toml_edit::value(toml_edit::Array::new()));
+    }
+    let list = hooks
+        .get_mut("disabled")
+        .and_then(toml_edit::Item::as_array_mut)
+        .context("hooks.disabled must be an array")?;
+    let present = list.iter().any(|value| value.as_str() == Some(name));
+    if present == disabled {
+        return Ok(false);
+    }
+    if disabled {
+        list.push(name);
+    } else {
+        list.retain(|value| value.as_str() != Some(name));
+    }
+    zhuye_fs::write_atomic(&path, document.to_string().as_bytes())
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(true)
 }

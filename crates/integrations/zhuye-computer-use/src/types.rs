@@ -38,6 +38,76 @@ pub enum ComputerUseAction {
     Scroll { dx: i32, dy: i32 },
 }
 
+impl ComputerUseAction {
+    /// 在访问桌面前拒绝无法明确解释的鼠标按钮和按键。
+    pub fn validate(&self) -> Result<(), MediaError> {
+        match self {
+            Self::MouseClick { button, .. } => {
+                if !matches!(
+                    button.to_ascii_lowercase().as_str(),
+                    "left" | "l" | "right" | "r" | "middle" | "m"
+                ) {
+                    return Err(MediaError::Other {
+                        message: format!("无效鼠标按钮: {button:?}"),
+                    });
+                }
+            }
+            Self::KeyCombo { keys } => {
+                for part in keys.split('+') {
+                    let key = part.trim();
+                    let name = key.to_ascii_lowercase();
+                    let named = matches!(
+                        name.as_str(),
+                        "ctrl"
+                            | "control"
+                            | "shift"
+                            | "alt"
+                            | "option"
+                            | "cmd"
+                            | "command"
+                            | "meta"
+                            | "super"
+                            | "enter"
+                            | "return"
+                            | "tab"
+                            | "esc"
+                            | "escape"
+                            | "backspace"
+                            | "space"
+                            | "left"
+                            | "right"
+                            | "up"
+                            | "down"
+                            | "home"
+                            | "end"
+                            | "delete"
+                            | "del"
+                            | "f1"
+                            | "f2"
+                            | "f3"
+                            | "f4"
+                            | "f5"
+                            | "f6"
+                            | "f7"
+                            | "f8"
+                            | "f9"
+                            | "f10"
+                            | "f11"
+                            | "f12"
+                    );
+                    if !named && (key.chars().count() != 1 || key.chars().any(char::is_control)) {
+                        return Err(MediaError::Other {
+                            message: format!("无效组合键: {keys:?}"),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 fn default_button() -> String {
     "left".into()
 }

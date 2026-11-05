@@ -39,9 +39,8 @@
 //!
 //! ## 读取方式
 //!
-//! 直接只读打开运行中的库会与 WAL 冲突,因此先把 `db.sqlite`(连带
-//! `-wal` / `-shm`)拷进进程临时目录,再以 `SQLITE_OPEN_READ_ONLY` 打开
-//! 副本,读完全目录清理。
+//! 以只读连接打开源库,通过 SQLite 在线备份生成一致快照,再以
+//! `SQLITE_OPEN_READ_ONLY` 打开临时副本;备份包含已提交的 WAL 内容。
 
 use std::path::{Path, PathBuf};
 
@@ -396,12 +395,9 @@ fn ms_to_utc(ms: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_millis_opt(ms).single()
 }
 
-/// 把 SQLite 库(含 WAL/SHM)拷进一次性临时目录的 RAII 守卫。
-///
-/// 运行中的 ZCode 以 WAL 模式实时写主库,直接只读打开可能撞上半检查点
-/// 状态;拷贝三件套到临时目录后打开副本,读完全目录清理(清理失败仅告警)。
+/// 通过 SQLite 在线备份生成只读快照,临时目录随守卫清理。
 struct TempDbCopy {
-    dir: PathBuf,
+    _dir: tempfile::TempDir,
     db_copy: PathBuf,
 }
 
@@ -413,21 +409,34 @@ impl TempDbCopy {
                 src.display()
             )));
         }
-        let dir = std::env::temp_dir().join(format!(
-            "zhuye-import-{}-{}",
-            std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        std::fs::create_dir_all(&dir)?;
-        let db_copy = dir.join("db.sqlite");
-        std::fs::copy(src, &db_copy)?;
-        for suffix in ["-wal", "-shm"] {
-            let side = PathBuf::from(format!("{}{suffix}", src.display()));
-            if side.exists() {
-                let _ = std::fs::copy(&side, dir.join(format!("db.sqlite{suffix}")));
+        let dir = tempfile::Builder::new().prefix("zhuye-import-").tempdir()?;
+        let db_copy = dir.path().join("db.sqlite");
+        let source = Connection::open_with_flags(src, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        source.busy_timeout(std::time::Duration::from_millis(100))?;
+        let mut destination = Connection::open(&db_copy)?;
+        {
+            use rusqlite::backup::{Backup, StepResult};
+            let backup = Backup::new(&source, &mut destination)?;
+            let mut busy_since = None;
+            loop {
+                match backup.step(128)? {
+                    StepResult::Done => break,
+                    StepResult::More => busy_since = None,
+                    StepResult::Busy | StepResult::Locked => {
+                        let since = busy_since.get_or_insert_with(std::time::Instant::now);
+                        if since.elapsed() >= std::time::Duration::from_secs(5) {
+                            return Err(ImportError::Other(
+                                "ZCode 数据库繁忙,无法生成一致快照".into(),
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    _ => return Err(ImportError::Other("SQLite 备份返回未知状态".into())),
+                }
             }
         }
-        Ok(Self { dir, db_copy })
+        drop(destination);
+        Ok(Self { _dir: dir, db_copy })
     }
 
     fn open(&self) -> Result<Connection, ImportError> {
@@ -435,14 +444,6 @@ impl TempDbCopy {
             &self.db_copy,
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?)
-    }
-}
-
-impl Drop for TempDbCopy {
-    fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_dir_all(&self.dir) {
-            tracing::warn!("清理临时 SQLite 副本失败({e}):{}", self.dir.display());
-        }
     }
 }
 
@@ -643,6 +644,38 @@ mod tests {
             &ImportOptions::default(),
         );
         assert!(matches!(missing, Err(ImportError::Other(_))));
+    }
+
+    #[test]
+    fn online_snapshot_reads_committed_wal_without_uncommitted_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal.sqlite");
+        let source = Connection::open(&path).unwrap();
+        source.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE sample(value TEXT); INSERT INTO sample VALUES ('committed'); BEGIN IMMEDIATE; INSERT INTO sample VALUES ('uncommitted');").unwrap();
+        assert!(PathBuf::from(format!("{}-wal", path.display())).exists());
+        let snapshot = TempDbCopy::new(&path).unwrap();
+        let copy = snapshot.open().unwrap();
+        let mut statement = copy
+            .prepare("SELECT value FROM sample ORDER BY value")
+            .unwrap();
+        let values: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(values, vec!["committed"]);
+        assert!(
+            copy.execute("INSERT INTO sample VALUES ('write')", [])
+                .is_err()
+        );
+        source.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            source
+                .query_row("SELECT count(*) FROM sample", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     /// discover:列出全部会话(按时间倒序)。

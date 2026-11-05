@@ -69,25 +69,59 @@ impl LspTool {
 
     /// 把 `file_path`(可能相对或绝对)按 workspace 锚定,跑 sandbox 校验。
     ///
-    /// 优先 `resolve_sandbox_path`(canonicalize + prefix);失败(文件尚未
-    /// 存在)走 fallback:用 `Path::components` 解析 `..` 后再 prefix
-    /// 比对,这样 `/ws/foo/../etc/passwd` 会被识别为逃逸。
+    /// 已存在的部分必须先解析符号链接；不存在的尾部按路径组件规整。
     fn resolve_path(workspace: &std::path::Path, file_path: &str) -> Result<PathBuf, ToolError> {
         let p = std::path::Path::new(file_path);
-        let abs = if p.is_absolute() {
+        let mut abs = if p.is_absolute() {
             p.to_path_buf()
         } else {
             workspace.join(p)
         };
-        // 优先 canonicalize(已存在的文件 → 走完整 sandbox 检查)。
-        if let Ok(p) = zhuye_tools::sandbox::resolve_sandbox_path(workspace, &abs) {
-            return Ok(p);
-        }
-        // fallback:把 `..` 解析成实际路径,再 strip_prefix。
-        let normalized = normalize_path(&abs);
-        match normalized.strip_prefix(workspace) {
-            Ok(rel) => Ok(workspace.join(rel)),
-            Err(_) => Err(ToolError::PathEscape { path: abs }),
+        let root = workspace
+            .canonicalize()
+            .map_err(|e| ToolError::Io(e.to_string()))?;
+        let mut ancestor = abs.clone();
+        loop {
+            match ancestor.canonicalize() {
+                Ok(resolved) => {
+                    if !resolved.starts_with(&root) {
+                        return Err(ToolError::PathEscape { path: abs });
+                    }
+                    let tail = abs
+                        .strip_prefix(&ancestor)
+                        .map_err(|e| ToolError::Io(e.to_string()))?;
+                    let has_parent = tail
+                        .components()
+                        .any(|part| part == std::path::Component::ParentDir);
+                    let candidate = normalize_path(&resolved.join(tail));
+                    if !candidate.starts_with(&root) {
+                        return Err(ToolError::PathEscape { path: abs });
+                    }
+                    if has_parent {
+                        // 规整可能暴露新的符号链接，必须重新检查所有已有祖先。
+                        abs = candidate;
+                        ancestor = abs.clone();
+                        continue;
+                    }
+                    return Ok(candidate);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // 悬空链接可能将来指向外部，不能按普通缺失路径放行。
+                    match std::fs::symlink_metadata(&ancestor) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {
+                            return Err(ToolError::PathEscape { path: abs });
+                        }
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(ToolError::Io(error.to_string())),
+                    }
+                    ancestor = ancestor
+                        .parent()
+                        .ok_or_else(|| ToolError::PathEscape { path: abs.clone() })?
+                        .to_path_buf();
+                }
+                Err(error) => return Err(ToolError::Io(error.to_string())),
+            }
         }
     }
 }
@@ -203,8 +237,16 @@ impl Tool for LspTool {
         let uri = path_to_uri(&abs).map_err(|e| ToolError::InvalidArgs {
             message: format!("lsp: cannot convert path to URI: {e}"),
         })?;
+        let pinned = zhuye_tools::sandbox::open_readonly(&abs)
+            .map_err(|error| ToolError::Io(error.to_string()))?;
+        let file = tokio::fs::File::from_std(
+            pinned
+                .file
+                .try_clone()
+                .map_err(|error| ToolError::Io(error.to_string()))?,
+        );
         client
-            .ensure_open(&abs, &uri, &route.language_id)
+            .ensure_open_file(file, &uri, &route.language_id)
             .await
             .map_err(|e| match e {
                 crate::error::LspError::Spawn(io) => ToolError::Io(io.to_string()),
@@ -224,6 +266,8 @@ impl Tool for LspTool {
             parsed.include_declaration,
         )
         .await;
+        // Windows 必须保持目录句柄到 LSP 请求结束，防止路径被替换。
+        drop(pinned);
         // 6. 包成 ToolOutput。
         match result {
             Ok(value) => Ok(ToolOutput {
@@ -344,7 +388,7 @@ fn path_to_uri(path: &std::path::Path) -> Result<Uri, String> {
 ///
 /// `Path::components` 返回 `Component::ParentDir` 表示 `..`,我们
 /// 在栈上模拟"前一个 normal 组件"——遇到 `..` 时弹栈;最后重建。
-/// 这是 `Path::canonicalize` 的纯函数版(不依赖 fs,文件存在与否都行)。
+/// 不解析符号链接；调用前必须先验证已有祖先的真实路径。
 fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
     use std::path::{Component, PathBuf};
     // 用字符串拼接而非 PathBuf::push 重建:Windows 上对 "C:"(盘符前缀、
@@ -360,7 +404,7 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
             Component::CurDir => {}
             Component::ParentDir => {
                 // 如果栈顶是 normal 组件就弹出;否则保留 `..`。
-                if !parts.is_empty() {
+                if parts.last().is_some_and(|part| part != "..") {
                     parts.pop();
                 } else if !absolute {
                     parts.push("..".into());
@@ -390,6 +434,18 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn normalize_preserves_unmatched_parent_components() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("../../file.rs")),
+            std::path::Path::new("../../file.rs")
+        );
+        assert_eq!(
+            normalize_path(std::path::Path::new("../dir/../file.rs")),
+            std::path::Path::new("../file.rs")
+        );
+    }
+
+    #[test]
     fn resolve_path_absolute_outside_workspace_errors() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path();
@@ -399,12 +455,67 @@ mod tests {
         assert!(matches!(r, Err(ToolError::PathEscape { .. })));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_existing_and_missing_files_under_outside_symlink() {
+        use std::os::unix::fs::symlink;
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), "secret").unwrap();
+        symlink(outside.path(), workspace.path().join("link")).unwrap();
+        for path in [
+            "link/secret.rs",
+            "link/missing.rs",
+            "absent/../link/secret.rs",
+        ] {
+            assert!(
+                matches!(
+                    LspTool::resolve_path(workspace.path(), path),
+                    Err(ToolError::PathEscape { .. })
+                ),
+                "outside symlink accepted: {path}"
+            );
+        }
+        symlink(
+            outside.path().join("not-created"),
+            workspace.path().join("dangling"),
+        )
+        .unwrap();
+        assert!(matches!(
+            LspTool::resolve_path(workspace.path(), "dangling/file.rs"),
+            Err(ToolError::PathEscape { .. })
+        ));
+        assert!(matches!(
+            LspTool::resolve_path(workspace.path(), "absent/../dangling/file.rs"),
+            Err(ToolError::PathEscape { .. })
+        ));
+        std::fs::create_dir(workspace.path().join("inside")).unwrap();
+        symlink(
+            workspace.path().join("inside"),
+            workspace.path().join("local"),
+        )
+        .unwrap();
+        let local = LspTool::resolve_path(workspace.path(), "local/missing.rs").unwrap();
+        assert_eq!(
+            local,
+            workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("inside/missing.rs")
+        );
+        assert_eq!(
+            LspTool::resolve_path(workspace.path(), "absent/../local/missing.rs").unwrap(),
+            local
+        );
+    }
+
     #[test]
     fn resolve_path_relative_joins_workspace() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path();
         let r = LspTool::resolve_path(ws, "src/main.rs").unwrap();
-        assert_eq!(r, ws.join("src/main.rs"));
+        assert_eq!(r, ws.canonicalize().unwrap().join("src/main.rs"));
     }
 
     #[test]

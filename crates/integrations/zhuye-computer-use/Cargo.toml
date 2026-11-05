@@ -6,6 +6,7 @@ license.workspace = true
 description = "ZhuYe: Computer Use 抽象层(截屏 / 鼠标 / 键盘;plugins/computer-use 的能力本体)"
 
 [dependencies]
+base64 = "0.22"
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 thiserror          = { workspace = true }
