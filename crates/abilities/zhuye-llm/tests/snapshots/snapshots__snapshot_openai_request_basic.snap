@@ -1,5 +1,5 @@
 ---
-source: crates/zhuye-llm/tests/snapshots.rs
+source: crates/abilities/zhuye-llm/tests/snapshots.rs
 expression: v
 ---
 max_tokens: 256
@@ -9,3 +9,5 @@ messages:
 model: gpt-4o
 reasoning_effort: medium
 stream: true
+stream_options:
+  include_usage: true

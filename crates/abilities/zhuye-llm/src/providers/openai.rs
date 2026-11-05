@@ -608,7 +608,9 @@ impl From<ChatRequest> for OpenAIRequest {
             top_p: req.top_p,
             stop: req.stop,
             stream: true,
-            stream_options: StreamOptions { include_usage: true },
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
             reasoning_effort,
             response_format: req.response_format.as_ref().map(openai_response_format),
         }
@@ -1169,7 +1171,8 @@ mod tests {
             "出站请求应为流式;got: {v}"
         );
         assert_eq!(
-            v.pointer("/stream_options/include_usage").and_then(Value::as_bool),
+            v.pointer("/stream_options/include_usage")
+                .and_then(Value::as_bool),
             Some(true),
             "流式请求必须带 stream_options.include_usage,否则服务端不下发 usage;got: {v}"
         );
