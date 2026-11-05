@@ -1,0 +1,16 @@
+# Git 工作流插件 —— 分支/PR 探测 + checkpoint 快照 + Stop 自动 checkpoint。
+#
+# 使用前必须先构建二进制(装插件 = 授权任意代码执行):
+#   ./scripts/build_git_tools_plugin.sh
+#   zhuye plugin install plugins/git-tools --scope user
+#   zhuye plugin enable git-tools@inline
+#
+# hooks.json 挂了 Stop 自动 checkpoint(可选;hook 永远退出 0 —— 失败
+# 不拦截 turn,详情见 stderr)。
+name = "git-tools"
+version = "0.1.0"
+description = "git 工作流:分支/PR/diff 统计探测(gh CLI)、checkpoint 快照(可 rewind)、Stop 自动 checkpoint"
+keywords = ["git", "checkpoint", "pr"]
+commands = "./commands"
+mcp_servers = "./.mcp.json"
+hooks = "./hooks/hooks.json"

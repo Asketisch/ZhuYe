@@ -299,20 +299,29 @@ async fn sandbox_policy_os_forces_seatbelt_per_turn() {
     let _g = LOCK.lock().unwrap();
     let prior_on = std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok();
     let prior_strict = std::env::var("ZHUYE_SANDBOX_STRICT").ok();
+    // v1.9 S2:模型来源命令默认强制沙箱(env 关沙箱也无效)。本测试要
+    // 验证「关沙箱时真的裸跑」这条对照路径,必须显式打开独立逃生口。
+    let prior_bare = std::env::var("ZHUYE_UNTRUSTED_ALLOW_BARE").ok();
     unsafe {
         std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", "0");
         std::env::set_var("ZHUYE_SANDBOX_STRICT", "0");
+        std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", "1");
     }
-    let restore = |prior_on: Option<String>, prior_strict: Option<String>| {
-        match prior_on {
-            Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", p) },
-            None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_OS_LEVEL") },
-        }
-        match prior_strict {
-            Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_STRICT", p) },
-            None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_STRICT") },
-        }
-    };
+    let restore =
+        |prior_on: Option<String>, prior_strict: Option<String>, prior_bare: Option<String>| {
+            match prior_on {
+                Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", p) },
+                None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_OS_LEVEL") },
+            }
+            match prior_strict {
+                Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_STRICT", p) },
+                None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_STRICT") },
+            }
+            match prior_bare {
+                Some(p) => unsafe { std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", p) },
+                None => unsafe { std::env::remove_var("ZHUYE_UNTRUSTED_ALLOW_BARE") },
+            }
+        };
 
     // Seatbelt 放行 workspace+tmp;$HOME 用户可写但不在放行清单 ——
     // 正好区分「无沙箱可写」与「有沙箱拒写」。
@@ -345,7 +354,8 @@ async fn sandbox_policy_os_forces_seatbelt_per_turn() {
     });
     let thread = build_thread(client);
 
-    // turn1:无覆盖(env 已关)→ 无沙箱 → 写成功。
+    // turn1:无覆盖(env 已关 + 显式 bare 豁免)→ 无沙箱 → 写成功。
+    // (S2 后模型命令默认强制沙箱;此处裸跑是显式逃生口语义。)
     let mut h1 = thread
         .submit(sub_with_settings(
             "s1",
@@ -382,7 +392,7 @@ async fn sandbox_policy_os_forces_seatbelt_per_turn() {
         .submit(sub_with_settings("s2", "再写系统目录", settings))
         .await;
     let ev2 = drain_until_terminal(&mut h2).await;
-    restore(prior_on, prior_strict);
+    restore(prior_on, prior_strict, prior_bare);
 
     let t2 = ev2
         .iter()

@@ -49,6 +49,7 @@ pub mod builder;
 pub mod discovery;
 pub mod error;
 pub mod load;
+pub mod paths;
 pub mod schema;
 pub mod watch;
 
@@ -63,6 +64,10 @@ pub use discovery::{
 };
 pub use error::ConfigError;
 pub use load::{default_config_path, load_default, load_from_file, load_from_str};
+pub use paths::{
+    data_dir, data_path, data_path_or_relative, project_data_dir, project_data_path,
+    resolve_data_dir,
+};
 pub use schema::{
     ACP_DEFAULT_BIND, AcpSection, ActiveSection, AnalyticsSection, AnthropicSection,
     AskUserQuestionSection, BridgeSection, CompactSection, ContextWindowsSection,

@@ -14,6 +14,26 @@
 //!
 //! `tokio::select!` 集成 cancel:token 触发 cancel 时短路等待并返回
 //! `ReviewDecision::Deny`。
+//!
+//! ## v1.9 S6+S7:fail-closed 不变量(与 buzz 对齐)
+//!
+//! 审批门的所有"拿不到人工决策"的路径**一律 Deny**,不存在
+//! "默认放行"的分支:
+//!
+//! 1. **线断即拒**:event channel 关闭 / oneshot 对端 drop → Deny。
+//! 2. **abort-safe 租约**:等待方 future 被 drop(cancel / panic /
+//!    abort)时,`WaiterLease` 的 Drop 保证 waiter 条目从 map 清除,
+//!    不留悬挂条目(否则占挂起名额 + complete 打到死条目)。
+//! 3. **全局挂起上限**:`MAX_PENDING_APPROVALS`,超限直接 Deny
+//!    (fail-closed),不让 waiter map 无界增长。
+//! 4. **共享绝对死线(S6 审批超时)**:gate 构造时确定
+//!    `created_at + approval_ttl` 一个**绝对**死线,本 turn 全部
+//!    挂起审批共享;到点统一过期 → Deny(`expire_pending_approvals`
+//!    供 submission_loop 周期清扫,等待侧 select 死线兜底)。
+//!    过期即裁决,裁决即 Deny —— **过期后的审批不可能再被执行**。
+//!
+//! 默认 TTL 5 分钟(人类响应审批的合理上限);`without_approval_ttl()`
+//! 显式关闭(headless 全自动流水线等场景)。
 
 mod gate;
 
@@ -30,6 +50,22 @@ pub use gate::ApprovalGate;
 
 /// 待处理审批的 `request_id` → oneshot waiter 映射。
 pub type ApprovalWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<ReviewDecision>>>>;
+
+/// v1.9 S7:全局挂起审批上限。超过即对**新请求**直接 Deny(fail-closed)。
+/// 64 远超人能处理的并发 modal 数,又能在 UI 客户端失联/死循环时熔断。
+pub const MAX_PENDING_APPROVALS: usize = 64;
+
+/// v1.9 S6:默认审批 TTL(秒)。gate 构造起算,本 turn 全部挂起审批
+/// 共享同一绝对死线。
+pub const DEFAULT_APPROVAL_TTL_SECS: u64 = 300;
+
+/// S6 统一过期原因串。裁决可见:客户端收到的是带该原因的 Deny。
+pub(crate) fn expired_reason() -> String {
+    format!(
+        "approval expired: no human decision within TTL ({}s); fail-closed deny",
+        DEFAULT_APPROVAL_TTL_SECS
+    )
+}
 
 /// 待处理 ask-user-question 的 `request_id` → oneshot waiter,负责把
 /// 结构化的 `AskUserAnswer` 送回 `AskUserQuestionTool::execute`。

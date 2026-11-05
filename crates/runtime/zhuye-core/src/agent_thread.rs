@@ -97,6 +97,7 @@ impl AgentThread {
         // 能读到运行时 `/mode` 切换后的实时模式。与 `ApprovalGate` 持有的句柄
         // 同源(cfg.permission_mode),保证 hook 与 gate 决策一致。
         tools_queue.set_session_permission_mode(cfg.permission_mode.clone());
+        tools_queue.set_permission_resolver(cfg.permission_resolver.clone());
         let tools_queue = Arc::new(tools_queue);
 
         // 启动 submission_loop(它持有 sub_rx 与扇出句柄)。

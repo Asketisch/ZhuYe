@@ -20,12 +20,11 @@ pub fn session_path_at(base: &Path, session_id: ThreadId, at: DateTime<Utc>) -> 
         .join(format!("{}.jsonl", session_id))
 }
 
-/// 默认 base 目录:`$HOME/.zhuye/sessions`。
+/// 默认 base 目录:`$ZHUYE_HOME/sessions`，未设置时为 `$HOME/.zhuye/sessions`。
 pub fn default_base() -> PathBuf {
-    match std::env::var_os("HOME") {
-        Some(home) => PathBuf::from(home).join(DEFAULT_ROLLOUT_DIR),
-        None => PathBuf::from(DEFAULT_ROLLOUT_DIR),
-    }
+    zhuye_fs::data_dir()
+        .map(|dir| dir.join("sessions"))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_ROLLOUT_DIR))
 }
 
 #[cfg(test)]
@@ -47,8 +46,11 @@ mod tests {
     }
 
     #[test]
-    fn default_base_uses_home_env() {
+    fn default_base_uses_data_directory() {
         let p = default_base();
-        assert!(p.ends_with(DEFAULT_ROLLOUT_DIR), "got {p:?}");
+        let expected = zhuye_fs::data_dir()
+            .map(|dir| dir.join("sessions"))
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_ROLLOUT_DIR));
+        assert_eq!(p, expected);
     }
 }

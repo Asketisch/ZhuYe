@@ -1,0 +1,7 @@
+{
+  "importer": {
+    "command": "${PLUGIN_ROOT}/bin/zhuye-import",
+    "args": ["mcp"],
+    "timeout_secs": 300
+  }
+}

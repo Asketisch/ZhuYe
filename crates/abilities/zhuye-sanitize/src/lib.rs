@@ -17,16 +17,27 @@
 //!
 //! ## 默认 pattern(详见 [`default_patterns`])
 //!
-//! 1. `KEY_ASSIGN` —— `KEY=value` / `password: xxx` 类赋值
-//! 2. `BEARER_TOKEN` —— HTTP `Authorization: Bearer xxx`
-//! 3. `AWS_ACCESS_KEY` —— `AKIA*` / `ASIA*` 16-char 标识
-//! 4. `OPENAI_KEY` —— `sk-...` 20+ 字符
-//! 5. `GITHUB_TOKEN` —— `ghp_*` / `gho_*` / `ghs_*` / `ghr_*` / `ghu_*`
-//! 6. `ANTHROPIC_KEY` —— `sk-ant-...` 20+ 字符
-//! 7. `PRIVATE_KEY_BLOCK` —— `-----BEGIN ... PRIVATE KEY-----` 整块
-//! 8. `JWT` —— `eyJ*.eyJ*.*` 三段 base64url
-//! 9. `DB_URL` —— `postgres://...` / `mongodb://...` 等连接串
-//! 10. `SLACK_TOKEN` —— `xox[abprs]-...`
+//! 顺序即匹配顺序,与 [`default_patterns`] 的返回顺序一致:
+//!
+//! 1. `AWS_ACCESS_KEY` —— `AKIA*` / `ASIA*` 16-char 标识
+//! 2. `ANTHROPIC_KEY` —— `sk-ant-...` 20+ 字符
+//! 3. `OPENAI_KEY` —— `sk-...` 20+ 字符
+//! 4. `GITHUB_TOKEN` —— `ghp_*` / `gho_*` / `ghs_*` / `ghr_*` / `ghu_*`
+//! 5. `PRIVATE_KEY_BLOCK` —— `-----BEGIN ... PRIVATE KEY-----` 整块
+//! 6. `JWT` —— `eyJ*.eyJ*.*` 三段 base64url
+//! 7. `DB_URL` —— `postgres://...` / `mongodb://...` 等连接串
+//! 8. `SLACK_TOKEN` —— `xox[abprs]-...`
+//! 9. `BEARER_TOKEN` —— HTTP `Authorization: Bearer xxx`
+//! 10. `KEY_ASSIGN` —— `KEY=value` / `password: xxx` 类赋值
+//!
+//! 具体 provider pattern 必须排在 `KEY_ASSIGN` 之前,否则赋值形态会把
+//! 它们整段吞掉。
+//!
+//! ## 输入侧提示注入检测(v1.9)
+//!
+//! [`prompt_guard`] 模块与输出脱敏互补:不可信文本进入模型上下文
+//! **之前**扫描,Allow/Block/Review 三档裁决 + SHA-256 指纹 +
+//! 工具定义扫描。详见 [`prompt_guard`] 模块文档。
 //!
 //! ## 幂等性
 //!
@@ -37,6 +48,8 @@
 
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
+
+pub mod prompt_guard;
 
 /// 默认脱敏 marker。与 `zhuye_tools::sanitize::DEFAULT_MARKER` 对齐。
 pub const DEFAULT_MARKER: &str = "[REDACTED]";

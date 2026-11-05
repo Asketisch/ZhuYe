@@ -25,7 +25,9 @@ pub mod background_tasks;
 pub mod config;
 pub mod eval;
 pub mod graph;
+pub mod poisoned;
 pub mod resume;
+pub mod side_channel;
 pub mod steering_queue;
 pub mod subagent_registry;
 pub mod submission_loop;
@@ -39,6 +41,14 @@ pub use background_tasks::{
 pub use config::AgentConfig;
 pub use eval::{
     EvalExpectations, EvalOp, EvalReport, EvalScenario, FinalStatus, run_all, run_scenario,
+};
+pub use poisoned::{
+    PoisonClass, PoisonConfig, PoisonDetector, PoisonSnapshot, PoisonVerdict, TurnEvidence,
+};
+pub use side_channel::{
+    MAX_CONCURRENT as SIDE_CHANNEL_MAX_CONCURRENT, SideChannelDriver, SideChannelEvent,
+    SideChannelId, SideChannelInfo, SideChannelRegistry, SideChannelStartError, SideChannelStatus,
+    SideThreadFactory,
 };
 pub use steering_queue::{SteeringMessage, SteeringPriority, SteeringQueue};
 pub use subagent_registry::SubagentRuntimeRegistry;

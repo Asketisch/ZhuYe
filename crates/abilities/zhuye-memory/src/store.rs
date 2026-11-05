@@ -12,7 +12,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::model::{MemoryError, MemoryScope};
-use crate::scope::{MAX_MEMORY_INJECT_CHARS, resolve_path};
+use crate::scope::{MAX_MEMORY_INJECT_CHARS, resolve_path_with_data_dir};
 
 /// 抽象 memory store。实现可持久化到磁盘、内存或两者。
 /// 线程安全(`Send + Sync`)。
@@ -81,20 +81,34 @@ pub(crate) fn full_combined(non_empty: Vec<(MemoryScope, String)>) -> Result<Str
 #[derive(Debug, Clone)]
 pub struct FileMemoryStore {
     workspace: PathBuf,
-    home: PathBuf,
+    user_data_dir: PathBuf,
 }
 
 impl FileMemoryStore {
-    /// 新建 store。`home` 为 `None` 时默认 `$HOME`。
+    /// 以主目录新建 store，用户记忆存放在其 `.zhuye` 子目录。
     pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
+        let home: PathBuf = home.into();
+        Self::with_user_data_dir(workspace, home.join(".zhuye"))
+    }
+
+    /// 以显式用户数据目录新建 store，适用于自定义 `ZHUYE_HOME`。
+    pub fn with_user_data_dir(
+        workspace: impl Into<PathBuf>,
+        user_data_dir: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             workspace: workspace.into(),
-            home: home.into(),
+            user_data_dir: user_data_dir.into(),
         }
     }
 
-    fn path(&self, scope: MemoryScope, agent_type: &str) -> Result<PathBuf, MemoryError> {
-        resolve_path(scope, &self.workspace, &self.home, agent_type)
+    /// `(scope, agent_type)` 的 MEMORY.md 路径。条目级编辑(edit 模块)复用。
+    pub(crate) fn path(
+        &self,
+        scope: MemoryScope,
+        agent_type: &str,
+    ) -> Result<PathBuf, MemoryError> {
+        resolve_path_with_data_dir(scope, &self.workspace, &self.user_data_dir, agent_type)
     }
 }
 
@@ -131,7 +145,7 @@ impl MemoryStore for FileMemoryStore {
         }
         let root = match scope {
             MemoryScope::Project => self.workspace.join(".zhuye").join("agent-memory"),
-            MemoryScope::User => self.home.join(".zhuye").join("agent-memory"),
+            MemoryScope::User => self.user_data_dir.join("agent-memory"),
             MemoryScope::Session => unreachable!("guarded above"),
         };
         if !root.exists() {
@@ -313,6 +327,36 @@ pub fn truncate_for_injection(s: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn explicit_data_directory_is_used_only_for_user_memory() {
+        let workspace = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let store = FileMemoryStore::with_user_data_dir(workspace.path(), data.path());
+        store
+            .save(MemoryScope::User, "default", "用户记忆")
+            .unwrap();
+        store
+            .save(MemoryScope::Project, "default", "项目记忆")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(data.path().join("agent-memory/default/MEMORY.md")).unwrap(),
+            "用户记忆"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                workspace
+                    .path()
+                    .join(".zhuye/agent-memory/default/MEMORY.md")
+            )
+            .unwrap(),
+            "项目记忆"
+        );
+        assert_eq!(
+            store.list_agent_types(MemoryScope::User).unwrap(),
+            vec!["default"]
+        );
+    }
 
     #[test]
     fn file_store_load_missing_returns_empty() {

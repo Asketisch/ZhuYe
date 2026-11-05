@@ -273,17 +273,14 @@ impl QuotaTracker {
     }
 
     /// v1.5 R4:配置持久化文件路径(env `ZHUYE_QUOTA_STATE` 覆盖,
-    /// 测试用;默认 `~/.zhuye/quota-state.json`)。
+    /// 测试用;默认用户数据目录下的 `quota-state.json`)。
     fn state_path() -> Option<std::path::PathBuf> {
         if let Ok(p) = std::env::var("ZHUYE_QUOTA_STATE") {
             if !p.is_empty() {
                 return Some(std::path::PathBuf::from(p));
             }
         }
-        std::env::var("HOME")
-            .ok()
-            .filter(|h| !h.is_empty())
-            .map(|h| std::path::PathBuf::from(h).join(".zhuye/quota-state.json"))
+        zhuye_fs::data_dir().map(|dir| dir.join("quota-state.json"))
     }
 
     /// v1.5 R4:把当前窗口状态写到持久化文件(原子写:临时文件 + rename)。

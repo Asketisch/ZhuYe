@@ -76,6 +76,24 @@ def test_R1_resume_按thread_id恢复会话(serve_session, mock_script, sandbox)
     assert "第二轮" in blob, "resume 后新消息应已落盘"
 
 
+def test_R6_resume后侧通道可运行(serve_session, mock_script, sandbox) -> None:
+    """恢复的 serve 会话仍能启动侧通道并收到全局完成事件。"""
+    script = mock_script(['{"type":"text","text":"first"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        session.submit({"type": "user_input", "items": [{"type": "text", "text": "初始回合"}]}, timeout=DRAIN_TIMEOUT)
+    time.sleep(0.8)
+    tid = rollout_thread_id(sandbox.home)
+    script = mock_script(['{"type":"text","text":"resumed-side"}'])
+    with serve_session(args=["--resume", tid], env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        events = session.submit({"type": "start_side_channel", "agent": "default", "prompt": "侧通道"})
+        started = first_event(events, "side_channel_started")
+        assert started is not None, msg_types(events)
+        sid = started["msg"]["id"]
+        finished = session.wait_global(lambda event: event.get("msg", {}).get("type") == "side_channel_finished" and event["msg"].get("id") == sid, timeout=30)
+        assert finished["msg"]["kind"] == "done", finished
+        assert finished["msg"]["summary"] == "resumed-side", finished
+
+
 def test_R2_continue_last_续最近会话(serve_session, mock_script, sandbox) -> None:
     """`zhuye serve -c` → 续最近一次会话。"""
     require_binary()

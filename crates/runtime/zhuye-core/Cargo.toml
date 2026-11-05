@@ -35,6 +35,8 @@ tracing            = { workspace = true }
 uuid               = { workspace = true }
 anyhow             = { workspace = true }
 chrono             = { workspace = true }
+# v1.9 C3:中毒会话判定的输出指纹(SHA-256,与 prompt_guard/audit 同算法)。
+sha2               = { workspace = true }
 
 [dev-dependencies]
 async-stream = "0.3"

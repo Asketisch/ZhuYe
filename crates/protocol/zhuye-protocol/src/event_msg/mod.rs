@@ -23,6 +23,7 @@ mod mcp;
 mod plan;
 mod plugin;
 mod routing;
+mod side_channel;
 mod subagent;
 mod tool;
 mod turn;
@@ -44,6 +45,9 @@ pub use plan::{
 };
 pub use plugin::{PluginLoadedEvent, QuotaExhaustedEvent};
 pub use routing::{RoutingEvent, RoutingEventKind};
+pub use side_channel::{
+    SideChannelEvent, SideChannelInfo, SideChannelStatusMirror, SideChannelStatusSnapshot,
+};
 pub use subagent::{
     SubagentProgressEvent, SubagentProgressKind, SubagentRunStateMirror, SubagentStatusEvent,
     SubagentStatusSnapshot,
@@ -106,6 +110,12 @@ pub enum EventMsg {
     // 子代理可观测(2;v1.4 C1)—— 进度推送 + 状态查询应答
     /// 子代理中间进度(父级 CallSubAgentTool 转发:助手文本 / 工具开始 / 结束)。
     SubagentProgress(SubagentProgressEvent),
+    /// v1.x:side-channel 已启动(见 `Op::StartSideChannel`)。
+    SideChannelStarted(SideChannelEvent),
+    /// v1.x:side-channel 终态(Done / Cancelled / Error)。
+    SideChannelFinished(SideChannelEvent),
+    /// v1.x:side-channel 查询应答(见 `Op::QuerySideChannels`)。
+    SideChannelStatus(SideChannelStatusSnapshot),
     /// `Op::QuerySubagents` 的状态快照应答。
     SubagentStatus(SubagentStatusEvent),
 
@@ -253,6 +263,9 @@ impl EventMsg {
             EventMsg::ToolCallEnd(_) => "tool_call_end",
             EventMsg::ToolCallOutputDelta(_) => "tool_call_output_delta",
             EventMsg::SubagentProgress(_) => "subagent_progress",
+            EventMsg::SideChannelStarted(_) => "side_channel_started",
+            EventMsg::SideChannelFinished(_) => "side_channel_finished",
+            EventMsg::SideChannelStatus(_) => "side_channel_status",
             EventMsg::SubagentStatus(_) => "subagent_status",
             EventMsg::ToolExecutionRequest(_) => "tool_execution_request",
             EventMsg::ApprovalRequest(_) => "approval_request",

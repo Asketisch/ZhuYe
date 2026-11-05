@@ -431,6 +431,30 @@ fn parse_sse_event(event: &str, data: &str, state: &mut StreamState) -> Vec<Chat
             if let Some(output) = v.pointer("/usage/output_tokens").and_then(|x| x.as_u64()) {
                 state.output_tokens = output as u32;
             }
+            // 部分网关(如本地 magpie/vLLM 桥)的 `message_start.message.usage`
+            // 里 input_tokens 恒为 0,真实值在尾帧 `message_delta.usage` 才给出
+            // —— 这里覆盖采集(仅非 0 时,避免把 start 帧已读到的真值冲掉)。
+            if let Some(input) = v
+                .pointer("/usage/input_tokens")
+                .and_then(|x| x.as_u64())
+                .filter(|n| *n > 0)
+            {
+                state.input_tokens = input as u32;
+            }
+            if let Some(cached) = v
+                .pointer("/usage/cache_read_input_tokens")
+                .and_then(|x| x.as_u64())
+                .filter(|n| *n > 0)
+            {
+                state.cached_tokens = cached as u32;
+            }
+            if let Some(write) = v
+                .pointer("/usage/cache_creation_input_tokens")
+                .and_then(|x| x.as_u64())
+                .filter(|n| *n > 0)
+            {
+                state.cache_write_tokens = write as u32;
+            }
             // 采集 stop_reason;后续的 `message_stop` 事件据此区分是否被 max_tokens 截断。
             if let Some(reason) = v
                 .pointer("/delta/stop_reason")
@@ -967,6 +991,56 @@ mod tests {
         let mut state = StreamState::default();
         let evs = parse_sse_event("message_stop", "{}", &mut state);
         assert!(matches!(&evs[0], ChatEvent::MessageStop));
+    }
+
+    /// 网关(magpie/vLLM 桥)的 `message_start.message.usage.input_tokens`
+    /// 恒 0,真实 input 在尾帧 `message_delta.usage` 才给出 —— 尾帧非 0
+    /// input 必须覆盖采集,否则 anthropic 流的 input/total 计量失真。
+    #[test]
+    fn message_delta_usage_overrides_zero_input() {
+        let mut state = StreamState::default();
+        let start = serde_json::json!({
+            "type": "message_start",
+            "message": {"id": "m1", "model": "m", "usage": {"input_tokens": 0, "output_tokens": 0}}
+        });
+        parse_sse_event("message_start", &start.to_string(), &mut state);
+        let delta = serde_json::json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"input_tokens": 56, "output_tokens": 26}
+        });
+        let evs = parse_sse_event("message_delta", &delta.to_string(), &mut state);
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                ChatEvent::Usage {
+                    input_tokens: 56,
+                    output_tokens: 26,
+                    ..
+                }
+            )),
+            "尾帧 usage 应覆盖 start 帧的 0 input;got: {evs:?}"
+        );
+        // 0 值不覆盖:start 帧读到的真值不被尾帧缺省冲掉。
+        let mut state2 = StreamState::default();
+        let start2 = serde_json::json!({
+            "type": "message_start",
+            "message": {"id": "m2", "model": "m", "usage": {"input_tokens": 40, "output_tokens": 0}}
+        });
+        parse_sse_event("message_start", &start2.to_string(), &mut state2);
+        let delta2 = serde_json::json!({
+            "type": "message_delta",
+            "usage": {"output_tokens": 8}
+        });
+        let evs2 = parse_sse_event("message_delta", &delta2.to_string(), &mut state2);
+        assert!(evs2.iter().any(|e| matches!(
+            e,
+            ChatEvent::Usage {
+                input_tokens: 40,
+                output_tokens: 8,
+                ..
+            }
+        )));
     }
 
     // ── M8：cache_control 接线（wire-up）───────────────────────────────────

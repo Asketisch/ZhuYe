@@ -38,11 +38,9 @@ use zhuye_plugin::{PluginId, PluginManager};
 
 use crate::login;
 
-/// `~/.zhuye/plugins` —— `PluginManager` 默认根目录。
+/// 用户数据目录下的插件根目录，与运行时使用同一解析规则。
 fn default_plugins_root() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|h| h.join(".zhuye").join("plugins"))
+    zhuye_plugin::default_plugins_root()
 }
 
 /// `~/.zhuye/plugins/marketplaces.json` —— Phase D 的 known marketplaces 持久化点。

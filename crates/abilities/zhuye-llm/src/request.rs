@@ -200,6 +200,39 @@ pub enum ContentBlock {
     Image { data: Vec<u8>, mime_type: String },
 }
 
+// 部分 provider 的工具结果只能放文本。保持整批工具结果相邻,然后
+// 以用户图片消息提供实际图像,避免把图片丢成占位文本。
+pub(crate) fn lift_tool_images(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    fn flush(pending: &mut Vec<ContentBlock>, output: &mut Vec<ChatMessage>) {
+        if !pending.is_empty() {
+            output.push(ChatMessage::User(UserContent {
+                blocks: std::mem::take(pending),
+            }));
+        }
+    }
+    let mut output = Vec::with_capacity(messages.len());
+    let mut pending = Vec::new();
+    for mut message in messages {
+        if let ChatMessage::Tool(result) = &mut message {
+            for block in &mut result.content {
+                if let ContentBlock::Image { data, mime_type } = block {
+                    let placeholder = format!("[image: {mime_type}, {} bytes]", data.len());
+                    let image = std::mem::replace(block, ContentBlock::Text { text: placeholder });
+                    pending.push(ContentBlock::Text {
+                        text: format!("[工具调用 {} 返回的图片]", result.call_id),
+                    });
+                    pending.push(image);
+                }
+            }
+        } else {
+            flush(&mut pending, &mut output);
+        }
+        output.push(message);
+    }
+    flush(&mut pending, &mut output);
+    output
+}
+
 impl ContentBlock {
     pub fn text(s: impl Into<String>) -> Self {
         ContentBlock::Text { text: s.into() }

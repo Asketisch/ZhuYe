@@ -33,6 +33,12 @@ if [ ! -x "$ZHUYE_BIN" ]; then
     echo "── 构建 release 二进制 ──"
     cargo build --release -p zhuye-cli --quiet || exit 2
 fi
+# 会话导入二进制(I 组能力用例驱动它的直跑模式;幂等)。
+ZHUYE_IMPORT_BIN="$ROOT/target/release/zhuye-import"
+if [ ! -x "$ZHUYE_IMPORT_BIN" ]; then
+    echo "── 构建 zhuye-import ──"
+    cargo build --release -p zhuye-import --quiet || exit 2
+fi
 
 OVERALL=0
 for s in "${SUITES[@]}"; do

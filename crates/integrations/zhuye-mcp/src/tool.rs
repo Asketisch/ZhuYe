@@ -25,7 +25,7 @@ use zhuye_protocol::{
 };
 use zhuye_tools::{Tool, ToolContext};
 
-use crate::content::convert_mcp_content;
+use crate::content::convert_mcp_content_checked;
 use crate::manager::McpClientInner;
 
 /// MCP server 暴露的单个 tool 描述符,由 `list_all_tools` 缓存。
@@ -178,8 +178,8 @@ impl Tool for McpToolAdapter {
         let result = result.map_err(|e| {
             ToolError::Execution(format!("mcp call_tool({}): {e}", self.original_name))
         })?;
-        let content = convert_mcp_content(&result.content);
-        let is_error = result.is_error.unwrap_or(false);
+        let (content, invalid_content) = convert_mcp_content_checked(&result.content);
+        let is_error = result.is_error.unwrap_or(false) || invalid_content;
         // 调用完成(无论成功/业务错误)→ emit `McpToolInvoked`,
         // `call_id` 与 `ToolCallEnd.call_id` 一致,供前端配对渲染调用链。
         // 通道关闭(下游已退出)时静默丢弃。

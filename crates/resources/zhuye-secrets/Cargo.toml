@@ -1,0 +1,16 @@
+[package]
+name = "zhuye-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: 密钥加密存储(AES-256-GCM + machine key + 每条目 HKDF 派生)"
+
+[dependencies]
+aes-gcm     = { workspace = true }
+chrono      = { workspace = true }
+hkdf        = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sha2        = { workspace = true }
+thiserror   = { workspace = true }
+tempfile = "3"

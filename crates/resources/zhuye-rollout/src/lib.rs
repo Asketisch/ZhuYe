@@ -2,7 +2,8 @@
 //!
 //! `zhuye-core` 产出的每条 [`zhuye_protocol::RolloutRecord`] 都会
 //! 追加到 per-thread 文件,位于
-//! `~/.zhuye/sessions/YYYY/MM/DD/<thread_id>.jsonl`。文件大小到 256 KiB
+//! `$ZHUYE_HOME/sessions/YYYY/MM/DD/<thread_id>.jsonl`(默认数据目录为
+//! `~/.zhuye`)。文件大小到 256 KiB
 //! 时触发轮转,最多保留 3 份轮转副本。
 //!
 //! 大字符串字段截断到 16 KiB 并标记为 `[redacted]`,防止失控的工具输出
@@ -29,8 +30,11 @@ pub mod search;
 pub mod types;
 pub mod writer;
 
-pub use export::{MAX_MARKDOWN_CHARS, to_markdown};
-pub use index::{all_model_usage, session_stats};
+pub use export::{
+    MAX_MARKDOWN_CHARS, MarkdownExport, export_session_markdown, exports_dir, render_transcript,
+    render_usage_section, to_markdown,
+};
+pub use index::{all_model_usage, derive_title_from_body, resolve_display_title, session_stats};
 pub use reader::{replay, replay_path};
 pub use search::{SearchHit, SearchOptions, search_sessions};
 pub use writer::JsonlRolloutWriter;

@@ -32,6 +32,8 @@ pub struct AgentConfig {
     /// `PlanModeGate`)和 tool queue 通过 [`Self::permission_mode`]
     /// 读到最新 mode。默认 `PermissionMode::Auto`(普通执行模式)。
     pub permission_mode: Arc<RwLock<PermissionMode>>,
+    /// 侧通道审批仅读取父会话模式,不允许侧通道修改父会话状态。
+    pub inherited_approval_mode: Option<Arc<RwLock<PermissionMode>>>,
     /// 工作区根路径 —— 各工具相对该路径操作。
     ///
     /// v1.x Git worktree:`EnterWorktreeTool` / `ExitWorktreeTool` 通过
@@ -116,7 +118,8 @@ pub struct AgentConfig {
     pub telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
     /// v1.2 P1:目标模式 controller(参考 zcode `/goal` 设计)。
     /// `None` = 目标模式未激活;`/goal <obj>` 时由 submission_loop 构造。
-    /// turn 结束后 `on_turn_end` 自校验,未完成则推 steering 续作。
+    /// turn 结束后 `on_turn_end` 自校验。未完成则把续作文本推进
+    /// steering 队列,等下一条 `UserInput` 合并,不自行提交新回合。
     ///
     /// **共享槽**(`Arc<RwLock<..>>`):`AgentConfig` 会被 clone 进 submission
     /// loop(`let cfg_c = cfg.clone()`),普通字段在 clone 上改**回不到**
@@ -190,6 +193,19 @@ pub struct AgentConfig {
     /// 向槽写快照,父会话经状态中心查询 —— 读取方永不阻塞子代理。
     /// `None` = 主会话 / 测试(不自报告)。
     pub subagent_status: Option<Arc<crate::subagent_registry::SubagentStatusSlot>>,
+    /// v1.x:`[sandbox]` 段解析出的 OS 沙箱默认开关。
+    /// `None` = 配置未表态 → 每 turn 的 `sandbox_policy` 未指定时跟随
+    /// env(`OsSandbox::from_env`);`Some(b)` = 配置表态,Op 未覆盖时生效。
+    /// 修复 `os_level = Some(false)` 此前不生效的缺口(headless 曾用
+    /// `unsafe set_var` 桥接,且只桥接 `Some(true)`)。
+    /// v1.x:side-channel driver(用户驱动的并发 agent)。`None` =
+    /// 未配置(库路径默认),`Op::StartSideChannel` 以 Error 事件应答。
+    pub side_channel_driver: Option<crate::side_channel::SideChannelDriver>,
+    pub sandbox_default: Option<bool>,
+    /// v1.x:`[sandbox].writable_dirs` 透传(workspace 之外额外可写目录)。
+    pub sandbox_writable: Vec<PathBuf>,
+    /// v1.x:`[sandbox].allow_network` 透传。
+    pub sandbox_network: Option<bool>,
 }
 
 impl Default for AgentConfig {
@@ -203,6 +219,7 @@ impl AgentConfig {
         Self {
             model: Arc::new(RwLock::new(model.into())),
             permission_mode: Arc::new(RwLock::new(PermissionMode::Auto)),
+            inherited_approval_mode: None,
             workspace: Arc::new(RwLock::new(workspace.into())),
             worktree: Arc::new(RwLock::new(None)),
             cancel: CancellationToken::new(),
@@ -229,6 +246,10 @@ impl AgentConfig {
             last_abort_reason: Arc::new(RwLock::new(None)),
             subagent_runtime: None,
             subagent_status: None,
+            side_channel_driver: None,
+            sandbox_default: None,
+            sandbox_writable: Vec::new(),
+            sandbox_network: None,
         }
     }
 
@@ -323,6 +344,7 @@ impl AgentConfig {
             Arc::clone(&self.workspace),
             Arc::clone(&self.worktree),
         );
+        ctx.session_id = self.session_id.unwrap_or_default();
         // v1.2 P1-12:共享会话用量 / 预算 / 上下文窗口句柄,让
         // `get_context_remaining` 工具读到 `model_call` 实时累加的值
         // (同 `workspace` 共享 pattern)。
@@ -331,12 +353,45 @@ impl AgentConfig {
         ctx.context_window_size = Arc::clone(&self.context_window_size);
         // 工具级 env(如 BRAVE_API_KEY)从 TOML 段注入到每个 ToolContext。
         ctx.env = self.tool_env.clone();
+        // v1.x:`[sandbox]` 段的 writable_dirs / allow_network 透传到每个
+        // ToolContext —— BashTool 据此构造 OsSandbox(此前这两个字段在
+        // 框架内无任何消费方,只有桌面端自己解析)。
+        ctx.os_sandbox_writable = self.sandbox_writable.clone();
+        ctx.os_sandbox_network = self.sandbox_network;
         ctx
     }
 
     /// 设置 M4 依赖。由 `zhuye-exec` 启动时调用。
     pub fn with_m4(mut self, m4: M4Deps) -> Self {
         self.m4 = Some(m4);
+        self
+    }
+
+    /// v1.x:注入 `[sandbox]` 解析出的 OS 沙箱默认开关(见
+    /// [`Self::sandbox_default`])。
+    pub fn with_sandbox_default(mut self, on: Option<bool>) -> Self {
+        self.sandbox_default = on;
+        self
+    }
+
+    /// v1.x:注入 `[sandbox].writable_dirs`。
+    pub fn with_sandbox_writable(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.sandbox_writable = dirs;
+        self
+    }
+
+    /// v1.x:注入 side-channel driver(见 `side_channel_driver` 字段)。
+    pub fn with_side_channel_driver(
+        mut self,
+        driver: crate::side_channel::SideChannelDriver,
+    ) -> Self {
+        self.side_channel_driver = Some(driver);
+        self
+    }
+
+    /// v1.x:注入 `[sandbox].allow_network`。
+    pub fn with_sandbox_network(mut self, allow: Option<bool>) -> Self {
+        self.sandbox_network = allow;
         self
     }
 

@@ -111,7 +111,7 @@ TUI/GUI(`/prompt` 命令,协议级 `Op::PromptCommand`)可在会话运行中
 `FINAL ANSWER: <answer>` 收口模板是**格式契约**(测试与展示层剥标记依赖),
 保留在常量 `zhuye_prompt::FINAL_ANSWER_TEMPLATE`,nudge 文案经变量注入。
 
-## 关闭模式段(P-08)
+## 关闭模式段
 
 非编码场景(金融分析师、写作助手等自定义 persona)不需要 Plan Mode
 规则手册与工具诱导。把对应 section 覆盖为保留字 **`off`**(也接受
@@ -196,7 +196,7 @@ let sub = Submission::with_id("ui-2", Op::PromptCommand {
 
 ## 运行时序
 
-1. 入口(`zhuye-exec::bootstrap_m4` / `build_default_m4_with_prompts`)
+1. 入口(`zhuye-exec::bootstrap_m4` / 库门面的 `zhuye::m4_bootstrap::build_default_m4_with_prompts`)
    扫描 `<ws>/.zhuye/prompts` + `~/.zhuye/prompts` + Builder 附加目录,
    调 `init_library` 装配进程级 `PromptLibrary`(可重复调用整体重扫);
 2. `pre_loop` 组装 system prompt:agent 定义来源为 `BuiltinDefault` 时按

@@ -1,6 +1,6 @@
 //! 门面 `ZhuyeBuilder::build_async` 的插件挂载集成测试。
 //!
-//! 在隔离 HOME 中真实安装示例插件 `examples/plugin-demo`,断言
+//! 在隔离 HOME 中真实安装示例插件 `plugins/plugin-demo`,断言
 //! `build_async` 后 `Zhuye::plugin_runtime()` 的命令注册表已含
 //! `demo:hello`(skills / agents / hooks / MCP 共用同一挂载路径)。
 //!
@@ -54,7 +54,7 @@ async fn mount_and_lookup(
 ) -> anyhow::Result<zhuye_plugin::SharedPluginRuntime> {
     // 真实安装示例插件(复制进隔离 HOME 的 plugins cache)。
     let demo =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/plugin-demo");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins/plugin-demo");
     let plugins_root = home.join(".zhuye").join("plugins");
     let mut manager = zhuye_plugin::PluginManager::load(&plugins_root)?;
     manager.install_local(

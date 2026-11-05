@@ -63,6 +63,11 @@ pub struct ServeArgs {
     /// 按序号 resume(1-indexed,newest first)。
     #[arg(long, short = 'r', value_name = "N", conflicts_with_all = ["resume", "continue_last"])]
     pub resume_by: Option<usize>,
+    /// 显式启用的插件 id(可多次,如 `--plugin harness-import@inline`)。
+    /// 传入时**覆盖** config 的 `[plugins].enabled_plugins`,SDK 嵌入方
+    /// 据此按需精确加载;未传维持配置驱动。
+    #[arg(long = "plugin", value_name = "ID")]
+    pub plugins: Vec<String>,
 }
 
 impl From<&ServeArgs> for HeadlessArgs {
@@ -76,6 +81,8 @@ impl From<&ServeArgs> for HeadlessArgs {
             // serve 是 SDK 嵌入入口:内置 hook 需在 `[hooks].enabled`
             // 显式列出才启用(理由见 HeadlessArgs::hooks_explicit_only)。
             hooks_explicit_only: true,
+            // --plugin 显式列表:非空时覆盖 config 的 enabled_plugins。
+            plugins: (!a.plugins.is_empty()).then(|| a.plugins.clone()),
         }
     }
 }
@@ -155,6 +162,13 @@ where
         let ev = proactive_session_configured(&thread);
         sink.send(ev).await?;
     }
+    // v1.x:Activity 审计 tee(WP12)—— serve 的三条 per-turn 排水环共用。
+    let activity = zhuye_config::load_default()
+        .telemetry
+        .as_ref()
+        .map(|config| config.activity_enabled())
+        .unwrap_or(true)
+        .then(zhuye_telemetry::ActivityLogger::with_default_home);
     // 远程工具桥:请求事件经独立通道产出,由专职 task 转发到 sink。
     let (bridge, mut bridge_rx) = RemoteBridge::new(64);
     let mut session_rx = thread.subscribe_session();
@@ -180,6 +194,18 @@ where
                     ev.msg,
                     EventMsg::ShutdownComplete | EventMsg::SessionConfigured(_)
                 ) {
+                    continue;
+                }
+                // 侧通道请求的同步应答已由提交专属通道转发;
+                // 全局终态(id 为空)仍须从会话通道发送。
+                if ev.id != EVENT_ID_NONE
+                    && matches!(
+                        ev.msg,
+                        EventMsg::SideChannelStarted(_)
+                            | EventMsg::SideChannelFinished(_)
+                            | EventMsg::SideChannelStatus(_)
+                    )
+                {
                     continue;
                 }
                 if sink3.send(ev).await.is_err() {
@@ -240,6 +266,9 @@ where
                 let sub_id = sub.id.clone();
                 let mut handle = thread.submit(sub).await;
                 while let Some(ev) = handle.next().await {
+                    if let (Some(logger), Some(a)) = (&activity, zhuye_telemetry::map_event(&ev)) {
+                        let _ = logger.record(a);
+                    }
                     if sink.send(ev).await.is_err() {
                         break;
                     }
@@ -270,8 +299,14 @@ where
                         let sub_id = sub.id.clone();
                         let mut handle = thread.submit(prompt_sub).await;
                         let sink5 = sink.clone();
+                        let activity5 = activity.clone();
                         tokio::spawn(async move {
                             while let Some(ev) = handle.next().await {
+                                if let (Some(logger), Some(a)) =
+                                    (&activity5, zhuye_telemetry::map_event(&ev))
+                                {
+                                    let _ = logger.record(a);
+                                }
                                 if matches!(ev.msg, EventMsg::SessionConfigured(_)) {
                                     continue;
                                 }
@@ -293,8 +328,14 @@ where
                 let sub_id = sub.id.clone();
                 let mut handle = thread.submit(sub).await;
                 let sink4 = sink.clone();
+                let activity4 = activity.clone();
                 tokio::spawn(async move {
                     while let Some(ev) = handle.next().await {
+                        if let (Some(logger), Some(a)) =
+                            (&activity4, zhuye_telemetry::map_event(&ev))
+                        {
+                            let _ = logger.record(a);
+                        }
                         // SessionConfigured 同时走 session 扇出通道(见
                         // submission_loop),由 session 转发 task 统一写出;
                         // 此处跳过避免重复。

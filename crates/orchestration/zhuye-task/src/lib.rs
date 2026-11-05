@@ -28,10 +28,12 @@
 //!
 //! Coordinator 模式在 `coordinator.rs` 子模块。
 
+pub mod actor;
 pub mod coordinator;
 pub mod error;
 pub mod manager;
 pub mod model;
+pub mod squad;
 pub mod store;
 pub mod team;
 pub mod team_store;
@@ -43,9 +45,11 @@ pub use coordinator::{
     ensure_scratchpad, is_coordinator_enabled,
 };
 
+pub use actor::{Actor, ActorKind, ActorType, actor_from_team_member};
 pub use error::TaskError;
 pub use manager::{TaskManager, TaskPatch, UpdateOutcome};
 pub use model::{ListId, Task, TaskId, TaskStatus, TeamFile, TeamMemberSpec, TeamName};
+pub use squad::{SquadError, SquadManager, SquadMember, SquadSpec, SquadTaskAssignment};
 pub use store::{FileTaskStore, InMemoryTaskStore, TaskStore};
 pub use team::{lead_agent_id_for, parse_agent_id, validate_team_name};
 pub use team_store::{FileTeamStore, InMemoryTeamStore, TeamStore};

@@ -8,6 +8,7 @@ description = "ZhuYe: unified TOML config loader with hot reload"
 [dependencies]
 zhuye-llm  = { workspace = true }
 zhuye-permissions = { workspace = true }
+zhuye-fs   = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 toml           = { workspace = true }
@@ -18,6 +19,8 @@ tracing-subscriber = { workspace = true }
 tokio          = { workspace = true, features = ["sync", "rt-multi-thread", "macros", "time"] }
 tokio-util     = { workspace = true }
 notify         = "6"
+# 数据目录解析的 getpwuid 兜底(HOME 未设置的启动场景)
+dirs            = "5"
 parking_lot    = { workspace = true }
 # v1.3 analytics 遥测:OTLP/HTTP 导出 + tracing bridge
 opentelemetry         = { workspace = true }

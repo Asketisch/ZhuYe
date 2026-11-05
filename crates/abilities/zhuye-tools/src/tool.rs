@@ -126,6 +126,23 @@ pub struct ToolContext {
     /// `Some(true)` = 强制启用 OS 沙箱;`Some(false)` = 本 turn 关闭 OS
     /// 层(路径沙箱仍由各文件工具自身的 workspace 校验承担)。
     pub os_sandbox: Option<bool>,
+    /// v1.x:`[sandbox].writable_dirs` 透传(workspace 之外额外可写目录)。
+    /// 空 = 用 `OsSandbox` 自带的 env 派生(`ZHUYE_SANDBOX_WRITABLE`)。
+    pub os_sandbox_writable: Vec<PathBuf>,
+    /// v1.x:`[sandbox].allow_network` 透传。`None` = 不覆盖
+    /// `OsSandbox` 默认(false = 禁出站)。
+    pub os_sandbox_network: Option<bool>,
+    /// v1.9 S2:本次调用命令文本的来源(authorship)。`None` = 默认
+    /// `ModelAuthored`(harness 里 bash 工具的命令几乎都是模型产出)。
+    /// 不可信来源经 `zhuye_sandbox::UntrustedGate` 强制沙箱 —— 全局
+    /// 沙箱关闭开关对其无效。宿主如果代用户执行亲笔命令(如 GUI 终端),
+    /// 显式传 `Some(UserAuthored)`。
+    pub command_origin: Option<zhuye_sandbox::CommandOrigin>,
+    /// v1.9 C1/C2:循环失控守卫(会话级共享)。`None`(默认)= 不检测;
+    /// `Some` 时 `ToolExecutionQueue::execute_single` 在每次工具执行前
+    /// 记账并裁决:软档 advisory 前插提醒文本,硬档(重复+无进展)直接
+    /// 阻断返回错误。执行后由 queue 登记输出指纹作进度证据。
+    pub loop_guard: Option<Arc<std::sync::Mutex<crate::loop_guard::LoopGuard>>>,
     /// v1.5 R2:后台任务生成器(宿主实现)。`None`(默认)= 工具不支持
     /// 后台执行;`Some` 时 bash 的 `run_in_background` 参数可用。
     pub background: Option<Arc<dyn TaskSpawner>>,
@@ -318,6 +335,10 @@ impl Default for ToolContext {
             background: None,
             human_input: None,
             parent_tail_json: Arc::new(RwLock::new(Vec::new())),
+            os_sandbox_writable: Vec::new(),
+            os_sandbox_network: None,
+            command_origin: None,
+            loop_guard: None,
         }
     }
 }

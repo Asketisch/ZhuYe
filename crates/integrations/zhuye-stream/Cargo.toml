@@ -7,6 +7,9 @@ description = "ZhuYe: 流式会话后端(PostgreSQL trait、SSE Redis stub、wor
 
 [dependencies]
 zhuye-protocol = { workspace = true }
+# v1.x:cron 持久化(data_dir 口径 + 原子写)。
+zhuye-config   = { workspace = true }
+zhuye-fs       = { workspace = true }
 async-trait      = { workspace = true }
 anyhow           = { workspace = true }
 serde            = { workspace = true }
@@ -21,4 +24,5 @@ uuid             = { workspace = true }
 parking_lot  = { workspace = true }
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

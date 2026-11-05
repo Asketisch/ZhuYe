@@ -57,8 +57,9 @@ Python 3 + pytest、Node ≥ 18。缺依赖的批次自动 SKIP,不算失败。
 | `functional/test_orchestration.py` | 编排面:子代理 / 讨论 / 任务团队 / 流水线 / goal 模式 |
 | `functional/test_cli.py` | CLI 能力面(行为断言;参数矩阵仍在 bash) |
 | `functional/run.sh` | 能力覆盖层入口 |
-| `rust/run.sh` | Rust 套件入口(依次调下面八个;`ZHUYE_SKIP_WORKSPACE=1` 跳过第 1 步) |
+| `rust/run.sh` | Rust 套件入口(依次调下面九个;`ZHUYE_SKIP_WORKSPACE=1` 跳过第 1 步) |
 | `rust/workspace_tests.sh` | `cargo test --workspace` + clippy `-D warnings` + fmt + doc |
+| `rust/env_lock_stress.sh` | zhuye-config **env 竞态回归门禁**:①结构门禁(确定性)校验改 env / 读 env 测试同持 `paths::ENV_LOCK`;②行为压测满载连跑 N 轮(`ZHUYE_ENV_STRESS_RUNS`,默认 20)采样调度器。竞态窗口微秒级,确定性保证由①承担,②负责 CI 满载下的概率放大(`44ae3da` 门禁) |
 | `rust/cli_core.sh` | 核心 CLI:exec(单轮/工具/plan-mode/resume)、serve(握手/远程工具/interrupt)、session、traces、login、config、doctor、version、update |
 | `rust/cli_modules.sh` | 模块 CLI:mcp、lsp、plugin、task+team、pipeline、discussion、security、workspace |
 | `rust/examples_e2e.sh` | `zhuye` 库 6 个 examples 冒烟(headless_run / custom_tool / multi_turn / custom_provider / hook_listener / discussion_demo) |
@@ -102,8 +103,7 @@ Python 3 + pytest、Node ≥ 18。缺依赖的批次自动 SKIP,不算失败。
 - **实模型层是独立层**:默认 SKIP(不发起网络请求),不进 CI 门禁;模型
   **从 provider 接口实时获取**(不写死 id —— 免费模型集合随时变);断言只到
   **协议形状**,不断言回答文本;上游限流(429)判为**跳过**而非失败。
-  详见 [`live/README.md`](live/README.md) 与
-  [`docs/FREE_MODEL_PRACTICE.md`](../docs/FREE_MODEL_PRACTICE.md)。
+  详见 [`live/README.md`](live/README.md)。
 - **三个 id 互不相同**(易踩坑):`session_configured.session_id`、
   rollout 内 `session_meta.session_id`、**会话文件名**里的 thread id 是
   三个不同的 uuid。`--resume` 的参数必须用**文件名**里的 id。

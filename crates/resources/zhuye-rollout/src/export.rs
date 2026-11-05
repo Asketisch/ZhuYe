@@ -28,6 +28,8 @@
 //! - 多 session 批量 export —— 当前单 session。
 //! - YAML front-matter(obsidian 兼容)—— 留 v2.x 接 `serde_yaml`。
 
+use std::path::Path;
+
 use zhuye_protocol::{MessageRole, RolloutRecord};
 
 /// 输出长度硬上限(单位:字符,不是字节)。超出后追加 `[truncated]` 注脚。
@@ -337,6 +339,266 @@ fn push_header(out: &mut String, name: &str) {
     out.push_str(&format!("## {name}\n"));
 }
 
+// ── v1.x:完整转写稿导出(文件向)────────────────────────────────────
+//
+// 与 [`to_markdown`] 的分工:后者面向 Pill / slash 命令的**行内预览**,
+// 有 4000 字符硬上限、结构紧凑;本节面向**落盘文件**(`session export`),
+// 不截断,且逐条渲染全部 13 个 `RolloutRecord` 变体 + 文末 Usage 段
+// (模型级 token 拆分 / 压缩节省 / 记忆访问审计)。
+//
+// 收编自 ReflectDesktop `src-tauri/src/commands/export.rs` —— 此前只有
+// 桌面端能导出带 Usage 段的完整稿,CLI 的 `to_markdown` 缺 per-model
+// 表与审计行。渲染拆成两个纯函数(无 IO,便于单测)。
+
+use zhuye_fs::write_atomic;
+use zhuye_protocol::{SessionStats, ThreadId};
+
+/// 导出产物:落盘路径 + 字节数。
+#[derive(Debug, Clone)]
+pub struct MarkdownExport {
+    pub path: std::path::PathBuf,
+    pub bytes: u64,
+}
+
+/// 把 rollout 记录渲染成完整 markdown 转写稿(纯函数,无 IO)。
+///
+/// 覆盖全部 13 个变体;`TokenCount` / `Plan*` / `PermissionModeChanged`
+/// 显式忽略(token 用量由文末 Usage 段统一聚合,plan / 权限轨迹不属于
+/// 对话内容),显式忽略同时保证 match 穷尽 —— 未来新增变体编译期报错。
+pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# ZhuYe session `{id}`\n\n"));
+    let mut session_meta_emitted = false;
+    let mut count: usize = 0;
+    for r in records {
+        match r {
+            RolloutRecord::SessionMeta { model, .. } => {
+                if !session_meta_emitted {
+                    out.push_str(&format!("**model**: `{model}`\n\n"));
+                    session_meta_emitted = true;
+                }
+            }
+            RolloutRecord::Message { role, content, .. } => {
+                count += 1;
+                // `content` 是 serde_json::Value;字符串直接当作文本。
+                let text = match content {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let label = match role {
+                    MessageRole::User => "**user**",
+                    MessageRole::Assistant => "**agent**",
+                    MessageRole::System => "**system**",
+                    MessageRole::Tool => "**tool**",
+                };
+                out.push_str(&format!("\n## Turn {count}\n\n{label}: "));
+                out.push_str(&text);
+                out.push_str("\n\n");
+            }
+            RolloutRecord::Compaction {
+                strategy,
+                removed_count,
+                summary,
+                before_tokens,
+                after_tokens,
+                ..
+            } => {
+                // v1.x:before/after 是压缩前后的上下文 token 估算(旧 JSONL 缺省为 0)。
+                let saved = before_tokens.saturating_sub(*after_tokens);
+                out.push_str(&format!(
+                    "\n---\n*compaction* (`{strategy}`, removed {removed_count} messages"
+                ));
+                if *before_tokens > 0 {
+                    out.push_str(&format!(
+                        ", {before_tokens} → {after_tokens} tokens (saved {saved})"
+                    ));
+                }
+                out.push_str(")\n\n");
+                if !summary.is_empty() {
+                    out.push_str("> ");
+                    out.push_str(summary);
+                    out.push_str("\n\n");
+                }
+            }
+            RolloutRecord::Fork {
+                parent_session_id,
+                branch_name,
+            } => {
+                out.push_str(&format!(
+                    "\n*forked from `{parent_session_id}` as `{branch_name}`*\n\n"
+                ));
+            }
+            RolloutRecord::Checkpoint { sha, label, .. } => {
+                let tag = label.clone().unwrap_or_else(|| "checkpoint".to_string());
+                out.push_str(&format!("\n*checkpoint `{tag}` @ `{sha}`*\n\n"));
+            }
+            RolloutRecord::Rewind {
+                target_sha,
+                from_sha,
+                ..
+            } => {
+                out.push_str(&format!("\n*rewind* (`{from_sha}` → `{target_sha}`)\n\n"));
+            }
+            RolloutRecord::DiscussionTranscript {
+                mode,
+                participants,
+                transcript,
+                ..
+            } => {
+                out.push_str(&format!(
+                    "\n## Discussion ({mode})\n\nParticipants: {}\n\n",
+                    participants.join(", ")
+                ));
+                let pretty = match transcript {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => serde_json::to_string_pretty(other).unwrap_or_default(),
+                };
+                out.push_str(&pretty);
+                out.push_str("\n\n");
+            }
+            // v1.x:记忆访问审计(检索注入 / 固化写入)。落盘后可在导出稿
+            // 回看「这个会话注入了哪些记忆 / 固化了什么」。
+            RolloutRecord::MemoryAccess {
+                op,
+                scope,
+                agent_type,
+                chars,
+                entries,
+                ..
+            } => {
+                let (label, detail) = match op {
+                    zhuye_protocol::MemoryOp::Read => (
+                        "memory read",
+                        format!("scope `{scope}`, agent `{agent_type}`, {chars} chars"),
+                    ),
+                    zhuye_protocol::MemoryOp::Write => (
+                        "memory write",
+                        format!(
+                            "scope `{scope}`, agent `{agent_type}`, {entries} entries, {chars} chars"
+                        ),
+                    ),
+                };
+                out.push_str(&format!("\n*{label}* ({detail})\n\n"));
+            }
+            // v1.x:per-turn token 用量快照(累计自 EventMsg::TokenCount)。
+            // 不逐条渲染 —— 改由文末「Usage」段统一聚合(含模型级拆分),
+            // 此处显式忽略以保证 match 穷尽。
+            RolloutRecord::TokenCount { .. } => {}
+            // Plan 工作流与权限模式变更记录:转写稿不渲染,显式忽略以保证
+            // match 穷尽。
+            RolloutRecord::PlanRequest { .. }
+            | RolloutRecord::PlanReady { .. }
+            | RolloutRecord::PlanRejected { .. }
+            | RolloutRecord::PermissionModeChanged { .. } => {}
+        }
+    }
+    out
+}
+
+/// 渲染文末「Usage」段(纯函数)。
+///
+/// 复用 [`crate::index::session_stats`] 的规范聚合(模型级拆分 + 压缩
+/// 节省 + 记忆访问),不在导出层复刻 token 聚合逻辑。统计缺省(会话尚无
+/// 落盘记录)→ 空串。
+pub fn render_usage_section(stats: Option<&SessionStats>) -> String {
+    let Some(stats) = stats else {
+        return String::new();
+    };
+    let mut out = String::from("\n## Usage\n\n");
+    out.push_str(&format!("- model: `{}`\n", stats.model));
+    out.push_str(&format!("- messages: {}\n", stats.message_count));
+    out.push_str(&format!("- tool calls: {}\n", stats.tool_calls));
+    out.push_str(&format!(
+        "- tokens: {} in / {} out / {} total\n",
+        stats.input_tokens, stats.output_tokens, stats.total_tokens
+    ));
+    if stats.cached_tokens > 0 {
+        out.push_str(&format!("- cached: {}\n", stats.cached_tokens));
+    }
+    if let Some(cost) = stats.cost_usd {
+        out.push_str(&format!("- cost: ${cost:.4}\n"));
+    }
+    if stats.compactions > 0 {
+        out.push_str(&format!(
+            "- compactions: {} (saved {} tokens)\n",
+            stats.compactions,
+            stats.compaction_tokens_saved()
+        ));
+    }
+    if stats.memory_reads > 0 || stats.memory_writes > 0 {
+        out.push_str(&format!(
+            "- memory: {} reads / {} writes\n",
+            stats.memory_reads, stats.memory_writes
+        ));
+    }
+    if !stats.per_model.is_empty() {
+        out.push_str("\n### Per model\n\n");
+        out.push_str("| model | provider | calls | input | output | total | cost |\n");
+        out.push_str("| --- | --- | ---: | ---: | ---: | ---: | ---: |\n");
+        for m in &stats.per_model {
+            let cost = m
+                .cost_usd
+                .map(|c| format!("${c:.4}"))
+                .unwrap_or_else(|| "-".to_string());
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} | {} | {} |\n",
+                m.model,
+                m.provider.as_deref().unwrap_or("-"),
+                m.calls,
+                m.input_tokens,
+                m.output_tokens,
+                m.total_tokens,
+                cost
+            ));
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// 导出目录:`<sessions_base>/../exports`,即 `~/.zhuye/exports`。
+///
+/// 生产语义与 `zhuye_config::data_path(&["exports"])` 等价(base 恒为
+/// `<data_dir>/sessions`);从 base 推导而不是直读 env,便于测试用任意
+/// 临时目录驱动。
+pub fn exports_dir(base: &Path) -> std::path::PathBuf {
+    base.parent()
+        .map(|p| p.join("exports"))
+        .unwrap_or_else(|| base.join("exports"))
+}
+
+/// 回放 session → 完整转写稿 + Usage 段 → 原子写落盘,返回产物信息。
+///
+/// - `base` 为 sessions 根(`~/.zhuye/sessions`);产物写
+///   [`exports_dir`] = `~/.zhuye/exports/<id>.md`;
+/// - 写走 [`zhuye_fs::write_atomic`](symlink 穿透 / 权限不放大 /
+///   失败保全)—— 桌面端旧实现的 `write_export` 会把 symlink 替换成
+///   普通文件,这里统一到框架契约(导出稿同样可能是运维挂载的链接);
+/// - 找不到 session 文件 → `Ok(None)`(与 `session_stats` 的 None 口径
+///   一致,调用方自行决定报错还是跳过)。
+pub async fn export_session_markdown(
+    base: &Path,
+    id: ThreadId,
+) -> anyhow::Result<Option<MarkdownExport>> {
+    let records = crate::reader::replay(base, id).await?;
+    if records.is_empty() {
+        return Ok(None);
+    }
+    let mut out = render_transcript(&id, &records);
+    out.push_str(&render_usage_section(
+        crate::index::session_stats(base, id).as_ref(),
+    ));
+
+    let dir = exports_dir(base);
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(format!("{id}.md"));
+    write_atomic(&dest, out.as_bytes())?;
+    Ok(Some(MarkdownExport {
+        path: dest,
+        bytes: out.len() as u64,
+    }))
+}
+
 /// 把 `MessageRole` 映射成 markdown 标题大小写(`User` / `Assistant` /
 /// `Tool` / `System` 四个枚举值)。
 fn role_heading(role: MessageRole) -> &'static str {
@@ -391,6 +653,223 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
     use zhuye_protocol::{ThreadId, TurnId};
+
+    // ── v1.x:完整转写稿(文件向)测试 ──────────────────────────────
+
+    fn turn_id() -> TurnId {
+        TurnId::parse_str("33333333-4444-5555-6666-777777777777").unwrap()
+    }
+
+    fn message(role: MessageRole, text: &str) -> RolloutRecord {
+        RolloutRecord::Message {
+            turn_id: turn_id(),
+            role,
+            content: serde_json::Value::String(text.to_string()),
+        }
+    }
+
+    #[test]
+    fn checkpoint_sha_is_rendered_as_balanced_inline_code() {
+        let record = RolloutRecord::Checkpoint {
+            turn_id: turn_id(),
+            sha: "abc123".into(),
+            label: Some("before".into()),
+            created_at: Utc::now(),
+        };
+        let markdown = render_transcript(&ThreadId::new(), &[record]);
+        assert!(markdown.contains("*checkpoint `before` @ `abc123`*"));
+    }
+
+    #[test]
+    fn transcript_renders_messages_and_model() {
+        let id = ThreadId::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let records = vec![
+            RolloutRecord::SessionMeta {
+                session_id: id,
+                model: "openai/gpt-4o".into(),
+                started_at: Utc::now(),
+                workspace: None,
+            },
+            message(MessageRole::User, "hello"),
+            message(MessageRole::Assistant, "hi"),
+        ];
+        let md = render_transcript(&id, &records);
+        assert!(md.contains("**model**: `openai/gpt-4o`"));
+        assert!(md.contains("## Turn 1"));
+        assert!(md.contains("## Turn 2"));
+        assert!(md.contains("**user**: hello"));
+        assert!(md.contains("**agent**: hi"));
+    }
+
+    #[test]
+    fn transcript_renders_memory_access_audit() {
+        // v1.x:记忆访问审计(读 / 写两种 op)。
+        let id = ThreadId::new();
+        let records = vec![
+            RolloutRecord::MemoryAccess {
+                turn_id: turn_id(),
+                op: zhuye_protocol::MemoryOp::Read,
+                scope: "project,user".into(),
+                agent_type: "coder".into(),
+                chars: 1234,
+                entries: 0,
+                at: Utc::now(),
+            },
+            RolloutRecord::MemoryAccess {
+                turn_id: turn_id(),
+                op: zhuye_protocol::MemoryOp::Write,
+                scope: "project".into(),
+                agent_type: "coder".into(),
+                chars: 56,
+                entries: 3,
+                at: Utc::now(),
+            },
+        ];
+        let md = render_transcript(&id, &records);
+        assert!(md.contains("*memory read* (scope `project,user`, agent `coder`, 1234 chars)"));
+        assert!(
+            md.contains("*memory write* (scope `project`, agent `coder`, 3 entries, 56 chars)")
+        );
+    }
+
+    #[test]
+    fn transcript_renders_compaction_token_saving() {
+        let id = ThreadId::new();
+        let records = vec![RolloutRecord::Compaction {
+            turn_id: turn_id(),
+            strategy: "microcompact".into(),
+            removed_count: 12,
+            summary: "<summary/>".into(),
+            before_tokens: 9000,
+            after_tokens: 2000,
+        }];
+        let md = render_transcript(&id, &records);
+        assert!(md.contains("9000 → 2000 tokens (saved 7000)"));
+    }
+
+    #[test]
+    fn transcript_omits_token_delta_for_legacy_records() {
+        // 旧 JSONL 的 compaction 无 before/after 字段 → 反序列化为 0,
+        // 此时不渲染 token 段(避免误导性的 "0 → 0")。
+        let id = ThreadId::new();
+        let records = vec![RolloutRecord::Compaction {
+            turn_id: turn_id(),
+            strategy: "microcompact".into(),
+            removed_count: 3,
+            summary: String::new(),
+            before_tokens: 0,
+            after_tokens: 0,
+        }];
+        let md = render_transcript(&id, &records);
+        assert!(md.contains("removed 3 messages"));
+        assert!(!md.contains("tokens (saved"));
+    }
+
+    #[test]
+    fn usage_section_is_empty_without_stats() {
+        assert_eq!(render_usage_section(None), "");
+    }
+
+    #[test]
+    fn usage_section_renders_per_model_table() {
+        // v1.x:文末 Usage 段 —— 总量 + 模型级拆分 + 压缩节省 + 记忆访问。
+        let id = ThreadId::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let stats = SessionStats {
+            session_id: id,
+            model: "openai/gpt-4o".into(),
+            started_at: Utc::now(),
+            message_count: 12,
+            tool_calls: 3,
+            compactions: 1,
+            compaction_before_tokens: 9000,
+            compaction_after_tokens: 2000,
+            memory_reads: 2,
+            memory_writes: 1,
+            input_tokens: 1000,
+            output_tokens: 200,
+            cached_tokens: 250,
+            cache_write_tokens: 0,
+            total_tokens: 1200,
+            cost_usd: Some(0.0234),
+            per_model: vec![zhuye_protocol::ModelUsage {
+                model: "openai/gpt-4o".into(),
+                provider: Some("openai".into()),
+                calls: 4,
+                input_tokens: 1000,
+                output_tokens: 200,
+                cached_tokens: 250,
+                cache_write_tokens: 0,
+                total_tokens: 1200,
+                cost_usd: Some(0.0234),
+            }],
+        };
+        let md = render_usage_section(Some(&stats));
+        assert!(md.contains("## Usage"));
+        assert!(md.contains("- model: `openai/gpt-4o`"));
+        assert!(md.contains("- tokens: 1000 in / 200 out / 1200 total"));
+        assert!(md.contains("- cost: $0.0234"));
+        assert!(md.contains("- compactions: 1 (saved 7000 tokens)"));
+        assert!(md.contains("- memory: 2 reads / 1 writes"));
+        assert!(md.contains("### Per model"));
+        assert!(md.contains("| `openai/gpt-4o` | openai | 4 | 1000 | 200 | 1200 | $0.0234 |"));
+    }
+
+    #[tokio::test]
+    async fn export_session_markdown_writes_full_transcript() {
+        // 落盘端到端:转写稿 + Usage 段 + exports 目录推导。
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("sessions");
+        let sid = ThreadId::new();
+        let day = base.join("2026/11/02");
+        std::fs::create_dir_all(&day).unwrap();
+        let mut body = String::new();
+        body.push_str(
+            &serde_json::to_string(&RolloutRecord::SessionMeta {
+                session_id: sid,
+                model: "openai/gpt-4o".into(),
+                started_at: Utc::now(),
+                workspace: None,
+            })
+            .unwrap(),
+        );
+        body.push('\n');
+        body.push_str(&serde_json::to_string(&message(MessageRole::User, "你好")).unwrap());
+        body.push('\n');
+        body.push_str(
+            &serde_json::to_string(&RolloutRecord::TokenCount {
+                turn_id: turn_id(),
+                usage: zhuye_protocol::TokenUsage::new(100, 50, 0),
+                cost_usd: Some(0.01),
+                model: Some("openai/gpt-4o".into()),
+                provider: Some("openai".into()),
+                at: Utc::now(),
+            })
+            .unwrap(),
+        );
+        body.push('\n');
+        std::fs::write(day.join(format!("{sid}.jsonl")), body).unwrap();
+
+        let out = export_session_markdown(&base, sid).await.unwrap().unwrap();
+        assert_eq!(
+            out.path,
+            tmp.path().join("exports").join(format!("{sid}.md"))
+        );
+        let text = std::fs::read_to_string(&out.path).unwrap();
+        assert!(text.contains("**model**: `openai/gpt-4o`"), "缺 model 行");
+        assert!(text.contains("**user**: 你好"), "缺对话内容");
+        assert!(text.contains("## Usage"), "缺 Usage 段");
+        assert!(text.contains("### Per model"), "缺 per-model 表");
+        assert_eq!(out.bytes, text.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn export_session_markdown_none_for_unknown_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = export_session_markdown(&tmp.path().join("sessions"), ThreadId::new())
+            .await
+            .unwrap();
+        assert!(out.is_none(), "无记录的 session 应返回 None");
+    }
 
     /// 拼一个最小的 SessionMeta + 1 条 User message,作为 fixture helper。
     fn fixture_basic() -> Vec<RolloutRecord> {

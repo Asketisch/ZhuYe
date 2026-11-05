@@ -15,8 +15,9 @@
 //! 具备异步友好(mpsc 通道)、可序列化(JSON)以及版本稳定
 //! (v0 已冻结,新增变体均以非破坏方式追加)的特性。
 //!
-//! 完整规范参见 `docs/protocol.md`。
+//! 完整规范参见 `sdks/PROTOCOL.md`。
 
+pub mod actor;
 pub mod ask_user_input;
 pub mod bash_command;
 pub mod error;
@@ -31,6 +32,7 @@ pub mod stats;
 pub mod submission;
 pub mod text;
 
+pub use actor::{Actor, ActorKind, ActorType};
 pub use bash_command::{BASH_COMMAND_KEYS, resolve_bash_command, split_shell_segments};
 pub use error::ProtocolError;
 pub use event::{EVENT_ID_NONE, Event};
@@ -42,7 +44,8 @@ pub use event_msg::{
     McpToolInvokedEvent, McpTransportMirror, PermissionBubbleEvent, PermissionModeChangedEvent,
     PlanApprovedEvent, PlanDraftUpdatedEvent, PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent,
     PlanStepEvent, PlanStepStatus, PluginLoadedEvent, PromptListEvent, PromptSwitchedEvent,
-    QuotaExhaustedEvent, RoutingEvent, RoutingEventKind, StreamErrorEvent, SubagentProgressEvent,
+    QuotaExhaustedEvent, RoutingEvent, RoutingEventKind, SideChannelEvent, SideChannelInfo,
+    SideChannelStatusMirror, SideChannelStatusSnapshot, StreamErrorEvent, SubagentProgressEvent,
     SubagentProgressKind, SubagentRunStateMirror, SubagentStatusEvent, SubagentStatusSnapshot,
     ThinkingDelta, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent,
     ToolCallEndEvent, ToolCallOutputDeltaEvent, ToolExecutionRequestEvent, TriedCredential,

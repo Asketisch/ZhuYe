@@ -28,6 +28,10 @@ pub enum ConfigError {
 pub struct HooksConfig {
     /// 已启用 hook 的名字(其余会被跳过)。`None` 表示全部启用。
     pub enabled: Option<Vec<String>>,
+    /// v1.x:显式禁用的 hook 名(持久化 `HookEngine::disable` 状态)。
+    /// 内置 hook 用短名,插件 hook 用 `plugin:<id>:<event>#<i>` 全名。
+    #[serde(default)]
+    pub disabled: Option<Vec<String>>,
     #[serde(default)]
     pub search_budget: Option<SearchBudgetConfig>,
     #[serde(default)]
@@ -105,6 +109,7 @@ impl HooksConfig {
     pub fn from_reflect_section(s: &HooksSection) -> Self {
         Self {
             enabled: s.enabled.clone(),
+            disabled: s.disabled.clone(),
             search_budget: s.search_budget.as_ref().map(|x| SearchBudgetConfig {
                 max_calls: x.max_calls,
                 search_tools: x.search_tools.clone(),
@@ -172,6 +177,14 @@ impl HooksConfig {
             let cfg = self.langfuse_tracker.clone().unwrap_or_default();
             engine.register(LangfuseTracker::new(cfg));
         }
+        // 插件 hook 在构建引擎之后才注册,需提前保存其禁用状态。
+        for name in self.disabled.iter().flatten() {
+            if name.starts_with("plugin:") {
+                engine.disable_on_registration(name);
+            } else if !engine.disable(name) {
+                tracing::debug!(hook = %name, "hooks: disabled name not registered (no-op)");
+            }
+        }
         engine
     }
 }
@@ -194,6 +207,72 @@ mod tests {
         };
         let engine = cfg.build_engine();
         assert_eq!(engine.len(), 1);
+    }
+
+    /// v1.x:持久化的 `disabled` 名单在 build_engine 末尾统一 apply ——
+    /// 先注册后禁用(`HookEngine::disable` 要求 hook 已注册)。
+    #[test]
+    fn disabled_list_is_applied_after_registration() {
+        let cfg = HooksConfig {
+            disabled: Some(vec!["search_budget".into(), "not_registered".into()]),
+            ..Default::default()
+        };
+        let engine = cfg.build_engine();
+        assert_eq!(engine.len(), 5, "禁用不注销 hook,只关行为");
+        assert!(engine.is_disabled("search_budget"));
+        assert!(!engine.is_disabled("verification"));
+        // 未注册的普通 hook 名字静默无效。
+        assert!(!engine.is_disabled("not_registered"));
+    }
+
+    #[test]
+    fn disabled_plugin_is_preserved_before_registration() {
+        use crate::event::HookEventKind;
+        use crate::shell::ShellHook;
+        use std::time::Duration;
+
+        let name = "plugin:example@inline:PostToolUse#0";
+        let cfg = HooksConfig {
+            disabled: Some(vec![name.into()]),
+            ..Default::default()
+        };
+        let engine = cfg.build_engine();
+        let register = || {
+            engine.register(ShellHook::new(
+                name,
+                HookEventKind::PostToolUse,
+                None,
+                "true",
+                Duration::from_secs(1),
+            ));
+        };
+        register();
+        assert!(engine.is_disabled(name));
+        assert!(engine.unregister(name));
+        register();
+        assert!(engine.is_disabled(name));
+        assert!(engine.enable(name));
+        assert!(!engine.is_disabled(name));
+    }
+
+    #[test]
+    fn disabled_roundtrips_from_reflect_section() {
+        let section = zhuye_config::HooksSection {
+            enabled: None,
+            disabled: Some(vec!["test_runner".into()]),
+            search_budget: None,
+            test_runner: None,
+            plan_completion: None,
+            verification: None,
+            langfuse_tracker: None,
+            read_before_edit: None,
+        };
+        let cfg = HooksConfig::from_reflect_section(&section);
+        assert_eq!(
+            cfg.disabled.as_deref(),
+            Some(&["test_runner".to_string()][..])
+        );
+        assert!(cfg.build_engine().is_disabled("test_runner"));
     }
 
     #[test]

@@ -52,6 +52,25 @@ pub struct HeadlessArgs {
     /// 默认启用 `verification` 之类 Stop hook 会在宿主 cwd 跑
     /// `cargo test`,对宿主进程既慢又不可预期。
     pub hooks_explicit_only: bool,
+    /// 显式插件 id 列表(`serve --plugin <id>` 可多次)。`None` /
+    /// 空 = 按 config 的 `[plugins].enabled_plugins` 挂载(默认);
+    /// 非空 = **显式覆盖**配置(SDK 嵌入方按需精确加载,不读全局开关)。
+    pub plugins: Option<Vec<String>>,
+}
+
+/// 解析插件挂载列表:显式 `--plugin` 覆盖优先,否则用 config。
+///
+/// 注:覆盖只作用于本次启动装配;若运行中 config 的 `[plugins]` 段
+/// 发生热重载,同步目标仍是 config 列表(见 `reload.rs`)—— 显式
+/// 加载是进程级语义,不回写配置。
+pub fn resolve_enabled_plugins(
+    args: &HeadlessArgs,
+    cfg: &zhuye_config::ReflectConfig,
+) -> Vec<String> {
+    match args.plugins.as_deref() {
+        Some(list) if !list.is_empty() => list.to_vec(),
+        _ => cfg.plugins.enabled_plugins.clone(),
+    }
 }
 
 /// [`bootstrap_common`] 的产物:两个分支后续装配都要用的共享句柄。
@@ -73,6 +92,13 @@ pub struct HeadlessCommon {
     /// `reload_tx` 的接收端(normal 分支桥接到 stdout drainer;resumed
     /// 分支 drop 掉,与 exec 历史行为一致)。
     pub(crate) _reload_rx: ReloadRxHandle,
+    /// v1.x:`[sandbox]` 段解析出的 OS 沙箱默认开关(env > config > 基线)。
+    /// `None` = 配置未表态(每 turn 跟随 env)。
+    pub sandbox_default: Option<bool>,
+    /// v1.x:`[sandbox].writable_dirs`(workspace 之外额外可写目录)。
+    pub sandbox_writable: Vec<PathBuf>,
+    /// v1.x:`[sandbox].allow_network`。
+    pub sandbox_network: Option<bool>,
 }
 
 /// [`bootstrap_normal`] / [`bootstrap_resumed`] 的产物。
@@ -97,20 +123,31 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     let initial_cfg = zhuye_config::load_default();
     init_tracing(initial_cfg.analytics.as_ref());
 
-    // 把 `[sandbox].os_level` 配置桥接到 env(`ZHUYE_SANDBOX_OS_LEVEL`)
-    // —— `BashTool` 在 execute 时读 env 决定是否激活 Seatbelt/Landlock。
-    // env 优先于 TOML(让 `ZHUYE_SANDBOX_OS_LEVEL=0` 能临时覆盖配置)。
-    // `Option<bool>`:`None` = 用户未表态 → 不桥接 env,让
-    // `OsSandbox::from_env()` 走**核心基线**(env 未设置 = 默认开启);
-    // `Some(true)` = 显式要求开 → 桥接 env=1。
-    if initial_cfg.sandbox.os_level == Some(true)
-        && std::env::var_os("ZHUYE_SANDBOX_OS_LEVEL").is_none()
-    {
-        unsafe {
-            std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", "1");
-        }
+    // v1.x:`[sandbox]` 段启动期解析为 OS 沙箱默认开关(env > config >
+    // 基线,见 `OsSandbox::resolve`),经 `AgentConfig.sandbox_default` 注入
+    // 每 turn —— 取代此前的 `unsafe set_var` 进程级桥接(Rust 2024 下
+    // set_var 是 unsafe 且多线程有竞态;且旧桥接只处理 `Some(true)`,
+    // `os_level = Some(false)` 用户显式关闭反而无效)。
+    let sandbox_cfg = &initial_cfg.sandbox;
+    let sandbox_default = (sandbox_cfg.os_level.is_some()
+        || !sandbox_cfg.writable_dirs.is_empty()
+        || sandbox_cfg.allow_network)
+        .then(|| {
+            zhuye_sandbox::OsSandbox::resolve(
+                sandbox_cfg.os_level,
+                sandbox_cfg.writable_dirs.clone(),
+                sandbox_cfg.allow_network,
+            )
+            .enabled
+        });
+    let sandbox_writable = sandbox_cfg.writable_dirs.clone();
+    let sandbox_network = sandbox_cfg.allow_network.then_some(true);
+    if let Some(on) = sandbox_default {
         tracing::info!(
-            "[sandbox].os_level = true → ZHUYE_SANDBOX_OS_LEVEL=1 (bash 将在 OS 沙箱内执行)"
+            enabled = on,
+            writable_dirs = sandbox_cfg.writable_dirs.len(),
+            allow_network = sandbox_cfg.allow_network,
+            "[sandbox] resolved → AgentConfig.sandbox_default (env 优先)"
         );
     }
 
@@ -178,50 +215,15 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     // Receiver 会让 HeadlessCommon 无法 Clone;这里包成消费端句柄。
     let reload_rx = ReloadRxHandle(reload_rx);
 
-    // 2. 工具注册表(builtin 全量注册,与 exec 历史行为一致)。
+    // 2. 工具注册表(builtin 全量注册 —— 单一事实源
+    // `register_builtin_tools`,与 lib facade 共用,勿在此内联追加)。
     let tools = Arc::new(ToolRegistry::default());
-    tools.register(Arc::new(zhuye_tools::builtins::EchoTool));
-    tools.register(Arc::new(zhuye_tools::builtins::BashTool::default()));
-    // 核心文件工具:与 lib facade(`zhuye::builder::default_tool_registry`)对齐。
-    // 此前缺失导致 CLI headless/serve 下模型调用 read/write/edit/grep/glob 报
-    // "tool not found",而 ALWAYS_ON_TOOLS prompt 仍向模型宣告这些工具可用。
-    tools.register(Arc::new(zhuye_tools::builtins::ReadTool));
-    tools.register(Arc::new(zhuye_tools::builtins::WriteTool));
-    tools.register(Arc::new(zhuye_tools::builtins::EditTool));
-    tools.register(Arc::new(zhuye_tools::builtins::DeleteTool));
-    tools.register(Arc::new(zhuye_tools::builtins::GrepTool));
-    tools.register(Arc::new(zhuye_tools::builtins::GlobTool));
-    tools.register(Arc::new(zhuye_tools::builtins::EnterPlanModeTool));
-    tools.register(Arc::new(zhuye_tools::builtins::ExitPlanModeTool));
-    tools.register(Arc::new(zhuye_tools::builtins::PlanWriteTool));
-    tools.register(Arc::new(zhuye_tools::builtins::EnterWorktreeTool));
-    tools.register(Arc::new(zhuye_tools::builtins::ExitWorktreeTool));
-    tools.register(Arc::new(zhuye_ast::AstTool::new()));
-    tools.register(Arc::new(zhuye_tools::builtins::WebFetchTool::new()));
-    tools.register(Arc::new(zhuye_tools::builtins::WebSearchTool::new()));
-    let ask_uq_limits = initial_cfg
+    let ask_uq_max = initial_cfg
         .ask_user_question
         .as_ref()
         .and_then(|s| s.resolved())
-        .unwrap_or(zhuye_config::schema::ResolvedAskUserQuestion {
-            max_questions: 4,
-            max_options: 4,
-            default_timeout_secs: 900,
-        });
-    tools.register(Arc::new(zhuye_tools::builtins::AskUserQuestionTool {
-        max_questions: ask_uq_limits.max_questions,
-    }));
-    tools.register(Arc::new(zhuye_tools::builtins::AskUserTool));
-    tools.register(Arc::new(zhuye_tools::builtins::RequestHumanInputTool));
-    tools.register(Arc::new(zhuye_tools::builtins::ToolSearchTool::new(
-        tools.clone(),
-    )));
-    tools.register(Arc::new(zhuye_tools::builtins::ImageViewTool));
-    tools.register(Arc::new(zhuye_tools::builtins::NotebookEditTool));
-    tools.register(Arc::new(zhuye_tools::builtins::BriefTool));
-    tools.register(Arc::new(zhuye_tools::builtins::GetContextRemainingTool));
-    tools.register(Arc::new(crate::CheckpointTool));
-    tools.register(Arc::new(crate::RewindTool));
+        .map(|r| r.max_questions as u32);
+    zhuye_tools::register_builtin_tools(&tools, ask_uq_max, Arc::new(zhuye_ast::AstTool::new()));
 
     // task 系统:默认 FileTaskStore 持久化,`--ephemeral-*` / HOME 缺失
     // 时降级内存后端。
@@ -304,6 +306,9 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         watcher,
         reload_tx,
         _reload_rx: reload_rx,
+        sandbox_default,
+        sandbox_writable,
+        sandbox_network,
     })
 }
 
@@ -319,22 +324,109 @@ pub(crate) struct ReloadRxHandle(pub(crate) mpsc::Receiver<Event>);
 /// 优先级(链式 first-match-wins,更具体的作用域在前):
 /// config.toml `[permissions]`(会话) > project
 /// (`<workspace>/.zhuye/permissions.toml`) > 用户级
-/// (`~/.zhuye/permissions.toml`)。`add` / `remove` 委托链尾的用户级
+/// (`$ZHUYE_HOME/permissions.toml`,默认 `~/.zhuye/permissions.toml`)。
+/// `add` / `remove` 委托链尾的用户级
 /// file store,运行时写入照旧落盘到用户文件;project 文件手工维护,
 /// 随工作区签入。
 ///
 /// v1.5 修复:此前只有 normal 分支装配权限,resume 分支完全绕过
+/// v1.x:side-channel thread 工厂 —— 按 agent 名构造**独立** AgentThread。
+///
+/// 与主会话共用 bootstrap(agent 定义 / 工具 / memory store / policy),
+/// 差异两点:
+/// - **recorder = None** —— side-channel 不写主会话 rollout(「事件不进
+///   主历史」的承诺在这里落地);
+/// - **取消令牌由 registry 生成**(参数传入),不是主 token 的子级。
+struct SideChannelSecurity {
+    permission_resolver: Option<Arc<dyn zhuye_permissions::PermissionResolver>>,
+    yolo_classifier: Option<Arc<dyn zhuye_permissions::YoloClassifier>>,
+    yolo_threshold: f32,
+    parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
+    approvals: bool,
+    sandbox_default: Option<bool>,
+    sandbox_writable: Vec<std::path::PathBuf>,
+    sandbox_network: Option<bool>,
+}
+
+fn build_side_channel_factory(
+    registry: zhuye_llm::SharedModelRegistry,
+    tools: Arc<ToolRegistry>,
+    cfg: zhuye_config::ReflectConfig,
+    telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
+    security: SideChannelSecurity,
+) -> zhuye_core::side_channel::SideContextThreadFactory {
+    Arc::new(
+        move |agent_name: &str,
+              cancel: CancellationToken,
+              context: zhuye_core::side_channel::SideChannelContext| {
+            let workspace = context.workspace;
+            let model = context.model;
+            // 独立注册表避免侧通道的 session 工具覆盖主会话工具。
+            let side_tools = Arc::new(ToolRegistry::new());
+            for (name, source) in tools.list_with_source() {
+                if let Some(tool) = tools.get(&name) {
+                    side_tools.register_with_source(source, tool);
+                }
+            }
+            let mut m4 = bootstrap_m4(
+                &workspace,
+                &side_tools,
+                agent_name,
+                &model,
+                &registry,
+                ThreadId::new(),
+                None,
+                &cfg,
+                telemetry.clone(),
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!("side-channel: agent `{agent_name}` bootstrap failed")
+            })?;
+            // 不写主历史:摘掉 recorder。
+            m4.recorder = None;
+            let mut thread_cfg = AgentConfig::new(model.clone(), workspace.clone())
+                .with_m4(m4)
+                .with_policy(Arc::new(cfg.routing_policy_with(&model)))
+                .with_sandbox_default(security.sandbox_default)
+                .with_sandbox_writable(security.sandbox_writable.clone())
+                .with_sandbox_network(security.sandbox_network)
+                .with_approvals(security.approvals)
+                .with_cancel(cancel);
+            thread_cfg.inherited_approval_mode = Some(security.parent_mode.clone());
+            thread_cfg.yolo_classifier = security.yolo_classifier.clone();
+            thread_cfg.yolo_threshold = security.yolo_threshold;
+            if let Some(resolver) = &security.permission_resolver {
+                thread_cfg = thread_cfg.with_permission_resolver(resolver.clone());
+            }
+            let thread = AgentThread::new(
+                thread_cfg,
+                registry.clone(),
+                side_tools,
+                Some(build_sanitizer(cfg.sanitize.as_ref())),
+                None,
+            );
+            thread.register_hook(zhuye_core::side_channel::InheritedPlanGate::new(
+                security.parent_mode.clone(),
+            ));
+            Ok(thread)
+        },
+    )
+}
+
 /// 权限规则与 YOLO 分类器。
 async fn apply_permission_layers(
     mut cfg: AgentConfig,
     initial_cfg: &zhuye_config::ReflectConfig,
     workspace: &std::path::Path,
 ) -> AgentConfig {
-    let Ok(file_store) = zhuye_permissions::FilePermissionStore::with_default_home() else {
-        cfg.yolo_classifier = Some(Arc::new(zhuye_permissions::HeuristicYoloClassifier));
-        return cfg;
-    };
-    let file_store: Arc<dyn zhuye_permissions::PermissionStore> = Arc::new(file_store);
+    let file_store: Arc<dyn zhuye_permissions::PermissionStore> =
+        match zhuye_permissions::FilePermissionStore::with_default_home() {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::warn!(%error, "无法确定用户权限文件路径，仍应用会话与项目规则");
+                Arc::new(zhuye_permissions::InMemoryPermissionStore::new())
+            }
+        };
     let cfg_store: Arc<dyn zhuye_permissions::PermissionStore> =
         Arc::new(zhuye_permissions::InMemoryPermissionStore::new());
     if let Some(sec) = &initial_cfg.permissions {
@@ -396,6 +488,9 @@ pub async fn bootstrap_normal(
         watcher,
         reload_tx,
         _reload_rx: ReloadRxHandle(reload_rx),
+        sandbox_default,
+        sandbox_writable,
+        sandbox_network,
     } = common;
 
     // M4 bootstrap:agent 定义、skills、压缩器、记忆、prompt 构建器。
@@ -403,6 +498,7 @@ pub async fn bootstrap_normal(
     let telemetry_sink = build_telemetry_sink(&initial_cfg);
     let m4 = bootstrap_m4(
         &workspace,
+        &tools,
         args.agent.as_deref().unwrap_or("default"),
         &model,
         &registry,
@@ -476,7 +572,11 @@ pub async fn bootstrap_normal(
             }
         }
     }
+
     let mut cfg = AgentConfig::new(model.clone(), workspace.clone())
+        .with_sandbox_default(sandbox_default)
+        .with_sandbox_writable(sandbox_writable.clone())
+        .with_sandbox_network(sandbox_network)
         .with_m4(m4)
         .with_policy(policy)
         .with_token_budget(token_budget)
@@ -485,6 +585,7 @@ pub async fn bootstrap_normal(
         .with_tool_env(tool_env)
         .with_telemetry(telemetry_sink.clone())
         .with_cancel(cancel.clone())
+        .with_session_id(thread_id)
         .with_subagent_runtime(subagent_runtime.clone())
         .with_context_window_overrides(
             initial_cfg
@@ -499,6 +600,29 @@ pub async fn bootstrap_normal(
             zhuye_protocol::PermissionMode::Auto
         });
     cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    // 侧通道复用主会话策略,避免独立执行绕过权限规则。
+    let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
+        zhuye_core::side_channel::SideChannelRegistry::new(),
+        cfg.workspace.clone(),
+        cfg.model.clone(),
+        build_side_channel_factory(
+            registry.clone(),
+            tools.clone(),
+            initial_cfg.clone(),
+            telemetry_sink.clone(),
+            SideChannelSecurity {
+                permission_resolver: cfg.permission_resolver.clone(),
+                yolo_classifier: cfg.yolo_classifier.clone(),
+                yolo_threshold: cfg.yolo_threshold,
+                parent_mode: cfg.permission_mode.clone(),
+                approvals: cfg.approvals,
+                sandbox_default,
+                sandbox_writable: sandbox_writable.clone(),
+                sandbox_network,
+            },
+        ),
+    );
+    cfg = cfg.with_side_channel_driver(side_channel_driver);
     let cfg_for_reload = cfg.clone(); // 共享 model Arc<RwLock>
     let thread = Arc::new(AgentThread::new(
         cfg,
@@ -507,12 +631,31 @@ pub async fn bootstrap_normal(
         Some(sanitizer.clone()),
         Some(hook_engine.clone()),
     ));
+    // v1.x:Activity 审计(WP12)—— 会话事件沉淀到
+    // `~/.zhuye/activity/activity.jsonl`。独立 receiver,与 stdout
+    // drainer 并行互不阻塞;`[telemetry].activity=false` 关闭。
+    if initial_cfg
+        .telemetry
+        .as_ref()
+        .map(|t| t.activity_enabled())
+        .unwrap_or(true)
+    {
+        let logger = zhuye_telemetry::ActivityLogger::with_default_home();
+        let rx = thread.subscribe_session();
+        tokio::spawn(zhuye_telemetry::pump_events(logger, rx));
+    }
 
     // Cron 真实调度:到期把 job.prompt 作为 user_input 注入。
-    let cron_scheduler = Arc::new(zhuye_stream::CronScheduler::new(
-        Some(thread.submission_sender()),
-        thread_id,
-    ));
+    // v1.x:启用持久化(`~/.zhuye/cron/<session>.json`)—— resume 同一
+    // thread id 时 job 恢复,进程退出不再丢。坏文件不覆盖、起步为空。
+    let cron_scheduler = {
+        let mut scheduler =
+            zhuye_stream::CronScheduler::new(Some(thread.submission_sender()), thread_id);
+        if let Some(base) = zhuye_stream::default_cron_base() {
+            scheduler = scheduler.with_store(zhuye_stream::store_path_for(&base, &thread_id));
+        }
+        Arc::new(scheduler)
+    };
     tools.register_with_source(
         ToolSource::Builtin,
         Arc::new(crate::CronTool::new(cron_scheduler.clone())),
@@ -571,7 +714,7 @@ pub async fn bootstrap_normal(
         mcp_for_plugins,
         skills_for_plugins,
         factory.clone(),
-        &initial_cfg.plugins.enabled_plugins,
+        &resolve_enabled_plugins(args, &initial_cfg),
         Some(reload_tx.clone()),
     )
     .await;
@@ -646,6 +789,9 @@ pub async fn bootstrap_resumed(
         watcher,
         reload_tx,
         _reload_rx: ReloadRxHandle(reload_rx),
+        sandbox_default,
+        sandbox_writable,
+        sandbox_network,
     } = common;
 
     let bundle = bootstrap_resume(thread_id_str).await?;
@@ -656,6 +802,7 @@ pub async fn bootstrap_resumed(
     // 的 `resume_recorder` 等价。
     let m4 = bootstrap_m4(
         &workspace,
+        &tools,
         args.agent.as_deref().unwrap_or("default"),
         &model,
         &registry,
@@ -684,14 +831,44 @@ pub async fn bootstrap_resumed(
     factory.set_telemetry(telemetry_sink.clone());
     factory.set_cancel(cancel.clone());
     let cfg = AgentConfig::new(model.clone(), workspace.clone())
+        .with_sandbox_default(sandbox_default)
+        .with_sandbox_writable(sandbox_writable.clone())
+        .with_sandbox_network(sandbox_network)
         .with_m4(m4)
         .with_policy(Arc::new(initial_cfg.routing_policy_with(&model)))
-        .with_telemetry(telemetry_sink)
+        .with_telemetry(telemetry_sink.clone())
         .with_cancel(cancel.clone())
+        // 回填 session_id:submission_loop 每轮 `rec.replay(cfg.session_id)`
+        // 重建历史 —— 未设置时是随机新 uuid,永远命不中原文件,恢复的
+        // 历史进不了模型上下文(跨轮失忆)。三处 id(文件名 /
+        // session_meta.session_id / 此处)对齐后,历史稳定进入每轮 base。
+        .with_session_id(thread_id)
         .with_preload_messages(bundle.initial_messages.clone());
     // 与 normal 分支同权:权限三层装配(config > project > user)+ YOLO
     // 分类器。此前 resume 分支漏装,resume 会话会绕过权限规则。
     let cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
+        zhuye_core::side_channel::SideChannelRegistry::new(),
+        cfg.workspace.clone(),
+        cfg.model.clone(),
+        build_side_channel_factory(
+            registry.clone(),
+            tools.clone(),
+            initial_cfg.clone(),
+            telemetry_sink.clone(),
+            SideChannelSecurity {
+                permission_resolver: cfg.permission_resolver.clone(),
+                yolo_classifier: cfg.yolo_classifier.clone(),
+                yolo_threshold: cfg.yolo_threshold,
+                parent_mode: cfg.permission_mode.clone(),
+                approvals: cfg.approvals,
+                sandbox_default,
+                sandbox_writable: sandbox_writable.clone(),
+                sandbox_network,
+            },
+        ),
+    );
+    let cfg = cfg.with_side_channel_driver(side_channel_driver);
     // 0.5:resume 分支此前完全忽略 `--plan-mode` —— 既不设
     // `PermissionMode::Plan` 也不注册 `PlanModeGate`,于是
     // `zhuye exec --plan-mode --resume <id>` 直接是 Auto 模式 + 无
@@ -710,6 +887,38 @@ pub async fn bootstrap_resumed(
         Some(sanitizer.clone()),
         Some(hook_engine.clone()),
     ));
+    // v1.x:Activity 审计(resume 分支与 normal 同权;开关同 [telemetry].activity)。
+    if initial_cfg
+        .telemetry
+        .as_ref()
+        .map(|t| t.activity_enabled())
+        .unwrap_or(true)
+    {
+        let logger = zhuye_telemetry::ActivityLogger::with_default_home();
+        let rx = thread.subscribe_session();
+        tokio::spawn(zhuye_telemetry::pump_events(logger, rx));
+    }
+    // v1.x:resume 分支补齐 CronTool + 持久化(此前只在 normal 分支装配,
+    // resume 会话里 cron 工具不存在 → "tool not found";持久化 store 也
+    // 没接,job 跨重启恢复不了)。store 以 thread_id 命名,与 normal 分支
+    // 同一文件 → 同一 session 的 job 跨重启可见。
+    {
+        let mut scheduler =
+            zhuye_stream::CronScheduler::new(Some(thread.submission_sender()), thread_id);
+        if let Some(base) = zhuye_stream::default_cron_base() {
+            scheduler = scheduler.with_store(zhuye_stream::store_path_for(&base, &thread_id));
+        }
+        tools.register_with_source(
+            ToolSource::Builtin,
+            Arc::new(crate::CronTool::new(Arc::new(scheduler.clone()))),
+        );
+        let cron_driver = scheduler.start(30);
+        tokio::spawn(async move {
+            let _handle = cron_driver;
+            std::future::pending::<()>().await;
+        });
+        tracing::info!(session_id = %thread_id, "cron scheduler started (resume, tick=30s)");
+    }
     // 0.5:Plan mode 的执行机制是 hook,不是 permission mode。normal 分支
     // 注册的 PlanModeGate / read_before_edit 在 resume 分支也要有。
     if args.plan_mode {
@@ -738,7 +947,7 @@ pub async fn bootstrap_resumed(
         mcp_for_plugins,
         skills_for_plugins,
         factory.clone(),
-        &initial_cfg.plugins.enabled_plugins,
+        &resolve_enabled_plugins(args, &initial_cfg),
         None,
     )
     .await;
@@ -902,6 +1111,68 @@ pub fn load_image_item(path: &str) -> anyhow::Result<zhuye_protocol::UserInputIt
         data,
         mime_type: mime.to_string(),
     })
+}
+
+#[cfg(test)]
+mod side_channel_security_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn side_channel_inherits_classifier_and_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let classifier: Arc<dyn zhuye_permissions::YoloClassifier> =
+            Arc::new(zhuye_permissions::HeuristicYoloClassifier);
+        let workspace = Arc::new(parking_lot::RwLock::new(dir.path().to_path_buf()));
+        let factory = build_side_channel_factory(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(ToolRegistry::new()),
+            zhuye_config::ReflectConfig::default(),
+            None,
+            SideChannelSecurity {
+                permission_resolver: None,
+                yolo_classifier: Some(classifier.clone()),
+                yolo_threshold: 0.93,
+                parent_mode: Arc::new(parking_lot::RwLock::new(
+                    zhuye_protocol::PermissionMode::Auto,
+                )),
+                approvals: true,
+                sandbox_default: None,
+                sandbox_writable: Vec::new(),
+                sandbox_network: None,
+            },
+        );
+        let thread = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: workspace.read().clone(),
+                model: "mock".into(),
+            },
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(
+            thread.config().yolo_classifier.as_ref().unwrap(),
+            &classifier
+        ));
+        assert_eq!(thread.config().yolo_threshold, 0.93);
+        assert!(thread.config().approvals);
+        let switched = dir.path().join("switched");
+        std::fs::create_dir(&switched).unwrap();
+        *workspace.write() = switched.clone();
+        let side = factory(
+            "default",
+            CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: workspace.read().clone(),
+                model: "mock/new".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(side.config().current_workspace(), switched);
+        assert_eq!(side.config().current_model(), "mock/new");
+        *workspace.write() = dir.path().to_path_buf();
+        assert_eq!(side.config().current_workspace(), switched);
+    }
 }
 
 #[cfg(test)]

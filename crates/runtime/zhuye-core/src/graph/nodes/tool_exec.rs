@@ -145,6 +145,14 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         .latest_content
         .retain(|b| !matches!(b, ContentBlock::ToolUse { .. }));
     for mut r in results {
+        // v1.9 C3:本 turn 工具证据计数(供中毒会话检测器在 turn 末读取)。
+        state.turn_tool_calls += 1;
+        if r.is_error {
+            state.turn_tool_errors += 1;
+        }
+        if r.metadata.get("timeout_ms").is_some() {
+            state.turn_tool_timeouts += 1;
+        }
         // 取出 call_meta 提前 —— v1.x Plan mode 分支要在 ToolCallEnd 之后
         // 立刻 dispatch(成功走 request / ready;失败走 PlanRejected),需要
         // 工具名 + 参数。

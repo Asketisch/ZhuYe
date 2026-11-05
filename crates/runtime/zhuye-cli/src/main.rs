@@ -14,6 +14,7 @@ use zhuye_plugin::state::PluginScope;
 
 mod config;
 mod doctor;
+mod hooks;
 mod init;
 mod login;
 mod lsp;
@@ -122,6 +123,11 @@ enum Command {
     Lsp {
         #[command(subcommand)]
         action: LspAction,
+    },
+    /// 内置 hook 启停管理(状态持久化在 `[hooks].disabled`)。
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
     },
     /// 结构化任务 + 团队管理(TaskCreate / TaskList / TeamCreate 等)。
     Task {
@@ -596,6 +602,23 @@ enum PluginAction {
     },
 }
 
+/// `zhuye hooks` 的三条子命令。
+#[derive(Debug, Subcommand)]
+enum HooksAction {
+    /// 列全部已注册 hook 与启停状态。
+    Ls,
+    /// 禁用 hook(写入 `config.toml#hooks.disabled`)。
+    Disable {
+        /// hook 名(内置短名或 `plugin:<id>:<event>#<i>`)。
+        name: String,
+    },
+    /// 启用 hook(从 `config.toml#hooks.disabled` 移除)。
+    Enable {
+        /// hook 名(内置短名或 `plugin:<id>:<event>#<i>`)。
+        name: String,
+    },
+}
+
 /// `zhuye lsp` 子命令(v0.5 Phase A:list + status)。
 #[derive(Debug, Subcommand)]
 enum LspAction {
@@ -774,7 +797,7 @@ fn main() -> anyhow::Result<()> {
             SessionAction::Rm { id, yes } => session::rm(&id, yes),
             SessionAction::Fork { id, branch } => session::fork(&id, branch.as_deref()),
             SessionAction::Rename { id, name } => session::rename(&id, &name),
-            SessionAction::Export { id, out } => session::export(&id, out.as_deref()),
+            SessionAction::Export { id, out } => rt.block_on(session::export(&id, out.as_deref())),
             SessionAction::Search { query, limit, json } => session::search(&query, limit, json),
             SessionAction::Stats { workspace } => session::stats(workspace.as_deref()),
         },
@@ -866,6 +889,11 @@ fn main() -> anyhow::Result<()> {
         Command::Lsp { action } => match action {
             LspAction::List => lsp::list(),
             LspAction::Status { name } => lsp::status(&name),
+        },
+        Command::Hooks { action } => match action {
+            HooksAction::Ls => hooks::ls(),
+            HooksAction::Disable { name } => hooks::disable(&name),
+            HooksAction::Enable { name } => hooks::enable(&name),
         },
         Command::Task { action } => match action {
             TaskAction::Ls {

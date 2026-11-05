@@ -7,6 +7,7 @@ description = "ZhuYe: plugin manifest, lifecycle, and capability loader"
 
 [dependencies]
 zhuye-protocol = { workspace = true }
+zhuye-fs       = { workspace = true }
 zhuye-tools    = { workspace = true }
 zhuye-hooks    = { workspace = true }
 zhuye-mcp      = { workspace = true }

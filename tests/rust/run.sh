@@ -10,6 +10,7 @@
 #   6. serve_ops.sh         serve 协议 19 Op 全量 + 事件断言
 #   7. tools_drive.sh       内置工具全量驱动(mock LLM 逐工具调一遍)
 #   8. integrations.sh      MCP/skill/notes/bubble/热重载/plugin 集成链路
+#   9. env_lock_stress.sh   zhuye-config env 竞态回归压测(44ae3da 门禁)
 #
 # `ZHUYE_SKIP_WORKSPACE=1` 时跳过第 1 步(cargo test / clippy / fmt / doc)
 # —— CI 的 `functional` 门禁入口用此模式:那部分由既有 CI job 覆盖。
@@ -83,9 +84,15 @@ bash "$HERE/tools_drive.sh" || TOTAL_RC=1
 
 echo
 echo "════════════════════════════════════════════════"
-echo "  8/8 集成链路(MCP/skill/notes/bubble/热重载/plugin)"
+echo "  8/9 集成链路(MCP/skill/notes/bubble/热重载/plugin)"
 echo "════════════════════════════════════════════════"
 bash "$HERE/integrations.sh" || TOTAL_RC=1
+
+echo
+echo "════════════════════════════════════════════════"
+echo "  9/9 zhuye-config env 竞态回归压测"
+echo "════════════════════════════════════════════════"
+bash "$HERE/env_lock_stress.sh" || TOTAL_RC=1
 
 echo
 if [ "$TOTAL_RC" -eq 0 ]; then

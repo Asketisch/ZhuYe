@@ -20,7 +20,7 @@
 //! 讨论中的每个 Agent 通过 [`zhuye_subagent::SubAgentFactory`] 生成(每角色一个
 //! `AgentThread`),[`DiscussionOrchestrator`] 负责调度 + 共识检测 + transcript 持久化。
 //!
-//! 协议不暴露讨论状态(参见 `docs/protocol.md §342` 的 `EventMsg::Collab*` 段);状态
+//! 协议不暴露讨论状态(`EventMsg::Collab*` 段);状态
 //! 完全在本 crate 内消化,唯一外部可见的是持久化到 JSONL 的
 //! `zhuye_protocol::RolloutRecord::DiscussionTranscript` 变体。
 //!

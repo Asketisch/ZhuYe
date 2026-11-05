@@ -516,10 +516,18 @@ pub struct OpenAIRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
     stream: bool,
+    /// 流式 usage 必须显式请求:OpenAI 兼容服务端(含 vLLM/各类网关)默认
+    /// **不在**流里下发 usage 帧,缺省时 `token_count` 恒为 0 —— 配额、
+    /// 成本与 GUI 用量面板全部失真。`stream.rs` 的排空逻辑(收 stop 后
+    /// 继续等尾帧 usage)正是为这一帧准备的。不支持该参数的服务端会
+    /// 忽略它,无副作用。
+    stream_options: StreamOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
     /// v1.4 B1:结构化输出(`response_format` 参数)。`None` 不序列化,
@@ -553,7 +561,7 @@ impl From<ChatRequest> for OpenAIRequest {
         if let Some(sys) = req.system.as_single_string() {
             messages.push(serde_json::json!({"role": "system", "content": sys}));
         }
-        for m in req.messages {
+        for m in crate::request::lift_tool_images(req.messages) {
             push_message(m, &mut messages);
         }
         let tools: Vec<Value> = req
@@ -576,19 +584,43 @@ impl From<ChatRequest> for OpenAIRequest {
             }
             _ => None,
         };
+        let model = req.model.rsplit('/').next().unwrap_or(&req.model);
+        let reasoning_model = model.strip_prefix('o').is_some_and(|suffix| {
+            let mut chars = suffix.chars();
+            chars.next().is_some_and(|c| c.is_ascii_digit())
+                && matches!(chars.next(), None | Some('-'))
+        });
         Self {
             model: req.model,
             messages,
             tools,
             temperature: req.temperature,
-            max_tokens: req.max_tokens,
+            max_tokens: if reasoning_model {
+                None
+            } else {
+                req.max_tokens
+            },
+            max_completion_tokens: if reasoning_model {
+                req.max_tokens
+            } else {
+                None
+            },
             top_p: req.top_p,
             stop: req.stop,
             stream: true,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
             reasoning_effort,
             response_format: req.response_format.as_ref().map(openai_response_format),
         }
     }
+}
+
+/// `stream_options` wire 形态 —— 目前只有 `include_usage` 一项。
+#[derive(Debug, Serialize)]
+pub struct StreamOptions {
+    include_usage: bool,
 }
 
 fn push_message(m: ChatMessage, out: &mut Vec<Value>) {
@@ -906,6 +938,52 @@ mod tests {
     }
 
     #[test]
+    fn tool_images_follow_the_complete_tool_result_batch() {
+        use crate::request::{
+            AssistantContent, ChatMessage, ChatRequest, ContentBlock, ToolCallRequest, ToolResult,
+        };
+        let call = |id: &str| ToolCallRequest {
+            id: id.into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({}),
+        };
+        let req = ChatRequest {
+            messages: vec![
+                ChatMessage::Assistant(AssistantContent {
+                    tool_calls: vec![call("a"), call("b")],
+                    ..Default::default()
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "a".into(),
+                    content: vec![ContentBlock::Image {
+                        data: vec![0x89, b'P', b'N', b'G'],
+                        mime_type: "image/png".into(),
+                    }],
+                    is_error: false,
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "b".into(),
+                    content: vec![ContentBlock::text("完成")],
+                    is_error: false,
+                }),
+            ],
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(OpenAIRequest::from(req)).unwrap();
+        let roles: Vec<_> = wire["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["assistant", "tool", "tool", "user"]);
+        assert_eq!(
+            wire["messages"][3]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw=="
+        );
+    }
+
+    #[test]
     fn base64_roundtrip_known_values() {
         assert_eq!(base64_encode(b""), "");
         assert_eq!(base64_encode(b"f"), "Zg==");
@@ -1071,6 +1149,32 @@ mod tests {
         assert!(
             !body.contains("cache_control"),
             "OpenAI 出站 body 不应含 cache_control,wire 是 no-op;got: {body}"
+        );
+    }
+
+    /// 流式 usage 必须显式请求:缺 `stream_options.include_usage` 时
+    /// OpenAI 兼容服务端不在流里下发 usage 帧 → `token_count` 恒 0
+    /// (GUI 用量/配额/成本全部失真,实机测试在 vLLM 网关上复现)。
+    #[test]
+    fn openai_stream_request_asks_for_usage() {
+        let req = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("hi")],
+            })],
+            ..Default::default()
+        };
+        let v: Value = serde_json::to_value(OpenAIRequest::from(req)).unwrap();
+        assert_eq!(
+            v.get("stream").and_then(Value::as_bool),
+            Some(true),
+            "出站请求应为流式;got: {v}"
+        );
+        assert_eq!(
+            v.pointer("/stream_options/include_usage")
+                .and_then(Value::as_bool),
+            Some(true),
+            "流式请求必须带 stream_options.include_usage,否则服务端不下发 usage;got: {v}"
         );
     }
     // ── v1.4 B1:response_format 映射 ─────────────────────────────

@@ -12,6 +12,7 @@
 //!
 //! 非 OpenAI 兼容网关若不支持 Responses,缺省 `responses_api = false` 走 Chat Completions。
 
+use base64::Engine as _;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -522,12 +523,20 @@ fn push_input_message(m: crate::request::ChatMessage, out: &mut Vec<Value>) {
             out.push(serde_json::json!({"role": "assistant", "content": content}));
         }
         ChatMessage::Tool(t) => {
-            // tool 结果:Responses 用 role=function + call_id。`output` 为
-            // 字符串,用 content_as_text()(Image 块占位,而非字节数组文本)。
+            // Responses 支持在工具回执中直接传入图片内容块。
+            let output = if t
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Image { .. }))
+            {
+                blocks_to_responses_content(t.content)
+            } else {
+                Value::String(t.content_as_text())
+            };
             out.push(serde_json::json!({
                 "type": "function_call_output",
                 "call_id": t.call_id,
-                "output": t.content_as_text(),
+                "output": output,
             }));
         }
     }
@@ -547,9 +556,9 @@ fn blocks_to_responses_content(blocks: Vec<ContentBlock>) -> Value {
             ContentBlock::Text { text } => {
                 serde_json::json!({"type": "input_text", "text": text})
             }
-            ContentBlock::Image { .. } => {
-                // Responses 用 input_image;image_url 详情序列化进去。
-                serde_json::json!({"type": "input_image", "image_url": "<image>"})
+            ContentBlock::Image { data, mime_type } => {
+                let data = base64::engine::general_purpose::STANDARD.encode(data);
+                serde_json::json!({"type": "input_image", "image_url": format!("data:{mime_type};base64,{data}")})
             }
         })
         .collect();
@@ -672,6 +681,44 @@ mod tests {
             evs[0],
             ChatEvent::ThinkingDelta(ref s) if s == "summary"
         ));
+    }
+
+    #[test]
+    fn user_and_tool_images_include_original_bytes() {
+        use crate::request::{ChatMessage, ChatRequest, ContentBlock, ToolResult, UserContent};
+        let image = || ContentBlock::Image {
+            data: vec![0x89, b'P', b'N', b'G'],
+            mime_type: "image/png".into(),
+        };
+        let req = ChatRequest {
+            messages: vec![
+                ChatMessage::User(UserContent {
+                    blocks: vec![image()],
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "c1".into(),
+                    content: vec![ContentBlock::text("截图"), image()],
+                    is_error: false,
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "c2".into(),
+                    content: vec![],
+                    is_error: false,
+                }),
+            ],
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(ResponsesRequest::from(req)).unwrap();
+        assert_eq!(
+            wire["input"][0]["content"][0]["image_url"],
+            "data:image/png;base64,iVBORw=="
+        );
+        assert_eq!(wire["input"][1]["output"][0]["text"], "截图");
+        assert_eq!(
+            wire["input"][1]["output"][1]["image_url"],
+            "data:image/png;base64,iVBORw=="
+        );
+        assert_eq!(wire["input"][2]["output"], "");
     }
 
     #[test]

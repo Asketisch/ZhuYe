@@ -1,0 +1,16 @@
+# 烛夜插件 —— 外部 Harness 历史会话导入。
+#
+# 安装:zhuye plugin install plugins/harness-import --scope user
+# 启用:zhuye plugin enable harness-import@inline
+# 前置:先构建并装配二进制 → ./scripts/build_import_plugin.sh
+#      (插件 .mcp.json 引用 ${PLUGIN_ROOT}/bin/zhuye-import)
+name = "harness-import"
+version = "0.1.0"
+description = "导入外部 Harness(Claude Code / Codex / ZCode)历史会话为烛夜会话"
+keywords = ["import", "claude-code", "codex", "zcode", "migration"]
+
+# commands:/harness:import <路径> 展开 → 指引模型调用 MCP 导入工具。
+commands = "./commands"
+# mcp_servers:bin/zhuye-import 的 MCP stdio 模式(能力核心是
+# crates/integrations/zhuye-import,二进制同时支持终端直跑批量导入)。
+mcp_servers = "./.mcp.json"

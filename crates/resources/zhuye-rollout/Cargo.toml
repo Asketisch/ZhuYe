@@ -8,6 +8,7 @@ description = "ZhuYe: JSONL rollout persistence with rotation and redaction"
 [dependencies]
 zhuye-protocol = { workspace = true }
 zhuye-sanitize = { workspace = true }
+zhuye-fs      = { workspace = true }
 chrono             = { workspace = true }
 tokio              = { workspace = true, features = ["fs", "io-util", "macros", "rt"] }
 serde              = { workspace = true }
