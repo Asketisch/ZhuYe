@@ -745,20 +745,6 @@ mod landlock {
         !strict && matches!(errno, 38 | 95)
     }
 
-    #[cfg(test)]
-    mod failure_policy_tests {
-        use super::may_ignore_unsupported;
-
-        #[test]
-        fn unsupported_backend_only_degrades_when_non_strict() {
-            for error in [38, 95] {
-                assert!(!may_ignore_unsupported(error, true));
-                assert!(may_ignore_unsupported(error, false));
-            }
-            assert!(!may_ignore_unsupported(1, false));
-        }
-    }
-
     /// 在 pre_exec 上下文应用 Landlock。仅 workspace(及其额外可写目录)
     /// 放行全 access;workspace 外的写由内核拒(读 / exec 不受限 —— 与
     /// macOS 策略一致:限制写是核心安全边界)。
@@ -842,6 +828,22 @@ mod landlock {
             ));
         }
         Ok(())
+    }
+
+    // 测试模块保持在实现之后:新版 stable clippy 将「test 模块后跟实现项」
+    // (items_after_test_module)列为默认警告,-D warnings 下会挂 CI。
+    #[cfg(test)]
+    mod failure_policy_tests {
+        use super::may_ignore_unsupported;
+
+        #[test]
+        fn unsupported_backend_only_degrades_when_non_strict() {
+            for error in [38, 95] {
+                assert!(!may_ignore_unsupported(error, true));
+                assert!(may_ignore_unsupported(error, false));
+            }
+            assert!(!may_ignore_unsupported(1, false));
+        }
     }
 }
 
