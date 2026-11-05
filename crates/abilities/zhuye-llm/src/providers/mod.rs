@@ -79,8 +79,8 @@ pub(crate) async fn ensure_sse_response(
 /// `XxxRequest::from` 里分散处理更不易漏。
 /// v1.9 C8 文档见函数体;`apply_request_param_defaults` 在「请求侧与
 /// provider 段配置都未给 max_tokens」时按模型上下文窗口自适应推
-/// 安全输出预算(见 `crate::output_budget`);模型不在窗口表
-/// (未知 / mock)时维持 `None` —— 行为与 v1.8 完全一致。
+/// 输出预算(见 `crate::output_budget`);模型窗口或最大输出未知时维持
+/// `None`,沿用 provider 原有默认行为。
 pub(crate) fn apply_request_param_defaults(
     request: &mut ChatRequest,
     temperature: Option<f32>,

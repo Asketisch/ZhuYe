@@ -472,7 +472,7 @@ impl From<ChatRequest> for OllamaRequest {
         if let Some(sys) = req.system.as_single_string() {
             messages.push(serde_json::json!({"role": "system", "content": sys}));
         }
-        for m in req.messages {
+        for m in crate::request::lift_tool_images(req.messages) {
             push_message(m, &mut messages);
         }
         let tools: Vec<Value> = req
@@ -662,6 +662,49 @@ fn base64_encode(input: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::request::SystemBlocks;
+
+    #[test]
+    fn tool_images_follow_the_complete_tool_result_batch() {
+        use crate::request::{
+            AssistantContent, ChatMessage, ChatRequest, ContentBlock, ToolCallRequest, ToolResult,
+        };
+        let call = |id: &str| ToolCallRequest {
+            id: id.into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({}),
+        };
+        let req = ChatRequest {
+            messages: vec![
+                ChatMessage::Assistant(AssistantContent {
+                    tool_calls: vec![call("a"), call("b")],
+                    ..Default::default()
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "a".into(),
+                    content: vec![ContentBlock::Image {
+                        data: vec![0x89, b'P', b'N', b'G'],
+                        mime_type: "image/png".into(),
+                    }],
+                    is_error: false,
+                }),
+                ChatMessage::Tool(ToolResult {
+                    call_id: "b".into(),
+                    content: vec![ContentBlock::text("完成")],
+                    is_error: false,
+                }),
+            ],
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(OllamaRequest::from(req)).unwrap();
+        let roles: Vec<_> = wire["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["assistant", "tool", "tool", "user"]);
+        assert_eq!(wire["messages"][3]["images"][0], "iVBORw==");
+    }
 
     #[test]
     fn ollama_request_basic() {

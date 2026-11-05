@@ -133,7 +133,7 @@ impl Actor {
         }
     }
 
-    /// 用 `<role>@<team>` 字符串反解析(与 [`crate::team::parse_agent_id`]
+    /// 用 `<role>@<team>` 字符串反解析(与 `zhuye_task::team::parse_agent_id`
     /// 拆分口径一致);`"user"` / `"system"` 特殊值;其它未知 id 保守归
     /// System,避免误导。
     pub fn from_agent_id(agent_id: &str) -> Self {

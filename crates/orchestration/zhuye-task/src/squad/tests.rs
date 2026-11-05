@@ -209,3 +209,113 @@ fn squad_error_display_and_name_validation() {
     assert!(SquadManager::validate_name("Has Space").is_err());
     assert!(SquadManager::validate_name("UPPER").is_err());
 }
+
+struct SlowTaskStore(InMemoryTaskStore);
+
+#[async_trait::async_trait]
+impl crate::store::TaskStore for SlowTaskStore {
+    fn dir_for(&self, list: &crate::model::ListId) -> std::path::PathBuf {
+        self.0.dir_for(list)
+    }
+    async fn save(&self, list: &crate::model::ListId, task: &Task) -> Result<(), TaskError> {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        self.0.save(list, task).await
+    }
+    async fn load(&self, list: &crate::model::ListId, id: TaskId) -> Result<Task, TaskError> {
+        self.0.load(list, id).await
+    }
+    async fn delete(&self, list: &crate::model::ListId, id: TaskId) -> Result<(), TaskError> {
+        self.0.delete(list, id).await
+    }
+    async fn list(&self, list: &crate::model::ListId) -> Result<Vec<Task>, TaskError> {
+        self.0.list(list).await
+    }
+    async fn next_id(&self, list: &crate::model::ListId) -> Result<TaskId, TaskError> {
+        self.0.next_id(list).await
+    }
+}
+
+#[tokio::test]
+async fn assignment_and_concurrent_update_preserve_both_changes() {
+    let manager = Arc::new(TaskManager::new(
+        Arc::new(SlowTaskStore(InMemoryTaskStore::default())),
+        Arc::new(InMemoryTeamStore::default()),
+    ));
+    let squad = SquadManager::new(manager.clone());
+    let task = create_task(&squad, "parallel", serde_json::json!({"keep": "value"})).await;
+    let list = "parallel".to_string();
+    let assignment = squad.assign_task(&list, task.id, Some("builder@parallel".into()));
+    let update = manager.update_task(
+        &list,
+        task.id,
+        crate::manager::TaskPatch {
+            subject: Some("新标题".into()),
+            ..Default::default()
+        },
+    );
+    let (assigned, updated) = tokio::join!(assignment, update);
+    assigned.unwrap();
+    updated.unwrap();
+    let result = manager.get_task(&list, task.id, false).await.unwrap();
+    assert_eq!(result.subject, "新标题");
+    assert_eq!(result.owner.as_deref(), Some("builder@parallel"));
+    assert_eq!(result.metadata["keep"], "value");
+    assert_eq!(result.metadata["actor"]["actorId"], "builder@parallel");
+}
+
+#[tokio::test]
+async fn claim_and_concurrent_update_preserve_both_changes() {
+    let manager = Arc::new(TaskManager::new(
+        Arc::new(SlowTaskStore(InMemoryTaskStore::default())),
+        Arc::new(InMemoryTeamStore::default()),
+    ));
+    let squad = SquadManager::new(manager.clone());
+    let task = create_task(&squad, "parallel", serde_json::json!({})).await;
+    let list = "parallel".to_string();
+    let claim = squad.delegate_next(&list, "team-lead@parallel");
+    let update = manager.update_task(
+        &list,
+        task.id,
+        crate::manager::TaskPatch {
+            subject: Some("新标题".into()),
+            ..Default::default()
+        },
+    );
+    let (claimed, updated) = tokio::join!(claim, update);
+    assert!(claimed.unwrap().is_some());
+    updated.unwrap();
+    let result = manager.get_task(&list, task.id, false).await.unwrap();
+    assert_eq!(result.subject, "新标题");
+    assert_eq!(result.status, crate::model::TaskStatus::InProgress);
+    assert_eq!(result.claimed_by.as_deref(), Some("team-lead@parallel"));
+}
+
+#[tokio::test]
+async fn delete_during_update_does_not_resurrect_task() {
+    let manager = Arc::new(TaskManager::new(
+        Arc::new(SlowTaskStore(InMemoryTaskStore::default())),
+        Arc::new(InMemoryTeamStore::default()),
+    ));
+    let squad = SquadManager::new(manager.clone());
+    let task = create_task(&squad, "parallel", serde_json::json!({})).await;
+    let list = "parallel".to_string();
+    let update = manager.update_task(
+        &list,
+        task.id,
+        crate::manager::TaskPatch {
+            subject: Some("更新".into()),
+            ..Default::default()
+        },
+    );
+    let delete = async {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        manager.delete_task(&list, task.id).await
+    };
+    let (updated, deleted) = tokio::join!(update, delete);
+    updated.unwrap();
+    deleted.unwrap();
+    assert!(matches!(
+        manager.get_task(&list, task.id, false).await,
+        Err(TaskError::NotFound { .. })
+    ));
+}

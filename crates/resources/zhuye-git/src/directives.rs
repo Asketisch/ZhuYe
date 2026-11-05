@@ -6,11 +6,12 @@
 //! 1. **`::git-<action>{attrs}`**(行内指令,从可见文本中**剥离**,一行
 //!    可有多条):`git-stage` / `git-commit` / `git-create-branch` /
 //!    `git-push` / `git-create-pr`。`cwd` 必填,缺 `cwd` / `branch` 的
-//!    指令整条丢弃且不留可见残片;按指令去重。
+//!    指令整条丢弃且不留可见残片;按指令去重。代码块、行内代码、
+//!    链接、HTML 代码及转义内容中的字面示例不解析为动作。
 //! 2. **`::code-comment{...}` / `:::code-comment{...}`**(1-3 个冒号,
 //!    **重写成可见 markdown** 而非剥离):属性 `title` / `body` / `file` /
 //!    `start` / `end` / `priority`(形如 `"P2"`),渲染成
-//!    `- [P2] {title} — {file}:{start}` + 缩进正文。
+//!    `- [P2] {title} — {file}:{start}` + 缩进正文,保留指令后的文本。
 //!
 //! 注意:模块内有两份手写属性解析器(`parse_attributes` 与
 //! `parse_code_comment_attributes`),行为**有意不同**(后者经
@@ -18,7 +19,10 @@
 //! "顺手统一"。
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::Path;
+
+use pulldown_cmark::{Event, Parser, Tag};
 
 /// assistant 输出里的 git 动作指令。
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -81,22 +85,49 @@ pub fn parse_assistant_markdown(markdown: &str, cwd: &Path) -> ParsedAssistantMa
     let mut git_actions: Vec<GitActionDirective> = Vec::new();
     let mut seen: HashSet<GitActionDirective> = HashSet::new();
     let mut visible_lines: Vec<String> = Vec::new();
+    let (protected, text_ranges) = markdown_ranges(markdown);
+    let mut offset = 0;
 
-    for line in markdown.lines() {
+    for segment in markdown.split_inclusive('\n') {
+        let line = match segment.strip_suffix('\n') {
+            Some(line) => line.strip_suffix('\r').unwrap_or(line),
+            None => segment,
+        };
+        let line_offset = offset;
+        offset += segment.len();
         // 1) code-comment 指令:整行重写成可见 markdown(先于 git 指令,
         //    因为它的 body 里可能含 `::git-stage{...}` 字样)。
-        if let Some(rewritten) = rewrite_code_comment_line(line, cwd) {
-            visible_lines.push(rewritten.trim_end().to_string());
-            continue;
+        let content_offset = line.len() - line.trim_start_matches([' ', '\t']).len();
+        if range_overlaps(
+            &text_ranges,
+            line_offset + content_offset..line_offset + content_offset + 1,
+        ) && !range_overlaps(
+            &protected,
+            line_offset + content_offset..line_offset + content_offset + 1,
+        ) {
+            let content = &line[content_offset..];
+            let markers = content.bytes().take_while(|byte| *byte == b':').count();
+            if (1..=3).contains(&markers) && content[markers..].starts_with("code-comment{") {
+                let visible = rewrite_code_comment_line(line, cwd)
+                    .map(|rewritten| rewritten.trim_end().to_string())
+                    .unwrap_or_else(|| line.to_string());
+                visible_lines.push(visible);
+                continue;
+            }
         }
         // 2) git 动作指令:从行内剥离(一行可有多条)。
-        let (visible_line, line_actions) = strip_line_directives(line);
+        let (visible_line, line_actions) =
+            strip_line_directives(line, line_offset, &protected, &text_ranges);
         for action in line_actions {
             if seen.insert(action.clone()) {
                 git_actions.push(action);
             }
         }
-        visible_lines.push(visible_line.trim_end().to_string());
+        if visible_line == line {
+            visible_lines.push(visible_line);
+        } else {
+            visible_lines.push(visible_line.trim_end().to_string());
+        }
     }
 
     // 尾部空行修剪(指令剥离后常留下)。
@@ -113,49 +144,169 @@ pub fn parse_assistant_markdown(markdown: &str, cwd: &Path) -> ParsedAssistantMa
     }
 }
 
-/// 把一行里的全部 `::git-*` 指令剥掉,返回(可见文本, 指令列表)。
-fn strip_line_directives(line: &str) -> (String, Vec<GitActionDirective>) {
+// 标记 Markdown 中的代码、链接及原始 HTML,避免把字面示例当成动作。
+fn markdown_ranges(markdown: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let parser = Parser::new(markdown);
+    let mut ranges: Vec<_> = parser
+        .reference_definitions()
+        .iter()
+        .map(|(_, definition)| definition.span.clone())
+        .collect();
+    let mut text_ranges = Vec::new();
+    let mut html_code: Option<(&str, usize, usize)> = None;
+    for (event, range) in parser.into_offset_iter() {
+        match event {
+            Event::InlineHtml(ref html) => {
+                let tag = html.trim().to_ascii_lowercase();
+                if let Some((name, start, depth)) = html_code.as_mut() {
+                    if html_tag_matches(&tag, name, true) {
+                        *depth -= 1;
+                        if *depth == 0 {
+                            ranges.push(*start..range.end);
+                            html_code = None;
+                        }
+                    } else if html_tag_matches(&tag, name, false) && !tag.ends_with("/>") {
+                        *depth += 1;
+                    }
+                } else if !tag.ends_with("/>") {
+                    for name in ["code", "pre", "script", "style", "textarea"] {
+                        if html_tag_matches(&tag, name, false) {
+                            html_code = Some((name, range.start, 1));
+                            break;
+                        }
+                    }
+                }
+                ranges.push(range);
+            }
+            Event::Text(_) => text_ranges.push(range),
+            Event::Code(_) | Event::Html(_) => ranges.push(range),
+            Event::Start(
+                Tag::CodeBlock(_) | Tag::Link { .. } | Tag::Image { .. } | Tag::HtmlBlock,
+            ) => ranges.push(range),
+            _ => {}
+        }
+    }
+    if let Some((_, start, _)) = html_code {
+        ranges.push(start..markdown.len());
+    }
+    (merge_ranges(ranges), merge_ranges(text_ranges))
+}
+
+fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
+// 只匹配完整标签名,避免把 `<code-example>` 当成 `<code>`。
+fn html_tag_matches(tag: &str, name: &str, closing: bool) -> bool {
+    let prefix = if closing {
+        format!("</{name}")
+    } else {
+        format!("<{name}")
+    };
+    tag.strip_prefix(&prefix)
+        .and_then(|suffix| suffix.chars().next())
+        .is_some_and(|character| {
+            character == '>' || character == '/' || character.is_ascii_whitespace()
+        })
+}
+
+fn range_overlaps(protected: &[Range<usize>], range: Range<usize>) -> bool {
+    let index = protected.partition_point(|item| item.end <= range.start);
+    protected
+        .get(index)
+        .is_some_and(|item| item.start < range.end)
+}
+
+// 判断指令前的反斜杠是否转义了第一个冒号。
+fn is_escaped(line: &str, start: usize) -> bool {
+    line.as_bytes()[..start]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count()
+        % 2
+        == 1
+}
+
+/// 把一行里的非字面 `::git-*` 指令剥掉,返回可见文本与动作列表。
+fn strip_line_directives(
+    line: &str,
+    offset: usize,
+    protected: &[Range<usize>],
+    text_ranges: &[Range<usize>],
+) -> (String, Vec<GitActionDirective>) {
     let mut visible = String::new();
     let mut actions = Vec::new();
-    let mut rest = line;
-    while let Some(start) = rest.find("::git-") {
-        visible.push_str(&rest[..start]);
-        let after = &rest[start + 2..]; // 跳过 "::"
-        // 指令体到下一个 '}' 为止(属性值不带 '}')。
-        let Some(end) = after.find('}') else {
-            // 无闭合:整条按原文保留(不猜)。
-            visible.push_str(&rest[start..]);
+    let mut cursor = 0;
+    while let Some(relative) = line[cursor..].find("::git-") {
+        let start = cursor + relative;
+        visible.push_str(&line[cursor..start]);
+        if is_escaped(line, start)
+            || !range_overlaps(text_ranges, offset + start..offset + start + 1)
+            || range_overlaps(protected, offset + start..offset + start + 6)
+        {
+            visible.push_str("::git-");
+            cursor = start + 6;
+            continue;
+        }
+        let after_start = start + 2;
+        let Some(relative_end) = line[after_start..].find('}') else {
+            visible.push_str(&line[start..]);
             return (visible, actions);
         };
-        let body = &after[..end];
-        if let Some((name, attrs)) = body.split_once('{')
-            && let Some(attrs) = parse_attributes(attrs)
-            && let Some(action) = parse_git_action(name, &attrs)
-        {
-            actions.push(action);
+        let end = after_start + relative_end + 1;
+        if range_overlaps(protected, offset + start..offset + end) {
+            visible.push_str(&line[start..end]);
+        } else {
+            let body = &line[after_start..end - 1];
+            if let Some((name, attrs)) = body.split_once('{')
+                && let Some(attrs) = parse_attributes(attrs)
+                && let Some(action) = parse_git_action(name, &attrs)
+            {
+                actions.push(action);
+            }
         }
-        // 畸形指令(缺 cwd / branch / 无法解析)整条丢弃,不留可见残片。
-        rest = &after[end + 1..];
+        cursor = end;
     }
-    visible.push_str(rest);
+    visible.push_str(&line[cursor..]);
     (visible, actions)
 }
 
 fn parse_git_action(name: &str, attrs: &HashMap<String, String>) -> Option<GitActionDirective> {
     let cwd = attrs.get("cwd")?.clone();
+    if cwd.trim().is_empty() {
+        return None;
+    }
+    let branch = || {
+        attrs
+            .get("branch")
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+    };
     match name {
         "git-stage" => Some(GitActionDirective::Stage { cwd }),
         "git-commit" => Some(GitActionDirective::Commit { cwd }),
         "git-create-branch" => Some(GitActionDirective::CreateBranch {
-            branch: attrs.get("branch")?.clone(),
+            branch: branch()?,
             cwd,
         }),
         "git-push" => Some(GitActionDirective::Push {
-            branch: attrs.get("branch")?.clone(),
+            branch: branch()?,
             cwd,
         }),
         "git-create-pr" => Some(GitActionDirective::CreatePr {
-            branch: attrs.get("branch")?.clone(),
+            branch: branch()?,
             cwd,
             url: attrs.get("url").cloned(),
             is_draft: attrs.get("isDraft").is_some_and(|value| value == "true"),
@@ -200,8 +351,9 @@ fn rewrite_code_comment_line(line: &str, cwd: &Path) -> Option<String> {
     }
 
     let directive = content[marker_length..].strip_prefix("code-comment{")?;
-    let (attributes, _suffix) = directive.rsplit_once('}')?;
-    let attributes = parse_code_comment_attributes(attributes)?;
+    let end = code_comment_end(directive)?;
+    let attributes = parse_code_comment_attributes(&directive[..end])?;
+    let suffix = &directive[end + 1..];
     let title = attributes.get("title")?.trim();
     let body = attributes.get("body")?.trim();
     let file = attributes.get("file")?.trim();
@@ -237,7 +389,29 @@ fn rewrite_code_comment_line(line: &str, cwd: &Path) -> Option<String> {
         out.push_str(body_line);
         out.push('\n');
     }
+    if !suffix.trim().is_empty() {
+        out.push_str(indent);
+        out.push_str(suffix.trim_start_matches([' ', '\t']));
+        out.push('\n');
+    }
     Some(out)
+}
+
+// 只把引号外的右花括号视为结束标记,保留后续文本。
+fn code_comment_end(input: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut chars = input.char_indices().peekable();
+    while let Some((index, character)) = chars.next() {
+        match character {
+            '\\' if quoted && chars.peek().is_some_and(|(_, next)| *next == '"') => {
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            '}' if !quoted => return Some(index),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// title 是否已带 `[P<digits>]` 优先级前缀。

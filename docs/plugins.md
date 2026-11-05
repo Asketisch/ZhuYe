@@ -140,6 +140,10 @@ zhuye plugin uninstall demo@inline --scope user --yes # 跳过确认
 
 ## 两个状态源与作用域
 
+以下路径使用默认数据目录；设置非空 `ZHUYE_HOME` 时，配置、安装记录、
+marketplace 和插件缓存均位于该目录下，CLI 与运行时使用同一位置。
+会话 rollout 和导入的会话同样存放在该目录的 `sessions/` 下。
+
 ```
 ~/.zhuye/config.toml                    ← 启用权威表(热重载唯一输入源)
   [plugins].enabled_plugins = ["demo@inline"]

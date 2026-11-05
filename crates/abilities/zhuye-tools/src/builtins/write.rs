@@ -2,8 +2,7 @@
 //!
 //! 详见 `docs/tools-and-hooks.md §2.3`。
 
-use std::fs;
-
+use crate::sandbox::PinnedWrite;
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -63,23 +62,17 @@ impl Tool for WriteTool {
             })?;
 
         let path = std::path::Path::new(path_str);
-        // 计算最终路径:workspace 与 path 按 component 逐级拼接。
-        // 文件(或其父目录)可能还不存在,所以先把现存的最深祖先 canonicalize,
-        // 再拼上后续 component。
-        //
-        // **0.2 修复(安全)**:workspace 包含校验此前被 `if path.is_absolute()`
-        // 包着,相对路径完全不查 —— 而 component-walk 里 `PathBuf::push("..")`
-        // 是真实生效的(`ws/a/../../etc/passwd` 会一步步 canonicalize 到
-        // workspace 外),于是 `{"path": "../../etc/passwd"}` 能写到
-        // workspace 之外。原注释声称「按 component 增量 canonicalize,这一步
-        // 隐式完成」是错的:canonicalize 只解析路径,不做任何包含校验。
-        // 现在改为**无条件**校验最终路径,与绝对 / 相对无关。
+        // 逐组件解析已有路径；即使中间目录不存在，也要先规整父目录组件。
         let canonical_workspace = ctx
             .workspace_path()
             .canonicalize()
             .map_err(|e| ToolError::Io(format!("workspace: {e}")))?;
         let mut final_path = canonical_workspace.clone();
         for component in path.components() {
+            if component == std::path::Component::ParentDir {
+                final_path.pop();
+                continue;
+            }
             final_path.push(component);
             if final_path.exists() {
                 if let Ok(c) = final_path.canonicalize() {
@@ -101,58 +94,45 @@ impl Tool for WriteTool {
                 path: path.to_path_buf(),
             });
         }
-        // 目标不允许是已存在目录(会把内容写进目录导致 Io 错误,报清楚点)。
-        if final_path.is_dir() {
-            return Err(ToolError::InvalidArgs {
-                message: format!("path 是目录,不能当文件写: {path_str}"),
-            });
-        }
-
-        // 自动 mkdir。
-        if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| ToolError::Io(format!("mkdir {parent:?}: {e}")))?;
-        }
-        let before = fs::read_to_string(&final_path).unwrap_or_default();
-        let new_owned = content.to_string();
-        let unified = {
-            let diff = TextDiff::from_lines(&before, &new_owned);
-            diff.unified_diff().to_string()
-        };
-
-        // 原子落盘:先写同目录 .tmp 再 rename。`fs::write` 直接截断目标,
-        // 进程在写入中途崩溃会把原文件留成半截内容(数据损坏)。
-        // rename 在同一文件系统内是原子的,且 .tmp 与目标同目录以保证
-        // 这一点(跨设备 rename 会退化为拷贝,失去原子性)。
-        let tmp_path = final_path.with_extension({
-            let mut ext = final_path
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if !ext.is_empty() {
-                ext.push('.');
+        // 固定父目录并拒绝路径替换或符号链接，再读旧内容及原子替换。
+        let target = PinnedWrite::prepare(&final_path)
+            .map_err(|e| ToolError::Io(format!("prepare {path_str}: {e}")))?;
+        let existing = target.read_existing().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                ToolError::InvalidArgs {
+                    message: format!("path 不是普通文件: {path_str}"),
+                }
+            } else {
+                ToolError::Io(format!("read {path_str}: {e}"))
             }
-            ext.push_str("zhuye-tmp");
-            ext
-        });
-        fs::write(&tmp_path, content)
+        })?;
+        // `existing` 为 `None` 表示旧内容存在但无法按文本比较(二进制或超过
+        // diff 上限)。此时不能拿空串算 diff —— 那会把「覆盖了非文本文件」
+        // 谎报成「新建文件」—— 而是省略 diff 块并在文本里说明。
+        target
+            .replace(content.as_bytes())
             .map_err(|e| ToolError::Io(format!("write {path_str}: {e}")))?;
-        if let Err(e) = fs::rename(&tmp_path, &final_path) {
-            // rename 失败时清掉临时文件,别在 workspace 里留垃圾。
-            let _ = fs::remove_file(&tmp_path);
-            return Err(ToolError::Io(format!("rename into {path_str}: {e}")));
-        }
 
+        let mut message = format!("wrote {path_str} ({} bytes)", content.len());
+        let mut blocks = Vec::with_capacity(2);
+        let unified = match existing.as_deref() {
+            Some(before) => {
+                let diff = TextDiff::from_lines(before, content)
+                    .unified_diff()
+                    .to_string();
+                blocks.push(zhuye_protocol::ContentBlock::Diff {
+                    unified_diff: diff.clone(),
+                });
+                diff
+            }
+            None => {
+                message.push_str(" [旧内容非文本或过大，diff 省略]");
+                String::new()
+            }
+        };
+        blocks.insert(0, zhuye_protocol::ContentBlock::text(message));
         Ok(ToolOutput {
-            content: vec![
-                zhuye_protocol::ContentBlock::text(format!(
-                    "wrote {path_str} ({} bytes)",
-                    content.len()
-                )),
-                zhuye_protocol::ContentBlock::Diff {
-                    unified_diff: unified.clone(),
-                },
-            ],
+            content: blocks,
             is_error: false,
             metadata: serde_json::json!({
                 "path": final_path.to_string_lossy(),
@@ -171,6 +151,82 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preexisting_temporary_symlink_does_not_overwrite_outside_file() {
+        use std::os::unix::fs::symlink;
+        let ws = tmp_workspace();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.txt");
+        std::fs::write(&victim, "original").unwrap();
+        symlink(&victim, ws.join("a.txt.zhuye-tmp")).unwrap();
+        WriteTool
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path":"a.txt", "content":"new"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(victim).unwrap(), "original");
+    }
+
+    #[tokio::test]
+    async fn missing_directory_followed_by_parents_cannot_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = root.path().join("workspace");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&ws).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let victim = outside.join("victim.txt");
+        std::fs::write(&victim, "original").unwrap();
+        let result = WriteTool
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path":"missing/../../outside/victim.txt", "content":"new"}),
+            )
+            .await;
+        assert!(result.is_err(), "traversal was accepted");
+        assert_eq!(std::fs::read_to_string(victim).unwrap(), "original");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn normalized_parent_cannot_hide_an_external_symlink() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let ws = root.path().join("workspace");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&ws).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let victim = outside.join("victim.txt");
+        std::fs::write(&victim, "original").unwrap();
+        symlink(&outside, ws.join("link")).unwrap();
+        let result = WriteTool
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path":"missing/../link/victim.txt", "content":"new"}),
+            )
+            .await;
+        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        assert_eq!(std::fs::read_to_string(victim).unwrap(), "original");
+    }
+
+    #[tokio::test]
+    async fn missing_parent_component_normalizes_inside_workspace() {
+        let ws = tmp_workspace();
+        WriteTool
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path":"missing/../file.txt", "content":"inside"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.join("file.txt")).unwrap(),
+            "inside"
+        );
+    }
 
     fn make_ctx(workspace: &std::path::Path) -> ToolContext {
         ToolContext::for_workspace(workspace)
@@ -248,6 +304,36 @@ mod tests {
         let diff = diff.expect("diff block");
         assert!(diff.contains("-old") || diff.contains("---"));
         assert!(diff.contains("+new") || diff.contains("+++"));
+    }
+
+    #[tokio::test]
+    async fn overwriting_binary_file_omits_diff() {
+        let ws = tmp_workspace();
+        // 非 UTF-8 字节:旧实现把它当空串算 diff,谎称「原文件是空的」。
+        std::fs::write(ws.join("blob.dat"), [0xff_u8, 0xfe, 0x00, 0x90]).unwrap();
+        let out = WriteTool
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path": "blob.dat", "content": "text now\n"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.join("blob.dat")).unwrap(),
+            "text now\n"
+        );
+        assert!(
+            !out.content
+                .iter()
+                .any(|c| matches!(c, zhuye_protocol::ContentBlock::Diff { .. })),
+            "binary overwrite must not report a diff"
+        );
+        assert_eq!(out.metadata["diff"], "");
+        let text = match &out.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.contains("diff"), "missing explanation: {text}");
     }
 
     #[tokio::test]

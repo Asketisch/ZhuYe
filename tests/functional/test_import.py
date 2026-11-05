@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -283,6 +284,32 @@ def test_I3_zcode导入_sqlite来源(sandbox: Sandbox) -> None:
     assert tc and tc[0]["usage"]["input_tokens"] == 500
 
 
+def test_I21_zcode在线快照包含已提交WAL(sandbox: Sandbox) -> None:
+    """ZCode 写入期间导入只读取已提交 WAL,不包含未提交修改。"""
+    _require_import_bin()
+    db = _make_zcode_db(sandbox)
+    tid = "cf9ee90f-0000-4000-8000-000000000033"
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        conn.execute("UPDATE part SET data=? WHERE id='p2'", (json.dumps({"type": "text", "text": "WAL 已提交内容"}, ensure_ascii=False),))
+        conn.commit()
+        assert Path(str(db) + "-wal").exists()
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("UPDATE part SET data=? WHERE id='p2'", (json.dumps({"type": "text", "text": "未提交内容"}, ensure_ascii=False),))
+        result = run_import(sandbox, "--all", "--from", "zcode", "--json")
+        assert result.returncode == 0, result.stderr + result.stdout
+        text = json.dumps(_records_of(sandbox, tid), ensure_ascii=False)
+        assert "WAL 已提交内容" in text, text
+        assert "未提交内容" not in text, text
+        conn.rollback()
+        restored = conn.execute("SELECT data FROM part WHERE id='p2'").fetchone()[0]
+        assert "WAL 已提交内容" in restored
+    finally:
+        conn.close()
+
+
 # ── I4 幂等 / dry-run / force ────────────────────────────────────────────
 
 
@@ -313,6 +340,32 @@ def test_I4_dry_run_幂等与force(sandbox: Sandbox) -> None:
     recs = _records_of(sandbox, tid)
     assert len(recs) == n1, "force 覆盖应为等量记录"
     assert recs[0]["type"] == "session_meta"
+
+
+def test_I20_force跨日期保持单一会话(sandbox: Sandbox) -> None:
+    """同一来源更正起始日期后强制导入,只替换已有会话并保留新内容。"""
+    _require_import_bin()
+    source = _write_fixture(sandbox, "changed-date.jsonl", CLAUDE_FIXTURE)
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+    first = run_import(sandbox, str(source))
+    assert first.returncode == 0, first.stderr + first.stdout
+    original = [path for path in rollout_files(sandbox.home) if path.stem == tid]
+    assert len(original) == 1, original
+    rotated = original[0].with_name(f"{tid}.1.jsonl")
+    rotated.write_text(original[0].read_text() + json.dumps({"type": "message", "turn_id": "00000000-0000-4000-8000-000000000001", "role": "user", "content": "旧轮转内容"}, ensure_ascii=False) + "\n")
+    revised = [line.replace("2026-05-01", "2026-05-02").replace("第一问:查端口", "更正后的问题") for line in CLAUDE_FIXTURE]
+    source.write_text("\n".join(revised) + "\n")
+    second = run_import(sandbox, str(source), "--force")
+    assert second.returncode == 0, second.stderr + second.stdout
+    files = [path for path in rollout_files(sandbox.home) if path.stem == tid]
+    assert files == original, files
+    assert not rotated.exists(), "强制覆盖后旧轮转片段不可继续参与回放"
+    records = _records_of(sandbox, tid)
+    assert records[0]["started_at"].startswith("2026-05-02"), records[0]
+    assert "更正后的问题" in json.dumps(records, ensure_ascii=False), records
+    shown = run_cli(sandbox, "session", "show", tid)
+    assert shown.returncode == 0, shown.stderr
+    assert "旧轮转内容" not in shown.stdout, shown.stdout
 
 
 # ── I5 auto 嗅探 + --json ────────────────────────────────────────────────
@@ -617,6 +670,103 @@ def test_I11a_mcp_list_importable工具(sandbox: Sandbox) -> None:
     assert "af9ee90f-0000-4000-8000-000000000011.jsonl" in text, text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="符号链接创建需要额外的系统权限")
+def test_I24_codex扫描符号链接环和目录别名(sandbox: Sandbox) -> None:
+    """自动发现、目录导入和 MCP 扫描均可终止且不会重复报告会话。"""
+    _require_import_bin()
+    root = sandbox.home / ".codex/sessions"
+    day = root / "2026/11"
+    day.mkdir(parents=True)
+    (day / "rollout.jsonl").write_text("\n".join(CODEX_FIXTURE) + "\n")
+    (day / "cycle").symlink_to(root, target_is_directory=True)
+    (root / "alias").symlink_to(root / "2026", target_is_directory=True)
+
+    for args in [("--all", "--from", "codex"), (str(root), "--from", "codex")]:
+        proc = run_import(sandbox, *args, "--dry-run", "--json", timeout=10)
+        assert proc.returncode == 0, proc.stderr
+        rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+        assert len(rows) == 1, rows
+        assert rows[0]["status"] == "imported"
+        assert rows[0]["thread_id"] == "bf9ee90f-0000-7000-8000-000000000022"
+
+    response = _mcp_call(IMPORT_BIN, sandbox.home, "tools/call", {
+        "name": "list_importable", "arguments": {"source_kind": "codex"},
+    })
+    assert response["result"]["isError"] is False, response
+    text = response["result"]["content"][0]["text"]
+    assert "发现 1 个来源" in text and text.count("rollout.jsonl") == 1, text
+
+
+def test_I25_codex导入图片与不可用图片告警(sandbox: Sandbox) -> None:
+    """图文与纯图片回合保留原字节，无法恢复的来源产生告警。"""
+    _require_import_bin()
+    lines = [CODEX_FIXTURE[0]]
+    for content in [
+        [{"type": "input_text", "text": "前"},
+         {"type": "input_image", "image_url": "data:image/png;base64,aGk="},
+         {"type": "input_text", "text": "后"}],
+        [{"type": "input_image", "image_url": "data:image/jpeg;base64,AQI="}],
+        [{"type": "local_image", "path": "/not-present"}],
+    ]:
+        lines.append(json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "user", "content": content,
+        }}))
+    source = _write_fixture(sandbox, "codex-images.jsonl", lines)
+    proc = run_import(sandbox, str(source), "--from", "codex", "--json")
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "imported" and result["turns"] == 2
+    assert any("unsupported-image" in warning for warning in result["warnings"])
+    records = _records_of(sandbox, result["thread_id"])
+    users = [record["content"] for record in records if record.get("type") == "message" and record.get("role") == "user"]
+    assert users == [
+        [{"type": "text", "text": "前"}, {"type": "image", "data": [104, 105], "mime_type": "image/png"}, {"type": "text", "text": "后"}],
+        [{"type": "image", "data": [1, 2], "mime_type": "image/jpeg"}],
+    ]
+
+
+def test_I26_自动识别首行大图片(sandbox: Sandbox) -> None:
+    """超过 64 KiB 的首行仍可自动识别并完整导入图片。"""
+    import base64
+
+    _require_import_bin()
+    image = b"x" * 60000
+    thread_id = "6f9ee90f-0000-4000-8000-000000000001"
+    row = {"type": "user", "sessionId": thread_id, "timestamp": "2026-05-01T10:00:00Z",
+           "message": {"role": "user", "content": [
+               {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                              "data": base64.b64encode(image).decode()}}]}}
+    source = _write_fixture(sandbox, "large-image.jsonl", [json.dumps(row)])
+    proc = run_import(sandbox, str(source), "--json")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    result = json.loads(proc.stdout)
+    assert result["status"] == "imported" and result["thread_id"] == thread_id
+    records = _records_of(sandbox, thread_id)
+    user = next(record for record in records if record.get("type") == "message" and record.get("role") == "user")
+    block = user["content"][0]
+    assert block["type"] == "image" and block["mime_type"] == "image/png"
+    assert bytes(block["data"]) == image
+
+
+def test_I27_claude拒绝损坏图片(sandbox: Sandbox) -> None:
+    """图片编码损坏时保留文本并显式报告，不写入虚假的图片字节。"""
+    _require_import_bin()
+    thread_id = "7f9ee90f-0000-4000-8000-000000000001"
+    row = {"type": "user", "sessionId": thread_id,
+           "message": {"role": "user", "content": [
+               {"type": "text", "text": "查看图片"},
+               {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "a=Gk"}}]}}
+    source = _write_fixture(sandbox, "bad-image.jsonl", [json.dumps(row)])
+    proc = run_import(sandbox, str(source), "--json")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    result = json.loads(proc.stdout)
+    assert result["status"] == "imported"
+    assert any("unsupported-image" in warning for warning in result["warnings"])
+    user = next(record for record in _records_of(sandbox, thread_id)
+                if record.get("type") == "message" and record.get("role") == "user")
+    assert user["content"] == [{"type": "text", "text": "查看图片"}]
+
+
 def test_I11b_批量失败退出码非零(sandbox: Sandbox) -> None:
     """全部来源失败(格式无法识别)→ 退出码 1(脚本可感知);部分成功 + 部分
     失败 → 退出码 0(批量语义)。
@@ -751,8 +901,10 @@ def test_I13_computer_use插件_降级不panic(sandbox: Sandbox, mock_script, se
             f"降级文案异常:{out_text}"
         )
     else:
-        # 真机(real feature 构建且授权)→ 成功元信息。
-        assert "screenshot captured" in out_text, out_text
+        # 真机(real feature 构建且授权)→ 返回可用的 PNG 字节。
+        images = [c for c in end["msg"]["output"]["content"] if c.get("type") == "image"]
+        assert len(images) == 1 and images[0]["mime_type"] == "image/png", images
+        assert images[0]["data"][:8] == [137, 80, 78, 71, 13, 10, 26, 10], images
 
     # 会话存活:turn 正常收尾(terminal 是 turn_complete,submission_closed
     # 是 wire 收尾标记,不算 turn 事件)。
@@ -824,10 +976,146 @@ def test_I14_shell插件_常驻会话增读与kill(sandbox: Sandbox, mock_script
     assert "killed" in _text_of(ends[2]["msg"])
 
 
+def test_I16_shell终止清理后台子进程(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """shell_kill 也终止命令的后台子进程,防止任务在会话移除后继续运行。"""
+    import shlex
+    import sys
+    import time
+
+    if sys.platform == "win32":
+        pytest.skip("进程组行为仅在 Unix 实现")
+    sh_bin = Path(ZHUYE_BIN).parent / "zhuye-shell-server"
+    if not sh_bin.is_file():
+        pytest.skip(f"zhuye-shell-server 二进制不存在:{sh_bin}")
+    plugin_dir = REPO_ROOT / "plugins" / "shell"
+    (plugin_dir / "bin").mkdir(exist_ok=True)
+    shutil.copy2(sh_bin, plugin_dir / "bin" / "zhuye-shell-server")
+    inst = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert inst.returncode == 0, inst.stderr + inst.stdout
+    marker = sandbox.cwd / "child-continued"
+    command = f"(sleep 2; touch {shlex.quote(str(marker))}) & echo child-started; wait"
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "mcp__plugin:shell@inline:shell__shell_run", "args": {"command": command}}),
+        json.dumps({"type": "tool_call", "name": "bash", "args": {"cmd": "sleep 0.4"}}),
+        json.dumps({"type": "tool_call", "name": "mcp__plugin:shell@inline:shell__shell_read", "args": {"session_id": "sh-00000000"}}),
+        json.dumps({"type": "tool_call", "name": "mcp__plugin:shell@inline:shell__shell_kill", "args": {"session_id": "sh-00000000"}}),
+        '{"type":"text","text":"done"}',
+    ])
+    with serve_session(args=["--plugin", "shell@inline"], env=sandbox.mock_env(script)) as session:
+        events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "启动并终止任务"}]})
+    ends = [e["msg"] for e in events if e["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == 4 and all(not e["is_error"] for e in ends), ends
+    assert "child-started" in _text_of(ends[2]), ends[2]
+    assert "killed" in _text_of(ends[3]), ends[3]
+    time.sleep(2.1)
+    assert not marker.exists(), "shell_kill 后子进程继续执行"
+
+
 def _text_of(msg: dict) -> str:
     return "".join(
         c.get("text", "") for c in msg.get("output", {}).get("content", []) if isinstance(c, dict)
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="测试依赖可执行 Git shell hook")
+def test_I15_checkpoint标签失败显式报错(sandbox: Sandbox) -> None:
+    """提交成功但标签被拒绝时,工具返回错误且保留已提交的文件。"""
+    import subprocess
+
+    gt_bin = Path(ZHUYE_BIN).parent / "zhuye-git-tools-server"
+    if not gt_bin.is_file():
+        pytest.skip(f"zhuye-git-tools-server 二进制不存在:{gt_bin}")
+    repo = sandbox.cwd / "tag-failure-repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    git("init", "-q")
+    git("config", "user.email", "test@localhost")
+    git("config", "user.name", "test")
+    hook = repo / ".git/hooks/reference-transaction"
+    hook.write_text('#!/bin/sh\nwhile read old new ref; do\n case "$ref" in refs/tags/zhuye-cp/*) exit 1;; esac\ndone\nexit 0\n')
+    hook.chmod(0o755)
+    (repo / "data.txt").write_text("preserve\n")
+    request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "git_checkpoint_create", "arguments": {"cwd": str(repo), "label": "test"},
+    }})
+    result = subprocess.run([str(gt_bin)], input=request + "\n", capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    reply = json.loads(result.stdout.splitlines()[0])["result"]
+    assert reply["isError"] is True, reply
+    head = git("rev-parse", "HEAD").stdout.strip()
+    assert head in reply["content"][0]["text"]
+    assert "标签创建失败" in reply["content"][0]["text"]
+    assert git("show", "HEAD:data.txt").stdout == "preserve\n"
+    assert not git("tag", "--list", "zhuye-cp/*").stdout.strip()
+
+
+def test_I15_子目录checkpoint保存仓库根变更(sandbox: Sandbox) -> None:
+    """从子目录调用 checkpoint 时,仓库根部的修改也进入快照。"""
+    import subprocess
+
+    gt_bin = Path(ZHUYE_BIN).parent / "zhuye-git-tools-server"
+    if not gt_bin.is_file():
+        pytest.skip(f"zhuye-git-tools-server 二进制不存在:{gt_bin}")
+    repo = sandbox.cwd / "nested-repo"
+    sub = repo / "sub"
+    sub.mkdir(parents=True)
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    git("init", "-q")
+    git("config", "user.email", "test@localhost")
+    git("config", "user.name", "test")
+    (repo / "root.txt").write_text("old\n")
+    (sub / "nested.txt").write_text("old\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    (repo / "root.txt").write_text("new root\n")
+    (sub / "nested.txt").write_text("new nested\n")
+    request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "git_checkpoint_create", "arguments": {"cwd": str(sub), "label": "nested"},
+    }})
+    result = subprocess.run([str(gt_bin)], input=request + "\n", capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    reply = json.loads(result.stdout.splitlines()[0])["result"]
+    assert reply["isError"] is False, reply
+    assert git("show", "HEAD:root.txt").stdout == "new root\n"
+    assert git("show", "HEAD:sub/nested.txt").stdout == "new nested\n"
+    assert not git("status", "--porcelain").stdout.strip()
+
+
+def test_I15_git_tools差异输出截断不报告错误统计(sandbox: Sandbox) -> None:
+    """差异输出超过上限时返回不可用,不能将截断后的部分当成完整统计。"""
+    import subprocess
+
+    gt_bin = Path(ZHUYE_BIN).parent / "zhuye-git-tools-server"
+    if not gt_bin.is_file():
+        pytest.skip(f"zhuye-git-tools-server 二进制不存在:{gt_bin}")
+    repo = sandbox.cwd / "large-git-repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@localhost")
+    git("config", "user.name", "test")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    git("checkout", "-q", "-b", "feature")
+    for i in range(900):
+        (repo / f"{i:04d}_{'x' * 80}.txt").write_text("line\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "many files")
+    assert len(git("diff", "--numstat", "main..HEAD").stdout.encode()) > 65536
+    request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "git_branch_summary", "arguments": {"cwd": str(repo)},
+    }})
+    result = subprocess.run([str(gt_bin)], input=request + "\n", capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    reply = json.loads(result.stdout.splitlines()[0])
+    assert reply["result"]["isError"] is False, reply
+    text = reply["result"]["content"][0]["text"]
+    assert "branch: feature" in text
+    assert "diff vs default branch: (unavailable)" in text
 
 
 def test_I15_git_tools插件_探测与checkpoint(sandbox: Sandbox, mock_script, serve_session) -> None:
@@ -914,3 +1202,123 @@ def test_I15_git_tools插件_探测与checkpoint(sandbox: Sandbox, mock_script, 
     assert '"isError":false' in cp2.stdout, cp2.stdout + cp2.stderr
     tags = git("tag", "--list").stdout
     assert "zhuye-cp/" in tags, f"checkpoint tag 未打:{tags}"
+
+
+def test_I22_导入重复和跨回合工具结果可回放(sandbox: Sandbox, serve_session) -> None:
+    """导入时过滤重复和错位结果,恢复请求中的每个工具调用都紧邻唯一回执。"""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    _require_import_bin()
+    tid = "af9ee90f-0000-4000-8000-000000000011"
+    rows = [
+        json.loads(CLAUDE_FIXTURE[0]),
+        {"type":"assistant", "sessionId":tid, "message":{"role":"assistant", "model":"test-model", "content":[{"type":"tool_use", "id":"shared", "name":"echo", "input":{"text":"一"}}]}},
+        {"type":"user", "sessionId":tid, "message":{"role":"user", "content":"第二问"}},
+        {"type":"user", "sessionId":tid, "message":{"role":"user", "content":[{"type":"tool_result", "tool_use_id":"shared", "content":"过期结果"}]}},
+        {"type":"assistant", "sessionId":tid, "message":{"role":"assistant", "model":"test-model", "content":[{"type":"tool_use", "id":"", "name":"echo", "input":{}}, {"type":"tool_use", "id":"invalid-name", "name":"", "input":{}}, {"type":"tool_use", "id":"shared", "name":"echo", "input":{"text":"二"}}]}},
+        {"type":"user", "sessionId":tid, "message":{"role":"user", "content":[{"type":"tool_result", "tool_use_id":"shared", "content":"实际结果"}, {"type":"tool_result", "tool_use_id":"shared", "content":"重复结果"}]}},
+        {"type":"assistant", "sessionId":tid, "message":{"role":"assistant", "model":"test-model", "content":[{"type":"text", "text":"完成"}]}},
+    ]
+    src = _write_fixture(sandbox, "corrupt-tools.jsonl", [json.dumps(row, ensure_ascii=False) for row in rows])
+    result = run_import(sandbox, str(src))
+    assert result.returncode == 0, result.stderr + result.stdout
+    records = _records_of(sandbox, tid)
+    assistants = [row["content"] for row in records if row["type"] == "message" and row["role"] == "assistant"]
+    assert [[block["type"] for block in blocks] for blocks in assistants] == [["tool_use"], ["tool_use", "tool_result", "text"]], assistants
+    assert assistants[1][1]["output"]["content"][0]["text"] == "实际结果"
+
+    received = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            body = (b'data: {"id":"test","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+                    b'data: [DONE]\n\n')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        sandbox.write_config(f'\n[active]\nprovider = "openai"\n[openai]\napi_key = "test"\nbase_url = "http://127.0.0.1:{server.server_port}"\n')
+        with serve_session(args=["--resume", tid], env={"ZHUYE_MODEL":"openai/gpt-4o"}) as session:
+            events = session.submit({"type":"user_input", "items":[{"type":"text", "text":"继续"}]})
+        assert any(event["msg"]["type"] == "turn_complete" for event in events), events
+        assert len(received) == 1, received
+        messages = received[0]["messages"]
+        calls = [(i, msg) for i, msg in enumerate(messages) if msg.get("role") == "assistant" and msg.get("tool_calls")]
+        assert len(calls) == 2, messages
+        outputs = []
+        for index, message in calls:
+            assert len(message["tool_calls"]) == 1
+            assert message["tool_calls"][0]["id"] == "shared"
+            following = messages[index + 1]
+            assert following["role"] == "tool" and following["tool_call_id"] == "shared", messages
+            outputs.append(following["content"])
+        assert "interrupted" in outputs[0]
+        assert "实际结果" in outputs[1]
+        conclusion = messages[calls[1][0] + 2]
+        assert conclusion["role"] == "assistant" and "完成" in conclusion["content"], messages
+        assert all("重复结果" not in str(message) and "过期结果" not in str(message) for message in messages)
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_I23_computer_use拒绝无效输入(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """坐标溢出、未知按钮和组合键不得转换成其他桌面动作。"""
+    cu_bin = Path(ZHUYE_BIN).parent / "zhuye-computer-use-server"
+    if not cu_bin.is_file():
+        pytest.skip(f"zhuye-computer-use-server 二进制不存在:{cu_bin}")
+    plugin_dir = REPO_ROOT / "plugins" / "computer-use"
+    bin_dir = plugin_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shutil.copy2(cu_bin, bin_dir / "zhuye-computer-use-server")
+    installed = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert installed.returncode == 0, installed.stderr + installed.stdout
+    prefix = "mcp__plugin:computer-use@inline:computer__"
+    requests = [
+        ("computer_click", {"x": 4294967296, "y": 0}, "x"),
+        ("computer_click", {"x": 1, "y": 2, "button": "rgiht"}, "按钮"),
+        ("computer_scroll", {"dy": 2147483648}, "dy"),
+        ("computer_key", {"keys": "ctrl+escapee"}, "组合键"),
+    ]
+    lines = [json.dumps({"type":"tool_call", "name":prefix + name, "args":args}) for name, args, _ in requests]
+    script = mock_script(lines + ['{"type":"text","text":"done"}'])
+    with serve_session(args=["--plugin", "computer-use@inline"], env=sandbox.mock_env(script)) as session:
+        events = session.submit({"type":"user_input", "items":[{"type":"text", "text":"测试输入"}]})
+    ends = [event["msg"] for event in events if event["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == len(requests), ends
+    for end, (_, _, expected) in zip(ends, requests):
+        assert end["is_error"] is True, end
+        text = "".join(block.get("text", "") for block in end["output"]["content"])
+        assert expected in text, end
+    assert any(event["msg"]["type"] == "turn_complete" for event in events), events
+
+
+def test_I28_导入会话遵循数据目录(sandbox: Sandbox) -> None:
+    """独立导入器和 session 命令访问同一隔离目录。"""
+    _require_import_bin()
+    alt = sandbox.cwd / "import-home"
+    alt.mkdir()
+    (alt / "config.toml").write_text('[hooks]\nenabled = []\n')
+    source = _write_fixture(sandbox, "isolated-codex.jsonl", CODEX_FIXTURE)
+    proc = subprocess.run([str(IMPORT_BIN), str(source), "--from", "codex", "--json"],
+                          cwd=sandbox.cwd, env=sandbox.env({"ZHUYE_HOME": str(alt)}),
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "imported"
+    thread_id = result["thread_id"]
+    dest = Path(result["path"])
+    assert dest.is_relative_to(alt / "sessions") and dest.exists()
+    assert json.loads(dest.read_text().splitlines()[0])["session_id"] == thread_id
+    assert not rollout_files(sandbox.home)
+    listed = run_cli(sandbox, "session", "ls", env={"ZHUYE_HOME": str(alt)})
+    assert listed.returncode == 0 and thread_id in listed.stdout, listed.stderr + listed.stdout

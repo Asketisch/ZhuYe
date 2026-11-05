@@ -62,6 +62,39 @@ async fn ask_tool_emits_event_and_waits_for_decision() {
 }
 
 #[tokio::test]
+async fn policy_ask_overrides_cached_session_allow() {
+    let (gate, mut events) = make_gate();
+    gate.allow_for_session("echo");
+    let gate = Arc::new(gate);
+    let task_gate = gate.clone();
+    let task = tokio::spawn(async move {
+        task_gate
+            .ask_tool_with_policy(
+                "echo",
+                &serde_json::json!({}),
+                RiskLevel::Low,
+                &CancellationToken::new(),
+                Some(zhuye_permissions::RuleMatch::Ask),
+            )
+            .await
+    });
+    let event = timeout(Duration::from_secs(2), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let EventMsg::ApprovalRequest(request) = event.msg else {
+        panic!("策略要求询问时必须发审批请求")
+    };
+    assert!(gate.complete(
+        &request.request_id,
+        ReviewDecision::Deny {
+            reason: "拒绝".into()
+        }
+    ));
+    assert!(matches!(task.await.unwrap(), ReviewDecision::Deny { .. }));
+}
+
+#[tokio::test]
 async fn cancel_short_circuits_to_deny() {
     let (gate, _rx) = make_gate();
     let cancel = CancellationToken::new();
@@ -1297,5 +1330,25 @@ async fn closed_channel_early_exit_cleans_lease() {
         }
         other => panic!("expected Deny(channel closed), got {other:?}"),
     }
+    assert!(gate.waiters().lock().is_empty());
+}
+
+#[tokio::test]
+async fn full_event_queue_does_not_prevent_approval_expiry() {
+    let (tx, _rx) = mpsc::channel::<Event>(1);
+    let _permit = tx.reserve().await.unwrap();
+    let gate = ApprovalGate::new(tx.clone(), "sub").with_approval_ttl(Duration::from_millis(30));
+    let decision = timeout(
+        Duration::from_secs(1),
+        gate.ask_tool(
+            "bash",
+            &serde_json::json!({}),
+            RiskLevel::Low,
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("满事件队列不应阻止审批过期");
+    assert!(matches!(decision, ReviewDecision::Deny { .. }));
     assert!(gate.waiters().lock().is_empty());
 }

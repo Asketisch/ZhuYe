@@ -145,8 +145,9 @@ impl OsSandbox {
     /// `ZHUYE_SANDBOX_OS_LEVEL=1` 加 `ZHUYE_SANDBOX_STRICT=0` 可临时
     /// 回到旧降级语义(用于本地调试 / 过渡期)。
     pub fn from_env() -> Self {
-        Self::with_enabled(parse_env_os_level(
-            &std::env::var("ZHUYE_SANDBOX_OS_LEVEL").unwrap_or_default(),
+        Self::with_enabled(resolve_enabled(
+            std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok().as_deref(),
+            None,
         ))
     }
 
@@ -528,8 +529,7 @@ impl OsSandbox {
     /// Landlock 规则。闭包限制 workspace 外的写(workspace 内写/读/执行
     /// 全放行;workspace 外读放行、写拒)。
     ///
-    /// 若内核不支持 Landlock(`landlock_create_ruleset` 返回 ENOSYS /
-    /// EOPNOTSUPP),闭包记 warn 后返回 `Ok(())`(降级,不阻塞 exec)。
+    /// 内核不支持时,严格模式返回错误;非严格模式允许降级。
     ///
     /// # Safety
     /// 仅在 `pre_exec`(子进程 fork 后)上下文调用;闭包内只做 async-signal-
@@ -541,7 +541,8 @@ impl OsSandbox {
         workspace: PathBuf,
     ) -> impl FnMut() -> std::io::Result<()> + Send + Sync + 'static {
         let writable = self.writable_dirs.clone();
-        move || apply_landlock(&workspace, &writable)
+        let strict = self.strict;
+        move || apply_landlock(&workspace, &writable, strict)
     }
 }
 
@@ -740,10 +741,32 @@ mod landlock {
         true
     }
 
+    fn may_ignore_unsupported(errno: i32, strict: bool) -> bool {
+        !strict && matches!(errno, 38 | 95)
+    }
+
+    #[cfg(test)]
+    mod failure_policy_tests {
+        use super::may_ignore_unsupported;
+
+        #[test]
+        fn unsupported_backend_only_degrades_when_non_strict() {
+            for error in [38, 95] {
+                assert!(!may_ignore_unsupported(error, true));
+                assert!(may_ignore_unsupported(error, false));
+            }
+            assert!(!may_ignore_unsupported(1, false));
+        }
+    }
+
     /// 在 pre_exec 上下文应用 Landlock。仅 workspace(及其额外可写目录)
     /// 放行全 access;workspace 外的写由内核拒(读 / exec 不受限 —— 与
     /// macOS 策略一致:限制写是核心安全边界)。
-    pub(super) fn apply_landlock(workspace: &Path, writable: &[PathBuf]) -> io::Result<()> {
+    pub(super) fn apply_landlock(
+        workspace: &Path,
+        writable: &[PathBuf],
+        strict: bool,
+    ) -> io::Result<()> {
         // 1. create ruleset(仅 handled_access_fs;net 留 0)。
         let attr = LandlockRulesetAttr {
             handled_access_fs: ACCESS_FS_WRITE_ONLY,
@@ -759,8 +782,8 @@ mod landlock {
         };
         if fd < 0 {
             let e = errno();
-            // ENOSYS / EOPNOTSUPP → 内核不支持,降级(不阻塞)。
-            if e == 38 || e == 95 {
+            // 仅非严格模式可在内核不支持时降级。
+            if may_ignore_unsupported(e, strict) {
                 return Ok(());
             }
             // 带 stage 的错误信息:spawn 失败消息会透传给调用方,便于
@@ -810,8 +833,8 @@ mod landlock {
         unsafe { close(ruleset_fd) };
         if r < 0 {
             let e = errno();
-            if e == 38 || e == 95 {
-                return Ok(()); // 降级
+            if may_ignore_unsupported(e, strict) {
+                return Ok(()); // 非严格模式允许降级
             }
             return Err(io::Error::new(
                 io::Error::from_raw_os_error(e).kind(),
@@ -860,7 +883,7 @@ pub fn probe_landlock_exec() -> bool {
         return false;
     }
     // restrict:复用 apply_landlock(失败 = 环境不支持 → 视作不可用)。
-    if apply_landlock(&cwd, &[]).is_err() {
+    if apply_landlock(&cwd, &[], true).is_err() {
         return false;
     }
     // restrict 成功后 exec 仍须可用(部分受限 runner 上会 EACCES)。
@@ -977,13 +1000,25 @@ mod tests {
 
     #[test]
     fn from_env_defaults_on_and_strict() {
-        // v1.3:未设置 env → 启用 + strict(向后不兼容,但符合
-        // "默认要求 OS sandbox" 的安全基线;设置 ZHUYE_SANDBOX_OS_LEVEL=0
-        // 可显式关闭)。
-        let s = OsSandbox::from_env();
-        // 不强制断言 enabled(可能继承 env),只确保不 panic 且 status 合法。
-        let _ = s.status();
-        let _ = s.strict;
+        // 子进程隔离环境变量,避免与并行测试互相干扰。
+        const CHILD: &str = "ZHUYE_TEST_SANDBOX_DEFAULT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let s = OsSandbox::from_env();
+            assert!(s.enabled, "未设置环境变量时必须启用沙箱");
+            assert!(s.strict, "未设置环境变量时必须启用严格模式");
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "os_sandbox::tests::from_env_defaults_on_and_strict",
+            ])
+            .env(CHILD, "1")
+            .env_remove("ZHUYE_SANDBOX_OS_LEVEL")
+            .env_remove("ZHUYE_SANDBOX_STRICT")
+            .status()
+            .unwrap();
+        assert!(status.success(), "沙箱默认值子进程测试失败");
     }
 
     #[test]
@@ -1260,7 +1295,7 @@ mod tests {
     fn landlock_apply_does_not_panic() {
         // Landlock 在测试机内核不支持时应降级(Ok),支持时也应 Ok。
         let ws = std::env::temp_dir();
-        let r = apply_landlock(&ws, &[]);
+        let r = apply_landlock(&ws, &[], false);
         // 测试进程已应用 landlock 后可能影响后续测试,故只验证不 panic。
         let _ = r;
     }
@@ -1279,7 +1314,7 @@ mod tests {
             return;
         }
         let ws = std::env::temp_dir();
-        if apply_landlock(&ws, &[]).is_err() {
+        if apply_landlock(&ws, &[], false).is_err() {
             std::process::exit(2); // 环境不支持 Landlock → 父进程按 skip 处理
         }
         match std::fs::OpenOptions::new().write(true).open("/dev/null") {

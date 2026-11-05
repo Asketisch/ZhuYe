@@ -110,6 +110,10 @@ function spawnMockServe(): ChildProcessWithoutNullStreams {
           id: sub.id, msg: { type: 'tool_call_output_delta', call_id: 'c1', delta: 'preview', is_stderr: true },
         }) + '\\n');
         process.stdout.write(JSON.stringify({
+          id: sub.id, msg: { type: 'tool_call_end', call_id: 'image-call', is_error: false,
+            output: { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: {}, elapsed_ms: 0 } },
+        }) + '\\n');
+        process.stdout.write(JSON.stringify({
           id: sub.id, msg: {
             type: 'turn_complete', turn_id: 't', status: 'success',
             usage: { input_tokens: 0, output_tokens: 1 },
@@ -148,6 +152,18 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
 
   it('prompt 高层 API 聚合 delta 并返回', async () => {
     expect(await agent.prompt('hi')).toBe('mock-reply');
+  }, 10_000);
+
+  it('工具图片事件透传原始字节', async () => {
+    const events = [];
+    for await (const event of await agent.submit({ type: 'user_input', items: [{ type: 'text', text: 'hi' }] })) {
+      events.push(event);
+    }
+    const end = events.find((event) => event.msg.type === 'tool_call_end');
+    expect(end?.msg.type).toBe('tool_call_end');
+    if (end?.msg.type !== 'tool_call_end') throw new Error('缺少工具结果');
+    expect(end.msg.output.content).toEqual([{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }]);
+    expect(events.at(-1)?.msg.type).toBe('turn_complete');
   }, 10_000);
 
   it('registerTools 静默接受(不污染 turn 事件流)', async () => {

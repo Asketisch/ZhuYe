@@ -48,6 +48,15 @@ pub fn resolve_path(
     home: &Path,
     agent_type: &str,
 ) -> Result<PathBuf, MemoryError> {
+    resolve_path_with_data_dir(scope, workspace, &home.join(".zhuye"), agent_type)
+}
+
+pub(crate) fn resolve_path_with_data_dir(
+    scope: MemoryScope,
+    workspace: &Path,
+    user_data_dir: &Path,
+    agent_type: &str,
+) -> Result<PathBuf, MemoryError> {
     if agent_type.is_empty() {
         return Err(MemoryError::Invalid("agent_type is empty".into()));
     }
@@ -58,8 +67,7 @@ pub fn resolve_path(
             .join("agent-memory")
             .join(safe)
             .join("MEMORY.md")),
-        MemoryScope::User => Ok(home
-            .join(".zhuye")
+        MemoryScope::User => Ok(user_data_dir
             .join("agent-memory")
             .join(safe)
             .join("MEMORY.md")),

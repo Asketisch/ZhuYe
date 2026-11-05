@@ -131,7 +131,7 @@ async fn branch_diff_stats_to_default_branch(
     let numstat = run_git_command(runner, cwd, &["diff", "--numstat", &range])
         .await
         .ok()?;
-    if !numstat.success() {
+    if !numstat.success() || numstat.truncated {
         return None;
     }
 

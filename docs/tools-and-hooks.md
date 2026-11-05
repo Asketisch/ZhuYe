@@ -211,7 +211,7 @@ test_command = "cargo test -p zhuye-core --lib"
 **启停持久化(v1.x)**:`[hooks].disabled` 名单持久化 `HookEngine` 的
 运行期禁用 —— `zhuye hooks ls / disable / enable` 三条 CLI 读写它(与
 `plugin enable` 同一 config 写入口);`build_engine` 注册后统一 apply,
-先注册后禁用,未注册的名字静默无效(插件 hook 未加载时同样安全)。
+内置 hook 先注册后禁用,未注册的普通名字静默无效;插件 hook 的禁用状态会保留到插件注册时生效。
 
 **插件 hook 的 env 白名单**:`hooks.json` 的 `env: ["NAME", ...]` 显式
 放行本应被 secret 剔除的环境变量(白名单优先)。`ShellHook` 子进程
@@ -233,6 +233,16 @@ timeout }`(`timeout` 是 `Duration`,不是毫秒数);`event` 接受
 规则引擎见 `zhuye-permissions`(tool 精确名 + tool_glob + bash
 shell_pattern,匹配上下文感知);bash 命令经 `classify_command` 三级
 分类(Safe / Risky / Dangerous)供审批分级。
+
+规则还可用 `resource_glob` 限定常用工具参数中的 `path`、`file_path`
+或 `url`。路径同时检查原始写法、工作区绝对路径和可解析的符号链接
+目标;多种表示在同一遍规则评估中匹配,不改变规则优先级。资源缺失或
+资源 glob 无效时,其他已知条件匹配的 `Deny` 规则失败关闭。工具执行前会检查
+显式策略:即使没有交互审批门,`Deny` 和无法向用户提出的 `Ask` 也会
+拒绝执行;无规则的工具仍按其原有权限模式处理。
+用户级规则位于 `$ZHUYE_HOME/permissions.toml`(未设置时为
+`$HOME/.zhuye/permissions.toml`)；任一权限规则文件无法读取或解析时,
+工具调用会被拒绝,修复文件后恢复规则评估。
 
 ### shell_pattern 的语义(0.4)
 
@@ -281,6 +291,8 @@ ApproveForSession(会话内记忆)。hook 的 `Ask` 决策同样路由到此处
 workspace-write 默认)/ Linux Landlock(路径白名单)。bash 工具的
 `sandbox` 参数启用;策略与权限模式正交(见 §6)。网络隔离目前仅
 `web_fetch` 层实施(SSRF 防护:私有网段 / 逐跳 redirect 校验)。
+
+`read` 与 LSP 工具同步文档时通过固定文件句柄读取，并拒绝路径替换造成的符号链接越界；`read` 在读取时也执行字节上限。LSP server 子进程自行访问文件不受此限制，其运行环境和权限应按来源配置。
 
 ### §8.2 Linux Landlock 的 handled 位集合(0.1)
 

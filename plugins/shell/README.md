@@ -25,7 +25,7 @@ zhuye plugin enable shell@inline
 | `shell_read` | 自上次调用的增量输出 + 退出状态 |
 | `shell_write` | 写 stdin |
 | `shell_close_stdin` | 发 EOF |
-| `shell_kill` | 终止(SIGKILL)并移除 |
+| `shell_kill` | 终止(SIGKILL)并移除;Unix 上同时终止同一进程组的子进程 |
 | `shell_list` | 列活跃会话 |
 
 ## slash 命令

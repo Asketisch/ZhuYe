@@ -8,6 +8,7 @@ description = "ZhuYe: unified TOML config loader with hot reload"
 [dependencies]
 zhuye-llm  = { workspace = true }
 zhuye-permissions = { workspace = true }
+zhuye-fs   = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 toml           = { workspace = true }

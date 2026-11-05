@@ -50,6 +50,8 @@ pub enum CronParseError {
     InvalidToken { field: &'static str, token: String },
     #[error("field {field:?}: step cannot be zero")]
     ZeroStep { field: &'static str },
+    #[error("cron store unavailable: {0}")]
+    StoreUnavailable(String),
 }
 
 impl CronSchedule {
@@ -156,30 +158,41 @@ fn parse_part(
             field,
             token: token.to_string(),
         })?;
+        check_range(v, lo, hi, field)?;
         // 单值 + 步长:v, v+step, ... 直到 hi(与 cron 语义一致)。
         if let Some(step) = step {
             let mut out = Vec::new();
             let mut cur = v;
             while cur <= hi {
-                check_range(cur, lo, hi, field)?;
                 out.push(cur as u32);
-                cur += step;
+                let Some(next) = cur.checked_add(step) else {
+                    break;
+                };
+                cur = next;
             }
             return Ok(out);
         }
-        check_range(v, lo, hi, field)?;
         return Ok(vec![v as u32]);
     };
 
     check_range(start, lo, hi, field)?;
     check_range(end, lo, hi, field)?;
+    if start > end {
+        return Err(CronParseError::InvalidToken {
+            field,
+            token: token.to_string(),
+        });
+    }
 
     let step = step.unwrap_or(1);
     let mut out = Vec::new();
     let mut cur = start;
     while cur <= end {
         out.push(cur as u32);
-        cur += step;
+        let Some(next) = cur.checked_add(step) else {
+            break;
+        };
+        cur = next;
     }
     Ok(out)
 }
@@ -253,6 +266,10 @@ pub struct CronScheduler {
     /// v1.x:持久化文件(`~/.zhuye/cron/<session>.json`)。`None` = 纯内存
     /// (测试 / 显式关闭)。create / update / delete / tick 触发后原子落盘。
     store_path: Option<std::path::PathBuf>,
+    /// 序列化同一调度器的全部持久化,避免旧快照覆盖新快照。
+    store_lock: Arc<parking_lot::Mutex<()>>,
+    /// 加载失败时禁止写入,保留磁盘上可能仍可恢复的数据。
+    store_error: Option<String>,
 }
 
 impl std::fmt::Debug for CronScheduler {
@@ -275,6 +292,8 @@ impl CronScheduler {
             sub_tx,
             session_id,
             store_path: None,
+            store_lock: Arc::new(parking_lot::Mutex::new(())),
+            store_error: None,
         }
     }
 
@@ -290,6 +309,7 @@ impl CronScheduler {
         let path = path.into();
         match load_jobs(&path) {
             Ok(mut loaded) => {
+                self.store_error = None;
                 let now = Utc::now();
                 for job in loaded.iter_mut() {
                     job.next_fire = if job.enabled {
@@ -312,6 +332,7 @@ impl CronScheduler {
             Err(e) => {
                 // 坏文件不覆盖:保留现有内存态,只 warn(用户数据不丢)。
                 tracing::warn!(path = %path.display(), error = %e, "cron: load store failed; starting empty (file left untouched)");
+                self.store_error = Some(format!("{}: {e}", path.display()));
             }
         }
         self.store_path = Some(path);
@@ -323,14 +344,24 @@ impl CronScheduler {
         self.store_path.as_deref()
     }
 
-    /// 把当前 job 列表原子落盘(`store_path` 为 `None` 时 noop)。失败只
-    /// warn —— 调度是主业务,落盘失败不该让 create / update 报错。
+    /// 加载失败时报告存储不可用,避免将未知状态误报为空任务列表。
+    pub fn ensure_store_available(&self) -> std::io::Result<()> {
+        match &self.store_error {
+            Some(error) => Err(std::io::Error::other(error.clone())),
+            None => Ok(()),
+        }
+    }
+
+    /// 把当前 job 列表原子落盘(`store_path` 为 `None` 时 noop)。
+    /// 显式调用失败时记录日志;创建、更新和删除会分别向调用方返回错误。
     pub fn persist(&self) {
+        if self.store_error.is_some() {
+            return;
+        }
         let Some(path) = self.store_path.as_deref() else {
             return;
         };
-        let jobs = self.jobs.read().clone();
-        if let Err(e) = save_jobs(path, &jobs) {
+        if let Err(e) = persist_jobs(path, &self.jobs, &self.store_lock) {
             tracing::warn!(path = %path.display(), error = %e, "cron: persist failed");
         }
     }
@@ -393,6 +424,9 @@ impl CronScheduler {
         prompt: impl Into<String>,
         name: Option<String>,
     ) -> Result<CronJobSpec, CronParseError> {
+        if let Some(error) = &self.store_error {
+            return Err(CronParseError::StoreUnavailable(error.clone()));
+        }
         let parsed = CronSchedule::parse(schedule)?;
         let now = Utc::now();
         let prompt = prompt.into();
@@ -410,8 +444,13 @@ impl CronScheduler {
             last_fired: None,
             next_fire,
         };
-        self.jobs.write().push(job.clone());
-        self.persist();
+        let _guard = self.store_lock.lock();
+        let mut jobs = self.jobs.write();
+        jobs.push(job.clone());
+        if let Err(error) = self.save_locked(&jobs) {
+            jobs.pop();
+            return Err(CronParseError::StoreUnavailable(error.to_string()));
+        }
         Ok(job)
     }
 
@@ -426,12 +465,38 @@ impl CronScheduler {
         name: Option<&str>,
         enabled: Option<bool>,
     ) -> Option<CronJobSpec> {
+        self.try_update(id, schedule, prompt, name, enabled)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "cron: update could not be persisted");
+                None
+            })
+    }
+
+    /// 更新任务并持久化;写入失败时保留原内存状态。
+    pub fn try_update(
+        &self,
+        id: &str,
+        schedule: Option<&str>,
+        prompt: Option<&str>,
+        name: Option<&str>,
+        enabled: Option<bool>,
+    ) -> std::io::Result<Option<CronJobSpec>> {
+        self.ensure_store_available()?;
+        let _guard = self.store_lock.lock();
         let mut jobs = self.jobs.write();
-        let idx = jobs.iter().position(|j| j.id == id)?;
-        let job = &mut jobs[idx];
+        let Some(idx) = jobs.iter().position(|j| j.id == id) else {
+            return Ok(None);
+        };
+        let mut job = jobs[idx].clone();
         if let Some(s) = schedule {
-            let parsed = CronSchedule::parse(s).ok()?;
-            job.next_fire = parsed.next_after(Utc::now());
+            let Ok(parsed) = CronSchedule::parse(s) else {
+                return Ok(None);
+            };
+            job.next_fire = if enabled.unwrap_or(job.enabled) {
+                parsed.next_after(Utc::now())
+            } else {
+                None
+            };
             job.schedule = s.trim().to_string();
         }
         if let Some(p) = prompt {
@@ -442,25 +507,55 @@ impl CronScheduler {
         }
         if let Some(e) = enabled {
             job.enabled = e;
+            if !e {
+                job.next_fire = None;
+            } else if schedule.is_none() && job.next_fire.is_none() {
+                job.next_fire = CronSchedule::parse(&job.schedule)
+                    .ok()
+                    .and_then(|parsed| parsed.next_after(Utc::now()));
+            }
         }
-        let out = job.clone();
-        drop(jobs);
-        self.persist();
-        Some(out)
+        let previous = std::mem::replace(&mut jobs[idx], job.clone());
+        if let Err(error) = self.save_locked(&jobs) {
+            jobs[idx] = previous;
+            return Err(error);
+        }
+        Ok(Some(job))
     }
 
     /// 删除一条 job(按 id)。返回是否删除成功。
     pub fn delete(&self, id: &str) -> bool {
-        let removed = {
-            let mut jobs = self.jobs.write();
-            let before = jobs.len();
-            jobs.retain(|j| j.id != id);
-            jobs.len() != before
+        self.try_delete(id).unwrap_or_else(|error| {
+            tracing::warn!(%error, "cron: delete could not be persisted");
+            false
+        })
+    }
+
+    /// 删除任务并持久化;写入失败时恢复原任务。
+    pub fn try_delete(&self, id: &str) -> std::io::Result<bool> {
+        self.ensure_store_available()?;
+        let _guard = self.store_lock.lock();
+        let mut jobs = self.jobs.write();
+        let Some(idx) = jobs.iter().position(|job| job.id == id) else {
+            return Ok(false);
         };
-        if removed {
-            self.persist();
+        let removed = jobs.remove(idx);
+        if let Err(error) = self.save_locked(&jobs) {
+            jobs.insert(idx, removed);
+            return Err(error);
         }
-        removed
+        Ok(true)
+    }
+
+    /// 调用方已持有持久化锁和任务锁。
+    fn save_locked(&self, jobs: &[CronJobSpec]) -> std::io::Result<()> {
+        if let Some(error) = &self.store_error {
+            return Err(std::io::Error::other(error.clone()));
+        }
+        match self.store_path.as_deref() {
+            Some(path) => save_jobs(path, jobs),
+            None => Ok(()),
+        }
     }
 
     /// 启动后台 driver。每 `tick_secs` 秒扫描一次 enabled job,到期则把
@@ -474,6 +569,8 @@ impl CronScheduler {
         let jobs = Arc::clone(&self.jobs);
         let sub_tx = self.sub_tx.clone();
         let store_path = self.store_path.clone();
+        let store_lock = self.store_lock.clone();
+        let store_error = self.store_error.clone();
         let join = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -482,12 +579,11 @@ impl CronScheduler {
                 let fired = Self::tick(&jobs, &sub_tx).await;
                 // 有 job 触发 → last_fired / next_fire 变了,落盘(纯内存时 noop)。
                 if fired > 0
+                    && store_error.is_none()
                     && let Some(path) = store_path.as_deref()
+                    && let Err(e) = persist_jobs(path, &jobs, &store_lock)
                 {
-                    let snapshot = jobs.read().clone();
-                    if let Err(e) = save_jobs(path, &snapshot) {
-                        tracing::warn!(path = %path.display(), error = %e, "cron: persist after tick failed");
-                    }
+                    tracing::warn!(path = %path.display(), error = %e, "cron: persist after tick failed");
                 }
             }
         });
@@ -502,43 +598,55 @@ impl CronScheduler {
         sub_tx: &Option<mpsc::Sender<Submission>>,
     ) -> usize {
         let now = Utc::now();
-        // 先快照到期 job(缩小锁持有时间)。
-        //
-        // 关键:快照 job **id**(而非数组下标)。`CronScheduler::delete` 用
-        // `retain` 删除 job,会使后续元素下标前移;`create` 会 append。若在
-        // 快照与写回之间发生增删,按旧下标 `get_mut(idx)` 会改到错误的 job
-        // (静默串改其它 job 的 last_fired/next_fire),且被删的到期 job 的
-        // next_fire 永不重算 → 每个 tick 重复触发。按 id 在写锁内重新定位
-        // 即可彻底规避。
-        let due: Vec<(String, String)> = {
+        // 先快照 ID,等待通道容量后再持锁检查,避免执行已经被删除或禁用的任务。
+        let due: Vec<String> = {
             let g = jobs.read();
             g.iter()
                 .filter(|j| j.enabled && j.next_fire.is_some_and(|nf| nf <= now))
-                .map(|j| (j.id.clone(), j.prompt.clone()))
+                .map(|j| j.id.clone())
                 .collect()
         };
-        let fired = due.len();
-        for (job_id, prompt) in due {
-            // 触发:发 Submission。sub_tx 为 None 时跳过(测试)。
-            if let Some(tx) = sub_tx {
-                let _ = tx.send(Submission::user_input(prompt.clone())).await;
-            }
-            // 更新 last_fired + 重算 next_fire(按 id 在写锁内重新定位)。
+        let mut fired = 0;
+        for job_id in due {
+            // 获取容量时不持任务锁;通道已关闭则不记录虚假的触发。
+            let permit = match sub_tx {
+                Some(tx) => match tx.reserve().await {
+                    Ok(permit) => Some(permit),
+                    Err(_) => break,
+                },
+                None => None,
+            };
+            let fired_at = Utc::now();
             let mut g = jobs.write();
-            if let Some(job) = g.iter_mut().find(|j| j.id == job_id) {
-                job.last_fired = Some(now);
-                // schedule 解析失败 → next_fire 置 None(永不再触发),
-                // 而不是保持旧值每 tick 重复触发。
-                job.next_fire = CronSchedule::parse(&job.schedule)
-                    .ok()
-                    .and_then(|p| p.next_after(now));
+            let Some(job) = g.iter_mut().find(|j| {
+                j.id == job_id && j.enabled && j.next_fire.is_some_and(|next| next <= fired_at)
+            }) else {
+                continue;
+            };
+            job.last_fired = Some(fired_at);
+            job.next_fire = CronSchedule::parse(&job.schedule)
+                .ok()
+                .and_then(|p| p.next_after(fired_at));
+            if let Some(permit) = permit {
+                permit.send(Submission::user_input(job.prompt.clone()));
             }
+            fired += 1;
         }
         fired
     }
 }
 
 // ── 持久化(v1.x)───────────────────────────────────────────────────
+
+/// 在持久化锁内读取最新快照并落盘,防止较早的快照后写。
+fn persist_jobs(
+    path: &std::path::Path,
+    jobs: &RwLock<Vec<CronJobSpec>>,
+    lock: &parking_lot::Mutex<()>,
+) -> std::io::Result<()> {
+    let _guard = lock.lock();
+    save_jobs(path, &jobs.read())
+}
 
 /// 默认持久化根目录:`<data_dir>/cron`(`~/.zhuye/cron`)。HOME 缺失 → `None`。
 pub fn default_cron_base() -> Option<std::path::PathBuf> {
@@ -667,8 +775,66 @@ mod tests {
 
         let scheduler = CronScheduler::new(None, ThreadId::new()).with_store(&path);
         assert!(scheduler.list().is_empty(), "坏文件应起步为空");
-        // 坏文件未被覆盖(用户数据不丢)。
+        assert!(matches!(
+            scheduler.create("* * * * *", "任务", None),
+            Err(CronParseError::StoreUnavailable(_))
+        ));
+        assert!(scheduler.ensure_store_available().is_err());
+        assert!(scheduler.try_delete("未知").is_err());
+        assert!(
+            scheduler
+                .try_update("未知", None, None, None, None)
+                .is_err()
+        );
+        scheduler.persist();
+        assert!(scheduler.list().is_empty());
+        // 后续操作也不能覆盖坏文件。
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not json {{{");
+    }
+
+    #[test]
+    fn concurrent_persistence_keeps_latest_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        let scheduler = CronScheduler::new(None, ThreadId::new()).with_store(&path);
+        std::thread::scope(|scope| {
+            for index in 0..24 {
+                let scheduler = scheduler.clone();
+                scope.spawn(move || {
+                    scheduler
+                        .create("* * * * *", format!("任务 {index}"), None)
+                        .unwrap();
+                });
+            }
+        });
+        let saved = load_jobs(&path).unwrap();
+        assert_eq!(saved.len(), 24);
+        assert_eq!(saved, *scheduler.jobs.read());
+    }
+
+    #[test]
+    fn failed_persistence_rolls_back_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        let scheduler = CronScheduler::new(None, ThreadId::new()).with_store(&path);
+        let job = scheduler.create("* * * * *", "原任务", None).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        assert!(matches!(
+            scheduler.create("* * * * *", "新任务", None),
+            Err(CronParseError::StoreUnavailable(_))
+        ));
+        assert!(
+            scheduler
+                .try_update(&job.id, None, Some("改名"), None, None)
+                .is_err()
+        );
+        assert!(scheduler.try_delete(&job.id).is_err());
+        assert_eq!(scheduler.list(), vec![job]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]
@@ -746,6 +912,26 @@ mod tests {
     fn parse_zero_step_errors() {
         let err = CronSchedule::parse("*/0 * * * *").unwrap_err();
         assert!(matches!(err, CronParseError::ZeroStep { field: "minute" }));
+    }
+
+    #[test]
+    fn parse_large_steps_and_invalid_ranges_without_overflow() {
+        let schedule = CronSchedule::parse("1/2147483647 * * * *").unwrap();
+        assert_eq!(schedule.minute, vec![1]);
+        assert!(matches!(
+            CronSchedule::parse("60/2 * * * *"),
+            Err(CronParseError::OutOfRange {
+                field: "minute",
+                ..
+            })
+        ));
+        assert!(matches!(
+            CronSchedule::parse("9-2 * * * *"),
+            Err(CronParseError::InvalidToken {
+                field: "minute",
+                ..
+            })
+        ));
     }
 
     // ── 计算下次触发时间(next_after)──────────────────────────
@@ -833,6 +1019,29 @@ mod tests {
     }
 
     #[test]
+    fn reenable_loaded_job_recomputes_next_fire() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        let scheduler = CronScheduler::new(None, ThreadId::new()).with_store(&path);
+        let job = scheduler.create("* * * * *", "任务", None).unwrap();
+        assert!(
+            scheduler
+                .update(&job.id, None, None, None, Some(false))
+                .unwrap()
+                .next_fire
+                .is_none()
+        );
+        let restored = CronScheduler::new(None, ThreadId::new()).with_store(&path);
+        assert!(restored.get(&job.id).unwrap().next_fire.is_none());
+        let enabled = restored
+            .update(&job.id, None, None, None, Some(true))
+            .unwrap();
+        assert!(enabled.enabled);
+        assert!(enabled.next_fire.is_some_and(|time| time > Utc::now()));
+        assert_eq!(load_jobs(&path).unwrap()[0].next_fire, enabled.next_fire);
+    }
+
+    #[test]
     fn delete_removes_job() {
         let s = sched();
         let job = s.create("0 * * * *", "p", None).unwrap();
@@ -868,6 +1077,57 @@ mod tests {
         CronScheduler::tick(&jobs, &Some(tx)).await;
         let sub = rx.recv().await.expect("should receive a submission");
         assert!(matches!(sub.op, zhuye_protocol::Op::UserInput { .. }));
+    }
+
+    #[tokio::test]
+    async fn tick_does_not_fire_job_disabled_while_waiting_for_capacity() {
+        let (tx, mut rx) = mpsc::channel::<Submission>(1);
+        tx.send(Submission::user_input("占满通道")).await.unwrap();
+        let scheduler = sched();
+        let mut job = scheduler.create("* * * * *", "任务", None).unwrap();
+        job.next_fire = Some(Utc::now() - Duration::minutes(1));
+        scheduler.jobs.write()[0] = job.clone();
+        let jobs = scheduler.jobs.clone();
+        let sender = tx.clone();
+        let tick = tokio::spawn(async move { CronScheduler::tick(&jobs, &Some(sender)).await });
+        tokio::task::yield_now().await;
+        scheduler
+            .update(&job.id, None, None, None, Some(false))
+            .unwrap();
+        rx.recv().await.unwrap();
+        assert_eq!(tick.await.unwrap(), 0);
+        assert!(rx.try_recv().is_err());
+        assert!(scheduler.get(&job.id).unwrap().last_fired.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_ticks_claim_due_job_only_once() {
+        let (tx, mut rx) = mpsc::channel::<Submission>(2);
+        let scheduler = sched();
+        let mut job = scheduler.create("* * * * *", "任务", None).unwrap();
+        job.next_fire = Some(Utc::now() - Duration::minutes(1));
+        scheduler.jobs.write()[0] = job;
+        let sender = Some(tx);
+        let first = CronScheduler::tick(&scheduler.jobs, &sender);
+        let second = CronScheduler::tick(&scheduler.jobs, &sender);
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first + second, 1);
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn closed_submission_channel_does_not_mark_job_fired() {
+        let (tx, rx) = mpsc::channel::<Submission>(1);
+        drop(rx);
+        let scheduler = sched();
+        let mut job = scheduler.create("* * * * *", "任务", None).unwrap();
+        job.next_fire = Some(Utc::now() - Duration::minutes(1));
+        scheduler.jobs.write()[0] = job.clone();
+        assert_eq!(CronScheduler::tick(&scheduler.jobs, &Some(tx)).await, 0);
+        let saved = scheduler.get(&job.id).unwrap();
+        assert!(saved.last_fired.is_none());
+        assert_eq!(saved.next_fire, job.next_fire);
     }
 
     /// v1.x:`rebind_sender` 后重启 driver,到期 job 投递到**新** channel,

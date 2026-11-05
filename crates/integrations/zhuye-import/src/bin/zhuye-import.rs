@@ -205,20 +205,30 @@ fn run_import(cli: Cli) -> Result<(), String> {
 
 /// 递归收集目录下的 .jsonl(深度上限 8)。
 fn collect_jsonl(dir: &std::path::Path, out: &mut Vec<ImportSource>, depth: usize) {
-    if depth > 8 {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().collect();
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
-        let p = e.path();
-        if p.is_dir() {
-            collect_jsonl(&p, out, depth + 1);
-        } else if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
-            out.push(ImportSource::JsonlFile(p));
+    let mut pending = std::collections::VecDeque::from([(dir.to_path_buf(), depth)]);
+    let mut visited = std::collections::HashSet::new();
+    while let Some((dir, depth)) = pending.pop_front() {
+        if depth > 8 {
+            continue;
+        }
+        let Ok(real_dir) = dir.canonicalize() else {
+            continue;
+        };
+        if !visited.insert(real_dir) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push_back((path, depth + 1));
+            } else if path.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                out.push(ImportSource::JsonlFile(path));
+            }
         }
     }
 }

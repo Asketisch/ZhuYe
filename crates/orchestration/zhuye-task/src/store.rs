@@ -1,9 +1,8 @@
 //! `TaskStore` trait + `InMemoryTaskStore` + `FileTaskStore`。
 //!
 //! 持久化后端抽象,与 `zhuye-memory::MemoryStore` 同构(一个 trait +
-//! 一个 in-memory + 一个 file-backed 实现)。Phase 0 落地的最小可用版本;
-//! 跨进程文件锁用 per-list `tokio::sync::Mutex`(进程内序列化),跨进程
-//! 互斥留给后续 phase 加 `fs2` advisory lock。
+//! 一个 in-memory + 一个 file-backed 实现)。内置后端按列表串行化
+//! 事务:内存后端在共享实例内使用异步锁,文件后端使用跨进程文件锁。
 //!
 //! 路径布局:
 //! ```text
@@ -17,8 +16,8 @@
 //! ## 写入语义
 //!
 //! - 写文件用 `tmp + rename` 原子替换,避免半写状态。
-//! - `next_id` 读 `.highwatermark` +1 写回;`save` + `next_id` 在同一把
-//!   list-level Mutex 下串行执行,避免两个并发调用读到同一个高水位。
+//! - `next_id` 在事务锁内校准高水位与已有任务 ID,再分配下一个 ID;
+//!   文件读写由后台阻塞任务执行,调用取消时锁保持至写入结束。
 //! - `list` 读 list 目录下所有 `*.json`,过滤 `.highwatermark` 与 `.lock`,
 //!   按 id 升序返回(失败的文件跳过 + `tracing::warn`)。
 
@@ -41,6 +40,45 @@ use crate::model::{ListId, Task, TaskId, TaskStatus};
 /// `Deleted` 的软删除);`list` 默认按 id 升序返回,自动排除软删任务。
 #[async_trait]
 pub trait TaskStore: Send + Sync {
+    /// 为跨管理器的读改写获取列表事务锁;自定义后端可按需实现。
+    /// 持锁期间必须使用下列 `*_transactional` 方法并传入锁句柄,
+    /// 避免直接调用会再次取锁的写方法;后台写入必须持有句柄直到结束。
+    async fn lock_transaction(
+        &self,
+        _list: &ListId,
+    ) -> Result<Option<Arc<dyn Send + Sync>>, TaskError> {
+        Ok(None)
+    }
+
+    /// 保持事务锁到异步写入完成;自定义后端可覆盖以处理取消。
+    async fn save_transactional(
+        &self,
+        list: &ListId,
+        task: &Task,
+        _guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<(), TaskError> {
+        self.save(list, task).await
+    }
+
+    /// 保持事务锁到 ID 分配完成。
+    async fn next_id_transactional(
+        &self,
+        list: &ListId,
+        _guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<TaskId, TaskError> {
+        self.next_id(list).await
+    }
+
+    /// 保持事务锁到删除完成。
+    async fn delete_transactional(
+        &self,
+        list: &ListId,
+        id: TaskId,
+        _guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<(), TaskError> {
+        self.delete(list, id).await
+    }
+
     /// `list` 目录的绝对路径(用于 `output_path` 派生)。
     fn dir_for(&self, list: &ListId) -> PathBuf;
 
@@ -71,6 +109,7 @@ pub trait TaskStore: Send + Sync {
 pub struct InMemoryTaskStore {
     map: RwLock<HashMap<(ListId, TaskId), Task>>,
     hwm: RwLock<HashMap<ListId, TaskId>>,
+    transaction_locks: Mutex<HashMap<ListId, Arc<Mutex<()>>>>,
 }
 
 impl std::fmt::Debug for InMemoryTaskStore {
@@ -96,17 +135,45 @@ impl InMemoryTaskStore {
         Self {
             map: RwLock::new(HashMap::new()),
             hwm: RwLock::new(HashMap::new()),
+            transaction_locks: Mutex::new(HashMap::new()),
         }
     }
 }
 
 #[async_trait]
 impl TaskStore for InMemoryTaskStore {
+    async fn lock_transaction(
+        &self,
+        list: &ListId,
+    ) -> Result<Option<Arc<dyn Send + Sync>>, TaskError> {
+        let lock = {
+            let mut locks = self.transaction_locks.lock().await;
+            locks
+                .entry(list.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        Ok(Some(Arc::new(lock.lock_owned().await)))
+    }
+
     fn dir_for(&self, list: &ListId) -> PathBuf {
         PathBuf::from(format!("<in-memory>/{list}"))
     }
 
-    async fn save(&self, _list: &ListId, task: &Task) -> Result<(), TaskError> {
+    async fn save(&self, list: &ListId, task: &Task) -> Result<(), TaskError> {
+        let guard = self.lock_transaction(list).await?;
+        self.save_transactional(list, task, guard).await
+    }
+
+    async fn save_transactional(
+        &self,
+        list: &ListId,
+        task: &Task,
+        _guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<(), TaskError> {
+        if task.list_id != *list {
+            return Err(TaskError::Invalid("任务列表不匹配".into()));
+        }
         self.map
             .write()
             .insert((task.list_id.clone(), task.id), task.clone());
@@ -125,6 +192,16 @@ impl TaskStore for InMemoryTaskStore {
     }
 
     async fn delete(&self, list: &ListId, id: TaskId) -> Result<(), TaskError> {
+        let guard = self.lock_transaction(list).await?;
+        self.delete_transactional(list, id, guard).await
+    }
+
+    async fn delete_transactional(
+        &self,
+        list: &ListId,
+        id: TaskId,
+        _guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<(), TaskError> {
         self.map.write().remove(&(list.clone(), id));
         Ok(())
     }
@@ -142,9 +219,20 @@ impl TaskStore for InMemoryTaskStore {
     }
 
     async fn next_id(&self, list: &ListId) -> Result<TaskId, TaskError> {
+        let guard = self.lock_transaction(list).await?;
+        self.next_id_transactional(list, guard).await
+    }
+
+    async fn next_id_transactional(
+        &self,
+        list: &ListId,
+        _guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<TaskId, TaskError> {
         let mut hwm = self.hwm.write();
         let cur = hwm.get(list).copied().unwrap_or(0);
-        let next = cur + 1;
+        let next = cur
+            .checked_add(1)
+            .ok_or_else(|| TaskError::Invalid("task id overflow".into()))?;
         hwm.insert(list.clone(), next);
         Ok(next)
     }
@@ -155,8 +243,8 @@ impl TaskStore for InMemoryTaskStore {
 /// 文件后端。冷路径(重启 / 跨 session)使用,持久化到磁盘。
 ///
 /// 路径:`<home>/tasks/<list>/<id>.json`(`<home>` 来自 `ZHUYE_HOME`
-/// 或 `$HOME/.zhuye`)。`next_id` 与 `save` 用 list-level `Mutex` 串行化
-/// 分配,高水位写回 `.highwatermark` 文件,避免跨进程 id 重复。
+/// 或 `$HOME/.zhuye`)。写入使用列表文件锁,高水位写回
+/// `.highwatermark`,支持跨进程安全分配。
 pub struct FileTaskStore {
     home: PathBuf,
     /// 每 list 一把 mutex,串行化 `next_id` 与 `save` 操作,避免
@@ -199,51 +287,89 @@ impl FileTaskStore {
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
+}
 
-    /// 读 list 下的高水位文件;不存在返回 0。
-    fn read_hwm(&self, list_dir: &Path) -> TaskId {
-        let p = list_dir.join(".highwatermark");
-        match std::fs::read_to_string(&p) {
-            Ok(s) => s.trim().parse().unwrap_or(0),
-            Err(_) => 0,
-        }
+// 列表标识必须是单个路径组件,拒绝绝对路径及多层路径。
+pub(crate) fn validate_list_id(list: &str) -> Result<(), TaskError> {
+    let path = Path::new(list);
+    let mut parts = path.components();
+    if list.contains(['/', '\\'])
+        || !matches!(parts.next(), Some(std::path::Component::Normal(_)))
+        || parts.next().is_some()
+    {
+        return Err(TaskError::Invalid(format!(
+            "invalid task list id: {list:?}"
+        )));
     }
+    Ok(())
 }
 
 #[async_trait]
 impl TaskStore for FileTaskStore {
+    async fn lock_transaction(
+        &self,
+        list: &ListId,
+    ) -> Result<Option<Arc<dyn Send + Sync>>, TaskError> {
+        validate_list_id(list)?;
+        let dir = self.dir_for(list);
+        let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File, TaskError> {
+            std::fs::create_dir_all(&dir)?;
+            Ok(std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join(".task-transaction.lock"))?)
+        })
+        .await
+        .map_err(|error| TaskError::Invalid(format!("join error: {error}")))??;
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(Some(Arc::new(file))),
+                Err(error)
+                    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+                {
+                    // 等待锁时不占用阻塞线程池,避免写入者因线程耗尽而无法完成。
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     fn dir_for(&self, list: &ListId) -> PathBuf {
         self.home.join("tasks").join(list)
     }
 
     async fn save(&self, list: &ListId, task: &Task) -> Result<(), TaskError> {
+        let guard = self.lock_transaction(list).await?;
+        self.save_transactional(list, task, guard).await
+    }
+
+    async fn save_transactional(
+        &self,
+        list: &ListId,
+        task: &Task,
+        guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<(), TaskError> {
+        validate_list_id(list)?;
+        if task.list_id != *list {
+            return Err(TaskError::Invalid("任务列表不匹配".into()));
+        }
         let lock = self.lock_for(list).await;
         let _guard = lock.lock().await;
-        let list_dir = self.dir_for(list);
-        // 同步 I/O 放进 spawn_blocking 避免阻塞 tokio runtime。
-        let dir = list_dir.clone();
-        let task_for_write = task.clone();
-        let result: Result<(), TaskError> =
-            tokio::task::spawn_blocking(move || write_task_blocking(&dir, &task_for_write))
-                .await
-                .map_err(|e| TaskError::Invalid(format!("join error: {e}")))?;
-        result?;
-        // 同步提升高水位文件,避免 `next_id` 在外部直接写文件后读到
-        // 过期的 max id。`next_id` 与 `save` 共用 list-level 锁,无竞态。
-        let cur = self.read_hwm(&list_dir);
-        if task.id > cur {
-            let dir = list_dir.clone();
-            let task_id = task.id;
-            let hwm: Result<(), TaskError> =
-                tokio::task::spawn_blocking(move || write_hwm_blocking(&dir, task_id))
-                    .await
-                    .map_err(|e| TaskError::Invalid(format!("join error: {e}")))?;
-            hwm?;
-        }
-        Ok(())
+        let dir = self.dir_for(list);
+        let task = task.clone();
+        run_guarded_blocking(guard, move || {
+            let current = read_hwm_blocking(&dir)?;
+            if task.id > current {
+                write_hwm_blocking(&dir, task.id)?;
+            }
+            write_task_blocking(&dir, &task)
+        })
+        .await
     }
 
     async fn load(&self, list: &ListId, id: TaskId) -> Result<Task, TaskError> {
+        validate_list_id(list)?;
         let p = self.dir_for(list).join(format!("{id}.json"));
         let s = tokio::fs::read_to_string(&p)
             .await
@@ -256,15 +382,28 @@ impl TaskStore for FileTaskStore {
     }
 
     async fn delete(&self, list: &ListId, id: TaskId) -> Result<(), TaskError> {
-        let p = self.dir_for(list).join(format!("{id}.json"));
-        match tokio::fs::remove_file(&p).await {
+        let guard = self.lock_transaction(list).await?;
+        self.delete_transactional(list, id, guard).await
+    }
+
+    async fn delete_transactional(
+        &self,
+        list: &ListId,
+        id: TaskId,
+        guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<(), TaskError> {
+        validate_list_id(list)?;
+        let path = self.dir_for(list).join(format!("{id}.json"));
+        run_guarded_blocking(guard, move || match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(TaskError::Io(e)),
-        }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(TaskError::Io(error)),
+        })
+        .await
     }
 
     async fn list(&self, list: &ListId) -> Result<Vec<Task>, TaskError> {
+        validate_list_id(list)?;
         let dir = self.dir_for(list);
         let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(e) => e,
@@ -294,19 +433,74 @@ impl TaskStore for FileTaskStore {
     }
 
     async fn next_id(&self, list: &ListId) -> Result<TaskId, TaskError> {
+        let guard = self.lock_transaction(list).await?;
+        self.next_id_transactional(list, guard).await
+    }
+
+    async fn next_id_transactional(
+        &self,
+        list: &ListId,
+        guard: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<TaskId, TaskError> {
+        validate_list_id(list)?;
         let lock = self.lock_for(list).await;
         let _guard = lock.lock().await;
-        let list_dir = self.dir_for(list);
-        let cur = self.read_hwm(&list_dir);
-        let next = cur + 1;
-        let dir = list_dir.clone();
-        let result: Result<(), TaskError> =
-            tokio::task::spawn_blocking(move || write_hwm_blocking(&dir, next))
-                .await
-                .map_err(|e| TaskError::Invalid(format!("join error: {e}")))?;
-        result?;
-        Ok(next)
+        let dir = self.dir_for(list);
+        run_guarded_blocking(guard, move || {
+            let next = read_hwm_blocking(&dir)?
+                .max(max_task_id_blocking(&dir)?)
+                .checked_add(1)
+                .ok_or_else(|| TaskError::Invalid("task id overflow".into()))?;
+            write_hwm_blocking(&dir, next)?;
+            Ok(next)
+        })
+        .await
     }
+}
+
+// 阻塞任务持有事务锁,即使等待它的异步调用被取消也不提前解锁。
+async fn run_guarded_blocking<T: Send + 'static>(
+    guard: Option<Arc<dyn Send + Sync>>,
+    operation: impl FnOnce() -> Result<T, TaskError> + Send + 'static,
+) -> Result<T, TaskError> {
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        operation()
+    })
+    .await
+    .map_err(|error| TaskError::Invalid(format!("join error: {error}")))?
+}
+
+fn read_hwm_blocking(dir: &Path) -> Result<TaskId, TaskError> {
+    match std::fs::read_to_string(dir.join(".highwatermark")) {
+        Ok(value) => value
+            .trim()
+            .parse()
+            .map_err(|_| TaskError::Invalid("任务高水位文件损坏".into())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => max_task_id_blocking(dir),
+        Err(error) => Err(error.into()),
+    }
+}
+
+// 校准落后或缺失的高水位,不能覆盖目录中已有的任务。
+fn max_task_id_blocking(dir: &Path) -> Result<TaskId, TaskError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    let mut maximum = 0;
+    for entry in entries {
+        let name = entry?.file_name();
+        if let Some(id) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".json"))
+            .and_then(|name| name.parse::<TaskId>().ok())
+        {
+            maximum = maximum.max(id);
+        }
+    }
+    Ok(maximum)
 }
 
 fn write_task_blocking(dir: &Path, task: &Task) -> Result<(), TaskError> {
@@ -352,6 +546,41 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancellation_keeps_file_transaction_until_blocking_write_finishes() {
+        let dir = TempDir::new().unwrap();
+        let first = FileTaskStore::new(dir.path());
+        let second = FileTaskStore::new(dir.path());
+        let list = "cancel-test".to_string();
+        let guard = first.lock_transaction(&list).await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let operation = tokio::spawn(run_guarded_blocking(guard, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        }));
+        started_rx.await.unwrap();
+        operation.abort();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                second.lock_transaction(&list)
+            )
+            .await
+            .is_err()
+        );
+        release_tx.send(()).unwrap();
+        let acquired = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            second.lock_transaction(&list),
+        )
+        .await
+        .expect("后台写入结束后应释放事务锁")
+        .unwrap();
+        assert!(acquired.is_some());
     }
 
     #[tokio::test]

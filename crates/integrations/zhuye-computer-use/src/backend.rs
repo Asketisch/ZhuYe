@@ -68,6 +68,7 @@ impl ComputerBackend for RealComputerBackend {
     }
 
     fn execute(&self, action: &ComputerUseAction) -> Result<(), MediaError> {
+        action.validate()?;
         #[cfg(feature = "real")]
         {
             use enigo::{Axis, Coordinate, Direction, Keyboard, Mouse};
@@ -96,14 +97,14 @@ impl ComputerBackend for RealComputerBackend {
                     let mut enigo = make_enigo()?;
                     let mut last_err: Option<MediaError> = None;
                     if *dy != 0 {
-                        if let Err(e) = enigo.scroll(*dy, Axis::Vertical) {
-                            last_err = Some(input_err(e));
-                        }
+                        last_err = enigo.scroll(*dy, Axis::Vertical).err().map(input_err);
                     }
                     if *dx != 0 {
-                        if let Err(e) = enigo.scroll(*dx, Axis::Horizontal) {
-                            last_err = Some(input_err(e));
-                        }
+                        last_err = enigo
+                            .scroll(*dx, Axis::Horizontal)
+                            .err()
+                            .map(input_err)
+                            .or(last_err);
                     }
                     match last_err {
                         None => Ok(()),
@@ -148,38 +149,45 @@ fn parse_button(s: &str) -> enigo::Button {
     }
 }
 
-/// 组合键:按住所有修饰键 → click 主键 → **无条件**逆序释放修饰键。
+/// 组合键:依次按住修饰键、点击主键,再逆序释放成功按下的修饰键。
 #[cfg(feature = "real")]
 fn press_combo(enigo: &mut enigo::Enigo, keys: &str) -> Result<(), MediaError> {
-    use enigo::{Direction, Key, Keyboard as _};
-    let parts: Vec<&str> = keys
-        .split('+')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
+    use enigo::{Key, Keyboard as _};
+    let parsed: Vec<Key> = keys.split('+').map(|key| parse_key(key.trim())).collect();
+    press_parsed_combo(&parsed, |key, direction| {
+        enigo.key(key, direction).map_err(input_err)
+    })
+}
+
+#[cfg(feature = "real")]
+fn press_parsed_combo(
+    keys: &[enigo::Key],
+    mut send: impl FnMut(enigo::Key, enigo::Direction) -> Result<(), MediaError>,
+) -> Result<(), MediaError> {
+    use enigo::Direction;
+    let Some((&last, modifiers)) = keys.split_last() else {
         return Err(MediaError::Other {
-            message: format!("empty combo: {keys:?}"),
+            message: "空组合键".into(),
         });
-    }
-    let parsed: Vec<Key> = parts.iter().map(|p| parse_key(p)).collect();
-    let (modifiers, last) = parsed.split_at(parsed.len() - 1);
-    let mut press_error = None;
-    for k in modifiers {
-        if let Err(e) = enigo.key(*k, Direction::Press) {
-            press_error = Some(input_err(e));
-            break;
+    };
+    let mut pressed = Vec::new();
+    let mut first_error = None;
+    for &key in modifiers {
+        match send(key, Direction::Press) {
+            Ok(()) => pressed.push(key),
+            Err(error) => {
+                first_error = Some(error);
+                break;
+            }
         }
     }
-    if press_error.is_none() {
-        if let Err(e) = enigo.key(last[0], Direction::Click) {
-            press_error = Some(input_err(e));
-        }
+    if first_error.is_none() {
+        first_error = send(last, Direction::Click).err();
     }
-    for k in modifiers.iter().rev() {
-        let _ = enigo.key(*k, Direction::Release);
+    for key in pressed.into_iter().rev() {
+        first_error = first_error.or(send(key, Direction::Release).err());
     }
-    press_error.map_or(Ok(()), Err)
+    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(feature = "real")]
@@ -216,8 +224,8 @@ fn parse_key(name: &str) -> enigo::Key {
         "f11" => Key::F11,
         "f12" => Key::F12,
         // 单字符键:enigo 0.6 用 Unicode 形态(Key::Unicode)。
-        other => match other.chars().next() {
-            Some(c) => Key::Unicode(c.to_uppercase().next().unwrap_or(c)),
+        _ => match name.chars().next() {
+            Some(c) => Key::Unicode(c),
             None => Key::Unicode('?'),
         },
     }
@@ -247,6 +255,66 @@ mod tests {
                 matches!(err, MediaError::Unavailable { capability, .. } if capability == "mouse_input")
             );
         }
+    }
+
+    #[cfg(feature = "real")]
+    #[test]
+    fn failed_combo_press_releases_only_successfully_pressed_modifiers() {
+        use enigo::{Direction, Key};
+        let mut sent = Vec::new();
+        let result = press_parsed_combo(
+            &[Key::Control, Key::Shift, Key::Unicode('a')],
+            |key, direction| {
+                sent.push((key, direction));
+                if key == Key::Shift && direction == Direction::Press {
+                    Err(MediaError::Other {
+                        message: "按键失败".into(),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            sent,
+            [
+                (Key::Control, Direction::Press),
+                (Key::Shift, Direction::Press),
+                (Key::Control, Direction::Release)
+            ]
+        );
+    }
+
+    #[cfg(feature = "real")]
+    #[test]
+    fn combo_release_failure_is_reported_after_remaining_releases() {
+        use enigo::{Direction, Key};
+        let mut sent = Vec::new();
+        let result = press_parsed_combo(
+            &[Key::Control, Key::Shift, Key::Unicode('a')],
+            |key, direction| {
+                sent.push((key, direction));
+                if key == Key::Shift && direction == Direction::Release {
+                    Err(MediaError::Other {
+                        message: "释放失败".into(),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(sent.last(), Some(&(Key::Control, Direction::Release)));
+    }
+
+    #[cfg(feature = "real")]
+    #[test]
+    fn single_character_key_preserves_original_unicode() {
+        assert_eq!(parse_key("a"), enigo::Key::Unicode('a'));
+        assert_eq!(parse_key("A"), enigo::Key::Unicode('A'));
+        assert_eq!(parse_key("ß"), enigo::Key::Unicode('ß'));
+        assert_eq!(parse_key("CTRL"), enigo::Key::Control);
     }
 
     #[test]

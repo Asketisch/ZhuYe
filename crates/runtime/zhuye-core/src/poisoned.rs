@@ -36,6 +36,27 @@ pub fn output_fingerprint(text: &str) -> String {
     out
 }
 
+/// 对最终回复的所有文本块按顺序计算指纹，空回复不参与复读检测。
+pub(crate) fn output_blocks_fingerprint(blocks: &[zhuye_protocol::ContentBlock]) -> Option<String> {
+    let mut digest = Sha256::new();
+    let mut has_text = false;
+    for block in blocks {
+        if let zhuye_protocol::ContentBlock::Text { text } = block {
+            if !text.is_empty() {
+                digest.update(text.as_bytes());
+                has_text = true;
+            }
+        }
+    }
+    has_text.then(|| {
+        let mut out = String::with_capacity(64);
+        for byte in digest.finalize() {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
+    })
+}
+
 /// 中毒类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoisonClass {
@@ -179,14 +200,14 @@ impl PoisonDetector {
         }
 
         // ── Error:错误率滑动窗口 ──
+        self.error_window.push_back((e.tool_calls, e.tool_errors));
+        while self.error_window.len() > self.config.error_window {
+            self.error_window.pop_front();
+        }
         if e.tool_calls > 0 {
-            self.error_window.push_back((e.tool_calls, e.tool_errors));
-            while self.error_window.len() > self.config.error_window {
-                self.error_window.pop_front();
-            }
-            let total_calls: u32 = self.error_window.iter().map(|(c, _)| *c).sum();
-            let total_errors: u32 = self.error_window.iter().map(|(_, er)| *er).sum();
-            if total_calls >= self.config.error_min_samples {
+            let total_calls: u64 = self.error_window.iter().map(|(c, _)| u64::from(*c)).sum();
+            let total_errors: u64 = self.error_window.iter().map(|(_, er)| u64::from(*er)).sum();
+            if total_calls > 0 && total_calls >= u64::from(self.config.error_min_samples) {
                 let rate = total_errors as f64 / total_calls as f64;
                 if rate >= self.config.error_rate_threshold {
                     return Some(self.retire(PoisonClass::Error, format!(
@@ -274,6 +295,59 @@ mod tests {
             tool_timeouts: 0,
             completed_with_outcome: true,
         }
+    }
+
+    #[test]
+    fn no_tool_turns_expire_old_error_evidence() {
+        let mut detector = PoisonDetector::with_defaults();
+        let failed = TurnEvidence {
+            tool_calls: 5,
+            tool_errors: 5,
+            completed_with_outcome: true,
+            ..Default::default()
+        };
+        assert!(detector.record_turn(&failed).is_none());
+        for _ in 0..10 {
+            assert!(
+                detector
+                    .record_turn(&TurnEvidence {
+                        completed_with_outcome: true,
+                        ..Default::default()
+                    })
+                    .is_none()
+            );
+        }
+        let failed_once = TurnEvidence {
+            tool_calls: 1,
+            tool_errors: 1,
+            completed_with_outcome: true,
+            ..Default::default()
+        };
+        assert!(detector.record_turn(&failed_once).is_none());
+        assert!(!detector.is_retired());
+        assert_eq!(detector.snapshot().error_window_turns, 10);
+    }
+
+    #[test]
+    fn complete_output_fingerprint_includes_each_text_block() {
+        use zhuye_protocol::ContentBlock;
+        let first = [
+            ContentBlock::text("共同开头"),
+            ContentBlock::text("第一种结论"),
+        ];
+        let second = [
+            ContentBlock::text("共同开头"),
+            ContentBlock::text("第二种结论"),
+        ];
+        assert_ne!(
+            output_blocks_fingerprint(&first),
+            output_blocks_fingerprint(&second)
+        );
+        assert_eq!(
+            output_blocks_fingerprint(&first),
+            Some(output_fingerprint("共同开头第一种结论"))
+        );
+        assert_eq!(output_blocks_fingerprint(&[ContentBlock::text("")]), None);
     }
 
     #[test]

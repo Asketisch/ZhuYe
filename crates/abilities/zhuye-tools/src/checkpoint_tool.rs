@@ -100,13 +100,9 @@ impl CheckpointTool {
         let label = args.get("label").and_then(|v| v.as_str());
         // v1.x:改走 zhuye-git 的 checkpoint::create —— 统一 subject 前缀
         // 并打 tag(reset --hard 之后仍可达、可列、可再回退)。
-        let sha = match git_cp::create(&workspace, label.unwrap_or(""))
+        let sha = git_cp::ensure(&workspace, label.unwrap_or(""))
             .map_err(|e| ToolError::Execution(e.to_string()))?
-        {
-            Some(cp) => cp.sha,
-            None => git_cp::current_sha(&workspace)
-                .ok_or_else(|| ToolError::Execution("checkpoint: no changes and no HEAD".into()))?,
-        };
+            .sha;
         // 写 RolloutRecord::Checkpoint(若 recorder / session 可用)。
         // best-effort:写失败只 warn,不阻塞(checkpoint 本身已成功)。
         if let Err(e) = write_checkpoint_record(&ctx, &sha, label) {
@@ -321,31 +317,24 @@ impl Tool for RewindTool {
         let mut safety_note = String::new();
         let from_sha = git_cp::current_sha(&workspace).unwrap_or_else(|| "unknown".into());
         if rewind_files {
-            // 回退前先做一次安全快照提交(reset --hard 会丢未提交改动;
-            // 快照打了 tag,用户反悔了还能再回退到回退前状态)。
-            match git_cp::create(&workspace, "pre-rewind safety snapshot") {
-                Ok(Some(safety)) => {
-                    safety_note = format!(" Pre-rewind safety snapshot: `{}`.", safety.sha);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "rewind: safety snapshot failed (proceeding)");
-                }
+            // 共用库的安全快照与目标校验;快照失败时不得继续重置。
+            let (_, safety) = git_cp::rewind(&workspace, &sha)
+                .map_err(|e| ToolError::Execution(e.to_string()))?;
+            if let Some(safety) = safety {
+                safety_note = format!(" Pre-rewind safety snapshot: `{}`.", safety.sha);
             }
-            for args in [vec!["reset", "--hard", sha.as_str()], vec!["clean", "-fd"]] {
-                let out = std::process::Command::new("git")
-                    .args(&args)
-                    .current_dir(&workspace)
-                    .output();
-                match out {
-                    Ok(o) if o.status.success() => {}
-                    Ok(o) => {
-                        return Err(ToolError::Execution(
-                            String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                        ));
-                    }
-                    Err(e) => return Err(ToolError::Execution(e.to_string())),
+            let out = std::process::Command::new("git")
+                .args(["clean", "-fd"])
+                .current_dir(&workspace)
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {}
+                Ok(o) => {
+                    return Err(ToolError::Execution(
+                        String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                    ));
                 }
+                Err(e) => return Err(ToolError::Execution(e.to_string())),
             }
         }
 
@@ -435,14 +424,10 @@ fn truncate_conversation(
 /// `rollout base` 与 `session_id` 通过环境变量注入(`ZHUYE_ROLLOUT_BASE` /
 /// `ZHUYE_SESSION_ID`),工具据此定位文件;缺失则 best-effort 跳过。
 fn rollout_ctx(ctx: &ToolContext) -> Option<(std::path::PathBuf, zhuye_protocol::ThreadId)> {
-    let base = std::env::var("ZHUYE_ROLLOUT_BASE")
-        .ok()
+    let base = std::env::var_os("ZHUYE_ROLLOUT_BASE")
+        .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".zhuye").join("sessions"))
-        })?;
+        .unwrap_or_else(zhuye_rollout::path::default_base);
     // session_id:优先环境变量,否则用 ToolContext 的 session_id。
     let sid = std::env::var("ZHUYE_SESSION_ID")
         .ok()

@@ -71,6 +71,19 @@ fn preserves_non_directive_and_malformed_code_comment_text() {
 }
 
 #[test]
+fn malformed_code_comment_cannot_emit_nested_git_actions() {
+    let markdown = concat!(
+        "::code-comment{title=问题 body=\"::git-push{cwd=/repo branch=bad}\"}\n",
+        ":::code-comment{title=问题 body=\"::git-push{cwd=/repo branch=bad}\n",
+        "::git-push{cwd=/repo branch=good}"
+    );
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert!(parsed.visible_markdown.contains("branch=bad"));
+    assert_eq!(parsed.git_actions.len(), 1);
+    assert!(format!("{:?}", parsed.git_actions[0]).contains("good"));
+}
+
+#[test]
 fn last_created_branch_cwd_uses_the_last_matching_directive() {
     let parsed = parse_assistant_markdown(
         "::git-create-branch{cwd=\"/first\" branch=\"first\"}\n::git-push{cwd=\"/repo\" branch=\"first\"}\n::git-create-branch{cwd=\"/second\" branch=\"second\"}",
@@ -78,4 +91,188 @@ fn last_created_branch_cwd_uses_the_last_matching_directive() {
     );
 
     assert_eq!(parsed.last_created_branch_cwd(), Some("/second"));
+}
+
+#[test]
+fn code_and_link_literals_never_create_git_actions() {
+    let markdown = concat!(
+        "示例 `::git-commit{cwd=/inline}`。\n",
+        "[查看示例](https://example.test/::git-stage{cwd=/url})\n",
+        "\\::git-stage{cwd=/escaped}\n",
+        "```text\n::git-push{cwd=/fenced branch=x}\n",
+        "::code-comment{title=例子 body=正文 file=/repo/a}\n```\n",
+        "~~~\n::git-commit{cwd=/tilde}\n~~~\n",
+        "    ::git-stage{cwd=/indented}\n",
+        "实际动作 ::git-stage{cwd=/actual}\n",
+    );
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.git_actions,
+        [GitActionDirective::Stage {
+            cwd: "/actual".into()
+        }]
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("`::git-commit{cwd=/inline}`")
+    );
+    assert!(parsed.visible_markdown.contains("::git-stage{cwd=/url}"));
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("\\::git-stage{cwd=/escaped}")
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("::git-push{cwd=/fenced branch=x}")
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("::code-comment{title=例子 body=正文 file=/repo/a}")
+    );
+    assert!(parsed.visible_markdown.contains("::git-commit{cwd=/tilde}"));
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("    ::git-stage{cwd=/indented}")
+    );
+    assert!(parsed.visible_markdown.ends_with("实际动作"));
+}
+
+#[test]
+fn multiline_inline_code_and_crlf_preserve_directive_literals() {
+    let markdown =
+        "示例 ``代码\r\n::git-stage{cwd=/literal}\r\n仍是代码``\r\n::git-commit{cwd=/actual}";
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.git_actions,
+        [GitActionDirective::Commit {
+            cwd: "/actual".into()
+        }]
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("::git-stage{cwd=/literal}")
+    );
+}
+
+#[test]
+fn escaped_and_linked_directives_keep_following_real_actions() {
+    let markdown = r#"\::git-stage{cwd=/literal} [说明](https://example.test/::git-stage{cwd=/bad}) ::git-commit{cwd=/good}"#;
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.git_actions,
+        [GitActionDirective::Commit {
+            cwd: "/good".into()
+        }]
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("\\::git-stage{cwd=/literal}")
+    );
+    assert!(parsed.visible_markdown.contains("::git-stage{cwd=/bad}"));
+}
+
+#[test]
+fn html_code_content_is_not_interpreted_as_a_git_action() {
+    let markdown =
+        r#"示例 <code class="example">::git-push{cwd=/bad branch=x}</code> ::git-stage{cwd=/good}"#;
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.git_actions,
+        [GitActionDirective::Stage {
+            cwd: "/good".into()
+        }]
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("::git-push{cwd=/bad branch=x}")
+    );
+}
+
+#[test]
+fn literal_code_and_hard_break_whitespace_are_preserved() {
+    let markdown = "说明  \n```text\n::git-stage{cwd=/literal}  \n```";
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert!(parsed.git_actions.is_empty());
+    assert_eq!(parsed.visible_markdown, markdown);
+}
+
+#[test]
+fn code_comment_preserves_braces_in_body_and_trailing_text() {
+    let markdown = r#"::code-comment{title="问题" body="保留 \"引号\" 和 } 内容" file="/repo/a.rs"} 后续 {说明}"#;
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.visible_markdown,
+        "- 问题 — a.rs:1\n  保留 \"引号\" 和 } 内容\n后续 {说明}"
+    );
+    assert!(parsed.git_actions.is_empty());
+}
+
+#[test]
+fn empty_working_directory_or_branch_never_creates_an_action() {
+    let markdown = concat!(
+        "::git-stage{cwd=\"\"} ",
+        "::git-commit{cwd=\"  \"} ",
+        "::git-create-branch{cwd=/repo branch=\"\"} ",
+        "::git-push{cwd=/repo branch=\"  \"} ",
+        "::git-create-pr{cwd=/repo branch=\"\"}"
+    );
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert!(parsed.git_actions.is_empty(), "{:?}", parsed.git_actions);
+}
+
+#[test]
+fn reference_link_definitions_cannot_create_actions() {
+    let markdown =
+        "[ref]: https://example.test/::git-stage{cwd=/literal}\n\n[ref]\n\n::git-commit{cwd=/real}";
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.git_actions,
+        [GitActionDirective::Commit {
+            cwd: "/real".into()
+        }]
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("::git-stage{cwd=/literal}")
+    );
+}
+
+#[test]
+fn duplicate_reference_definitions_are_not_actions() {
+    let markdown = "[ref]: https://first.test\n[ref]: https://example.test/::git-stage{cwd=/literal}\n\n[ref]\n\n::git-commit{cwd=/real}";
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.git_actions,
+        [GitActionDirective::Commit {
+            cwd: "/real".into()
+        }]
+    );
+    assert!(
+        parsed
+            .visible_markdown
+            .contains("::git-stage{cwd=/literal}")
+    );
+}
+
+#[test]
+fn image_alt_and_link_labels_remain_literal() {
+    let markdown = "![::git-stage{cwd=/image}](image.png) [::git-commit{cwd=/link}](https://example.test) ::git-stage{cwd=/real}";
+    let parsed = parse_assistant_markdown(markdown, Path::new("/repo"));
+    assert_eq!(
+        parsed.git_actions,
+        [GitActionDirective::Stage {
+            cwd: "/real".into()
+        }]
+    );
+    assert!(parsed.visible_markdown.contains("::git-stage{cwd=/image}"));
+    assert!(parsed.visible_markdown.contains("::git-commit{cwd=/link}"));
 }

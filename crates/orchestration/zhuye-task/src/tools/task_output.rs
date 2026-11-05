@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
 use tracing::warn;
 use zhuye_protocol::{PermissionMode, ToolOutput};
@@ -24,6 +25,21 @@ use zhuye_tools::{Tool, ToolContext, ToolError};
 
 use crate::manager::TaskManager;
 use crate::tools::{list_id_from_args_or_ctx, parse_u32_arg};
+
+/// 读取任务输出时的字节数上限；超大交付物必须分段读取，避免直接
+/// 塞进模型上下文或 IPC 载荷。
+const MAX_OUTPUT_READ_BYTES: usize = 1024 * 1024;
+
+async fn read_output_file(path: &std::path::Path) -> std::io::Result<(String, bool)> {
+    let file = tokio::fs::File::open(path).await?;
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_READ_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    let truncated = bytes.len() > MAX_OUTPUT_READ_BYTES;
+    bytes.truncate(MAX_OUTPUT_READ_BYTES);
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
+}
 
 /// `TaskOutput` 工具实现。
 pub struct TaskOutputTool {
@@ -45,11 +61,11 @@ impl TaskOutputTool {
 }
 
 /// 轮询文件出现,直到文件存在或超时。100ms 间隔。
-async fn wait_for_file(path: &PathBuf, timeout: Duration) -> Option<String> {
+async fn wait_for_file(path: &PathBuf, timeout: Duration) -> Option<(String, bool)> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        match tokio::fs::read_to_string(path).await {
-            Ok(s) => return Some(s),
+        match read_output_file(path).await {
+            Ok((s, truncated)) => return Some((s, truncated)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if tokio::time::Instant::now() >= deadline {
                     return None;
@@ -123,14 +139,14 @@ impl Tool for TaskOutputTool {
             ))
         })?;
 
-        let content = if block {
+        let (content, output_truncated) = if block {
             // block=true:等待文件出现,超时返回空串(不报错,跟 Unix tail 语义一致)
             wait_for_file(&path, Duration::from_millis(timeout_ms))
                 .await
                 .unwrap_or_default()
         } else {
             // block=false:立即读,文件不存在返回空串
-            tokio::fs::read_to_string(&path).await.unwrap_or_default()
+            read_output_file(&path).await.unwrap_or_default()
         };
 
         Ok(ToolOutput {
@@ -143,6 +159,7 @@ impl Tool for TaskOutputTool {
                 "block": block,
                 "timeoutMs": timeout_ms,
                 "contentLength": content.len(),
+                "outputTruncated": output_truncated,
             }),
             elapsed_ms: 0,
         })

@@ -38,13 +38,10 @@ pub fn imported_to_records(session: &ImportedSession, opts: &ConvertOptions) -> 
         workspace: session.workspace.clone(),
     });
 
-    // 记录每个 turn 已见过的 tool_use id,用于孤儿 tool_result 判定。
-    let mut seen_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
-
     for entry in &session.entries {
         match entry {
             Entry::Turn(turn) => {
-                append_turn(&mut records, turn, session, opts, &mut seen_calls);
+                append_turn(&mut records, turn, session, opts);
             }
             Entry::Compaction { summary, .. } => {
                 // strategy 语义对齐原生:摘要是 LLM 生成的替换性摘要。
@@ -70,7 +67,6 @@ fn append_turn(
     turn: &ImportedTurn,
     session: &ImportedSession,
     opts: &ConvertOptions,
-    seen_calls: &mut std::collections::HashSet<String>,
 ) {
     if turn.is_empty() {
         return;
@@ -102,22 +98,48 @@ fn append_turn(
     // IrBlock 按源时序映射;Thinking 按 opts 折叠或丢弃;孤儿
     // tool_result(其 call_id 未在更早块中出现过)丢弃。
     let mut assistant_blocks: Vec<ContentBlock> = Vec::new();
+    let mut seen_calls = std::collections::HashSet::new();
+    let mut pending_calls = std::collections::HashSet::new();
+    let mut after_result = false;
     for b in &turn.assistant {
         match b {
             IrBlock::Text { text } => {
                 if !text.trim().is_empty() {
+                    if after_result {
+                        seen_calls.clear();
+                        pending_calls.clear();
+                        after_result = false;
+                    }
                     assistant_blocks.push(ContentBlock::Text { text: text.clone() });
                 }
             }
             IrBlock::Thinking { text } => {
                 if opts.include_thinking && !text.trim().is_empty() {
+                    if after_result {
+                        seen_calls.clear();
+                        pending_calls.clear();
+                        after_result = false;
+                    }
                     assistant_blocks.push(ContentBlock::Text {
                         text: format!("<thinking>{text}</thinking>"),
                     });
                 }
             }
             IrBlock::ToolUse { id, name, args } => {
-                seen_calls.insert(id.clone());
+                if id.trim().is_empty() || name.trim().is_empty() {
+                    tracing::debug!("导入:丢弃缺少调用 ID 或工具名的工具调用");
+                    continue;
+                }
+                if after_result {
+                    seen_calls.clear();
+                    pending_calls.clear();
+                    after_result = false;
+                }
+                if !seen_calls.insert(id.clone()) {
+                    tracing::debug!(call_id = %id, "导入:丢弃重复的工具调用");
+                    continue;
+                }
+                pending_calls.insert(id.clone());
                 assistant_blocks.push(ContentBlock::ToolUse {
                     id: id.clone(),
                     name: name.clone(),
@@ -129,12 +151,13 @@ fn append_turn(
                 output,
                 is_error,
             } => {
-                if !seen_calls.contains(call_id) {
-                    // 孤儿结果:源侧工具先于调用出现(或调用被过滤)。
+                if !pending_calls.remove(call_id) {
+                    // 孤儿或重复结果:本轮没有尚未应答的对应调用。
                     // 保留会让回放消息序列被 provider 拒绝,丢弃并留痕。
                     tracing::debug!(call_id = %call_id, "导入:丢弃孤儿 tool_result");
                     continue;
                 }
+                after_result = true;
                 assistant_blocks.push(ContentBlock::ToolResult {
                     call_id: call_id.clone(),
                     output: ToolOutput {
@@ -321,6 +344,123 @@ mod tests {
         let records = imported_to_records(&s, &ConvertOptions::default());
         // assistant 块全空 → 该记录不写。
         assert_eq!(records.len(), 2, "meta + user,assistant 空块不落盘");
+    }
+
+    #[test]
+    fn ignores_duplicate_and_cross_turn_tool_results() {
+        let call = IrBlock::ToolUse {
+            id: "c1".into(),
+            name: "echo".into(),
+            args: serde_json::json!({}),
+        };
+        let result = IrBlock::ToolResult {
+            call_id: "c1".into(),
+            output: "一次".into(),
+            is_error: false,
+        };
+        let s = session(vec![
+            Entry::Turn(turn(
+                "第一问",
+                vec![call.clone(), call, result.clone(), result.clone()],
+            )),
+            Entry::Turn(turn(
+                "第二问",
+                vec![
+                    result,
+                    IrBlock::Text {
+                        text: "完成".into(),
+                    },
+                ],
+            )),
+        ]);
+        let records = imported_to_records(&s, &ConvertOptions::default());
+        let assistants: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                RolloutRecord::Message {
+                    role: MessageRole::Assistant,
+                    content,
+                    ..
+                } => Some(content),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(assistants.len(), 2);
+        assert_eq!(assistants[0].as_array().unwrap().len(), 2);
+        assert_eq!(assistants[0][0]["type"], "tool_use");
+        assert_eq!(assistants[0][1]["type"], "tool_result");
+        assert_eq!(assistants[1].as_array().unwrap().len(), 1);
+        assert_eq!(assistants[1][0]["text"], "完成");
+    }
+
+    #[test]
+    fn permits_reused_call_id_in_later_tool_round() {
+        let call = IrBlock::ToolUse {
+            id: "same".into(),
+            name: "echo".into(),
+            args: serde_json::json!({}),
+        };
+        let result = IrBlock::ToolResult {
+            call_id: "same".into(),
+            output: "完成".into(),
+            is_error: false,
+        };
+        let s = session(vec![Entry::Turn(turn(
+            "问题",
+            vec![call.clone(), result.clone(), call, result],
+        ))]);
+        let records = imported_to_records(&s, &ConvertOptions::default());
+        let RolloutRecord::Message { content, .. } = &records[2] else {
+            panic!("应有助手消息")
+        };
+        let kinds: Vec<_> = content
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["tool_use", "tool_result", "tool_use", "tool_result"]
+        );
+    }
+
+    #[test]
+    fn drops_tool_calls_with_missing_identity_and_their_results() {
+        let s = session(vec![Entry::Turn(turn(
+            "问题",
+            vec![
+                IrBlock::ToolUse {
+                    id: "".into(),
+                    name: "echo".into(),
+                    args: serde_json::json!({}),
+                },
+                IrBlock::ToolResult {
+                    call_id: "".into(),
+                    output: "无 ID".into(),
+                    is_error: false,
+                },
+                IrBlock::ToolUse {
+                    id: "c1".into(),
+                    name: " ".into(),
+                    args: serde_json::json!({}),
+                },
+                IrBlock::ToolResult {
+                    call_id: "c1".into(),
+                    output: "无工具名".into(),
+                    is_error: false,
+                },
+                IrBlock::Text {
+                    text: "有效答复".into(),
+                },
+            ],
+        ))]);
+        let records = imported_to_records(&s, &ConvertOptions::default());
+        let RolloutRecord::Message { content, .. } = &records[2] else {
+            panic!("应有助手消息")
+        };
+        assert_eq!(content.as_array().unwrap().len(), 1);
+        assert_eq!(content[0]["text"], "有效答复");
     }
 
     /// Compaction 位置保持,summary 透传。

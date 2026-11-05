@@ -37,16 +37,51 @@ pub trait PermissionResolver: Send + Sync {
     /// `shell_pattern` 规则(仅 `Bash`/`bash` 工具)参与匹配;`None` 时
     /// 跳过 shell 规则(与旧 `resolve` 行为一致)。
     async fn resolve_with_context(&self, tool_name: &str, bash_command: Option<&str>) -> RuleMatch;
+
+    /// 带资源上下文的解析;已有自定义实现可继续使用原有接口。
+    async fn resolve_with_resource(
+        &self,
+        tool_name: &str,
+        bash_command: Option<&str>,
+        _resource: Option<&str>,
+    ) -> RuleMatch {
+        self.resolve_with_context(tool_name, bash_command).await
+    }
+
+    /// 多个等价资源表示;旧实现按最严格结果合并,存储实现保持规则顺序。
+    async fn resolve_with_resources(
+        &self,
+        tool_name: &str,
+        bash_command: Option<&str>,
+        resources: &[&str],
+    ) -> RuleMatch {
+        if resources.is_empty() {
+            return self
+                .resolve_with_resource(tool_name, bash_command, None)
+                .await;
+        }
+        let mut result = RuleMatch::NoMatch;
+        for resource in resources {
+            match self
+                .resolve_with_resource(tool_name, bash_command, Some(resource))
+                .await
+            {
+                RuleMatch::Deny => return RuleMatch::Deny,
+                RuleMatch::Ask => result = RuleMatch::Ask,
+                RuleMatch::Allow if result == RuleMatch::NoMatch => result = RuleMatch::Allow,
+                _ => {}
+            }
+        }
+        result
+    }
 }
 
 // ── StorePermissionResolver ─────────────────────────────────────────────
 
-/// 把 `PermissionStore` 包成 resolver。**错误降级**:list 失败
-/// (corrupt toml / IO 错误)→ `NoMatch`,让上层按 `PermissionMode`
-/// 默认行为走,而不是 deny 用户工作流。
+/// 把 `PermissionStore` 包成 resolver。权限规则读取或解析失败时拒绝工具，
+/// 避免损坏的文件使整条规则链中的拒绝规则静默失效。
 ///
-/// "降级而非 fail-closed"的理由:用户误编辑 toml 不该让所有 tool 调用
-/// 失败。`tracing::warn!` 留排查痕迹。
+/// 存储错误通过 `tracing::warn!` 留下排查痕迹。
 pub struct StorePermissionResolver {
     store: Arc<dyn PermissionStore>,
     /// v1.9(1.5):v2 策略引擎。默认配置 = v1 兼容(DenyWins +
@@ -88,13 +123,36 @@ impl StorePermissionResolver {
 #[async_trait::async_trait]
 impl PermissionResolver for StorePermissionResolver {
     async fn resolve_with_context(&self, tool_name: &str, bash_command: Option<&str>) -> RuleMatch {
-        match self.store.list().await {
-            Ok(rules) => crate::matcher::evaluate_with_context(&rules, tool_name, bash_command),
+        self.resolve_with_resource(tool_name, bash_command, None)
+            .await
+    }
+
+    async fn resolve_with_resource(
+        &self,
+        tool_name: &str,
+        bash_command: Option<&str>,
+        resource: Option<&str>,
+    ) -> RuleMatch {
+        self.resolve_with_resources(tool_name, bash_command, resource.as_slice())
+            .await
+    }
+
+    async fn resolve_with_resources(
+        &self,
+        tool_name: &str,
+        bash_command: Option<&str>,
+        resources: &[&str],
+    ) -> RuleMatch {
+        let rules = match self.store.list().await {
+            Ok(rules) => rules,
             Err(e) => {
-                tracing::warn!(error = %e, tool = %tool_name, "permission store list failed; falling back to NoMatch");
-                RuleMatch::NoMatch
+                tracing::warn!(error = %e, tool = %tool_name, "权限规则读取失败，拒绝工具调用");
+                return RuleMatch::Deny;
             }
-        }
+        };
+        self.engine
+            .evaluate_resources(&rules, tool_name, bash_command, resources)
+            .action
     }
 }
 
@@ -103,6 +161,74 @@ mod tests {
     use super::*;
     use crate::rules::{PermissionAction, PermissionRule};
     use crate::store::InMemoryPermissionStore;
+
+    #[tokio::test]
+    async fn corrupt_permission_file_denies_until_repaired() {
+        use crate::store::FilePermissionStore;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("permissions.toml");
+        std::fs::write(&path, "[[rule\n").unwrap();
+        let resolver =
+            StorePermissionResolver::new(Arc::new(FilePermissionStore::with_path(path.clone())));
+        assert_eq!(
+            resolver.resolve_with_context("echo", None).await,
+            RuleMatch::Deny
+        );
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(
+            resolver.resolve_with_context("echo", None).await,
+            RuleMatch::NoMatch
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_policy_and_resource_are_applied() {
+        use crate::policy::{PolicyConfig, Precedence, UnspecifiedDefault};
+        let store = Arc::new(InMemoryPermissionStore::new());
+        for action in [PermissionAction::Deny, PermissionAction::Allow] {
+            store
+                .add(PermissionRule {
+                    tool: "read".into(),
+                    action,
+                    tool_glob: None,
+                    shell_pattern: None,
+                    resource_glob: Some("/safe/**".into()),
+                })
+                .await
+                .unwrap();
+        }
+        let resolver = StorePermissionResolver::with_engine(
+            store,
+            PolicyEngine::new(PolicyConfig {
+                precedence: Precedence::LastMatch,
+                unspecified_default: UnspecifiedDefault::Deny,
+                deny_labels: Vec::new(),
+                self_protection: false,
+                unattended: false,
+            }),
+        );
+        assert_eq!(
+            resolver
+                .resolve_with_resource("read", None, Some("/safe/file"))
+                .await,
+            RuleMatch::Allow
+        );
+        assert_eq!(
+            resolver
+                .resolve_with_resource("read", None, Some("/other/file"))
+                .await,
+            RuleMatch::Deny
+        );
+    }
+
+    #[tokio::test]
+    async fn default_policy_enforces_risk_labels() {
+        let resolver = StorePermissionResolver::new(Arc::new(InMemoryPermissionStore::new()));
+        assert_eq!(
+            resolver.resolve_with_context("bash", Some("sudo id")).await,
+            RuleMatch::Deny
+        );
+    }
 
     #[tokio::test]
     async fn resolver_returns_allow_when_rule_present() {

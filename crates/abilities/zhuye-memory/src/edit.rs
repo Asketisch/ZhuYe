@@ -119,6 +119,7 @@ impl FileMemoryStore {
             zhuye_fs::write_atomic(&path, value.as_bytes())?;
             return Ok(());
         }
+        ensure_section_editable(scope, &current)?;
         if value.lines().any(|line| line.starts_with("## ")) {
             return Err(MemoryError::HeadingInValue);
         }
@@ -209,6 +210,7 @@ impl FileMemoryStore {
             std::fs::remove_file(path)?;
             return Ok(());
         }
+        ensure_section_editable(scope, &current)?;
         let heading = format!("## {key}");
         let matching = split_sections(scope, &current)
             .iter()
@@ -332,9 +334,11 @@ fn memory_entries(scope: MemoryScope, content: &str) -> Vec<MemoryEntry> {
         .filter_map(|line| line.strip_prefix("## "))
         .any(|title| title.is_empty() || title.trim() != title);
     if malformed_heading
-        || sections
-            .iter()
-            .any(|section| section.title.is_empty() || !keys.insert(section.title.clone()))
+        || sections.iter().any(|section| {
+            section.title.is_empty()
+                || section.title == WHOLE_DOCUMENT_KEY
+                || !keys.insert(section.title.clone())
+        })
     {
         return vec![MemoryEntry {
             scope,
@@ -366,6 +370,19 @@ fn memory_entries(scope: MemoryScope, content: &str) -> Vec<MemoryEntry> {
             }
         })
         .collect()
+}
+
+/// 无法安全拆分的文档只能通过整份替换或删除修改。
+fn ensure_section_editable(scope: MemoryScope, content: &str) -> Result<(), MemoryError> {
+    if memory_entries(scope, content)
+        .iter()
+        .any(|entry| entry.whole_document)
+    {
+        return Err(MemoryError::Invalid(
+            "memory document cannot be safely split; use whole-document editing".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// 整份替换 / 删除的前置校验:文件当前必须是「单个整份文档条目」形态。

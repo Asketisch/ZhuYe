@@ -88,6 +88,11 @@ impl HookEngine {
         self.disabled.write().insert(name.to_string())
     }
 
+    /// 保存尚未注册的插件 hook 的持久化禁用状态。
+    pub(crate) fn disable_on_registration(&self, name: &str) {
+        self.disabled.write().insert(name.to_string());
+    }
+
     /// 把 disabled 的 hook 复活。返回 `true` 表示之前是 disabled,`false`
     /// 表示已是 enabled 或不存在。
     pub fn enable(&self, name: &str) -> bool {

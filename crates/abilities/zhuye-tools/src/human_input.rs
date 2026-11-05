@@ -32,8 +32,8 @@ pub struct HumanInputStore {
 }
 
 impl HumanInputStore {
-    /// env `ZHUYE_HUMAN_INPUT_DIR` 覆盖;默认 `~/.zhuye/human_input`;
-    /// HOME 缺失返回 `None`(调用方退化为无持久化)。
+    /// env `ZHUYE_HUMAN_INPUT_DIR` 覆盖;默认用户数据目录下的 `human_input`;
+    /// 无法确定数据目录时返回 `None`(调用方退化为无持久化)。
     pub fn from_env_or_default() -> Option<Self> {
         if let Ok(d) = std::env::var("ZHUYE_HUMAN_INPUT_DIR") {
             if !d.is_empty() {
@@ -42,12 +42,9 @@ impl HumanInputStore {
                 });
             }
         }
-        std::env::var("HOME")
-            .ok()
-            .filter(|h| !h.is_empty())
-            .map(|h| Self {
-                dir: PathBuf::from(h).join(".zhuye/human_input"),
-            })
+        zhuye_fs::data_dir().map(|dir| Self {
+            dir: dir.join("human_input"),
+        })
     }
 
     /// 测试 / 显式路径构造。

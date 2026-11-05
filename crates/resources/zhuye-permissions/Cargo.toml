@@ -8,6 +8,7 @@ description = "ZhuYe: persistent tool-permission rules and approval resolver (v1
 
 [dependencies]
 zhuye-protocol = { workspace = true }
+zhuye-fs       = { workspace = true }
 async-trait        = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
@@ -16,6 +17,8 @@ thiserror          = { workspace = true }
 tracing            = { workspace = true }
 parking_lot        = { workspace = true }
 globset            = { workspace = true }
+fs2                = "0.4"
+tokio              = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tokio    = { workspace = true }

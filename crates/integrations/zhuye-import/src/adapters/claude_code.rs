@@ -31,6 +31,7 @@
 
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use zhuye_protocol::ThreadId;
@@ -268,7 +269,7 @@ pub(crate) fn parse_lines(
                                         warnings.push(ImportWarning::new(
                                             "unsupported-image",
                                             format!(
-                                                "{display}:{lineno} 图片块缺少 base64 source,已跳过"
+                                                "{display}:{lineno} 图片来源缺失或 base64 无效,已跳过"
                                             ),
                                         ));
                                     }
@@ -524,43 +525,44 @@ fn map_image(b: &Value) -> Option<UserBlock> {
     })
 }
 
-/// 无依赖 base64 解码(标准字母表 + padding 容错)。
+/// 解码标准 base64，接受换行和省略末尾 padding，拒绝损坏的数据。
 fn decode_base64(s: &str) -> Option<Vec<u8>> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
-    let mut buf: u32 = 0;
-    let mut bits = 0u32;
-    for c in s.bytes() {
-        if c == b'=' || c == b'\n' || c == b'\r' {
-            continue;
-        }
-        let v = TABLE.iter().position(|&t| t == c)? as u32;
-        buf = (buf << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push(((buf >> bits) & 0xFF) as u8);
-        }
-    }
-    Some(out)
+    let encoded = s.replace(['\r', '\n'], "");
+    base64::engine::general_purpose::STANDARD
+        .decode(&encoded)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&encoded))
+        .ok()
 }
 
-/// 读取文件首个非空行(嗅探用,最多读 64 KiB 防御超大行)。
+/// 读取文件首个完整非空行，避免图片等大字段截断 JSON 导致格式误判。
 pub(crate) fn first_non_empty_line(path: &Path) -> Option<String> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; 64 * 1024];
-    let n = f.read(&mut buf).ok()?;
-    let head = String::from_utf8_lossy(&buf[..n]);
-    head.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(String::from)
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let content = line.trim();
+        if !content.is_empty() {
+            return Some(content.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_base64_rejects_corrupt_padding_and_incomplete_data() {
+        assert_eq!(decode_base64("aG\nk="), Some(b"hi".to_vec()));
+        assert_eq!(decode_base64("aGk"), Some(b"hi".to_vec()));
+        for invalid in ["a", "a=Gk", "aGk===", "aGk?"] {
+            assert_eq!(decode_base64(invalid), None, "{invalid}");
+        }
+    }
 
     const FIXTURE: &str = r#"
 {"type":"summary","summary":"旧标题","leafUuid":"8d6954fe-a8e2-4d10-b212-7066f62a784a"}

@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use tokio::io::AsyncWriteExt;
@@ -42,13 +42,14 @@ pub struct OutputBuffer {
 pub struct ShellSession {
     pub id: String,
     pub command: String,
-    /// 子进程句柄(kill / try_wait 用;退出后被 take 走)。
+    /// 子进程句柄(kill / try_wait 用;监视任务回收退出的进程)。
     pub child: Arc<AsyncMutex<Option<Child>>>,
     /// 输出缓冲(pump 任务写,`read` 工具消费)。
     pub output: Arc<Mutex<OutputBuffer>>,
     /// 从缓冲读取的游标(stdout / stderr 各自的字节偏移)。
     pub cursor: Arc<Mutex<(usize, usize)>>,
     stdin: Arc<AsyncMutex<Option<tokio::process::ChildStdin>>>,
+    kill_requested: AtomicBool,
 }
 
 impl ShellSession {
@@ -63,6 +64,12 @@ impl ShellSession {
         cwd: &std::path::Path,
         env_clear: bool,
     ) -> std::io::Result<Self> {
+        if argv.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "shell command must not be empty",
+            ));
+        }
         let mut command = tokio::process::Command::new(&argv[0]);
         command
             .args(&argv[1..])
@@ -71,6 +78,9 @@ impl ShellSession {
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::piped())
             .kill_on_drop(true);
+        // 为整条命令创建独立进程组,终止时可以一并清理普通子进程。
+        #[cfg(unix)]
+        command.process_group(0);
         if env_clear {
             // 与框架其它 spawn 子进程一致:不继承宿主凭据。
             command.env_clear();
@@ -89,6 +99,7 @@ impl ShellSession {
             output: Arc::new(Mutex::new(OutputBuffer::default())),
             cursor: Arc::new(Mutex::new((0, 0))),
             stdin: Arc::new(AsyncMutex::new(Some(stdin))),
+            kill_requested: AtomicBool::new(false),
         };
 
         // 两条 pump:逐行 read_until + 容错解码(细节见模块 doc)。
@@ -104,7 +115,7 @@ impl ShellSession {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let mut guard = child_lock.lock().await;
                 let Some(child) = guard.as_mut() else {
-                    break; // 已被 take(kill 路径)。
+                    break; // 句柄已被移除。
                 };
                 match child.try_wait() {
                     Ok(Some(status)) => {
@@ -173,13 +184,28 @@ impl ShellSession {
     /// kill(SIGKILL)。返回是否还有一个活进程可杀。
     pub async fn kill(&self) -> bool {
         let mut guard = self.child.lock().await;
-        if let Some(child) = guard.as_mut() {
-            let _ = child.start_kill();
-            guard.take();
-            true
-        } else {
-            false
+        let Some(child) = guard.as_mut() else {
+            return false;
+        };
+        if self.kill_requested.swap(true, Ordering::AcqRel) {
+            return false;
         }
+        #[cfg(unix)]
+        let killed = child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .is_some_and(|id| {
+                // 进程启动时已创建独立进程组,负 PID 仅向该组发送信号。
+                unsafe { libc::kill(-id, libc::SIGKILL) == 0 }
+            });
+        #[cfg(not(unix))]
+        let killed = child.start_kill().is_ok();
+        if !killed {
+            self.kill_requested.store(false, Ordering::Release);
+            return false;
+        }
+        // 保留句柄供监视任务回收并发布退出状态,即使调用方取消也不丢状态。
+        true
     }
 }
 
@@ -357,9 +383,49 @@ mod tests {
             .run(vec!["sleep".into(), "30".into()], dir.path(), true)
             .unwrap();
         assert!(session.kill().await, "活进程应可杀");
-        // 再杀一次:句柄已 take,返回 false。
+        // 再杀一次:终止请求已发出,返回 false。
         assert!(!session.kill().await);
-        assert!(pool.remove(&session.id).await || true);
+        let mut exit_code = None;
+        for _ in 0..100 {
+            let (delta, exited) = session.read_delta();
+            if exited {
+                exit_code = delta.exit_code;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(exit_code.is_some(), "终止后必须可观察到退出状态");
+        assert!(pool.remove(&session.id).await);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_terminates_background_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("child-finished");
+        let command = format!("(sleep 1; touch '{}') & echo ready; wait", marker.display());
+        let session = ShellSessions::new()
+            .run(vec!["sh".into(), "-c".into(), command], dir.path(), true)
+            .unwrap();
+        let mut ready = false;
+        for _ in 0..100 {
+            if session.read_delta().0.stdout.contains("ready") {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(ready, "后台子进程必须在终止前启动");
+        assert!(session.kill().await);
+        tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+        assert!(!marker.exists(), "终止会话后后台子进程不应继续执行");
+    }
+
+    #[tokio::test]
+    async fn empty_argv_returns_invalid_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = ShellSessions::new().run(Vec::new(), dir.path(), true);
+        assert!(matches!(result, Err(e) if e.kind() == std::io::ErrorKind::InvalidInput));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

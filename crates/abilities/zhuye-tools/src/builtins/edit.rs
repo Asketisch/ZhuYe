@@ -2,13 +2,11 @@
 //!
 //! See `docs/tools-and-hooks.md §2.4`.
 
-use std::fs;
-
 use async_trait::async_trait;
 use serde_json::Value;
 use similar::TextDiff;
 
-use crate::sandbox::resolve_sandbox_path;
+use crate::sandbox::{PinnedWrite, resolve_sandbox_path};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 use zhuye_protocol::PermissionMode;
 
@@ -73,8 +71,17 @@ impl Tool for EditTool {
 
         let path = std::path::Path::new(path_str);
         let abs = resolve_sandbox_path(&ctx.workspace_path(), path)?;
-        let before =
-            fs::read_to_string(&abs).map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
+        // 固定父目录后读取与替换，防止检查后替换目录项或符号链接。
+        let target = PinnedWrite::prepare(&abs)
+            .map_err(|e| ToolError::Io(format!("prepare {path_str}: {e}")))?;
+        let before = target
+            .read_existing()
+            .map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
+        let Some(before) = before else {
+            return Err(ToolError::InvalidArgs {
+                message: format!("path 不是可编辑文本: {path_str}"),
+            });
+        };
 
         let occurrences = before.matches(old).count();
         if occurrences == 0 {
@@ -94,7 +101,9 @@ impl Tool for EditTool {
         let diff = TextDiff::from_lines(&before, &after);
         let unified = format!("{}", diff.unified_diff());
 
-        fs::write(&abs, &after).map_err(|e| ToolError::Io(format!("write {path_str}: {e}")))?;
+        target
+            .replace(after.as_bytes())
+            .map_err(|e| ToolError::Io(format!("write {path_str}: {e}")))?;
 
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::Diff {
@@ -117,6 +126,20 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[tokio::test]
+    async fn non_utf8_target_is_not_treated_as_empty() {
+        let ws = tmp_workspace();
+        std::fs::write(ws.join("blob.dat"), [0xff_u8, 0xfe, 0x00, 0x90]).unwrap();
+        let err = EditTool
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path": "blob.dat", "old_string": "x", "new_string": "y"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs { .. }), "{err:?}");
+    }
 
     fn make_ctx(workspace: &std::path::Path) -> ToolContext {
         ToolContext::for_workspace(workspace)

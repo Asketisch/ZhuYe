@@ -70,16 +70,16 @@ class ZhuyeAgentOptions:
     cwd: Optional[Path] = None
     env: Optional[dict[str, str]] = None
     handshake_timeout_secs: float = DEFAULT_HANDSHAKE_TIMEOUT
-    # 显式启用的插件 id 列表(如 ["harness-import@inline"])。传入时以
-    # `--plugin <id>` 传给 serve,**覆盖** config 的
-    # [plugins].enabled_plugins;None / 空 = 维持配置驱动。
-    plugins: Optional[list[str]] = None
     # 子进程 stderr 转发开关。None(默认)= 维持旧行为(透传宿主
     # stderr);设为 Callable[[bytes], None] 时每个原始块交给回调
     # (落文件 / 送日志系统 / 过滤降噪);设为 "" 或 False 时完全静默,
     # 不再硬编码直通宿主进程 stderr。
     on_stderr: Optional[Callable[[bytes], None]] = None
     forward_stderr: bool = True
+    # 显式启用的插件 id 列表(如 ["harness-import@inline"])。传入时以
+    # `--plugin <id>` 传给 serve,**覆盖** config 的
+    # [plugins].enabled_plugins;None / 空 = 维持配置驱动。
+    plugins: Optional[list[str]] = None
 
 
 @dataclass

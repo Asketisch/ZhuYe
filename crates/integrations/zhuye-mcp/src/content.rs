@@ -1,36 +1,50 @@
 //! MCP `Content` ↔ `zhuye_protocol::ContentBlock` 转换。
 //!
 //! MCP 5 个 variant:`Text` / `Image` / `Resource` / `Audio` / `ResourceLink`。
-//! Zhuye `ContentBlock` 4 个 variant:`Text` / `Image` / `Json` / `ToolResult`。
+//! Zhuye `ContentBlock` 有 `Text` / `Image` / `Diff` / `ToolUse` / `ToolResult`。
 //! `Audio` 与 `Resource*` 暂降级为文本 placeholder (`[unsupported MCP content: ...]`),
 //! 留 v0.4 补全。
 
+use base64::Engine as _;
 use rmcp::model::{Content, RawContent};
 
 use zhuye_protocol::ContentBlock;
 
 /// 把 MCP `Vec<Content>` 转 `Vec<ContentBlock>`。
 ///
-/// 不支持的 variant 输出 `[unsupported MCP content: ...]` 文本,
-/// 保留信息但不丢失数据。
+/// 不支持的内容输出占位文本;无效图片输出错误提示。
 pub fn convert_mcp_content(items: &[Content]) -> Vec<ContentBlock> {
-    items
-        .iter()
-        .map(|annotated| convert_one(&annotated.raw))
-        .collect()
+    convert_mcp_content_checked(items).0
 }
 
-fn convert_one(raw: &RawContent) -> ContentBlock {
+pub(crate) fn convert_mcp_content_checked(items: &[Content]) -> (Vec<ContentBlock>, bool) {
+    let mut invalid = false;
+    let blocks = items
+        .iter()
+        .map(|item| convert_one(&item.raw, &mut invalid))
+        .collect();
+    (blocks, invalid)
+}
+
+fn convert_one(raw: &RawContent, invalid: &mut bool) -> ContentBlock {
     match raw {
         RawContent::Text(t) => ContentBlock::Text {
             text: t.text.clone(),
         },
-        RawContent::Image(img) => ContentBlock::Image {
-            // MCP 字段是 base64-encoded String,Zhuye Image.data 是 Vec<u8>;
-            // v0.3 暂保留原 base64 字节 (消费者按 MIME 自行解码);
-            // v0.4 计划用专用 base64 解码器把图片还原成原始字节。
-            data: img.data.as_bytes().to_vec(),
-            mime_type: img.mime_type.clone(),
+        RawContent::Image(img) => match base64::engine::general_purpose::STANDARD
+            .decode(&img.data)
+            .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&img.data))
+        {
+            Ok(data) => ContentBlock::Image {
+                data,
+                mime_type: img.mime_type.clone(),
+            },
+            Err(_) => {
+                *invalid = true;
+                ContentBlock::Text {
+                    text: "[无效的 MCP 图片数据]".into(),
+                }
+            }
         },
         RawContent::Audio(a) => ContentBlock::Text {
             text: format!("[unsupported MCP content: audio/{}]", a.mime_type),
@@ -68,10 +82,10 @@ mod tests {
     }
 
     #[test]
-    fn image_passthrough() {
+    fn image_is_decoded_to_original_bytes() {
         let items = vec![Content::new(
             RawContent::Image(RawImageContent {
-                data: "AAA".to_string(),
+                data: "iVBORw==".to_string(),
                 mime_type: "image/png".to_string(),
                 meta: None,
             }),
@@ -80,12 +94,44 @@ mod tests {
         let out = convert_mcp_content(&items);
         match &out[0] {
             ContentBlock::Image { data, mime_type } => {
-                // v0.3 保留 base64 字节;详见 convert_one 注释。
-                assert_eq!(data, b"AAA");
+                assert_eq!(data, &[0x89, b'P', b'N', b'G']);
                 assert_eq!(mime_type, "image/png");
             }
             other => panic!("expected Image, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unpadded_image_is_decoded() {
+        let items = vec![Content::new(
+            RawContent::Image(RawImageContent {
+                data: "iVBORw".into(),
+                mime_type: "image/png".into(),
+                meta: None,
+            }),
+            None,
+        )];
+        let out = convert_mcp_content(&items);
+        assert!(
+            matches!(&out[0], ContentBlock::Image { data, .. } if data == &[0x89, b'P', b'N', b'G'])
+        );
+    }
+
+    #[test]
+    fn invalid_image_is_explained_without_leaking_payload() {
+        let items = vec![Content::new(
+            RawContent::Image(RawImageContent {
+                data: "not-base64!".into(),
+                mime_type: "image/png".into(),
+                meta: None,
+            }),
+            None,
+        )];
+        let (out, invalid) = convert_mcp_content_checked(&items);
+        assert!(invalid);
+        assert!(
+            matches!(&out[0], ContentBlock::Text { text } if text.contains("无效") && !text.contains("not-base64"))
+        );
     }
 
     #[test]

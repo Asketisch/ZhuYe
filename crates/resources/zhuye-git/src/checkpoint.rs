@@ -17,7 +17,7 @@
 //!    前缀双重校验,畸形 sha / 用户手挑的任意提交都会被拒绝,不会被打进
 //!    `reset --hard`;
 //! 3. **非 git 仓库 / git 不在 PATH 都明确报错**,不静默成功;
-//! 4. `git add -A` 不传路径(让 git 按 .gitignore 过滤);`--no-verify`
+//! 4. `git add -A -- :/` 覆盖整个仓库(仍按 .gitignore 过滤);`--no-verify`
 //!    跳过 pre-commit hook(checkpoint 是安全网,不该被项目自己的
 //!    lint/format hook 挡住而静默失败)。
 
@@ -94,14 +94,36 @@ pub fn is_repo(cwd: &Path) -> bool {
 /// 没有改动时不创建空提交,返回 `Ok(None)` —— 调用方据此提示「无改动」。
 /// `label` 为空时用默认文案。
 pub fn create(cwd: &Path, label: &str) -> Result<Option<Checkpoint>, GitError> {
+    create_snapshot(cwd, label, false)
+}
+
+/// 获取可回退的 checkpoint;干净的普通提交也会生成带标签的空快照。
+pub fn ensure(cwd: &Path, label: &str) -> Result<Checkpoint, GitError> {
+    if let Some(checkpoint) = create(cwd, label)? {
+        return Ok(checkpoint);
+    }
+    if let Some(checkpoint) =
+        current_sha(cwd).and_then(|sha| find_checkpoint(cwd, &sha, usize::MAX).ok())
+    {
+        return Ok(checkpoint);
+    }
+    create_snapshot(cwd, label, true)?
+        .ok_or_else(|| GitError::Failed("无法创建 checkpoint 快照".into()))
+}
+
+fn create_snapshot(
+    cwd: &Path,
+    label: &str,
+    allow_empty: bool,
+) -> Result<Option<Checkpoint>, GitError> {
     if !is_repo(cwd) {
         return Err(GitError::NotARepo);
     }
-    // 暂存全部改动(含新文件)。不传路径,让 git 自己按 .gitignore 过滤。
-    run_git(cwd, &["add", "-A"])?;
+    // `:/` 从仓库根匹配,即使调用方位于子目录也要保存全部将被重置的改动。
+    run_git(cwd, &["add", "-A", "--", ":/"])?;
     // 有暂存内容才提交,避免 `nothing to commit` 的非零退出。
     let staged = run_git(cwd, &["diff", "--cached", "--name-only"])?;
-    if staged.trim().is_empty() {
+    if staged.trim().is_empty() && !allow_empty {
         return Ok(None);
     }
     let label = label.trim();
@@ -117,11 +139,11 @@ pub fn create(cwd: &Path, label: &str) -> Result<Option<Checkpoint>, GitError> {
         &["commit", "--no-verify", "-m", &subject, "--allow-empty"],
     )?;
     let sha = run_git(cwd, &["rev-parse", "HEAD"])?.trim().to_string();
-    // 打 tag 让这个 checkpoint 在后续 reset --hard 之后依然可达、可列、可再回退。
-    // `-f` 允许同名短 sha 标签被覆盖(极端情况下短 sha 碰撞)。
-    let short = &sha[..8.min(sha.len())];
-    let tag = format!("{CHECKPOINT_TAG_PREFIX}{short}");
-    let _ = run_git(cwd, &["tag", "-f", &tag, &sha]);
+    // 完整 SHA 避免短前缀碰撞;打标签失败时不能继续回退。
+    let tag = format!("{CHECKPOINT_TAG_PREFIX}{sha}");
+    run_git(cwd, &["tag", &tag, &sha]).map_err(|error| {
+        GitError::Failed(format!("checkpoint {sha} 已提交但标签创建失败: {error}"))
+    })?;
     let meta = run_git(cwd, &["log", "-1", "--format=%cI%x1f%s"])?;
     let (committed_at, subject) = match meta.trim().split_once('\u{1f}') {
         Some((t, s)) => (t.to_string(), s.to_string()),
@@ -145,6 +167,9 @@ pub fn create(cwd: &Path, label: &str) -> Result<Option<Checkpoint>, GitError> {
 pub fn list(cwd: &Path, limit: usize) -> Result<Vec<Checkpoint>, GitError> {
     if !is_repo(cwd) {
         return Err(GitError::NotARepo);
+    }
+    if limit == 0 {
+        return Ok(Vec::new());
     }
     // 一次 for-each-ref 拿全字段:%1f 作字段分隔符。
     let out = run_git(
@@ -188,17 +213,24 @@ pub fn list(cwd: &Path, limit: usize) -> Result<Vec<Checkpoint>, GitError> {
 /// `rewind` 用它做**白名单校验**:只接受本模块创建的 checkpoint,
 /// 畸形 sha / 用户手挑的任意 commit 一律拒绝。
 pub fn find_checkpoint(cwd: &Path, sha: &str, limit: usize) -> Result<Checkpoint, GitError> {
-    list(cwd, limit)?
+    if sha.is_empty() || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(GitError::NotACheckpoint(sha.to_string()));
+    }
+    let mut matches = list(cwd, limit)?
         .into_iter()
-        .find(|c| c.sha == sha || c.sha.starts_with(sha))
-        .ok_or_else(|| GitError::NotACheckpoint(sha.to_string()))
+        .filter(|checkpoint| checkpoint.sha.starts_with(sha));
+    let first = matches.next();
+    if matches.next().is_some() {
+        return Err(GitError::NotACheckpoint(sha.to_string()));
+    }
+    first.ok_or_else(|| GitError::NotACheckpoint(sha.to_string()))
 }
 
 /// 回退到指定 checkpoint:`git reset --hard <sha>`。
 ///
 /// **回退前先做一次快照提交**,把当前工作区状态存下来 —— 用户反悔了还能
 /// 再回退到回退前的状态。返回 `(回退到的 checkpoint, 回退前快照)`;
-/// 干净树上快照为 `None`。
+/// 干净树且当前提交已是 checkpoint 时快照为 `None`;否则建立可回退的快照。
 pub fn rewind(cwd: &Path, sha: &str) -> Result<(Checkpoint, Option<Checkpoint>), GitError> {
     if !is_repo(cwd) {
         return Err(GitError::NotARepo);
@@ -208,7 +240,9 @@ pub fn rewind(cwd: &Path, sha: &str) -> Result<(Checkpoint, Option<Checkpoint>),
     let target = find_checkpoint(cwd, sha, 200)?;
 
     // 先存当前状态。有未提交改动时这一步尤其重要。
-    let safety = create(cwd, "pre-rewind safety snapshot")?;
+    let head_is_checkpoint =
+        current_sha(cwd).is_some_and(|head| find_checkpoint(cwd, &head, usize::MAX).is_ok());
+    let safety = create_snapshot(cwd, "pre-rewind safety snapshot", !head_is_checkpoint)?;
 
     run_git(cwd, &["reset", "--hard", &target.sha])?;
     Ok((target, safety))

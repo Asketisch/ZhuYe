@@ -21,7 +21,7 @@ zhuye plugin enable computer-use@inline
 
 | 工具 | 说明 |
 |---|---|
-| `computer_screenshot` | 截主屏 PNG(返回字节数元信息) |
+| `computer_screenshot` | 截主屏并返回 PNG 图片 |
 | `computer_click` | 绝对坐标点击(button 可选) |
 | `computer_type` | 键入文本 |
 | `computer_key` | 组合键(`ctrl+c`) |

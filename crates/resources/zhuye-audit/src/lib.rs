@@ -27,8 +27,8 @@
 //! ## 存储
 //!
 //! 单文件 JSONL(audit.jsonl),每行一条 [`AuditRecord`];`seq`
-//! 单调递增,进程重启后从已有文件续号(行数即序号基线)。每条记录
-//! 一次 `write` 调用(`Mutex` 串行化),并发安全。
+//! 单调递增,进程重启及多进程并发写入时在文件锁内续号。
+//! 初次打开会检查历史,并按既有最大序号和记录数量恢复基线。
 //!
 //! ## 抽象
 //!
@@ -36,8 +36,10 @@
 //! 测试/内存场景用 `Vec` sink;fail-closed 语义在 trait 层面成立
 //! (sink `Err` → 提交失败)。
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::Path;
+
+use fs2::FileExt;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -131,36 +133,148 @@ pub trait AuditSink: Send + Sync {
 /// 文件 sink:audit.jsonl 追加写。
 pub struct FileSink {
     file: Mutex<std::fs::File>,
-    #[allow(dead_code)]
-    path: PathBuf,
 }
 
 impl FileSink {
     /// 打开(不存在则创建)追加句柄。
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<FileSink> {
-        let path = path.as_ref().to_path_buf();
+        Self::open_inner(path.as_ref(), false)
+    }
+
+    fn open_inner(path: &Path, read: bool) -> std::io::Result<FileSink> {
         let file = std::fs::OpenOptions::new()
             .create(true)
+            .read(read)
             .append(true)
-            .open(&path)?;
+            .open(path)?;
         Ok(FileSink {
             file: Mutex::new(file),
-            path,
+        })
+    }
+
+    // 同一锁覆盖读序号和追加,不同进程也必须按同一顺序操作。
+    fn with_lock<T>(
+        &self,
+        f: impl FnOnce(&mut std::fs::File) -> Result<T, AuditError>,
+    ) -> Result<T, AuditError> {
+        let mut file = self.file.lock();
+        FileExt::lock_exclusive(&*file)?;
+        let result = f(&mut file);
+        let unlock = FileExt::unlock(&*file).map_err(AuditError::from);
+        match (result, unlock) {
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
+        }
+    }
+
+    // 检查历史并兼容旧版本留下的序号重复或不连续。
+    fn baseline(&self) -> Result<u64, AuditError> {
+        self.with_lock(|file| {
+            file.seek(SeekFrom::Start(0))?;
+            let mut reader = BufReader::new(file);
+            let mut line = String::new();
+            let mut count = 0u64;
+            let mut max_seq = 0u64;
+            loop {
+                line.clear();
+                if reader.read_line(&mut line)? == 0 {
+                    break;
+                }
+                if !line.ends_with('\n') {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "审计记录末尾不完整",
+                    )
+                    .into());
+                }
+                if !line.trim().is_empty() {
+                    let record: AuditRecord = serde_json::from_str(&line)?;
+                    max_seq = max_seq.max(record.seq);
+                    count = count
+                        .checked_add(1)
+                        .ok_or_else(|| std::io::Error::other("审计序号溢出"))?;
+                }
+            }
+            Ok(max_seq.max(count))
+        })
+    }
+
+    // 从文件末尾向前读取最后一条完整记录,避免每次写入都扫描全文件。
+    fn last_seq(file: &mut std::fs::File) -> Result<u64, AuditError> {
+        let len = file.metadata()?.len();
+        if len == 0 {
+            return Ok(0);
+        }
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0u8; 1];
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            return Err(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "审计记录末尾不完整").into(),
+            );
+        }
+        let mut end = len - 1;
+        // 旧版允许空行;跳过尾部空白,再定位最后一条实际记录。
+        while end > 0 {
+            file.seek(SeekFrom::Start(end - 1))?;
+            file.read_exact(&mut last)?;
+            if !last[0].is_ascii_whitespace() {
+                break;
+            }
+            end -= 1;
+        }
+        if end == 0 {
+            return Ok(0);
+        }
+        let mut chunks = Vec::new();
+        while end > 0 {
+            let start = end.saturating_sub(8192);
+            let mut chunk = vec![0; (end - start) as usize];
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut chunk)?;
+            if let Some(index) = chunk.iter().rposition(|b| *b == b'\n') {
+                chunks.push(chunk[index + 1..].to_vec());
+                break;
+            }
+            chunks.push(chunk);
+            end = start;
+        }
+        chunks.reverse();
+        let bytes: Vec<u8> = chunks.into_iter().flatten().collect();
+        if bytes.is_empty() {
+            return Err(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "审计记录末行为空").into(),
+            );
+        }
+        let record: AuditRecord = serde_json::from_slice(&bytes)?;
+        Ok(record.seq)
+    }
+
+    fn append_sequenced(&self, record: &mut AuditRecord, baseline: u64) -> Result<(), AuditError> {
+        self.with_lock(|file| {
+            record.seq = Self::last_seq(file)?
+                .max(baseline)
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("审计序号溢出"))?;
+            let mut line = serde_json::to_vec(record)?;
+            line.push(b'\n');
+            file.write_all(&line)?;
+            file.flush()?;
+            Ok(())
         })
     }
 }
 
 impl AuditSink for FileSink {
     fn append(&self, line: &str) -> Result<(), AuditError> {
-        use std::io::Write;
-        let mut f = self.file.lock();
-        // 单次 write:JSONL 单行原子追加(行内不撕裂)。
-        f.write_all(line.as_bytes())?;
-        f.write_all(b"\n")?;
-        // 审计要求落盘语义:flush(不 fsync —— 每条 fsync 代价过高,
-        // flush 保证进入 OS 缓冲一致视图;调用方可在关键点显式 sync_all)。
-        f.flush()?;
-        Ok(())
+        self.with_lock(|file| {
+            let mut bytes = Vec::with_capacity(line.len() + 1);
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+            file.write_all(&bytes)?;
+            file.flush()?;
+            Ok(())
+        })
     }
 }
 
@@ -249,11 +363,12 @@ pub fn fingerprint(bytes: &[u8]) -> String {
     out
 }
 
-/// 审计日志。`seq` 跨进程续号(构造时数已有行数 —— 仅文件 sink 的
-/// 场景由调用方传入基线,见 [`AuditLog::open`])。
+/// 审计日志。通过 [`AuditLog::open`] 打开的文件在进程间同步序号;
+/// 自定义 sink 的序号在当前实例内递增。
 pub struct AuditLog {
     sink: std::sync::Arc<dyn AuditSink>,
-    seq: AtomicU64,
+    file_sink: Option<std::sync::Arc<FileSink>>,
+    seq: Mutex<u64>,
 }
 
 impl AuditLog {
@@ -261,28 +376,26 @@ impl AuditLog {
     pub fn new(sink: std::sync::Arc<dyn AuditSink>) -> AuditLog {
         AuditLog {
             sink,
-            seq: AtomicU64::new(0),
+            file_sink: None,
+            seq: Mutex::new(0),
         }
     }
 
-    /// 打开 `<dir>/audit.jsonl`,序号基线 = 已有行数(进程重启续号,
-    /// 序号不回退)。目录不存在则创建。
+    /// 打开 `<dir>/audit.jsonl`,检查历史并跨进程同步序号。
+    /// 目录不存在则创建;损坏或不完整的历史返回错误。
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<AuditLog> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
         let path = dir.join("audit.jsonl");
-        let baseline = if path.exists() {
-            std::fs::read_to_string(&path)?
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .count() as u64
-        } else {
-            0
-        };
-        let sink = std::sync::Arc::new(FileSink::open(&path)?);
+        let sink = std::sync::Arc::new(FileSink::open_inner(&path, true)?);
+        let baseline = sink.baseline().map_err(|error| match error {
+            AuditError::Io(error) => error,
+            error => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        })?;
         Ok(AuditLog {
-            sink,
-            seq: AtomicU64::new(baseline),
+            sink: sink.clone(),
+            file_sink: Some(sink),
+            seq: Mutex::new(baseline),
         })
     }
 
@@ -291,9 +404,11 @@ impl AuditLog {
         let raw = serde_json::to_string(&entry.detail)?;
         let fingerprint = fingerprint(raw.as_bytes());
         let detail = redact_value(&entry.detail);
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let rec = AuditRecord {
-            seq,
+        let mut seq = self.seq.lock();
+        let mut rec = AuditRecord {
+            seq: seq
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("审计序号溢出"))?,
             ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             kind: entry.kind,
             subject: entry.subject,
@@ -301,8 +416,13 @@ impl AuditLog {
             detail,
             fingerprint,
         };
-        let line = serde_json::to_string(&rec)?;
-        self.sink.append(line.as_str())?;
+        if let Some(sink) = &self.file_sink {
+            sink.append_sequenced(&mut rec, *seq)?;
+        } else {
+            let line = serde_json::to_string(&rec)?;
+            self.sink.append(line.as_str())?;
+        }
+        *seq = rec.seq;
         Ok(rec)
     }
 
@@ -585,6 +705,117 @@ mod tests {
         assert_eq!(rec.seq, 4, "序号必须跨进程续(行数基线)");
         let content = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
         assert_eq!(content.lines().count(), 4);
+    }
+
+    #[test]
+    fn audit_writer_process() {
+        let Some(dir) = std::env::var_os("ZHUYE_AUDIT_TEST_DIR") else {
+            return;
+        };
+        let log = AuditLog::open(dir).unwrap();
+        for index in 0..40 {
+            log.record(sample_entry(
+                json!({"index": index, "padding": "x".repeat(12000)}),
+            ))
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_processes_append_complete_records_in_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mut children: Vec<_> = (0..4)
+            .map(|_| {
+                std::process::Command::new(&executable)
+                    .args(["--exact", "tests::audit_writer_process", "--nocapture"])
+                    .env("ZHUYE_AUDIT_TEST_DIR", dir.path())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for child in &mut children {
+            assert!(child.wait().unwrap().success());
+        }
+        let text = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+        let records: Vec<AuditRecord> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 160);
+        assert!(
+            records
+                .iter()
+                .enumerate()
+                .all(|(i, record)| record.seq == i as u64 + 1)
+        );
+        assert!(
+            records
+                .iter()
+                .all(|record| record.detail["padding"].as_str().unwrap().len() == 12000)
+        );
+    }
+
+    #[test]
+    fn incomplete_audit_file_is_not_overwritten_or_extended() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let original = b"{\"seq\":1";
+        std::fs::write(&path, original).unwrap();
+        assert!(AuditLog::open(dir.path()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn old_nonmonotonic_history_uses_highest_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = AuditLog::new(std::sync::Arc::new(VecSink::default()));
+        let mut record = log.record(sample_entry(json!({}))).unwrap();
+        let path = dir.path().join("audit.jsonl");
+        record.seq = 15;
+        let first = serde_json::to_string(&record).unwrap();
+        record.seq = 2;
+        let second = serde_json::to_string(&record).unwrap();
+        std::fs::write(&path, format!("{first}\n{second}\n")).unwrap();
+        let opened = AuditLog::open(dir.path()).unwrap();
+        assert_eq!(opened.record(sample_entry(json!({}))).unwrap().seq, 16);
+    }
+
+    #[test]
+    fn legacy_blank_lines_do_not_prevent_appending() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = AuditLog::open(dir.path()).unwrap();
+        assert_eq!(log.record(sample_entry(json!({}))).unwrap().seq, 1);
+        let path = dir.path().join("audit.jsonl");
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(b"  \n\n").unwrap();
+        drop(file);
+        assert_eq!(log.record(sample_entry(json!({}))).unwrap().seq, 2);
+    }
+
+    #[test]
+    fn concurrent_memory_sink_records_follow_sequence_order() {
+        let (log, sink) = mem_log();
+        let log = std::sync::Arc::new(log);
+        std::thread::scope(|scope| {
+            for index in 0..100 {
+                let log = log.clone();
+                scope.spawn(move || {
+                    log.record(sample_entry(json!({"index": index}))).unwrap();
+                });
+            }
+        });
+        let records: Vec<AuditRecord> = sink
+            .lines()
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            records
+                .iter()
+                .enumerate()
+                .all(|(i, record)| record.seq == i as u64 + 1)
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@
 //!
 //! - 内存:`VecDeque` 环形缓冲,cap = [`CAP_INMEMORY`],LRU 驱逐最旧;
 //! - 磁盘:`<data_dir>/activity/activity.jsonl` 追加写;超过
-//!   [`ROTATE_BYTES`] 时 rotate 为 `activity.<ts>.jsonl` 再开新文件;
+//!   [`ROTATE_BYTES`] 时轮转为 `activity.<ts>.<uuid>.jsonl` 再开新文件;
 //!   逐条 `flush()`(防进程被杀丢审计)。
 //!
 //! ## 数据源
@@ -24,12 +24,14 @@
 //! Logger 不主动订阅;调用方把 `Event` 经 [`map_event`](纯函数,None =
 //! 不记录)转换后 `record`。保持本模块对 runtime 的零依赖。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fs2::FileExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use zhuye_protocol::{Actor, Event, EventMsg, SideChannelEvent};
@@ -184,8 +186,7 @@ impl ActivityFilter {
 
 struct Inner {
     buf: VecDeque<ActivityEvent>,
-    file: Option<BufWriter<File>>,
-    written_bytes: u64,
+    lock_file: Option<File>,
     path: PathBuf,
     next_seq: u64,
 }
@@ -214,30 +215,37 @@ impl ActivityLogger {
     /// 退化为纯内存(审计不是启动前提,不 panic)。
     pub fn with_default_home() -> std::sync::Arc<Self> {
         match zhuye_config::data_path(&["activity"]) {
-            Some(dir) => std::sync::Arc::new(Self::new(dir)),
-            None => std::sync::Arc::new(Self::in_memory()),
+            Some(dir) => {
+                static LOGGERS: OnceLock<Mutex<HashMap<PathBuf, Weak<ActivityLogger>>>> =
+                    OnceLock::new();
+                let mut loggers = LOGGERS.get_or_init(|| Mutex::new(HashMap::new())).lock();
+                if let Some(logger) = loggers.get(&dir).and_then(Weak::upgrade) {
+                    return logger;
+                }
+                loggers.retain(|_, logger| logger.strong_count() > 0);
+                let logger = Arc::new(Self::new(dir.clone()));
+                loggers.insert(dir, Arc::downgrade(&logger));
+                logger
+            }
+            None => Arc::new(Self::in_memory()),
         }
     }
 
     /// 落盘到 `<root>/activity.jsonl`。
     pub fn new(root: PathBuf) -> Self {
         let path = root.join("activity.jsonl");
-        // 打开已有文件时从当前长度续计 rotate 阈值(进程重启不重置);
-        // 打开失败(权限等)→ 纯内存降级,审计不阻断启动。
-        let existing_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        let file = open_append(&path)
-            .map(|f| BufWriter::with_capacity(8 * 1024, f))
+        // 跨进程共享锁保护追加和轮转;无法打开时降级到纯内存。
+        let lock_file = open_append(&path)
+            .and_then(|_| open_append(&root.join("activity.lock")))
             .map_err(|e| {
                 tracing::warn!(path = %path.display(), error = %e, "activity: open log failed; falling back to in-memory");
                 e
             })
             .ok();
-        let written_bytes = if file.is_some() { existing_len } else { 0 };
         Self {
             inner: Mutex::new(Inner {
                 buf: VecDeque::with_capacity(CAP_INMEMORY),
-                file,
-                written_bytes,
+                lock_file,
                 path,
                 next_seq: 1,
             }),
@@ -249,8 +257,7 @@ impl ActivityLogger {
         Self {
             inner: Mutex::new(Inner {
                 buf: VecDeque::with_capacity(CAP_INMEMORY),
-                file: None,
-                written_bytes: 0,
+                lock_file: None,
                 path: PathBuf::new(),
                 next_seq: 1,
             }),
@@ -267,26 +274,30 @@ impl ActivityLogger {
             g.buf.pop_front();
         }
         g.buf.push_back(event.clone());
-        // 2) 磁盘 append。
-        if let Some(f) = g.file.as_mut() {
-            let mut line = serde_json::to_vec(&event)?;
-            line.push(b'\n');
-            f.write_all(&line)?;
-            f.flush()?; // 逐条 flush:进程被杀不丢审计。
-            g.written_bytes += line.len() as u64;
-            // 3) rotate:超阈值把当前文件改名,下次 record 重开新文件。
-            if g.written_bytes >= ROTATE_BYTES {
-                if let Some(f) = g.file.take() {
-                    drop(f);
+        // 每次加锁后重开活动文件,避免其他进程轮转后写入旧归档。
+        if let Some(lock_file) = &g.lock_file {
+            FileExt::lock_exclusive(lock_file)?;
+            let result = (|| -> std::io::Result<()> {
+                let mut file = open_append(&g.path)?;
+                let mut line = serde_json::to_vec(&event)?;
+                line.push(b'\n');
+                file.write_all(&line)?;
+                file.flush()?;
+                let written_bytes = file.metadata()?.len();
+                drop(file);
+                if written_bytes >= ROTATE_BYTES {
+                    let rotated = g.path.with_extension(format!(
+                        "{}.{}.jsonl",
+                        now_ms(),
+                        uuid::Uuid::new_v4()
+                    ));
+                    std::fs::rename(&g.path, rotated)?;
+                    open_append(&g.path)?;
                 }
-                let ts = now_ms();
-                let rotated = g.path.with_extension(format!("{ts}.jsonl"));
-                let _ = std::fs::rename(&g.path, &rotated);
-                g.file = open_append(&g.path)
-                    .map(|f| BufWriter::with_capacity(8 * 1024, f))
-                    .ok();
-                g.written_bytes = 0;
-            }
+                Ok(())
+            })();
+            let unlocked = FileExt::unlock(lock_file);
+            result.and(unlocked)?;
         }
         Ok(())
     }
@@ -604,6 +615,36 @@ mod tests {
             body.contains("\"actorType\":\"system\"") || body.contains("agent"),
             "actor 序列化"
         );
+    }
+
+    #[test]
+    fn rapid_rotations_keep_each_archive() {
+        let (dir, logger) = temp_logger();
+        for summary in ["第一条", "第二条"] {
+            let padded = format!("{summary}{}", "x".repeat(ROTATE_BYTES as usize));
+            logger
+                .record(sample(ActivityKind::Other, &padded, ActivityLevel::Info))
+                .unwrap();
+        }
+        let mut summaries = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension().is_some_and(|ext| ext == "jsonl")
+                    && path.file_name().unwrap() != "activity.jsonl"
+            })
+            .map(|path| {
+                let body = std::fs::read_to_string(path).unwrap();
+                serde_json::from_str::<ActivityEvent>(body.trim())
+                    .unwrap()
+                    .summary
+                    .chars()
+                    .take(3)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        summaries.sort();
+        assert_eq!(summaries, ["第一条", "第二条"]);
     }
 
     #[test]

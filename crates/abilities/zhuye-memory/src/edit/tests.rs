@@ -100,6 +100,7 @@ fn ambiguous_or_unheaded_memory_is_editable_as_a_document() {
         "legacy text",
         "preamble\n## one\nvalue\n",
         "## one\na\n## one\nb\n",
+        "## (all)\nreserved\n",
     ] {
         std::fs::write(&path, content).unwrap();
         let entries = store.list_entries(MemoryScope::Project, "agent").unwrap();
@@ -110,6 +111,17 @@ fn ambiguous_or_unheaded_memory_is_editable_as_a_document() {
         assert_eq!(entry.key, WHOLE_DOCUMENT_KEY);
         assert!(entry.whole_document);
         assert_eq!(entry.value, content);
+        for key in ["one", "new"] {
+            assert!(matches!(
+                store.add_entry(MemoryScope::Project, "agent", key, "changed", &write_opts()),
+                Err(MemoryError::Invalid(_))
+            ));
+            assert!(matches!(
+                store.remove_entry(MemoryScope::Project, "agent", key, &write_opts()),
+                Err(MemoryError::Invalid(_))
+            ));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
     }
     // 非 replace_document 形态写 "(all)" → 拒绝(整份替换必须显式声明)。
     assert!(

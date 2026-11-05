@@ -100,6 +100,10 @@ rl.on('line', (line) => {
     console.log(JSON.stringify({
       id: sub.id, msg: { type: 'tool_call_output_delta', call_id: 'c1', delta: 'preview', is_stderr: true },
     }));
+    console.log(JSON.stringify({
+      id: sub.id, msg: { type: 'tool_call_end', call_id: 'image-call', is_error: false,
+        output: { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: {}, elapsed_ms: 0 } },
+    }));
     // 未知变体:SDK 不得因不认识而抛错(按未知 type 降级)。
     console.log(JSON.stringify({
       id: sub.id, msg: { type: 'some_future_event', payload: { x: 1 } },
@@ -243,6 +247,14 @@ def test_tool_call_args_delta_透传到事件流(agent: ZhuyeAgent) -> None:
     d = next(ev["msg"] for ev in events if ev["msg"]["type"] == "tool_call_args_delta")
     assert d["call_id"] == "c1", f"call_id 不对:{d}"
     assert d["delta"] == '{"text":"pi', f"delta 不对:{d}"
+
+
+def test_工具图片事件透传(agent: ZhuyeAgent) -> None:
+    """工具输出图片按原始字节数组透传,不影响事件流收尾。"""
+    events = list(agent.submit("hi"))
+    end = next(event["msg"] for event in events if event["msg"]["type"] == "tool_call_end")
+    assert end["output"]["content"] == [{"type": "image", "data": [137, 80, 78, 71], "mime_type": "image/png"}]
+    assert events[-1]["msg"]["type"] == "turn_complete"
 
 
 def test_未知事件变体降级不崩(agent: ZhuyeAgent) -> None:
