@@ -163,8 +163,12 @@ CUR2="$(cargo_version)"
   || die "bump 后四处版本复核失败(当前 Rust workspace:$CUR2,期望 $NEW)。"
 git -C "$ROOT" diff --quiet -- Cargo.lock \
   && die "Cargo.lock 未被刷新 —— 请手动执行 cargo check --workspace 后重试。"
-! grep -q "version = \"$CUR\"" "$ROOT/Cargo.lock" \
-  || die "Cargo.lock 仍残留旧版本 $CUR 的 workspace 记录。"
+# lock 里所有 zhuye* 包的版本必须都已到 NEW(第三方依赖恰好同名版本不算残留)。
+STALE_LOCK="$(awk -v want="\"$NEW\"" '
+  /^name = "zhuye/ { n = $3 }
+  /^version = /   { if (n != "" && $3 != want) print n, $3; n = "" }
+' "$ROOT/Cargo.lock")"
+[ -z "$STALE_LOCK" ] || die "Cargo.lock 中 zhuye 包仍有旧版本:$STALE_LOCK"
 
 # ── 4. 提交版本改动 -------------------------------------------------------
 git -C "$ROOT" add "$CARGO_TOML" Cargo.lock "$PY_PROJECT" "$PY_INIT" "$TS_PACKAGE"
