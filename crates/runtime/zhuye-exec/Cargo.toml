@@ -24,6 +24,7 @@ tokenizer = ["zhuye-compact/tokenizer"]
 
 [dependencies]
 zhuye-core      = { workspace = true }
+zhuye-goal  = { workspace = true }
 zhuye-llm       = { workspace = true }
 zhuye-protocol  = { workspace = true }
 zhuye-tools     = { workspace = true }

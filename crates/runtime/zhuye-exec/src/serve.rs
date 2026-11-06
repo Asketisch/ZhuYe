@@ -467,7 +467,9 @@ fn proactive_session_configured(thread: &Arc<AgentThread>) -> Event {
     // SessionMeta 保持一致(见 submission_loop 同款修复)。
     sc.session_id = cfg.session_id.unwrap_or(sc.session_id);
     // RwLock guard 不是 Send:先把值拷出来再构造事件(与 core 同款注释)。
-    let override_hit = cfg.context_window_overrides.read().get(&model).copied();
+    // v1.10 功能3:归一化查覆盖表(与 submission_loop 同口径),覆盖表已
+    // 合并 `[model].context_window`。
+    let override_hit = cfg.context_window_override_for(&model);
     sc.context_window_size = override_hit.or_else(|| zhuye_llm::context_window_for(&model));
     *cfg.context_window_size.write() = sc.context_window_size;
     Event::new(EVENT_ID_NONE, EventMsg::SessionConfigured(sc))

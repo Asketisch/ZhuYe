@@ -267,7 +267,13 @@ pub(crate) fn bootstrap_m4(
     // M8 P0b:触发阈值取自环境变量 `ZHUYE_AUTO_COMPACT_INPUT_TOKENS`
     // > TOML `[compact].trigger_tokens` > 默认值 (10_000)。M7 仅记录了
     // 环境变量;M8 把两者都接入 `CompactorConfig`。
-    let compactor_cfg = zhuye_core::config::compactor_config_from_env_and_toml(toml_trigger_tokens);
+    // v1.10 功能3:两级显式值都缺席时,若用户在 config.toml 显式配置了
+    // 该模型的上下文窗口(`[context_windows]` / `[model].context_window`),
+    // 触发阈值联动为窗口 × 80%(静态表命中而未配置的模型保持 10k)。
+    let compactor_cfg = zhuye_core::config::compactor_config_with_window(
+        toml_trigger_tokens,
+        cfg.configured_context_window_for(model),
+    );
     // v1.4 D2:记忆固化门控 —— `ZHUYE_MEMORY_CONSOLIDATION`:
     //   未设 / `0` / `false` = 关闭(默认,行为不变);
     //   `1` / `session` = 写 Session scope(进程内,重启即丢,最安全);

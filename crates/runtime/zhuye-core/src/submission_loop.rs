@@ -294,8 +294,11 @@ pub async fn submission_loop(
                     // 级联:config.toml `[context_windows]` per-model 覆盖表(优先)
                     // → 内置 `context_window_for` 静态回退表 → None。
                     // 让用户能为新/私端模型直接配窗口,无需改代码 + 重新编译。
+                    // v1.10 功能3:覆盖查询改为归一化匹配(去 provider 前缀 /
+                    // tag、小写、前缀兜底),且覆盖表已合并
+                    // `[model].context_window`(exec bootstrap 装配)。
                     // 注意:RwLock guard 不是 Send,先把值拷出来再 await。
-                    let override_hit = cfg.context_window_overrides.read().get(&sc.model).copied();
+                    let override_hit = cfg.context_window_override_for(&sc.model);
                     sc.context_window_size =
                         override_hit.or_else(|| zhuye_llm::context_window_for(&sc.model));
                     // v1.2 P1-12:同步写入共享句柄,让 `get_context_remaining`

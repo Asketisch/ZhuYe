@@ -476,6 +476,19 @@ impl AgentConfig {
         self
     }
 
+    /// v1.10 功能4:构造时设置会话**初始**思考强度(来自 config.toml
+    /// `[model].reasoning_effort`)。与 [`Self::set_effort`] 的区别:不写
+    /// 审计日志(bootstrap 不是用户操作)。`None` = 保持默认 `Low`。
+    /// 运行时仍可经 `Op::SetEffort` 覆盖;发 wire 前由
+    /// `zhuye_llm::reasoning_effort` 按模型族钳制(qwen→high /
+    /// deepseek→max / OpenAI→ultra / 未知→high)。
+    pub fn with_initial_effort(self, effort: Option<ReasoningEffortMirror>) -> Self {
+        if let Some(e) = effort {
+            *self.effort.write() = e;
+        }
+        self
+    }
+
     /// v1.2 P1:注入本地 Langfuse 式日志 sink。由 `zhuye-exec` /
     /// `zhuye-tui` 在 bootstrap 时按 `[telemetry]` 配置构造后注入。
     /// `None` = telemetry 关闭。
@@ -512,6 +525,25 @@ impl AgentConfig {
     /// 下一次 `SessionConfigured` 时的优先表。后续切换 model 自动查最新值。
     pub fn set_context_window_overrides(&self, overrides: HashMap<String, u32>) {
         *self.context_window_overrides.write() = overrides;
+    }
+
+    /// v1.10 功能3:按模型查覆盖表 —— 归一化(去 provider 前缀 / ollama
+    /// tag、小写)后先精确匹配、再前缀匹配(与 `[context_windows]` 段
+    /// `lookup()` / `zhuye_llm` 全局表同语义)。此前 submission_loop 用
+    /// 原始模型串做精确 `get`,`"MiniMax-M3"` 这类大小写 / 前缀写法永远
+    /// 命不中。
+    pub fn context_window_override_for(&self, model_spec: &str) -> Option<u32> {
+        let key = zhuye_llm::normalize_model_spec(model_spec);
+        if key.is_empty() {
+            return None;
+        }
+        let map = self.context_window_overrides.read();
+        if let Some(v) = map.get(&key) {
+            return Some(*v);
+        }
+        map.iter()
+            .find(|(k, _)| k.starts_with(&key) || key.starts_with(k.as_str()))
+            .map(|(_, v)| *v)
     }
 
     /// 当前覆盖表快照,用于测试 / 诊断。

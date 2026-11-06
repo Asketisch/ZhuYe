@@ -16,7 +16,7 @@ mod m4;
 pub use agent::AgentConfig;
 pub use env::{
     AUTO_COMPACT_INPUT_TOKENS_ENV, DEFAULT_MAX_ITERATIONS, MAX_ITERATIONS_ENV, TOKEN_BUDGET_ENV,
-    compactor_config_from_env_and_toml, max_iterations_from_env, token_budget_from_env,
-    trigger_tokens_from_env,
+    compactor_config_from_env_and_toml, compactor_config_with_window, max_iterations_from_env,
+    token_budget_from_env, trigger_tokens_from_env,
 };
 pub use m4::{M4Deps, default_m4_deps};

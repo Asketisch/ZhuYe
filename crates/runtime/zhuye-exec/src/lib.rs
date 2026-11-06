@@ -14,9 +14,11 @@
 
 mod bootstrap;
 mod cron_tool;
+mod goal_tool;
 mod headless;
 mod jsonl;
 mod memory_tool;
+mod queue_tool;
 mod reload;
 mod runtime_config;
 pub mod serve;
@@ -27,8 +29,10 @@ mod tests;
 // 重导出,保留历史公共 API 表面积。内部也通过 `crate::` 路径引用这些项。
 pub use bootstrap::ResumeBundle;
 pub use cron_tool::CronTool;
+pub use goal_tool::GoalTool;
 pub use jsonl::JsonlWriter;
 pub use memory_tool::MemoryTool;
+pub use queue_tool::{QueueTool, QueueTurnEndHook};
 pub use reload::{diff_sections_for_test, handle_reload, spawn_reload_task};
 
 use clap::Args;
