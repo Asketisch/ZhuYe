@@ -20,6 +20,7 @@ import {
   EVENT_ID_NONE,
   Event,
   EventMsg,
+  ReasoningEffort,
   ZhuyeAgent,
 } from '../src/index.js';
 
@@ -31,6 +32,8 @@ it('公开类型与 Rust wire 值一致', () => {
   expectTypeOf<PlanApprovalChoice>().toEqualTypeOf<'auto_mode' | 'manual_approve' | 'revise'>();
   expectTypeOf<ReviewDecision>().toEqualTypeOf<'approve' | 'approve_for_session' | { deny: { reason: string } }>();
   expectTypeOf<ToolCallOutputDelta>().toEqualTypeOf<{ type: 'tool_call_output_delta'; call_id: string; delta: string; is_stderr: boolean }>();
+  // v1.10 功能4:思考强度阶梯扩到 max / ultra(变体级 additive,旧值不变)。
+  expectTypeOf<ReasoningEffort>().toEqualTypeOf<'low' | 'medium' | 'high' | 'max' | 'ultra'>();
 });
 
 /**

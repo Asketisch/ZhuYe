@@ -355,6 +355,24 @@ def test_wire_type_annotations() -> None:
     from zhuye import protocol
 
     assert set(get_args(get_type_hints(protocol.TurnComplete)["status"])) == {"success", "max_iterations", "stopped", "token_budget_exceeded"}
+    # v1.10 功能4:思考强度阶梯扩到 max / ultra(变体级 additive,旧值不变)。
+    # 注解形态是 `Literal[...] | None`,get_args 外层是 (Literal, NoneType),
+    # 需要再解一层 Literal 才拿到字符串集合。
+    effort_union = get_args(get_type_hints(protocol.ThreadSettings)["effort"])
+    effort_vals = {
+        v
+        for a in effort_union
+        if a is not type(None)
+        for v in get_args(a)
+        if isinstance(v, str)
+    }
+    assert effort_vals == {"low", "medium", "high", "max", "ultra"}
+    set_effort_vals = {
+        a
+        for a in get_args(get_type_hints(protocol.SetEffortOp)["effort"])
+        if isinstance(a, str)
+    }
+    assert set_effort_vals == {"low", "medium", "high", "max", "ultra"}
     assert set(get_args(get_type_hints(protocol.PlanApprovalOp)["choice"])) == {"auto_mode", "manual_approve", "revise"}
     assert get_type_hints(protocol.TurnAborted)["reason"] == protocol.AbortReason
     assert protocol.ReviewDecisionDeny.__required_keys__ == {"deny"}
