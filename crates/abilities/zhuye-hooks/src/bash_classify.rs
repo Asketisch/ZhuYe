@@ -176,8 +176,7 @@ fn segment_writes_files(segment: &str) -> bool {
         let token_end = bytes[j..]
             .iter()
             .position(|b| matches!(b, b' ' | b'\t' | b';' | b'|' | b'&'))
-            .map(|p| j + p)
-            .unwrap_or(bytes.len());
+            .map_or(bytes.len(), |p| j + p);
         let target = segment[j..token_end].to_ascii_lowercase();
         // 丢弃型目标(/dev/null 等)不算写文件。
         if !(target == "/dev/null"

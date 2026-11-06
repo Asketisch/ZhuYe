@@ -118,7 +118,7 @@ impl JsonlRolloutWriter {
             fs::create_dir_all(parent)?;
         }
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let size = file.metadata().map_or(0, |m| m.len());
         g.writer = Some(BufWriter::new(file));
         g.current_path = Some(path);
         g.current_size = size;
@@ -393,8 +393,7 @@ fn locate_cut(
 fn write_backup(path: &Path, content: &str) -> anyhow::Result<()> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let mut bak = path.to_path_buf();
     let stem = path
         .file_stem()

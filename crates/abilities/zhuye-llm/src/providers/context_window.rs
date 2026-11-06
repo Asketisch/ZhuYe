@@ -113,10 +113,7 @@ pub fn context_window_override_for(model_spec: &str) -> Option<u32> {
 /// 模型名归一化:去 provider 前缀 / ollama tag、小写化 trim。
 /// 与 `zhuye_config::schema::normalize_model_key` 保持同一口径。
 pub fn normalize_model_spec(model_spec: &str) -> String {
-    let no_provider = model_spec
-        .rsplit_once('/')
-        .map(|(_, m)| m)
-        .unwrap_or(model_spec);
+    let no_provider = model_spec.rsplit_once('/').map_or(model_spec, |(_, m)| m);
     let no_tag = no_provider.split(':').next().unwrap_or(no_provider);
     no_tag.trim().to_ascii_lowercase()
 }
@@ -145,10 +142,7 @@ pub fn context_window_for(model_spec: &str) -> Option<u32> {
         return Some(v);
     }
     // 1. 去 provider 前缀(`rsplit_once('/')` 取最后一段,无 '/' 时整串)。
-    let no_provider = model_spec
-        .rsplit_once('/')
-        .map(|(_, m)| m)
-        .unwrap_or(model_spec);
+    let no_provider = model_spec.rsplit_once('/').map_or(model_spec, |(_, m)| m);
     // 2. 去 ollama tag(`:7b` / `:latest` / `:instruct`)。
     let no_tag = no_provider.split(':').next().unwrap_or(no_provider);
     // 3. 小写化匹配。

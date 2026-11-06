@@ -86,14 +86,12 @@ impl Default for UntrustedGate {
 impl UntrustedGate {
     /// 从 env 构造:`ZHUYE_UNTRUSTED_ALLOW_BARE=1` 打开显式逃生口。
     pub fn from_env() -> Self {
-        let allow = std::env::var("ZHUYE_UNTRUSTED_ALLOW_BARE")
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
+        let allow = std::env::var("ZHUYE_UNTRUSTED_ALLOW_BARE").is_ok_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
         Self::with_allow_bare(allow)
     }
 

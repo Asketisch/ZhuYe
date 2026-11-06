@@ -522,10 +522,7 @@ impl ContextWindowsSection {
 /// 去 provider 前缀(`anthropic/claude-...` → `claude-...`)、去 ollama tag(`:7b`),
 /// 小写化 trim。
 fn normalize_model_key(model_spec: &str) -> String {
-    let no_provider = model_spec
-        .rsplit_once('/')
-        .map(|(_, m)| m)
-        .unwrap_or(model_spec);
+    let no_provider = model_spec.rsplit_once('/').map_or(model_spec, |(_, m)| m);
     let no_tag = no_provider.split(':').next().unwrap_or(no_provider);
     no_tag.trim().to_ascii_lowercase()
 }

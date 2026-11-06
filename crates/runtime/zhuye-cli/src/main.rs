@@ -840,8 +840,7 @@ fn main() -> anyhow::Result<()> {
         Command::Init { force } => {
             let existed = std::env::current_dir()
                 .ok()
-                .map(|d| d.join("AGENTS.md").exists())
-                .unwrap_or(false);
+                .is_some_and(|d| d.join("AGENTS.md").exists());
             let path = init::run(force)?;
             if existed && !force {
                 println!("AGENTS.md 已存在,跳过(用 --force 覆盖):{}", path.display());

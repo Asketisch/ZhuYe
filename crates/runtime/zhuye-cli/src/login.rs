@@ -48,7 +48,7 @@ pub fn run(provider: &str, api_key: Option<String>, force: bool) -> anyhow::Resu
     let mut cfg = load_default();
 
     // 4. 改对应 section。
-    apply_key(&mut cfg, &provider, api_key.clone());
+    apply_key(&mut cfg, &provider, api_key);
 
     // 5. 把 [active].provider 设为该 provider(若是首次配置)。
     if cfg.active.provider.is_none() {

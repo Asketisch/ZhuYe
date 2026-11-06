@@ -108,9 +108,10 @@ pub fn parse_assistant_markdown(markdown: &str, cwd: &Path) -> ParsedAssistantMa
             let content = &line[content_offset..];
             let markers = content.bytes().take_while(|byte| *byte == b':').count();
             if (1..=3).contains(&markers) && content[markers..].starts_with("code-comment{") {
-                let visible = rewrite_code_comment_line(line, cwd)
-                    .map(|rewritten| rewritten.trim_end().to_string())
-                    .unwrap_or_else(|| line.to_string());
+                let visible = rewrite_code_comment_line(line, cwd).map_or_else(
+                    || line.to_string(),
+                    |rewritten| rewritten.trim_end().to_string(),
+                );
                 visible_lines.push(visible);
                 continue;
             }

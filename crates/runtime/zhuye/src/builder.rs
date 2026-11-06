@@ -335,7 +335,7 @@ impl ZhuyeBuilder {
             registry,
             tools,
             Some(sanitizer),
-            Some(hook_engine.clone()),
+            Some(hook_engine),
         ));
         if self.plan_mode {
             thread.register_hook(zhuye_hooks::builtins::PlanModeGate::default_mode());
@@ -586,8 +586,7 @@ fn build_telemetry_sink(traces_dir: Option<&Path>) -> Option<Arc<TelemetrySink>>
         redact: section.should_redact(),
         max_bytes: section
             .max_bytes
-            .map(|n| n as usize)
-            .unwrap_or(zhuye_telemetry::model::MAX_FIELD_CHARS),
+            .map_or(zhuye_telemetry::model::MAX_FIELD_CHARS, |n| n as usize),
     };
     let sink = TelemetrySink::new_with_config(
         base_dir,
@@ -803,7 +802,7 @@ fn build_side_channel_factory(
     parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
     parent_approvals: bool,
 ) -> zhuye_core::side_channel::SideContextThreadFactory {
-    let registry_for_factory = registry.clone();
+    let registry_for_factory = registry;
     // 闭包要求 'static —— 克隆 config(含 policy 计算所需段)进去。
     let app_cfg = app_cfg.clone();
     Arc::new(
@@ -820,7 +819,7 @@ fn build_side_channel_factory(
                 zhuye_protocol::ThreadId::new(),
             )?;
             m4.recorder = None; // 不写主历史。
-            let cfg = zhuye_core::AgentConfig::new(model.clone(), workspace.clone())
+            let cfg = zhuye_core::AgentConfig::new(model.clone(), workspace)
                 .with_m4(m4)
                 .with_policy(Arc::new(app_cfg.routing_policy_with(&model)))
                 .with_cancel(cancel);
@@ -850,8 +849,7 @@ fn maybe_spawn_activity_logger(
     let enabled = app_cfg
         .telemetry
         .as_ref()
-        .map(|t| t.activity_enabled())
-        .unwrap_or(true);
+        .is_none_or(|t| t.activity_enabled());
     if !enabled {
         tracing::info!("[telemetry].activity=false: audit logger disabled");
         return;
@@ -1312,7 +1310,7 @@ mod tests {
             None,
             None,
         ));
-        let agent = Zhuye::from_thread(t.clone());
+        let agent = Zhuye::from_thread(t);
         assert!(!agent.thread().config().approvals);
     }
 

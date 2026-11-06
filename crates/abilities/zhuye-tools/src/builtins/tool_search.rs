@@ -88,8 +88,7 @@ impl Tool for ToolSearchTool {
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(DEFAULT_LIMIT)
+            .map_or(DEFAULT_LIMIT, |n| n as usize)
             .clamp(1, MAX_LIMIT);
 
         let hits = self.search(query, limit);

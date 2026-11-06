@@ -63,8 +63,7 @@ pub fn max_effort_for_model(model_spec: &str) -> ReasoningEffort {
     EFFORT_CAP_TABLE
         .iter()
         .find(|(prefix, _)| needle.starts_with(prefix))
-        .map(|(_, cap)| *cap)
-        .unwrap_or(DEFAULT_MAX_EFFORT)
+        .map_or(DEFAULT_MAX_EFFORT, |(_, cap)| *cap)
 }
 
 /// 把请求档位钳制到目标模型支持的上限(取 `min`)。
@@ -124,10 +123,7 @@ pub fn supported_efforts_for_model(model_spec: &str) -> Vec<ReasoningEffort> {
 /// 归一化:去 provider 前缀(`rsplit_once('/')` 取末段)、去 ollama tag
 /// (`:7b`)、小写化 trim。与 `context_window_for` 的归一化三步一致。
 fn normalize(model_spec: &str) -> String {
-    let no_provider = model_spec
-        .rsplit_once('/')
-        .map(|(_, m)| m)
-        .unwrap_or(model_spec);
+    let no_provider = model_spec.rsplit_once('/').map_or(model_spec, |(_, m)| m);
     let no_tag = no_provider.split(':').next().unwrap_or(no_provider);
     no_tag.trim().to_ascii_lowercase()
 }

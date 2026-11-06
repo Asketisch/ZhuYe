@@ -258,7 +258,7 @@ pub(crate) fn bootstrap_m4(
         if registry.next_for(&spec, &[]).is_some() {
             Arc::new(
                 LlmSummarizer::new(registry.clone(), Arc::new(policy), spec)
-                    .with_telemetry(telemetry.clone()),
+                    .with_telemetry(telemetry),
             )
         } else {
             Arc::new(NoopSummarizer)
@@ -624,7 +624,7 @@ pub(crate) async fn bootstrap_lsp(
     let manager = Arc::new(LspConnectionManager::new(internal_tx));
 
     // 后台 task:internal event → protocol Event → event_tx。
-    let event_tx_clone = event_tx.clone();
+    let event_tx_clone = event_tx;
     tokio::spawn(async move {
         while let Some(evt) = internal_rx.recv().await {
             let msg = match evt {
@@ -747,7 +747,7 @@ mod tests {
         // 全空 → 原样返回(向后兼容)。
         let cfg = zhuye_config::ReflectConfig::default();
         let def = AgentDefinition::default();
-        let out = apply_active_tool_filter(def.clone(), &cfg);
+        let out = apply_active_tool_filter(def, &cfg);
         assert!(out.tools.is_empty() && out.disallowed_tools.is_empty());
 
         // 白名单:定义层为空 → 直接采用。

@@ -226,8 +226,7 @@ fn classify_status(status: u16, body: &str, headers: &reqwest::header::HeaderMap
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<f64>().ok())
-                .map(|s| (s * 1000.0) as u64)
-                .unwrap_or(1000);
+                .map_or(1000, |s| (s * 1000.0) as u64);
             LlmError::RateLimited { retry_after_ms }
         }
         529 => LlmError::Overloaded {

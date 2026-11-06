@@ -93,7 +93,7 @@ impl ShellSession {
         let stdin = child.stdin.take().expect("piped");
 
         let session = Self {
-            id: id.clone(),
+            id,
             command: argv.join(" "),
             child: Arc::new(AsyncMutex::new(Some(child))),
             output: Arc::new(Mutex::new(OutputBuffer::default())),

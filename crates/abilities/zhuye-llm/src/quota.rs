@@ -291,8 +291,7 @@ impl QuotaTracker {
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis());
         let windows = self.windows.read();
         let records: Vec<PersistedWindow> = windows
             .iter()
@@ -334,8 +333,7 @@ impl QuotaTracker {
         };
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis());
         let mut windows = self.windows.write();
         for r in records {
             let key = CredentialKey {

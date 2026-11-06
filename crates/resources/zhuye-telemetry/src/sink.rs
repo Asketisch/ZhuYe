@@ -227,7 +227,7 @@ impl TelemetrySink {
             completed_at: now,
             duration_ms,
             attempt,
-            request_id: request_id.clone(),
+            request_id,
             trace_id: self.trace_id.clone(),
             turn_id: turn_id.map(String::from),
             session_id: self.session_id.clone(),

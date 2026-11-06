@@ -81,7 +81,7 @@ impl Tool for ExitPlanModeTool {
                 }
             })],
             is_error: false,
-            metadata: serde_json::json!({"plan_markdown_len": markdown.as_ref().map(|m| m.len()).unwrap_or(0)}),
+            metadata: serde_json::json!({"plan_markdown_len": markdown.as_ref().map_or(0, |m| m.len())}),
             elapsed_ms: 0,
         })
     }

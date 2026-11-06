@@ -71,7 +71,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             return false;
         };
         v.get("type").and_then(Value::as_str).is_some()
-            && v.get("type").map(Value::is_string).unwrap_or(false)
+            && v.get("type").is_some_and(Value::is_string)
             && v.get("sessionId").is_some()
     }
 

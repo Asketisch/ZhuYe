@@ -426,14 +426,12 @@ fn truncate_conversation(
 fn rollout_ctx(ctx: &ToolContext) -> Option<(std::path::PathBuf, zhuye_protocol::ThreadId)> {
     let base = std::env::var_os("ZHUYE_ROLLOUT_BASE")
         .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(zhuye_rollout::path::default_base);
+        .map_or_else(zhuye_rollout::path::default_base, std::path::PathBuf::from);
     // session_id:优先环境变量,否则用 ToolContext 的 session_id。
     let sid = std::env::var("ZHUYE_SESSION_ID")
         .ok()
         .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-        .map(zhuye_protocol::ThreadId)
-        .unwrap_or_else(|| ctx.session_id);
+        .map_or_else(|| ctx.session_id, zhuye_protocol::ThreadId);
     Some((base, sid))
 }
 

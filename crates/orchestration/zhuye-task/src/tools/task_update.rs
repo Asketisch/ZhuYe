@@ -131,10 +131,10 @@ impl Tool for TaskUpdateTool {
         }
         // activeForm / owner 支持 null 显式清空,直接读原始 Value。
         if let Some(v) = args.get("activeForm") {
-            patch.active_form = Some(v.as_str().map(|s| Some(s.to_string())).unwrap_or(None));
+            patch.active_form = Some(v.as_str().map(|s| s.to_string()));
         }
         if let Some(v) = args.get("owner") {
-            patch.owner = Some(v.as_str().map(|s| Some(s.to_string())).unwrap_or(None));
+            patch.owner = Some(v.as_str().map(|s| s.to_string()));
         }
         if let Some(s) = args.get("status").and_then(|v| v.as_str()) {
             let st = parse_status(s)?;
@@ -191,7 +191,7 @@ pub(crate) fn task_update_output(outcome: UpdateOutcome) -> ToolOutput {
             "listId": outcome.task.list_id,
             "updatedFields": outcome.updated_fields,
             "statusChange": outcome.status_change.map(|(f, t)| {
-                (TaskStatus::to_string(&f).to_string(), TaskStatus::to_string(&t).to_string())
+                (TaskStatus::to_string(&f), TaskStatus::to_string(&t))
             }),
         }),
         elapsed_ms: 0,

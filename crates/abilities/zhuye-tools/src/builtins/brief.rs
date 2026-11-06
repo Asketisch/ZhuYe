@@ -81,7 +81,7 @@ impl Tool for BriefTool {
 
         let briefing = format!("## {title}\n\n{truncated}");
         Ok(ToolOutput {
-            content: vec![ContentBlock::text(briefing.clone())],
+            content: vec![ContentBlock::text(briefing)],
             is_error: false,
             metadata: serde_json::json!({
                 "title": title,

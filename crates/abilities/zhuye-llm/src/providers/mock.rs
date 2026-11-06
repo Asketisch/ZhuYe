@@ -517,7 +517,7 @@ mod tests {
             client.config_error.is_some(),
             "全部行解析失败必须记 config_error"
         );
-        let msg = client.config_error.clone().unwrap();
+        let msg = client.config_error.unwrap();
         assert!(msg.contains("全部无法解析"), "{msg}");
 
         // 场景二:路径不存在 → config_error(此前静默回退默认回复)。

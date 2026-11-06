@@ -17,8 +17,7 @@ pub fn show(reveal: bool) -> anyhow::Result<()> {
     println!(
         "# ReflectConfig @ {}",
         path.as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<no HOME>".into())
+            .map_or_else(|| "<no HOME>".into(), |p| p.display().to_string())
     );
     println!();
 
@@ -244,8 +243,8 @@ fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
             .as_deref()
             .map(redact_key)
             .unwrap_or_default(),
-        "anthropic.base_url" => anthropic(cfg).base_url.clone().unwrap_or_default(),
-        "anthropic.model" => anthropic(cfg).model.clone().unwrap_or_default(),
+        "anthropic.base_url" => anthropic(cfg).base_url.unwrap_or_default(),
+        "anthropic.model" => anthropic(cfg).model.unwrap_or_default(),
         "anthropic.timeout_secs" => anthropic(cfg)
             .timeout_secs
             .map(|v| v.to_string())
@@ -255,19 +254,18 @@ fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
             .as_deref()
             .map(redact_key)
             .unwrap_or_default(),
-        "openai.base_url" => openai(cfg).base_url.clone().unwrap_or_default(),
-        "openai.model" => openai(cfg).model.clone().unwrap_or_default(),
+        "openai.base_url" => openai(cfg).base_url.unwrap_or_default(),
+        "openai.model" => openai(cfg).model.unwrap_or_default(),
         "openai.timeout_secs" => openai(cfg)
             .timeout_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
-        "ollama.base_url" => ollama(cfg).base_url.clone().unwrap_or_default(),
+        "ollama.base_url" => ollama(cfg).base_url.unwrap_or_default(),
         "ollama.api_key" => ollama(cfg)
             .api_key
-            .clone()
             .map(|k| redact_key(&k))
             .unwrap_or_default(),
-        "ollama.model" => ollama(cfg).model.clone().unwrap_or_default(),
+        "ollama.model" => ollama(cfg).model.unwrap_or_default(),
         "ollama.keep_alive_secs" => ollama(cfg)
             .keep_alive_secs
             .map(|v| v.to_string())

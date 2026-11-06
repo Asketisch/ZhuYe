@@ -34,8 +34,7 @@ pub(crate) fn print_servers(cfg: &ReflectConfig) {
         let entry = &cfg.lsp_servers.servers[name];
         let timeout = entry
             .timeout_ms
-            .map(|t| format!("{t}ms"))
-            .unwrap_or_else(|| "30000ms".into());
+            .map_or_else(|| "30000ms".into(), |t| format!("{t}ms"));
         let patterns: Vec<String> = entry
             .file_patterns
             .iter()

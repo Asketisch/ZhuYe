@@ -354,8 +354,7 @@ fn open_append(path: &Path) -> std::io::Result<File> {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// 把 `Event` 映射成 [`ActivityEvent`](None = 不记录)。默认 actor:

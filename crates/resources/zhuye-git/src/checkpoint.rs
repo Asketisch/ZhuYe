@@ -147,7 +147,7 @@ fn create_snapshot(
     let meta = run_git(cwd, &["log", "-1", "--format=%cI%x1f%s"])?;
     let (committed_at, subject) = match meta.trim().split_once('\u{1f}') {
         Some((t, s)) => (t.to_string(), s.to_string()),
-        None => (String::new(), subject.clone()),
+        None => (String::new(), subject),
     };
     Ok(Some(Checkpoint {
         sha,

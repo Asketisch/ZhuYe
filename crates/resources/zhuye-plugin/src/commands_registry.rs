@@ -122,10 +122,7 @@ fn strip_frontmatter(text: &str) -> &str {
     };
     // 跳过收尾 `---` 所在行,正文从下一行开始。
     let after_marker = &rest[end + 1..];
-    after_marker
-        .split_once('\n')
-        .map(|(_, body)| body)
-        .unwrap_or("")
+    after_marker.split_once('\n').map_or("", |(_, body)| body)
 }
 
 /// 单遍扫描替换 `$ARGUMENTS`(全量参数)与 `$1`..`$9`(位置参数)。
@@ -216,12 +213,12 @@ mod tests {
         let (_t1, c1) = cmd("demo:hello", "# hi");
         let (_t2, c2) = cmd("demo:utils:lint", "# lint");
 
-        registry.add_plugin("demo", vec![c1.clone(), c2.clone()]);
+        registry.add_plugin("demo", vec![c1.clone(), c2]);
         assert_eq!(registry.list().len(), 2);
         assert_eq!(registry.lookup("demo:hello").unwrap().name, "demo:hello");
         assert!(registry.lookup("demo:nope").is_none());
         // 同 id 重挂 = 整体替换(幂等)。
-        registry.add_plugin("demo", vec![c1.clone()]);
+        registry.add_plugin("demo", vec![c1]);
         assert_eq!(registry.list().len(), 1);
         assert_eq!(registry.remove_plugin("demo"), 1);
         assert_eq!(registry.remove_plugin("demo"), 0);

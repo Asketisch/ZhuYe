@@ -587,7 +587,7 @@ mod tests {
             mode: "sequential".into(),
             participants: vec!["advocate".into(), "skeptic".into()],
             agent_id: Some("advocate".into()),
-            transcript: payload.clone(),
+            transcript: payload,
         };
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains(r#""agent_id":"advocate""#), "got: {j}");

@@ -207,7 +207,7 @@ async fn concurrent_start_respects_limit() {
 async fn cancel_is_independent_of_other_channels() {
     let reg = SideChannelRegistry::new();
     let (factory, _rx) = counting_factory(Arc::default());
-    let driver = SideChannelDriver::new(reg.clone(), factory);
+    let driver = SideChannelDriver::new(reg, factory);
     let (id1, _c1) = driver.start("a", "p1").unwrap();
     let (id2, _c2) = driver.start("a", "p2").unwrap();
     assert!(driver.cancel(&id1));

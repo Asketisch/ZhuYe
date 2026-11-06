@@ -237,8 +237,7 @@ impl Tool for WebFetchTool {
         let timeout = args
             .get("timeout")
             .and_then(|v| v.as_u64())
-            .map(Duration::from_secs)
-            .unwrap_or(DEFAULT_TIMEOUT)
+            .map_or(DEFAULT_TIMEOUT, Duration::from_secs)
             .min(Duration::from_secs(120))
             .min(if ctx.timeout.is_zero() {
                 DEFAULT_TIMEOUT
@@ -673,7 +672,7 @@ mod tests {
             ));
             (s, true)
         } else {
-            (markdown.clone(), false)
+            (markdown, false)
         };
         assert!(truncated_md);
         assert!(body_md.contains('中'), "中文内容应完整保留");

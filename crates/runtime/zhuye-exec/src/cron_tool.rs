@@ -268,8 +268,7 @@ fn job_output(
                 .map(|n| format!(" ({n})"))
                 .unwrap_or_default(),
             j.next_fire
-                .map(|t| t.to_rfc3339())
-                .unwrap_or_else(|| "unknown".into())
+                .map_or_else(|| "unknown".into(), |t| t.to_rfc3339())
         ),
         ("deleted", _) => "Cron job deleted.".into(),
         ("not_found", _) => "Cron job not found.".into(),

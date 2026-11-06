@@ -458,12 +458,11 @@ mod tests {
         let mut resolver = DepResolver::new(&known, &mut mgr);
         let report = resolver.resolve(root, PluginScope::User);
         // 应有 DependencyCycle 失败。
-        let cycle_failures: Vec<_> = report
+        let has_cycle = report
             .failed
             .iter()
-            .filter(|f| matches!(f.error, PluginError::DependencyCycle { .. }))
-            .collect();
-        assert!(!cycle_failures.is_empty(), "expected cycle, got {report:?}");
+            .any(|f| matches!(f.error, PluginError::DependencyCycle { .. }));
+        assert!(has_cycle, "expected cycle, got {report:?}");
     }
 
     #[test]
@@ -520,10 +519,7 @@ mod tests {
         .unwrap();
         let m1_name = MarketplaceName::parse("m1").unwrap();
         let m2_name = MarketplaceName::parse("m2").unwrap();
-        let known = build_known(&[
-            (m1_name, m1_root.clone()),
-            (m2_name.clone(), m2_root.clone()),
-        ]);
+        let known = build_known(&[(m1_name, m1_root), (m2_name.clone(), m2_root.clone())]);
 
         let mut mgr = PluginManager::new(&plugins_root);
         let root = ResolvedDep {
@@ -578,13 +574,12 @@ mod tests {
         };
         let mut resolver = DepResolver::new(&known, &mut mgr);
         let report = resolver.resolve(root, PluginScope::User);
-        let cross_failures: Vec<_> = report
+        let has_cross = report
             .failed
             .iter()
-            .filter(|f| matches!(f.error, PluginError::DependencyCrossMarketplace { .. }))
-            .collect();
+            .any(|f| matches!(f.error, PluginError::DependencyCrossMarketplace { .. }));
         assert!(
-            !cross_failures.is_empty(),
+            has_cross,
             "expected DependencyCrossMarketplace, got {report:?}"
         );
     }

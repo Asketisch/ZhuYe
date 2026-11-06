@@ -109,8 +109,7 @@ impl Tool for WebSearchTool {
         let count = args
             .get("count")
             .and_then(|v| v.as_u64())
-            .map(|n| (n as usize).clamp(1, MAX_COUNT))
-            .unwrap_or(DEFAULT_COUNT);
+            .map_or(DEFAULT_COUNT, |n| (n as usize).clamp(1, MAX_COUNT));
 
         let api_key = ctx
             .env

@@ -114,8 +114,10 @@ pub fn append_active_mode_section(core: &mut String, mode: zhuye_protocol::Permi
     // 其他 ## 段)。找不到则直接 append 到 core 末尾。
     let insert_pos = core[plan_start + PLAN_MODE_HEADER.len()..]
         .find("\n## ")
-        .map(|rel| plan_start + PLAN_MODE_HEADER.len() + rel + 1)
-        .unwrap_or_else(|| core.len());
+        .map_or_else(
+            || core.len(),
+            |rel| plan_start + PLAN_MODE_HEADER.len() + rel + 1,
+        );
     let mut new = String::with_capacity(core.len() + section.len());
     new.push_str(&core[..insert_pos]);
     new.push('\n');

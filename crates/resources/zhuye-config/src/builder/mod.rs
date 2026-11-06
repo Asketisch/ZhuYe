@@ -403,8 +403,7 @@ fn build_anthropic_pool(section: &AnthropicSection) -> Result<Option<CredentialP
         let has_custom_endpoint = section
             .base_url
             .as_deref()
-            .map(|b| !b.trim().is_empty())
-            .unwrap_or(false);
+            .is_some_and(|b| !b.trim().is_empty());
         if key.is_empty() && !has_custom_endpoint {
             return Ok(None);
         }
@@ -466,8 +465,7 @@ fn build_openai_pool(section: &OpenAISection) -> Result<Option<CredentialPool>, 
         let has_custom_endpoint = section
             .base_url
             .as_deref()
-            .map(|b| !b.trim().is_empty())
-            .unwrap_or(false);
+            .is_some_and(|b| !b.trim().is_empty());
         if key.is_empty() && !has_custom_endpoint {
             return Ok(None);
         }

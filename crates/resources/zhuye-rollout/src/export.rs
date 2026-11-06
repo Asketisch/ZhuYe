@@ -538,8 +538,7 @@ pub fn render_usage_section(stats: Option<&SessionStats>) -> String {
         for m in &stats.per_model {
             let cost = m
                 .cost_usd
-                .map(|c| format!("${c:.4}"))
-                .unwrap_or_else(|| "-".to_string());
+                .map_or_else(|| "-".to_string(), |c| format!("${c:.4}"));
             out.push_str(&format!(
                 "| `{}` | {} | {} | {} | {} | {} | {} |\n",
                 m.model,
@@ -563,8 +562,7 @@ pub fn render_usage_section(stats: Option<&SessionStats>) -> String {
 /// 临时目录驱动。
 pub fn exports_dir(base: &Path) -> std::path::PathBuf {
     base.parent()
-        .map(|p| p.join("exports"))
-        .unwrap_or_else(|| base.join("exports"))
+        .map_or_else(|| base.join("exports"), |p| p.join("exports"))
 }
 
 /// 回放 session → 完整转写稿 + Usage 段 → 原子写落盘,返回产物信息。

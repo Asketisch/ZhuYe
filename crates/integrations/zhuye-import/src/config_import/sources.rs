@@ -70,9 +70,9 @@ fn toml_to_json(v: &toml::Value) -> Value {
     match v {
         toml::Value::String(s) => Value::String(s.clone()),
         toml::Value::Integer(i) => Value::Number((*i).into()),
-        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
+        toml::Value::Float(f) => {
+            serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number)
+        }
         toml::Value::Boolean(b) => Value::Bool(*b),
         toml::Value::Array(a) => Value::Array(a.iter().map(toml_to_json).collect()),
         toml::Value::Table(t) => {
