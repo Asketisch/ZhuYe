@@ -240,8 +240,11 @@ impl ZhuyeBuilder {
     }
 
     /// 保留旧版构造链的兼容入口;完整默认依赖由 `build` 时自动安装。
-    pub fn with_defaults(self) -> anyhow::Result<Self> {
-        Ok(self)
+    ///
+    /// 旧签名返回 `Result` 但从不会失败(默认依赖在 `build` 时才装配),
+    /// 现直接返回 `Self`。
+    pub fn with_defaults(self) -> Self {
+        self
     }
 
     /// 当前 model spec(只读)。
@@ -273,7 +276,7 @@ impl ZhuyeBuilder {
     /// `with_defaults` 步骤(该方法保留用于兼容旧代码)。
     /// 如果想用最小 m4 路径,直接通过
     /// `AgentThread::new + AgentConfig::with_m4(default_m4_deps)` 走底层 API。
-    pub fn build(self) -> anyhow::Result<Zhuye> {
+    pub fn build(self) -> Result<Zhuye, BuilderError> {
         let registry = build_registry_from_env(&self.model)?;
         let tools = default_tool_registry();
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出,部分移动后
@@ -283,7 +286,8 @@ impl ZhuyeBuilder {
         let thread_id = ThreadId::new();
         // 默认构造完整 M4 依赖 —— compactor / memory / skills / agent def
         // / recorder / note store / file recovery / subagent registry。
-        // 失败 → 透传(不静默)。`with_prompts_dir` 的额外目录一并传入。
+        // 可选依赖失败在 bootstrap 内部优雅降级,此处无失败路径;
+        // `with_prompts_dir` 的额外目录一并传入。
         let mut m4 = m4_bootstrap::build_default_m4_with_prompts(
             &self.workspace,
             "default",
@@ -292,7 +296,7 @@ impl ZhuyeBuilder {
             thread_id,
             self.prompts_dir.as_slice(),
             self.rollout_base.as_deref(),
-        )?;
+        );
         // v1.x:`without_rollout()` → 摘掉 recorder(M4Deps.recorder 为 Option)。
         if !self.rollout_enabled {
             m4.recorder = None;
@@ -358,7 +362,7 @@ impl ZhuyeBuilder {
     ///   hooks 不受此开关影响,照常挂载;
     /// - config `[mcp_servers]` 不消费(空 manager 兜底,仅供插件的
     ///   mcp_servers 能力落点)。
-    pub async fn build_async(self) -> anyhow::Result<Zhuye> {
+    pub async fn build_async(self) -> Result<Zhuye, BuilderError> {
         let registry = build_registry_from_env(&self.model)?;
         let tools = default_tool_registry();
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出。
@@ -373,7 +377,7 @@ impl ZhuyeBuilder {
             thread_id,
             self.prompts_dir.as_slice(),
             self.rollout_base.as_deref(),
-        )?;
+        );
         // v1.x:`without_rollout()` → 摘掉 recorder。
         if !self.rollout_enabled {
             m4.recorder = None;
@@ -625,7 +629,23 @@ fn build_telemetry_sink(traces_dir: Option<&Path>) -> Option<Arc<TelemetrySink>>
 ///
 /// `model_spec`:调用方显式传入的 model spec —— 参与 mock 判定
 /// (`Zhuye::builder("mock")` 应当离线可用)。
-fn build_registry_from_env(model_spec: &str) -> anyhow::Result<Arc<zhuye_llm::ModelRegistry>> {
+/// [`ZhuyeBuilder::build`] / [`ZhuyeBuilder::build_async`] 的失败原因。
+#[derive(Debug, thiserror::Error)]
+pub enum BuilderError {
+    /// 模型客户端构造失败(provider 配置非法 / HTTP 客户端初始化失败)。
+    #[error("model registry bootstrap failed: {0}")]
+    Registry(#[from] zhuye_llm::LlmError),
+    /// 未配置任何 provider:缺少 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+    /// `OLLAMA_HOST`(离线场景可显式用 mock spec)。
+    #[error(
+        "no provider available: set OPENAI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_HOST/OLLAMA_API_KEY (离线场景可显式用 mock)"
+    )]
+    NoProvider,
+}
+
+fn build_registry_from_env(
+    model_spec: &str,
+) -> Result<Arc<zhuye_llm::ModelRegistry>, BuilderError> {
     use zhuye_llm::{
         AnthropicClient, AnthropicConfig, CredentialPool, MockClient, ModelRegistry, OllamaClient,
         OllamaConfig, OpenAIClient, OpenAIConfig, PoolEntry,
@@ -712,10 +732,7 @@ fn build_registry_from_env(model_spec: &str) -> anyhow::Result<Arc<zhuye_llm::Mo
         any = true;
     }
     if !any {
-        return Err(anyhow::anyhow!(
-            "Zhuye: set OPENAI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_HOST/OLLAMA_API_KEY \
-             (离线场景可显式设 ZHUYE_MODEL=mock)"
-        ));
+        return Err(BuilderError::NoProvider);
     }
     Ok(registry)
 }
@@ -817,7 +834,7 @@ fn build_side_channel_factory(
                 &model,
                 &registry_for_factory,
                 zhuye_protocol::ThreadId::new(),
-            )?;
+            );
             m4.recorder = None; // 不写主历史。
             let cfg = zhuye_core::AgentConfig::new(model.clone(), workspace)
                 .with_m4(m4)
@@ -959,7 +976,8 @@ mod tests {
         let _g = env_lock().lock().unwrap();
         let _env = ProviderEnvGuard::clear();
         let err = Zhuye::builder("openai/gpt-4o").build().unwrap_err();
-        assert!(err.to_string().contains("OPENAI_API_KEY"));
+        // 类型化断言:无 key 时必须命中 NoProvider 变体。
+        assert!(matches!(err, BuilderError::NoProvider));
     }
 
     /// 回归:门面此前**完全不认识** mock provider —— `Zhuye::builder("mock")`

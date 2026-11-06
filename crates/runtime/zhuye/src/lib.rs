@@ -4,22 +4,32 @@
 //!
 //! 1. **扁平 re-export**(扁平重导出)—— 适合希望显式写出类型名的深度用户:
 //!
-//!    ```ignore
+//!    ```rust
 //!    use zhuye::{AgentThread, Submission, Op, Event, EventMsg, ModelRegistry};
-//!    // 上方为常用类型的扁平 re-export 路径
 //!    ```
 //!
 //! 2. **Builder**(构建器)—— 一行启动 + 合理默认:
 //!
-//!    ```ignore
-//!    let agent = Zhuye::builder("openai/gpt-4o")   // 指定模型
-//!        .workspace(".");                          // 指定工作目录
-//!    // build() 自带完整 M4(压缩器 + 记忆 + 技能 + JSONL recorder)
-//!    let mut stream = agent.submit(Submission::user_input("hello"));  // 提交输入
-//!    while let Some(event) = stream.next().await { /* 消费事件 */ }
+//!    ```rust,no_run
+//!    use zhuye::{Submission, Zhuye};
+//!
+//!    #[tokio::main]
+//!    async fn main() {
+//!        let agent = Zhuye::builder("openai/gpt-4o") // 指定模型
+//!            .workspace(".")                         // 指定工作目录
+//!            .build() // 自带完整 M4(压缩器 + 记忆 + 技能 + JSONL recorder)
+//!            .expect("builder 初始化失败");
+//!        // 提交输入并消费事件流
+//!        let mut stream = agent.submit(Submission::user_input("hello")).await;
+//!        while let Some(_event) = stream.next().await {}
+//!    }
 //!    ```
 //!
 //! 门面映射关系见 `docs/architecture.md` 的「门面映射」一节。
+
+// 门面是对外 SDK 形象:本 crate 内新定义的 pub item 缺文档即告警
+// (re-export 不受影响,沿用来源 crate 的文档)。
+#![warn(missing_docs)]
 
 pub mod builder;
 pub mod m4_bootstrap;
@@ -150,7 +160,7 @@ pub use zhuye_discussion::{
 };
 
 // ── Builder 外观(Builder facade)──────────────────────────────────────
-pub use builder::ZhuyeBuilder;
+pub use builder::{BuilderError, ZhuyeBuilder};
 
 /// 便捷别名:用一条链式调用构造 `Zhuye`。`Zhuye` 即
 /// `zhuye::Zhuye`,包装一个 `AgentThread`。

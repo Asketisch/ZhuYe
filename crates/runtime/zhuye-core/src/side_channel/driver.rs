@@ -32,9 +32,13 @@ use super::{MAX_CONCURRENT, SideChannelId, SideChannelRegistry, SideChannelStatu
 ///
 /// 由调用方(exec / facade)实现 —— 工厂决定 agent 定义来源、工具集、
 /// memory store 与 **recorder 是否为 `None`**(不写主历史的承诺在工厂
-/// 落地,driver 不感知 rollout)。
+/// 落地,driver 不感知 rollout)。失败原因统一用
+/// [`SideChannelStartError::Factory`],不引入无类型错误。
 pub type SideThreadFactory = Arc<
-    dyn Fn(&str, CancellationToken) -> anyhow::Result<crate::AgentThread> + Send + Sync + 'static,
+    dyn Fn(&str, CancellationToken) -> Result<crate::AgentThread, SideChannelStartError>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// 侧通道启动时的工作区与模型快照。
@@ -46,7 +50,11 @@ pub struct SideChannelContext {
 
 /// 接收启动时上下文快照的侧通道线程工厂。
 pub type SideContextThreadFactory = Arc<
-    dyn Fn(&str, CancellationToken, SideChannelContext) -> anyhow::Result<crate::AgentThread>
+    dyn Fn(
+            &str,
+            CancellationToken,
+            SideChannelContext,
+        ) -> Result<crate::AgentThread, SideChannelStartError>
         + Send
         + Sync
         + 'static,
@@ -63,28 +71,16 @@ enum Factory {
 }
 
 /// driver 启动失败的原因。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 pub enum SideChannelStartError {
     /// 并发已满(`MAX_CONCURRENT`)。
+    #[error("side-channel concurrency limit reached ({MAX_CONCURRENT})")]
     Busy,
     /// thread 工厂失败(agent 定义缺失等)。
+    #[error("side-channel thread factory failed: {0}")]
     Factory(String),
 }
-
-impl std::fmt::Display for SideChannelStartError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Busy => write!(
-                f,
-                "side-channel concurrency limit reached ({MAX_CONCURRENT})"
-            ),
-            Self::Factory(e) => write!(f, "side-channel thread factory failed: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for SideChannelStartError {}
 
 /// side-channel 执行驱动。
 #[derive(Clone)]
@@ -165,7 +161,11 @@ impl SideChannelDriver {
     pub fn without_factory(registry: SideChannelRegistry) -> Self {
         Self::new(
             registry,
-            Arc::new(|_agent, _cancel| Err(anyhow::anyhow!("side-channel factory not configured"))),
+            Arc::new(|_agent, _cancel| {
+                Err(SideChannelStartError::Factory(
+                    "side-channel factory not configured".into(),
+                ))
+            }),
         )
     }
 

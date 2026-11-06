@@ -437,7 +437,9 @@ fn build_side_channel_factory(
                 telemetry.clone(),
             )
             .ok_or_else(|| {
-                anyhow::anyhow!("side-channel: agent `{agent_name}` bootstrap failed")
+                zhuye_core::SideChannelStartError::Factory(format!(
+                    "side-channel: agent `{agent_name}` bootstrap failed"
+                ))
             })?;
             // 不写主历史:摘掉 recorder。
             m4.recorder = None;

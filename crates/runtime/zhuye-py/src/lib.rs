@@ -118,12 +118,14 @@ impl PyZhuyeBuilder {
         let builder = self.inner.clone();
         // `detach` 即旧版的 `allow_threads`:释放 GIL 后执行闭包,闭包返回
         // 时重新拿回 GIL(pyo3 0.26 起 `allow_threads` 更名为 `detach`)。
+        // 闭包内 tokio runtime 构造(io::Error)与 build_async(BuilderError)
+        // 两类错误统一收敛到 anyhow,再转字符串抛 Python 异常。
         let agent = py
-            .detach(move || {
+            .detach(move || -> anyhow::Result<zhuye::Zhuye> {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                rt.block_on(builder.build_async())
+                Ok(rt.block_on(builder.build_async())?)
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(PyZhuye { inner: agent })
