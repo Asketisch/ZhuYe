@@ -189,12 +189,15 @@ pub fn smart_prune(
         victims.dedup();
         for &v in victims.iter().rev() {
             keep.remove(v);
+            // 先摘除 v 的旧 pin 再做 >v 区间下移:若顺序颠倒,v+1 位移
+            // 下来的新 pin(值恰为 v)会被随后的 remove 误删,keep 窗口
+            // 保护随之失效(见 phase2_never_eats_into_keep_window_after_pair_removal)。
+            pinned.remove(&v);
             let shifted: Vec<usize> = pinned.range(v + 1..).copied().collect();
             for p in shifted {
                 pinned.remove(&p);
                 pinned.insert(p - 1);
             }
-            pinned.remove(&v);
             removed_count += 1;
         }
         // 删除后位置全部失效:重建配对索引并重估 token(纯借用,无克隆)。
@@ -648,6 +651,42 @@ mod tests {
         assert!(matches!(out[0], ChatMessage::System(_)));
         // keep_recent=5 的尾部完好。
         assert!(out.len() <= 51);
+    }
+
+    /// 回归:keep 窗口保护不得被区间位移误蚀。
+    ///
+    /// 布局:System + User(固定)+ 一组可丢弃的 tool 配对 + 3 条长
+    /// filler(keep_recent 窗口)。删掉配对后 token 仍高于 target,
+    /// 但剩余消息全部处于固定集合 —— 正确行为是到此为止(5 条、删 2)。
+    /// pinned 区间位移若先插入后 `remove(&v)`,会把刚从 v+1 位移下来的
+    /// 窗口头 pin 误删,导致窗口消息被继续丢弃(退化成 3 条)。
+    #[test]
+    fn phase2_never_eats_into_keep_window_after_pair_removal() {
+        let mut msgs = vec![
+            ChatMessage::System("sys".into()),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("first user")],
+            }),
+        ];
+        // 下标 2/3:无保护的 assistant(tool_use)+ Tool 结果对。
+        msgs.extend(tool_pair("victim", &["c1"]));
+        // 下标 4/5/6:keep_recent 窗口内的长 filler。
+        for i in 0..3 {
+            msgs.push(ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text(format!("{}{}", "z".repeat(400), i))],
+            }));
+        }
+        let cfg = SmartPruneConfig {
+            trigger_tokens: 400,
+            target_tokens: 200,
+            keep_recent: 3,
+            ..Default::default()
+        };
+        let (out, r) = smart_prune(msgs, &cfg);
+        // 只应删除那一对(2 条);窗口 filler 一条都不能少。
+        assert_eq!(r.removed_count, 2, "只删配对,窗口不得被蚀:got {r:?}");
+        assert_eq!(out.len(), 5, "keep_recent=3 的窗口必须完整保留:got {out:?}");
+        assert!(matches!(out[0], ChatMessage::System(_)));
     }
 
     /// 大会话(约 2000 条、400 组 tool 配对)下的 phase 2 一致性:
