@@ -784,6 +784,29 @@ pub async fn bootstrap_normal(
         Some(reload_tx.clone()),
     )
     .await;
+    // B4:用户级 slash 命令目录(workspace + 用户级),与 plugin 命令
+    // 同表共存(裸名 vs `<plugin>:` 前缀名)。
+    let user_cmd_dirs = vec![
+        thread
+            .config()
+            .current_workspace()
+            .join(".zhuye")
+            .join("commands"),
+        zhuye_config::data_path(&[])
+            .map(|d| d.join("commands"))
+            .unwrap_or_default(),
+    ];
+    // SharedPluginRuntime 是锁包装:快照内部句柄尽快释放(展开范式同款)。
+    let user_cmds = {
+        let guard = plugin_runtime.lock().await;
+        match guard.as_ref() {
+            Some(rt) => rt.register_user_commands(&user_cmd_dirs),
+            None => 0,
+        }
+    };
+    if user_cmds > 0 {
+        tracing::info!(count = user_cmds, "user slash commands mounted");
+    }
 
     // v1.10 功能2:goal + 队列模式(goal-queue 插件门控;未启用 no-op)。
     wire_goal_queue_plugin(
@@ -1036,6 +1059,27 @@ pub async fn bootstrap_resumed(
         None,
     )
     .await;
+    // B4:resume 路径同样挂用户级命令目录(见 bootstrap_normal 注释)。
+    let user_cmd_dirs = vec![
+        thread
+            .config()
+            .current_workspace()
+            .join(".zhuye")
+            .join("commands"),
+        zhuye_config::data_path(&[])
+            .map(|d| d.join("commands"))
+            .unwrap_or_default(),
+    ];
+    let user_cmds = {
+        let guard = plugin_runtime.lock().await;
+        match guard.as_ref() {
+            Some(rt) => rt.register_user_commands(&user_cmd_dirs),
+            None => 0,
+        }
+    };
+    if user_cmds > 0 {
+        tracing::info!(count = user_cmds, "user slash commands mounted (resume)");
+    }
 
     // v1.10 功能2:resume 分支与 normal 同权(goal-queue 插件门控)。
     wire_goal_queue_plugin(

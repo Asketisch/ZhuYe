@@ -88,21 +88,43 @@ pub async fn register(
 ) -> Result<(), Vec<RegisterError>> {
     let mut errors = Vec::new();
 
-    // 1. Skills —— 最简单,纯内存操作。
+    // 1. Skills —— 完整解析(B5):经 `parse_skill_file` 读 frontmatter
+    // 全字段(triggers/tools/when_paths/body),不再一律手工降级 ——
+    // plugin skill 此前是文件型 skill 的降级拷贝(LoadSkillTool 拿不到
+    // tools 标注与附属资源路径)。SKILL.md 不合规(缺 frontmatter /
+    // 必填字段)时降级回旧手工构造并 warn —— 宽容既有 fixture 与作者,
+    // 不阻断其余能力挂载。
     let skill_metas: Vec<SkillMeta> = loaded
         .skills
         .iter()
-        .map(|s| SkillMeta {
-            name: s.name.clone(),
-            description: s.description.clone().unwrap_or_default(),
-            triggers: vec![],
-            tools: vec![],
-            mcp_collections: vec![],
-            path: s.skill_md.clone(),
-            body: String::new(),
-            plugin_id: Some(loaded.plugin_id.to_string()),
-            when_paths: vec![],
-            version: None,
+        .map(|s| {
+            match zhuye_skills::parse_skill_file(&s.skill_md) {
+                Ok(mut meta) => {
+                    // plugin 归属标记:卸载按 id 精确反注册。
+                    meta.plugin_id = Some(loaded.plugin_id.to_string());
+                    meta
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %loaded.plugin_id,
+                        skill = %s.name,
+                        error = %e,
+                        "SKILL.md 解析失败;降级为 manifest 元数据(无 tools/triggers)"
+                    );
+                    SkillMeta {
+                        name: s.name.clone(),
+                        description: s.description.clone().unwrap_or_default(),
+                        triggers: vec![],
+                        tools: vec![],
+                        mcp_collections: vec![],
+                        path: s.skill_md.clone(),
+                        body: String::new(),
+                        plugin_id: Some(loaded.plugin_id.to_string()),
+                        when_paths: vec![],
+                        version: None,
+                    }
+                }
+            }
         })
         .collect();
     if !skill_metas.is_empty() {

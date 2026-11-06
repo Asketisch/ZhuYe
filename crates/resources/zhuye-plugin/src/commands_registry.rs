@@ -7,13 +7,18 @@
 //! exec / serve / 门面调用方在 submit 前触发。
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use parking_lot::RwLock;
 
-use crate::capabilities::commands::LoadedCommand;
+use crate::capabilities::commands::{LoadedCommand, extract_description};
 
 /// 全量参数占位符 —— 展开时替换为命令名后的全部参数文本。
 const ARGUMENTS_PLACEHOLDER: &str = "$ARGUMENTS";
+
+/// 用户级命令在注册表里的键(非 plugin_id;`add_plugin` / `remove_plugin`
+/// 不触碰它)。
+const USER_COMMANDS_KEY: &str = "__user__";
 
 /// 插件 slash 命令注册表 —— 以 `plugin_id` 为键整体挂/卸,按命令全名查询。
 ///
@@ -51,11 +56,50 @@ impl CommandRegistry {
             .cloned()
     }
 
+    /// 用户级 slash 命令目录发现(B4):`<dir>/**.md` 递归扫描(与
+    /// plugin commands 同款),命令名为**文件 stem** —— 输入 `/review`
+    /// 直达;plugin 命令名恒带 `<plugin>:` 前缀,与裸名天然不冲突。
+    /// 键 [`USER_COMMANDS_KEY`] 整体替换(重复调用幂等);返回挂载数。
+    /// 目录不存在 → 0(用户没有自定义命令是常态,不算错)。
+    pub fn register_user_dir(&self, dir: &Path) -> usize {
+        let mut cmds = Vec::new();
+        scan_user_dir(dir, &mut cmds);
+        let n = cmds.len();
+        self.entries
+            .write()
+            .insert(USER_COMMANDS_KEY.to_string(), cmds);
+        n
+    }
+
     /// 当前已挂载的全部命令快照(跨插件,按命令名排序便于展示)。
     pub fn list(&self) -> Vec<LoadedCommand> {
         let mut all: Vec<LoadedCommand> = self.entries.read().values().flatten().cloned().collect();
         all.sort_by(|a, b| a.name.cmp(&b.name));
         all
+    }
+}
+
+/// 递归扫描用户命令目录:`*.md` → 命令(stem 裸名 + frontmatter 描述)。
+fn scan_user_dir(current: &Path, out: &mut Vec<LoadedCommand>) {
+    let entries = match std::fs::read_dir(current) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_user_dir(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let description = extract_description(&path).ok().flatten();
+            out.push(LoadedCommand {
+                name: stem.to_string(),
+                file_path: path,
+                description,
+            });
+        }
     }
 }
 

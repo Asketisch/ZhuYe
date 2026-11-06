@@ -21,10 +21,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use zhuye_core::{AgentConfig, AgentThread};
+use zhuye_hooks::Hook;
 use zhuye_plugin::runtime::{SharedPluginRuntime, bootstrap_plugins, empty_plugin_runtime};
 use zhuye_protocol::{Event, Submission, ThreadId};
 use zhuye_telemetry::TelemetrySink;
-use zhuye_tools::ToolRegistry;
+use zhuye_tools::{Tool, ToolRegistry};
 
 use crate::m4_bootstrap;
 use crate::stream::EventStream;
@@ -67,7 +68,7 @@ impl std::fmt::Debug for TelemetryChoice {
 /// [`ZhuyeBuilder`] 的链式 builder。
 ///
 /// 由 [`Zhuye::builder`] 构造。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ZhuyeBuilder {
     model: String,
     workspace: PathBuf,
@@ -98,6 +99,29 @@ pub struct ZhuyeBuilder {
     /// v1.x:rollout 开关(默认 true)。`without_rollout()` 置 false ——
     /// 拿到 M4Deps 后把 `recorder` 置 `None`。
     rollout_enabled: bool,
+    /// v1.x B6:嵌入方注入的自定义工具(`with_tool`)。`build` /
+    /// `build_async` 两条路径都在 builtin 之后注册(同名覆盖 builtin)。
+    extra_tools: Vec<Arc<dyn Tool>>,
+    /// v1.x B6:嵌入方注入的 hook(`with_hook`),注册进 HookEngine。
+    extra_hooks: Vec<Arc<dyn Hook>>,
+    /// v1.x B6:额外 skills 目录(`with_skills_dir`),与 bootstrap 同语义:
+    /// `SkillsCatalog` 追加扫描(优先级最低,同名以既有为准)。
+    skills_dirs: Vec<PathBuf>,
+}
+
+impl std::fmt::Debug for ZhuyeBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZhuyeBuilder")
+            .field("model", &self.model)
+            .field("workspace", &self.workspace)
+            .field("approvals", &self.approvals)
+            .field("plan_mode", &self.plan_mode)
+            .field("plugins", &self.plugins)
+            .field("extra_tools", &self.extra_tools.len())
+            .field("extra_hooks", &self.extra_hooks.len())
+            .field("skills_dirs", &self.skills_dirs)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ZhuyeBuilder {
@@ -118,6 +142,9 @@ impl ZhuyeBuilder {
             traces_dir: None,
             rollout_base: None,
             rollout_enabled: true,
+            extra_tools: Vec::new(),
+            extra_hooks: Vec::new(),
+            skills_dirs: Vec::new(),
         }
     }
 
@@ -226,6 +253,30 @@ impl ZhuyeBuilder {
         self
     }
 
+    /// v1.x B6:注入自定义工具(嵌入场景)。`build` / `build_async` 两条
+    /// 路径均在 builtin 注册之后挂载 —— 同名工具覆盖 builtin(嵌入方
+    /// 显式行为);走 `register_with_source_floor(Runtime, ...)`,自动
+    /// 应用 Runtime 源的 `Prompt` 安全 floor。可多次调用。
+    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.extra_tools.push(tool);
+        self
+    }
+
+    /// v1.x B6:注入自定义 hook(嵌入场景)。`build` / `build_async` 均注册
+    /// 进 HookEngine(hook 名即 `Hook::name()`,引擎按名启停)。可多次调用。
+    pub fn with_hook(mut self, hook: Arc<dyn Hook>) -> Self {
+        self.extra_hooks.push(hook);
+        self
+    }
+
+    /// v1.x B6:追加 skills 扫描目录(嵌入场景,如宿主自带的技能包)。
+    /// 与 bootstrap 同语义:`SkillsCatalog` 扫描,同名以既有条目为准。
+    /// 可多次调用;`build` / `build_async` 均生效。
+    pub fn with_skills_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.skills_dirs.push(dir.as_ref().to_path_buf());
+        self
+    }
+
     /// 按当前 telemetry 配置解析出最终注入 `AgentConfig` 的 sink。
     ///
     /// - `Off` → `None`(telemetry 关闭);
@@ -279,6 +330,11 @@ impl ZhuyeBuilder {
     pub fn build(self) -> Result<Zhuye, BuilderError> {
         let registry = build_registry_from_env(&self.model)?;
         let tools = default_tool_registry();
+        // B6:嵌入方注入点 —— 自定义工具(Runtime floor)/ hook / skills
+        // 目录。与 build_async 同权(两条路径能力面一致)。
+        for t in &self.extra_tools {
+            tools.register_with_source_floor(zhuye_tools::ToolSource::Runtime, Arc::clone(t));
+        }
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出,部分移动后
         // 不能再整体借用 self。
         let telemetry_sink = self.resolve_telemetry_sink();
@@ -320,6 +376,18 @@ impl ZhuyeBuilder {
             hooks_cfg.enabled = Some(Vec::new());
         }
         let hook_engine: Arc<zhuye_hooks::HookEngine> = Arc::new(hooks_cfg.build_engine());
+        // B6:注入 hook 注册进引擎(名字即 `Hook::name()`,可按名启停)。
+        for h in &self.extra_hooks {
+            hook_engine.register_dyn(Arc::clone(h));
+        }
+        // B6:追加 skills 目录(m4.skills 追加扫描,同名以既有为准)。
+        if !self.skills_dirs.is_empty()
+            && let Some(m4) = cfg.m4.as_ref()
+        {
+            let dir_refs: Vec<&std::path::Path> =
+                self.skills_dirs.iter().map(|p| p.as_path()).collect();
+            m4.skills.load_dirs(&dir_refs);
+        }
         // v1.x(WP13):[sandbox] / side-channel 与 exec 对齐(此前 build()
         // 两者皆缺 —— Op::StartSideChannel 会以 Error 诚实应答,但既然
         // bootstrap 材料都在,直接装配)。
@@ -365,6 +433,10 @@ impl ZhuyeBuilder {
     pub async fn build_async(self) -> Result<Zhuye, BuilderError> {
         let registry = build_registry_from_env(&self.model)?;
         let tools = default_tool_registry();
+        // B6:嵌入方注入点(与 build 同款,两条路径能力面一致)。
+        for t in &self.extra_tools {
+            tools.register_with_source_floor(zhuye_tools::ToolSource::Runtime, Arc::clone(t));
+        }
         // v1.x:先解析 telemetry sink —— self.cancel 随后被移出。
         let telemetry_sink = self.resolve_telemetry_sink();
         let cancel = self.cancel.unwrap_or_default();
@@ -392,6 +464,10 @@ impl ZhuyeBuilder {
             hooks_cfg.enabled = Some(Vec::new());
         }
         let hook_engine: Arc<zhuye_hooks::HookEngine> = Arc::new(hooks_cfg.build_engine());
+        // B6:注入 hook 注册进引擎(与 build 同款)。
+        for h in &self.extra_hooks {
+            hook_engine.register_dyn(Arc::clone(h));
+        }
 
         // MCP manager:空壳兜底 —— 插件 mcp_servers 经 loader 挂进同一份。
         let (mcp_tx, _mcp_rx) = mpsc::channel::<zhuye_mcp::McpLifecycleEvent>(16);
