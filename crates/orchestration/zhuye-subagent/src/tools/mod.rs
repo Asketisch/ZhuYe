@@ -99,7 +99,6 @@ impl Tool for CallSubAgentTool {
             });
         let parent_tail: Vec<zhuye_llm::ChatMessage> = if pass_n > 0 {
             ctx.parent_tail_json
-                .read()
                 .iter()
                 .rev()
                 .take(pass_n)

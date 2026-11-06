@@ -210,7 +210,7 @@ async fn run_turn_with_steering(
     tools.register(Arc::new(EchoTool));
     // 插件源注册:外部工具不受 skills catalog 的 always_on 白名单限制,
     // pre_loop 会把它们并入 LLM 可见集(effective.extend(external))。
-    tools.register_with_source(ToolSource::Plugin, Arc::new(SlowTool));
+    tools.register_with_source(ToolSource::Plugin("test@local".into()), Arc::new(SlowTool));
     let thread = AgentThread::new(cfg, registry, tools, None, None);
 
     let mut handle = thread
