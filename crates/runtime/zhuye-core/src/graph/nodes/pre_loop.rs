@@ -106,10 +106,12 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
 
     // v1.x:第三返回值是记忆固化写入摘要(compact 期间 append 进 MEMORY.md
     // 的事实),供下方落盘 MemoryAccess 审计。
+    // 消息列表按借用传入;压缩判定每迭代执行且绝大多数走 Noop ——
+    // None 表示未压缩,保持原列表不回写,不为「借一下」深拷贝整个会话。
     let (compacted, evt, memory_write) = if compact_denied {
         tracing::info!("PreCompact hook denied; skipping compaction this round");
         (
-            state.messages.messages.clone(),
+            None,
             zhuye_protocol::ContextCompactedEvent {
                 strategy: ContextCompactedStrategy::Noop,
                 removed_messages: 0,
@@ -121,7 +123,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     } else {
         m4.compactor
             .compact_with_prior_and_tokens(
-                state.messages.messages.clone(),
+                &state.messages.messages,
                 state.compaction_summary.as_deref(),
                 llm_reported,
             )
@@ -137,7 +139,9 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
 
         // 从压缩后的消息列表里抽取 LLM 生成的摘要
         // (它是带 `<summary>...</summary>` 的 System 消息)。
-        let summary_text = compacted.iter().find_map(|m| match m {
+        // compact_triggered 为真时 compacted 必为 Some(Noop 不会触发),
+        // iter().flatten() 对 None 也安全。
+        let summary_text = compacted.iter().flatten().find_map(|m| match m {
             ChatMessage::System(s) if s.contains("<summary>") => Some(s.clone()),
             _ => None,
         });
@@ -212,6 +216,10 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                 // 把提取的事实 append 进了 MEMORY.md(此前只有 tracing
                 // 日志,无持久化)。
                 if let Some(info) = &memory_write {
+                    // 固化改变了 MEMORY.md:失效本 turn 的检索缓存,
+                    // 让后续迭代重新检索到新写入的事实。
+                    state.memory_retrieval_cache = None;
+                    state.memory_read_recorded = false;
                     let _ = rec
                         .record(RolloutRecord::MemoryAccess {
                             turn_id: ctx.turn_id,
@@ -227,7 +235,10 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             }
         }
     }
-    state.messages.messages = compacted;
+    // 仅真正压缩过才回写;Noop 迭代保持原消息列表(零拷贝路径)。
+    if let Some(compacted) = compacted {
+        state.messages.messages = compacted;
+    }
     // v1.5 E1:PreCompact 的 InjectMessage 以 System 消息追加(压缩后
     // 可见,天然进入下一请求上下文)。
     for content in compact_injected {
@@ -274,21 +285,32 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             _ => None,
         })
         .unwrap_or_default();
-    let memory_text = match zhuye_memory::retrieve_relevant_arc(
-        &m4.memory,
-        &m4.active_agent_def.memory,
-        &m4.active_agent_def.name,
-        memory_query.trim(),
-    ) {
-        Ok(s) => zhuye_memory::truncate_for_injection(&s),
-        Err(e) => {
-            tracing::warn!(?e, "failed to load memory; using empty");
-            String::new()
+    // 检索走 turn 级缓存:`AgentState` 每 turn 新建,turn 内查询固定,
+    // 命中缓存即可省掉每次迭代的 MEMORY.md 读盘 + BM25 全量打分。
+    let memory_text = match &state.memory_retrieval_cache {
+        Some(cached) => cached.clone(),
+        None => {
+            let text = match zhuye_memory::retrieve_relevant_arc(
+                &m4.memory,
+                &m4.active_agent_def.memory,
+                &m4.active_agent_def.name,
+                memory_query.trim(),
+            ) {
+                Ok(s) => zhuye_memory::truncate_for_injection(&s),
+                Err(e) => {
+                    tracing::warn!(?e, "failed to load memory; using empty");
+                    String::new()
+                }
+            };
+            state.memory_retrieval_cache = Some(text.clone());
+            text
         }
     };
     // v1.x:记忆检索注入审计 —— 每轮迭代把相关记忆拼进 system prompt,
-    // 此前无任何持久化。空记忆不记(避免无 memory 配置的会话刷噪声)。
+    // 此前无任何持久化。空记忆不记(避免无 memory 配置的会话刷噪声);
+    // 每 turn 只落盘一条(与检索缓存配套,迭代不重复写)。
     if !memory_text.is_empty()
+        && !state.memory_read_recorded
         && let Some(rec) = ctx.recorder.as_ref()
     {
         let scopes = m4
@@ -309,6 +331,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                 at: chrono::Utc::now(),
             })
             .await;
+        state.memory_read_recorded = true;
     }
 
     // 4. 构建分层 system prompt。

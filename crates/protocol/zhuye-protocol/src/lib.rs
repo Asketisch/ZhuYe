@@ -39,9 +39,10 @@ pub use event_msg::{
     QuotaExhaustedEvent, RoutingEvent, RoutingEventKind, SideChannelEvent, SideChannelInfo,
     SideChannelStatusMirror, SideChannelStatusSnapshot, StreamErrorEvent, SubagentProgressEvent,
     SubagentProgressKind, SubagentRunStateMirror, SubagentStatusEvent, SubagentStatusSnapshot,
-    ThinkingDelta, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent,
-    ToolCallEndEvent, ToolCallOutputDeltaEvent, ToolExecutionRequestEvent, TriedCredential,
-    TurnAbortedEvent, TurnCompleteEvent, TurnRewoundEvent, TurnStartedEvent, TurnStatus,
+    ThinkingDelta, ThinkingDeltaKind, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent,
+    ToolCallBeginEvent, ToolCallEndEvent, ToolCallOutputDeltaEvent, ToolExecutionRequestEvent,
+    TriedCredential, TurnAbortedEvent, TurnCompleteEvent, TurnRewoundEvent, TurnStartedEvent,
+    TurnStatus,
 };
 pub use item::{
     ApprovalPolicy, ContentBlock, PermissionMode, PlanApprovalChoice, PlanId,

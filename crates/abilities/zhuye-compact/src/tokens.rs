@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use zhuye_llm::{ChatMessage, ContentBlock, ToolResult};
+use zhuye_llm::{ChatMessage, ContentBlock};
 
 /// 单图块的固定 token 预算。
 const IMAGE_TOKENS: u32 = 1000;
@@ -48,7 +48,32 @@ pub trait TokenEstimator: Send + Sync {
                 }
                 t
             }
-            ChatMessage::Tool(r) => self.estimate_text(&tool_result_text(r)),
+            // Tool 结果逐块累加,免整段展平分配:旧实现经
+            // `content_as_text` 把全部块连接成新 String 再估算,长会话
+            // 每次重估都复制整段工具输出。单 Text 块(最常见)与旧实现
+            // 数值完全一致;多块时块间分隔符带来 ±1 token 差 —— 估算值
+            // 仅用于压缩触发判定,可接受。Image 块按 `content_as_text`
+            // 的占位符渲染估算,口径不变。
+            ChatMessage::Tool(r) => {
+                let mut t = 0u32;
+                let mut first = true;
+                for b in &r.content {
+                    if !first {
+                        t += self.estimate_text("\n");
+                    }
+                    first = false;
+                    match b {
+                        ContentBlock::Text { text } => t += self.estimate_text(text),
+                        ContentBlock::Image { data, mime_type } => {
+                            t += self.estimate_text(&format!(
+                                "[image: {mime_type}, {} bytes]",
+                                data.len()
+                            ));
+                        }
+                    }
+                }
+                t
+            }
         }
     }
 
@@ -101,13 +126,6 @@ pub fn estimate_messages(messages: &[ChatMessage]) -> u32 {
 /// 注入预算等非消息场景使用。
 pub fn estimate_text(text: &str) -> u32 {
     global_estimator().estimate_text(text)
-}
-
-fn tool_result_text(r: &ToolResult) -> String {
-    // content 现为 Vec<ContentBlock>(多模态);为 token 估算展平为
-    // 文本。Image 块按占位符计算,而非原始字节长度(后者会严重
-    // 高估 token 数)。
-    r.content_as_text()
 }
 
 // ── tiktoken 实现(feature = "tokenizer") ──────────────────────────
@@ -274,6 +292,41 @@ mod tests {
         let t = estimate_messages(&msgs);
         // "ok result" = ceil(9/3.5) = 3
         assert_eq!(t, 3);
+    }
+
+    /// 对拍:单 Text 块的 Tool 结果,逐块累加与旧「整段展平再估算」
+    /// 数值完全一致(非分配改造不得改变估算口径)。
+    #[test]
+    fn tool_single_block_matches_flat_estimate() {
+        let text = "x".repeat(1000);
+        let flat = estimate_text(&text); // 旧口径:estimate_text(整段串)
+        let r = ToolResult {
+            call_id: "c1".into(),
+            content: vec![ContentBlock::text(text)],
+            is_error: false,
+        };
+        let msgs = vec![ChatMessage::Tool(r)];
+        assert_eq!(estimate_messages(&msgs), flat);
+    }
+
+    /// 多 Text 块:逐块累加与整段展平仅差块间分隔符的 ceil 边界,
+    /// 误差受 ≤ 块数 - 1 约束(每分隔符最多差 1)。
+    #[test]
+    fn tool_multi_block_within_flat_tolerance() {
+        let a = "a".repeat(100);
+        let b = "b".repeat(100);
+        let flat = estimate_text(&format!("{a}\n{b}"));
+        let r = ToolResult {
+            call_id: "c1".into(),
+            content: vec![ContentBlock::text(a), ContentBlock::text(b)],
+            is_error: false,
+        };
+        let msgs = vec![ChatMessage::Tool(r)];
+        let t = estimate_messages(&msgs);
+        assert!(
+            (t as i64 - flat as i64).abs() <= 1,
+            "逐块累加 {t} 与展平 {flat} 应在 ±1 内"
+        );
     }
 
     #[test]

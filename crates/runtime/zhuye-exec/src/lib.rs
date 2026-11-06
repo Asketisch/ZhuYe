@@ -229,6 +229,8 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
                 break;
             }
         }
+        // 冲出攒批滞留的尾部 delta(broken pipe 退出时忽略二次错误)。
+        let _ = writer.flush();
         // plan 模式未产出计划 → 按上游约定 exit 122;其余失败由上面的
         // `exit_code_for` 映射成 0 / 1 / 122。
         finish_plan_mode(args.plan_mode, plan_produced)?;
@@ -267,6 +269,10 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
     let activity = zhuye_telemetry::ActivityLogger::with_default_home();
     let mut plan_produced = false;
     let mut code = 0;
+    // writer 移出循环:此前每事件重建 JsonlWriter(BufWriter + flush)
+    // 是纯浪费;复用同一实例,由 write_event 内部按事件类型决定冲刷。
+    let stdout = std::io::stdout();
+    let mut writer = JsonlWriter::new(stdout.lock());
     while let Some(event) = handle.next().await {
         if let Some(a) = zhuye_telemetry::map_event(&event) {
             let _ = activity.record(a);
@@ -277,13 +283,14 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         // 一般失败(Error / 非 Success 的 TurnComplete / TurnAborted)→
         // 非零退出码,CI 与脚本可据此感知失败。
         code = exit_code_for(&args, &event.msg);
-        let mut w = JsonlWriter::new(std::io::stdout().lock());
-        if let Err(e) = w.write_event(&event) {
+        if let Err(e) = writer.write_event(&event) {
             // broken pipe(如 | head 已关闭)—— 优雅退出
             tracing::warn!(error = %e, "jsonl writer failed; exiting");
             break;
         }
     }
+    // 冲出攒批滞留的尾部 delta(broken pipe 退出时忽略二次错误)。
+    let _ = writer.flush();
     finish_plan_mode(args.plan_mode, plan_produced)?;
     Ok(code)
 }

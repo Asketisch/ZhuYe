@@ -28,7 +28,9 @@ mod subagent;
 mod tool;
 mod turn;
 
-pub use agent::{AgentMessage, AgentMessageDelta, ThinkingDelta, TokenCountEvent};
+pub use agent::{
+    AgentMessage, AgentMessageDelta, ThinkingDelta, ThinkingDeltaKind, TokenCountEvent,
+};
 pub use approval::{ApprovalKind, ApprovalRequestEvent, PermissionBubbleEvent};
 pub use collab::{CollabFinishedEvent, CollabMessageEvent, CollabStartedEvent};
 pub use compaction::{
@@ -391,7 +393,7 @@ mod tests {
             }),
             EventMsg::ThinkingDelta(ThinkingDelta {
                 delta: String::new(),
-                kind: "raw".to_string(),
+                kind: ThinkingDeltaKind::Raw,
             }),
             EventMsg::TokenCount(TokenCountEvent {
                 input_tokens: 0,

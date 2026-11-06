@@ -16,23 +16,39 @@ pub struct AgentMessageDelta {
     pub delta: String,
 }
 
+/// thinking delta 的语义类型。此前是自由 `String`(构造端每片
+/// `"raw".to_string()` 分配一次),类型化为枚举:wire 形状不变
+/// (`"raw"` / `"summary"` 小写),未知值容错为 `Unknown` 不崩。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingDeltaKind {
+    /// token 级流式(默认)。
+    #[default]
+    Raw,
+    /// 推理摘要:TUI reducer 路由到 `MessageRow::ReasoningSummary`
+    /// (区别于原始 `Thinking`)。
+    Summary,
+    /// 前向兼容:未知语义值(仅反序列化路径可出现)。
+    #[serde(other)]
+    Unknown,
+}
+
 /// 模型思考(thinking / reasoning)内容的流式分片。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingDelta {
     /// 本次追加的思考文本增量。
     pub delta: String,
-    /// P4:thinking delta 的语义类型,默认 `"raw"`(token 级流式);`"summary"`
-    /// 时 TUI reducer 路由到 `MessageRow::ReasoningSummary`(区别于原始
-    /// `Thinking`)。`#[serde(default)]` 保持与旧事件的线缆兼容。
+    /// P4:thinking delta 的语义类型(默认 [`ThinkingDeltaKind::Raw`])。
+    /// `#[serde(default)]` 保持与旧事件的线缆兼容。
     #[serde(default)]
-    pub kind: String,
+    pub kind: ThinkingDeltaKind,
 }
 
 impl Default for ThinkingDelta {
     fn default() -> Self {
         Self {
             delta: String::new(),
-            kind: "raw".to_string(),
+            kind: ThinkingDeltaKind::Raw,
         }
     }
 }
