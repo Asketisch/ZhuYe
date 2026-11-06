@@ -436,6 +436,32 @@ impl PromptBuilder {
         let _ = injected;
         (req, changed)
     }
+
+    /// 只更新 cache 指纹观测,不构造完整请求。
+    ///
+    /// 与 [`Self::build_request`] 中 `detector.observe` 的副作用等价:
+    /// 指纹仅由 system blocks、工具(name+参数)与模型名构成,不含
+    /// messages。调用方若只为预热指纹(例如模型调用前预注册 cache
+    /// 断点形状),走本方法可避免为拼装 `ChatRequest` 而克隆整个
+    /// 消息列表与工具列表。
+    ///
+    /// 返回值语义同 `build_request` 的 `changed`:指纹相对上次观测
+    /// 是否变化(变化时 Anthropic 缓存将 miss)。
+    pub fn observe_fingerprint(
+        &mut self,
+        layers: &LayeredPrompt,
+        tools: &[ToolSpec],
+        model: &str,
+    ) -> bool {
+        let composed = if self.sections.is_empty() {
+            layers.clone()
+        } else {
+            compose_with_sections(layers, &self.sections)
+        };
+        let system = layer_to_system_blocks(&composed);
+        let (changed, _) = self.detector.observe_parts(&system, tools, model);
+        changed
+    }
 }
 
 fn layer_to_system_blocks(layers: &LayeredPrompt) -> SystemBlocks {

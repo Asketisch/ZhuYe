@@ -19,7 +19,6 @@ tracing            = { workspace = true }
 uuid               = { workspace = true }
 parking_lot        = { workspace = true }
 fs2                = "0.4"
-anyhow             = { workspace = true }
 reqwest            = { workspace = true }
 
 [dev-dependencies]

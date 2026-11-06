@@ -93,12 +93,13 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             })
             .await;
         let resolved = decision.resolve();
+        // injected 是本块 owned 值:直接 move 出 content,无需逐条克隆。
         (
             resolved.deny_reason.is_some(),
             resolved
                 .injected
-                .iter()
-                .map(|m| m.content.clone())
+                .into_iter()
+                .map(|m| m.content)
                 .collect::<Vec<_>>(),
         )
     };
