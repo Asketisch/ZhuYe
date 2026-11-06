@@ -53,6 +53,17 @@ impl HookEngine {
         }
     }
 
+    /// 动态(dyn)注册入口:嵌入方持有 `Arc<dyn Hook>` 时使用(泛型
+    /// `register` 需要 concrete 类型)。语义与 [`Self::register`] 一致:
+    /// 新注册默认 enabled;若同名曾 disabled,保持禁用(热重载不变量)。
+    pub fn register_dyn(&self, hook: Arc<dyn Hook>) {
+        let name = hook.name().to_string();
+        self.hooks.write().push(hook);
+        if self.disabled.read().contains(&name) {
+            tracing::debug!(name = %name, "hook re-registered while disabled; remains disabled");
+        }
+    }
+
     /// 反注册指定名字的 hook。返回 `true` 表示真删了,`false` 表示
     /// 没找到。重复调用幂等。
     ///
