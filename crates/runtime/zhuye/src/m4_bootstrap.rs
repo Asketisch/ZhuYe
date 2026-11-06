@@ -189,6 +189,7 @@ pub fn build_default_m4_with_prompts(
         subagent_registry,
         prompt_dirs,
         skill_dirs: vec![ws_skills, home_skills],
+        bundled_skills: zhuye_config::load_default().active.bundled_skills,
     }
 }
 

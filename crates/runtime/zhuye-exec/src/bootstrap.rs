@@ -345,6 +345,7 @@ pub(crate) fn bootstrap_m4(
         // 与启动时 init_library 同序)。
         prompt_dirs: vec![home_prompts, ws_prompts],
         skill_dirs: skill_dirs_owned,
+        bundled_skills: cfg.active.bundled_skills,
     })
 }
 

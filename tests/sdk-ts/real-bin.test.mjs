@@ -159,6 +159,31 @@ describe('TS SDK 绑定层 × 真二进制', () => {
     }
   });
 
+  it('K14: rescan_extensions additive Op → extensions_rescanned 字段级', async () => {
+    // v1.x additive:Op::RescanExtensions(skills 重扫)→
+    // extensions_rescanned(skills 计数 / commands=false)+ submission_closed
+    // 收尾;绑定层对新 Op / 新事件的双向透传,与 V11(serve 直发)互补。
+    const agent = await ZhuyeAgent.spawn(
+      makeOptions(['{"type":"text","text":"t1"}'])
+    );
+    try {
+      const types = [];
+      let evt = null;
+      for await (const ev of await agent.submit({
+        type: 'rescan_extensions', skills: true, commands: false,
+      })) {
+        types.push(ev.msg.type);
+        if (ev.msg.type === 'extensions_rescanned') evt = ev.msg;
+      }
+      assert.ok(types.includes('extensions_rescanned'), `缺回执事件:${types}`);
+      assert.ok(Number.isInteger(evt.skills) && evt.skills >= 0, `skills 字段:${evt}`);
+      assert.equal(evt.commands, false, `commands 位恒 false:${evt}`);
+      assert.equal(types.at(-1), 'submission_closed', `收尾异常:${types}`);
+    } finally {
+      await agent.close();
+    }
+  });
+
   it('K4b: set_effort 新档位 max/ultra 经真二进制透传', async () => {
     // v1.10 功能4:additive 新档位;引擎与 high 同型静默收尾,SDK 与 serve
     // 都不得因新增字面量崩溃(协议 additive 变更的绑定层回归);

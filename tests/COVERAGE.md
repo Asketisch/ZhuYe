@@ -356,6 +356,12 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 
 ### SDK 绑定层(K 组,`tests/sdk-python/test_sdk_real_bin.py` + `tests/sdk-ts/real-bin.test.mjs`)
 
+- K14:rescan_extensions additive Op(真二进制,双 SDK 字段级)——
+  `Op::RescanExtensions` → `extensions_rescanned`(skills 计数非负、
+  commands=false、submission_closed 收尾);逻辑层同型用例
+  (python `test_protocol.py` / TS `protocol.test.ts`)+ V11(serve 直发)
+  三层互补。
+
 真二进制 + mock provider,断言 **SDK 客户端自身的行为**(服务端语义归
 能力覆盖层;历史证明只有这一层能发现协议漂移 —— mock 是自己写的假
 服务端,不随真协议演进):

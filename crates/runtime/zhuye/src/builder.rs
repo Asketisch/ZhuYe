@@ -1591,4 +1591,111 @@ mod tests {
             Some(std::path::Path::new("/tmp/custom-sessions"))
         );
     }
+
+    // ── B6:with_tool / with_hook / with_skills_dir 注入点闭环 ────────
+
+    /// 最小自定义工具:execute 返回固定文本,断言注册与调用面。
+    struct ProbeTool;
+    #[async_trait::async_trait]
+    impl Tool for ProbeTool {
+        fn name(&self) -> &str {
+            "probe_builder_tool"
+        }
+        fn description(&self) -> &str {
+            "builder 注入测试工具"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn is_concurrency_safe(&self) -> bool {
+            true
+        }
+        async fn execute(
+            &self,
+            _ctx: zhuye_tools::ToolContext,
+            _: serde_json::Value,
+        ) -> Result<zhuye_protocol::ToolOutput, zhuye_protocol::ToolError> {
+            Ok(zhuye_protocol::ToolOutput {
+                content: vec![zhuye_protocol::ContentBlock::text("probe-ok")],
+                is_error: false,
+                metadata: serde_json::Value::Null,
+                elapsed_ms: 0,
+            })
+        }
+    }
+
+    /// 最小自定义 hook:PreToolUse 一律 Allow(可被引擎按名启停)。
+    struct ProbeHook;
+    #[async_trait::async_trait]
+    impl Hook for ProbeHook {
+        fn name(&self) -> &str {
+            "probe_builder_hook"
+        }
+        fn description(&self) -> &str {
+            "builder 注入测试 hook"
+        }
+        fn events(&self) -> &[zhuye_hooks::HookEventKind] {
+            &[zhuye_hooks::HookEventKind::PreToolUse]
+        }
+        async fn handle(
+            &self,
+            _event: &zhuye_hooks::HookEvent,
+        ) -> Result<zhuye_hooks::HookDecision, zhuye_hooks::HookError> {
+            Ok(zhuye_hooks::HookDecision::Allow)
+        }
+    }
+
+    #[tokio::test]
+    async fn with_tool_and_hook_register_into_runtime() {
+        let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
+        let agent = Zhuye::builder("mock")
+            .workspace("/tmp")
+            .with_tool(Arc::new(ProbeTool))
+            .with_hook(Arc::new(ProbeHook))
+            .build()
+            .expect("mock build");
+        // 工具注册进 registry(Runtime floor),hook 注册进引擎(按名可见)。
+        assert!(
+            agent.thread().tools().get("probe_builder_tool").is_some(),
+            "with_tool 应注册进 ToolRegistry"
+        );
+        let engine = agent.thread().hook_engine();
+        assert!(
+            engine
+                .hook_names()
+                .iter()
+                .any(|n| n == "probe_builder_hook"),
+            "with_hook 应注册进 HookEngine"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_skills_dir_loads_extra_skill() {
+        let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("builder-skill").with_extension("md"),
+            "---\nname: builder-skill\ndescription: 注入测试\n---\nbody\n",
+        )
+        .unwrap();
+        // 目录约定:SKILL.md 文件名;load_dirs 扫描目录下的 SKILL.md。
+        std::fs::create_dir(dir.path().join("builder-skill")).unwrap();
+        std::fs::write(
+            dir.path().join("builder-skill").join("SKILL.md"),
+            "---\nname: builder-skill\ndescription: 注入测试\n---\nbody\n",
+        )
+        .unwrap();
+        let agent = Zhuye::builder("mock")
+            .workspace("/tmp")
+            .with_skills_dir(dir.path())
+            .build()
+            .expect("mock build");
+        let m4 = agent.thread().config().m4.clone().expect("m4");
+        assert!(
+            m4.skills.get("builder-skill").is_some(),
+            "with_skills_dir 应追加挂载(同名以既有为准)"
+        );
+    }
 }
