@@ -417,6 +417,11 @@ pub struct ResponsesRequest {
     /// 历史请求体不变。
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<Value>,
+    /// v1.10 功能4:推理强度(`reasoning.effort` 子对象)。`None` 不序列化,
+    /// 历史请求体不变。档位按目标模型钳制(同 Chat Completions 路径,
+    /// 见 `reasoning_effort::clamp_effort_for_model`)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Value>,
 }
 
 impl From<ChatRequest> for ResponsesRequest {
@@ -467,6 +472,19 @@ impl From<ChatRequest> for ResponsesRequest {
             };
             serde_json::json!({"format": format})
         });
+        // v1.10 功能4:thinking → `reasoning.effort`(此前被整个丢弃)。
+        // 发 wire 前按目标模型钳制档位(qwen→high / deepseek→max /
+        // OpenAI→ultra / 未知→high)。
+        let reasoning = match &req.thinking {
+            Some(crate::request::ThinkingConfig::OpenAIReasoning { effort }) => {
+                Some(serde_json::json!({
+                    "effort": crate::reasoning_effort::effort_wire_str(
+                        crate::reasoning_effort::clamp_effort_for_model(*effort, &req.model)
+                    )
+                }))
+            }
+            _ => None,
+        };
         Self {
             model: req.model,
             input,
@@ -477,6 +495,7 @@ impl From<ChatRequest> for ResponsesRequest {
             stream: true,
             instructions,
             text,
+            reasoning,
         }
     }
 }
@@ -771,5 +790,55 @@ mod tests {
         };
         let wire = serde_json::to_value(ResponsesRequest::from(req)).unwrap();
         assert!(wire.get("text").is_none());
+    }
+}
+
+// ── v1.10 功能4:reasoning.effort 上 wire(按模型族钳制)──────────────
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+    use crate::request::{ReasoningEffort, ThinkingConfig};
+
+    fn req(model: &str, effort: ReasoningEffort) -> ChatRequest {
+        ChatRequest {
+            model: model.to_string(),
+            thinking: Some(ThinkingConfig::OpenAIReasoning { effort }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_序列化为_effort_子对象并钳制() {
+        // gpt-5.1 + ultra → 原样。
+        let wire = serde_json::to_value(ResponsesRequest::from(req(
+            "gpt-5.1",
+            ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(wire["reasoning"]["effort"], "ultra");
+        // qwen3 + ultra → 钳到 high。
+        let wire_q = serde_json::to_value(ResponsesRequest::from(req(
+            "qwen3-max",
+            ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(wire_q["reasoning"]["effort"], "high");
+        // deepseek + ultra → 钳到 max。
+        let wire_d = serde_json::to_value(ResponsesRequest::from(req(
+            "deepseek-chat",
+            ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(wire_d["reasoning"]["effort"], "max");
+    }
+
+    #[test]
+    fn 未设置thinking时不发reasoning字段() {
+        let wire = serde_json::to_value(ResponsesRequest::from(ChatRequest {
+            model: "gpt-5.1".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(wire.get("reasoning").is_none(), "历史请求体不变");
     }
 }

@@ -174,9 +174,23 @@ pub fn resolve_output_budget(request: &ChatRequest, context_window: u32) -> Outp
 }
 
 /// 便捷入口:只有窗口与输出上限均已知时才生成自动预算。
+///
+/// v1.10 功能3:窗口来源放宽 —— 用户在 config.toml 配了上下文窗口
+///(`[context_windows]` / `[model].context_window`,即运行时 override 表
+/// 命中)的模型,**输出上限未知时以 [`HARD_OUTPUT_CAP`] 兜底**也生成
+/// 预算。此前私端 / 新模型两边都查不到 → `None` → 输出上限交给
+/// provider 服务端默认(普遍偏小,长答案被截);现在只要窗口可配,
+/// 预算就能按 `min(硬上限, 窗口余量)` 自适应。静态表已知但输出上限
+/// 未知的模型(如 o3-mini 之外的多数条目)仍维持 `None`(行为不变)。
 pub fn adaptive_max_tokens(request: &ChatRequest) -> Option<u32> {
     let window = context_window_for(&request.model)?;
-    model_output_limit(&request.model)?;
+    // 输出上限来源:精确输出上限表;窗口来自用户配置(override 命中)时
+    // 视为可用(resolve_output_budget 内部以 HARD_OUTPUT_CAP 兜底)。
+    let has_output_cap = model_output_limit(&request.model).is_some()
+        || crate::providers::context_window_override_for(&request.model).is_some();
+    if !has_output_cap {
+        return None;
+    }
     Some(resolve_output_budget(request, window).max_tokens)
 }
 
@@ -442,5 +456,41 @@ mod tests {
         assert_eq!(budget.framing_tokens, TOOL_SCHEMA_OVERHEAD);
         assert_eq!(budget.max_tokens, 100);
         assert_eq!(budget.clamped_by, BudgetClamp::WindowHeadroom);
+    }
+
+    // ── v1.10 功能3:配置了上下文窗口的私端模型也生成自适应预算 ─────
+
+    #[test]
+    fn configured_context_window_unlocks_budget_for_custom_model() {
+        use crate::set_context_window_overrides;
+        // 全局 override 表是进程级共享:与 context_window.rs 里的 override
+        // 单测互斥,避免 set/clear 互相踩;模型名全局唯一防泄漏误伤。
+        let _guard = crate::providers::context_window::override_test_lock()
+            .lock()
+            .unwrap();
+        let mut req = ChatRequest {
+            model: "zzob-custom-endpoint-model".into(),
+            ..ChatRequest::default()
+        };
+        req.messages.push(user_msg("hi"));
+        // 未配置时:窗口未知 → None(行为不变)。
+        set_context_window_overrides(&std::collections::HashMap::new());
+        assert_eq!(
+            adaptive_max_tokens(&req),
+            None,
+            "未配置窗口的未知模型保持 None"
+        );
+
+        // 配置窗口后:窗口已知 → 输出上限以 HARD_OUTPUT_CAP 兜底。
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("zzob-custom-endpoint-model".to_string(), 32_768u32);
+        set_context_window_overrides(&entries);
+        let mt = adaptive_max_tokens(&req).expect("配置窗口后应有预算");
+        assert!(
+            mt > 0 && mt <= HARD_OUTPUT_CAP,
+            "预算落在 (0, HARD_OUTPUT_CAP],实际 {mt}"
+        );
+        // 清理全局表。
+        set_context_window_overrides(&std::collections::HashMap::new());
     }
 }

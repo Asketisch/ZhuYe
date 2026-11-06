@@ -130,6 +130,11 @@ impl ModelClient for AnthropicClient {
 
         // 当使用自定义 base_url 时（非官方 Anthropic API），自动切换为
         // `Authorization: Bearer` 认证方式以兼容第三方网关（vLLM 等）。
+        // v1.10 功能5:`api_key` 为空时**两种认证头都不发** —— 免 Key 的
+        // Anthropic 兼容端点(LM Studio / claude-code-router 等本地网关)
+        // 与 `OpenAIClient` 的既有约定对齐(空 key = 不带 Authorization)。
+        // 此前空串也会拼出 `x-api-key: ""`,部分网关按「提供了错误凭据」
+        // 处理直接 401。
         let is_official = self
             .config
             .base_url
@@ -137,10 +142,12 @@ impl ModelClient for AnthropicClient {
             .map(|u| u.contains("api.anthropic.com"))
             .unwrap_or(true);
         let mut req = self.http.post(&url);
-        if is_official {
-            req = req.header("x-api-key", &self.config.api_key);
-        } else {
-            req = req.header("Authorization", format!("Bearer {}", self.config.api_key));
+        if !self.config.api_key.is_empty() {
+            if is_official {
+                req = req.header("x-api-key", &self.config.api_key);
+            } else {
+                req = req.header("Authorization", format!("Bearer {}", self.config.api_key));
+            }
         }
         let response = req
             .header("anthropic-version", ANTHROPIC_VERSION)
