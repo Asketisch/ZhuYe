@@ -42,6 +42,11 @@ pub const CAP_INMEMORY: usize = 500;
 /// 单 JSONL 文件 rotate 阈值(1 MB)。
 pub const ROTATE_BYTES: u64 = 1024 * 1024;
 
+/// 持久写句柄的 inode 陈旧检测间隔(每 N 条写入校验一次):其他进程
+/// rename 走活跃文件后,本进程句柄会指向旧归档 —— 周期性比对 inode
+/// 及时重开,均摊成本可忽略。
+const STALE_HANDLE_CHECK_EVERY: u64 = 32;
+
 /// 事件等级(供 UI 颜色 / 过滤)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -189,6 +194,16 @@ struct Inner {
     lock_file: Option<File>,
     path: PathBuf,
     next_seq: u64,
+    /// 持久化的追加句柄(flock 内复用):避免每条事件 open/close 两个
+    /// 系统调用。跨进程轮转检测:每 [`STALE_HANDLE_CHECK_EVERY`] 条或
+    /// 计数临近阈值时,比对当前 inode 与记录值,不一致(其他进程已
+    /// rename 走活跃文件)则重开。`None` = 未打开(降级/未写)。
+    write_file: Option<File>,
+    write_inode: Option<u64>,
+    /// 本进程累计写入字节数(替代逐条 `metadata()` 探大小)。
+    written_bytes: u64,
+    /// 距上次 inode 校验的写入条数。
+    writes_since_check: u64,
 }
 
 /// Activity 审计日志(线程安全;`record` 同步 append)。
@@ -248,6 +263,10 @@ impl ActivityLogger {
                 lock_file,
                 path,
                 next_seq: 1,
+                write_file: None,
+                write_inode: None,
+                written_bytes: 0,
+                writes_since_check: 0,
             }),
         }
     }
@@ -260,6 +279,10 @@ impl ActivityLogger {
                 lock_file: None,
                 path: PathBuf::new(),
                 next_seq: 1,
+                write_file: None,
+                write_inode: None,
+                written_bytes: 0,
+                writes_since_check: 0,
             }),
         }
     }
@@ -274,29 +297,61 @@ impl ActivityLogger {
             g.buf.pop_front();
         }
         g.buf.push_back(event.clone());
-        // 每次加锁后重开活动文件,避免其他进程轮转后写入旧归档。
-        if let Some(lock_file) = &g.lock_file {
-            FileExt::lock_exclusive(lock_file)?;
+        // 2) 磁盘 append:flock 内复用持久句柄 —— 常规路径只有
+        // flock + write 两个系统调用(此前每条 open/write/flush/
+        // metadata/close 五六个)。句柄陈旧检测见
+        // [`STALE_HANDLE_CHECK_EVERY`]。
+        if g.lock_file.is_some() {
+            // lock/unlock 的借用是临时的,闭包独占 `&mut g` 不与其冲突。
+            FileExt::lock_exclusive(g.lock_file.as_ref().expect("已判 Some"))?;
             let result = (|| -> std::io::Result<()> {
-                let mut file = open_append(&g.path)?;
+                // 闭包内对 g 的可变借与 path 借并存,提前拷出 path。
+                let path = g.path.clone();
+                // 惰性打开(构造时未持有写句柄)。
+                if g.write_file.is_none() {
+                    let file = open_append(&path)?;
+                    g.write_inode = file.metadata().ok().as_ref().and_then(file_inode);
+                    g.written_bytes = file.metadata().map_or(0, |m| m.len());
+                    g.write_file = Some(file);
+                }
+                // 周期性 inode 校验:其他进程轮转(rename)了活跃文件时
+                // 本进程句柄已指向旧归档,需重开。每 N 条一次,均摊为零。
+                if g.writes_since_check >= STALE_HANDLE_CHECK_EVERY
+                    || g.written_bytes + 64 * 1024 >= ROTATE_BYTES
+                {
+                    g.writes_since_check = 0;
+                    let old_ino = g.write_inode;
+                    let cur_ino = g
+                        .write_file
+                        .as_ref()
+                        .and_then(|f| f.metadata().ok().as_ref().and_then(file_inode));
+                    if old_ino.is_some() && cur_ino != old_ino {
+                        let fresh = open_append(&path)?;
+                        g.write_inode = fresh.metadata().ok().as_ref().and_then(file_inode);
+                        g.written_bytes = fresh.metadata().map_or(0, |m| m.len());
+                        g.write_file = Some(fresh);
+                    }
+                }
                 let mut line = serde_json::to_vec(&event)?;
                 line.push(b'\n');
-                file.write_all(&line)?;
-                file.flush()?;
-                let written_bytes = file.metadata()?.len();
-                drop(file);
-                if written_bytes >= ROTATE_BYTES {
-                    let rotated = g.path.with_extension(format!(
-                        "{}.{}.jsonl",
-                        now_ms(),
-                        uuid::Uuid::new_v4()
-                    ));
-                    std::fs::rename(&g.path, rotated)?;
-                    open_append(&g.path)?;
+                if let Some(file) = g.write_file.as_mut() {
+                    file.write_all(&line)?;
+                    file.flush()?;
+                }
+                g.written_bytes += line.len() as u64;
+                g.writes_since_check += 1;
+                if g.written_bytes >= ROTATE_BYTES {
+                    let rotated =
+                        path.with_extension(format!("{}.{}.jsonl", now_ms(), uuid::Uuid::new_v4()));
+                    std::fs::rename(&path, rotated)?;
+                    let fresh = open_append(&path)?;
+                    g.write_inode = fresh.metadata().ok().as_ref().and_then(file_inode);
+                    g.written_bytes = 0;
+                    g.write_file = Some(fresh);
                 }
                 Ok(())
             })();
-            let unlocked = FileExt::unlock(lock_file);
+            let unlocked = FileExt::unlock(g.lock_file.as_ref().expect("已判 Some"));
             result.and(unlocked)?;
         }
         Ok(())
@@ -342,6 +397,18 @@ impl ActivityLogger {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// 句柄指向文件的 inode(unix);非 unix 平台返回 `None` —— 陈旧检测
+/// 跳过(写句柄仍持久化,仅失去跨进程轮转重开能力)。
+#[cfg(unix)]
+fn file_inode(m: &std::fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(m.ino())
+}
+#[cfg(not(unix))]
+fn file_inode(_m: &std::fs::Metadata) -> Option<u64> {
+    None
 }
 
 fn open_append(path: &Path) -> std::io::Result<File> {

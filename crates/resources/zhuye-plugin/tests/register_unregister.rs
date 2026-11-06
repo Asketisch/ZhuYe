@@ -159,7 +159,7 @@ async fn register_unregister_full_cycle() {
     let tool_names = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .map(|(n, _)| n)
         .collect::<Vec<_>>();
     assert!(
@@ -195,7 +195,7 @@ async fn register_unregister_full_cycle() {
     let remaining_plugin_tools = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert_eq!(remaining_plugin_tools, 0);
     // Subagent specs 清除
@@ -224,7 +224,7 @@ async fn register_then_unregister_then_register_idempotent() {
     let count_after_first = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert!(count_after_first > 0);
 
@@ -233,7 +233,7 @@ async fn register_then_unregister_then_register_idempotent() {
     let count_after_unregister = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert_eq!(count_after_unregister, 0);
 
@@ -241,7 +241,7 @@ async fn register_then_unregister_then_register_idempotent() {
     let count_after_second = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert_eq!(count_after_first, count_after_second);
 }

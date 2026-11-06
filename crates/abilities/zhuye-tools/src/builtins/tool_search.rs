@@ -108,7 +108,7 @@ impl Tool for ToolSearchTool {
             let src = match source {
                 ToolSource::Builtin => "builtin",
                 ToolSource::Runtime => "runtime",
-                ToolSource::Plugin => "plugin",
+                ToolSource::Plugin(_) => "plugin",
                 // v1.3:`ToolSource::Mcp` 新增;搜索结果中标注 MCP 工具
                 // 的来源,便于区分。
                 ToolSource::Mcp => "mcp",

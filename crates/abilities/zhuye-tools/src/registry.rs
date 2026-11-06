@@ -17,18 +17,21 @@ use zhuye_protocol::{PermissionMode, ToolError, ToolOutput};
 /// Where a tool came from. v1.0.0-rc2 起三个 source 全部正常工作 ——
 ///
 /// `Builtin` 在 binary 启动期注册,`Runtime` 由用户代码或 MCP server 注入,
-/// `Plugin` 由 `PluginManager` 在 plugin install / load 时挂载,
+/// `Plugin(id)` 由 `PluginManager` 在 plugin load 时挂载,
 /// `Mcp` 由 `McpConnectionManager` 在 MCP server start / reload 时挂载。
-/// `unregister_source(ToolSource::Plugin)` 用于 unload 时一次性反注册
-/// 某 plugin 的所有 tool。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// `unregister_source(&ToolSource::Plugin(id))` 用于 unload 时精确反注册
+/// 指定 plugin 的所有 tool(不影响其他插件)。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolSource {
     /// 由 binary 自带(如 `bash`、`read`、`grep`)。
     Builtin,
     /// 运行时由用户代码注册(如 plugins、自定义工具)。
     Runtime,
-    /// 通过 `PluginManager` 从 plugin 加载。
-    Plugin,
+    /// 通过 `PluginManager` 从 plugin 加载,**携带 plugin id**。此前是
+    /// 无身份的单元变体:卸载走 `unregister_source(Plugin)` 全源清空,
+    /// 禁用插件 A 会把插件 B 的 agent 工具一并误删。携带 id 后卸载可
+    /// 精确到单个插件。
+    Plugin(Arc<str>),
     /// v1.3:Registered from an MCP server. 安全基线与 Plugin / Runtime
     /// 相同:不显式声明权限时默认 `Prompt`。
     Mcp,
@@ -50,10 +53,10 @@ impl ToolSource {
     /// 最低权限(`Prompt` / 审批),除非显式声明更严(`Deny`)或显式
     /// 声明白名单(`Auto` —— 仅 builtin)。这是安全基线:外部工具
     /// 无法把主程序最低门禁降为 `Auto`。
-    pub fn is_external(self) -> bool {
+    pub fn is_external(&self) -> bool {
         matches!(
             self,
-            ToolSource::Runtime | ToolSource::Plugin | ToolSource::Mcp
+            ToolSource::Runtime | ToolSource::Plugin(_) | ToolSource::Mcp
         )
     }
 
@@ -61,7 +64,7 @@ impl ToolSource {
     /// builtin floor = `Auto`(可显式提到更高等级)。该 floor 不被
     /// 工具自身 `required_permission()` 的返回值覆盖 —— 工具只能
     /// 把自己提到更严(例如 `Deny`),不能放宽。
-    pub fn permission_floor(self) -> PermissionMode {
+    pub fn permission_floor(&self) -> PermissionMode {
         if self.is_external() {
             PermissionMode::Prompt
         } else {
@@ -191,15 +194,16 @@ impl ToolRegistry {
         self.tools.write().insert(name, (source, wrapped));
     }
 
-    /// 注册一个 plugin 提供的 tool —— `PluginSource::Plugin` source 的便捷方法。
+    /// 注册一个 plugin 提供的 tool —— `ToolSource::Plugin` source 的便捷方法。
     ///
     /// v1.3:走 `register_with_source_floor`,自动应用 plugin 源的安全 floor
     /// (`Prompt`)。plugin 工具自身 `required_permission()` 声明若为
     /// `Auto` 会被提升为 `Prompt`(用户不能被 plugin 静默放行)。
-    /// 通常 `PluginManager` 通过此 API 把 plugin manifest 里声明的能力
-    /// 挂到主程序,卸载时用 `unregister(name)` 反注册。
-    pub fn register_plugin_tool(&self, tool: Arc<dyn Tool>) {
-        self.register_with_source_floor(ToolSource::Plugin, tool);
+    /// `plugin_id` 进入 source 身份:卸载用 `unregister_source` 可精确
+    /// 匹配单个插件,不误伤其他插件(详见 [`ToolSource::Plugin`])。
+    pub fn register_plugin_tool(&self, plugin_id: impl AsRef<str>, tool: Arc<dyn Tool>) {
+        let id: Arc<str> = Arc::from(plugin_id.as_ref());
+        self.register_with_source_floor(ToolSource::Plugin(id), tool);
     }
 
     /// v1.3:注册一个 runtime 提供的 tool(`load_skill` / `note` 等
@@ -227,7 +231,7 @@ impl ToolRegistry {
             .tools
             .read()
             .iter()
-            .map(|(name, (source, _))| (name.clone(), *source))
+            .map(|(name, (source, _))| (name.clone(), source.clone()))
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
@@ -235,12 +239,13 @@ impl ToolRegistry {
 
     /// 反注册某个 source 下的所有 tool,返回实际移除的数量。
     ///
-    /// `PluginManager::unload` 调用此方法一次清空该 plugin 的所有 tool;
-    /// 也可用于测试清理。
-    pub fn unregister_source(&self, source: ToolSource) -> usize {
+    /// 比较为**精确相等**:`ToolSource::Plugin(id)` 只移除该 id 插件的
+    /// 工具 —— 多插件共存时禁用其一,其余插件工具不受影响(修复此前
+    /// 无身份 `Plugin` 变体全源清空的误伤)。
+    pub fn unregister_source(&self, source: &ToolSource) -> usize {
         let mut map = self.tools.write();
         let before = map.len();
-        map.retain(|_, (s, _)| *s != source);
+        map.retain(|_, (s, _)| s != source);
         before - map.len()
     }
 
@@ -337,7 +342,8 @@ impl ToolRegistry {
                 tracing::debug!(tool = %name, "register_except: 跳过 excluded tool");
                 continue;
             }
-            self.register_with_source(source, tool);
+            // source 无 Copy:循环内克隆(Plugin 变体克隆 Arc<str>,廉价)。
+            self.register_with_source(source.clone(), tool);
             count += 1;
         }
         count
@@ -429,22 +435,25 @@ mod tests {
     #[test]
     fn plugin_source_is_preserved_not_warned() {
         let r = ToolRegistry::default();
-        r.register_plugin_tool(Arc::new(T));
+        r.register_plugin_tool("test@local", Arc::new(T));
         let pairs = r.list_with_source();
-        assert_eq!(pairs, vec![("t".to_string(), ToolSource::Plugin)]);
+        assert_eq!(
+            pairs,
+            vec![("t".to_string(), ToolSource::Plugin("test@local".into()))]
+        );
     }
 
     /// `register_with_source(Plugin, _)` 与 `register_plugin_tool` 等价。
     #[test]
     fn register_with_source_plugin_equals_helper() {
         let r = ToolRegistry::default();
-        r.register_with_source(ToolSource::Plugin, Arc::new(T));
+        r.register_with_source(ToolSource::Plugin("test@local".into()), Arc::new(T));
         let (_, src) = r
             .list_with_source()
             .into_iter()
             .find(|(n, _)| n == "t")
             .unwrap();
-        assert_eq!(src, ToolSource::Plugin);
+        assert_eq!(src, ToolSource::Plugin("test@local".into()));
     }
 
     /// `unregister_source` 只移除指定 source 的 tool,其他 source 不动。
@@ -475,12 +484,39 @@ mod tests {
                 unreachable!()
             }
         }
-        r.register_plugin_tool(Arc::new(U));
-        let removed = r.unregister_source(ToolSource::Plugin);
+        struct V;
+        #[async_trait]
+        impl Tool for V {
+            fn name(&self) -> &str {
+                "v"
+            }
+            fn description(&self) -> &str {
+                "d"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type":"object"})
+            }
+            fn is_concurrency_safe(&self) -> bool {
+                true
+            }
+            async fn execute(
+                &self,
+                _: ToolContext,
+                _: serde_json::Value,
+            ) -> Result<Out, ToolError> {
+                unreachable!()
+            }
+        }
+        // 两个不同插件的工具 + 一个 builtin。
+        r.register_plugin_tool("alpha@local", Arc::new(U));
+        r.register_plugin_tool("beta@local", Arc::new(V));
+        // 只卸载 alpha:beta 与 builtin 必须原样保留(回归:此前无身份
+        // 的 Plugin 变体全源清空会把 beta 误删)。
+        let removed = r.unregister_source(&ToolSource::Plugin("alpha@local".into()));
         assert_eq!(removed, 1);
-        // builtin 't' 保留,plugin 'u' 消失。
-        assert!(r.get("t").is_some());
-        assert!(r.get("u").is_none());
+        assert!(r.get("t").is_some(), "builtin 保留");
+        assert!(r.get("u").is_none(), "alpha 移除");
+        assert!(r.get("v").is_some(), "beta 不得被误删");
     }
 
     // ── v1.1.0 Phase 4:排除式注册(register_except)──────────────
@@ -632,7 +668,7 @@ mod tests {
     fn external_source_classification() {
         assert!(!ToolSource::Builtin.is_external());
         assert!(ToolSource::Runtime.is_external());
-        assert!(ToolSource::Plugin.is_external());
+        assert!(ToolSource::Plugin("x@local".into()).is_external());
         assert!(ToolSource::Mcp.is_external());
     }
 
@@ -646,7 +682,7 @@ mod tests {
             PermissionMode::Prompt
         );
         assert_eq!(
-            ToolSource::Plugin.permission_floor(),
+            ToolSource::Plugin("x@local".into()).permission_floor(),
             PermissionMode::Prompt
         );
         assert_eq!(ToolSource::Mcp.permission_floor(), PermissionMode::Prompt);
@@ -725,7 +761,7 @@ mod tests {
         }
 
         let r = ToolRegistry::default();
-        r.register_plugin_tool(Arc::new(PluginTool));
+        r.register_plugin_tool("test@local", Arc::new(PluginTool));
         r.register_mcp_tool(Arc::new(McpTool));
 
         let plugin = r.get("plugin-tool").expect("plugin tool registered");

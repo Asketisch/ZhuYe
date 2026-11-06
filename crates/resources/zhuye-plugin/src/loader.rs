@@ -130,7 +130,9 @@ pub async fn register(
                     Arc::clone(&registries.subagent_factory),
                     spec.clone(),
                 ));
-                registries.tools.register_plugin_tool(tool);
+                registries
+                    .tools
+                    .register_plugin_tool(loaded.plugin_id.as_str(), tool);
             }
             Err(e) => errors.push(RegisterError {
                 capability: "agents",
@@ -294,7 +296,7 @@ pub async fn unregister(registries: &LoaderRegistries, plugin_id: &PluginId) -> 
     // 2. 来自 Plugin 的工具(本插件的 agents 与未来 commands)
     let removed_tools = registries
         .tools
-        .unregister_source(zhuye_tools::ToolSource::Plugin);
+        .unregister_source(&zhuye_tools::ToolSource::Plugin(plugin_id.as_str().into()));
     tracing::debug!(
         plugin = %plugin_id,
         count = removed_tools,
