@@ -470,7 +470,7 @@ impl ToolExecutionQueue {
             let combined = resolved
                 .injected
                 .iter()
-                .map(|m| m.content.clone())
+                .map(|m| m.content.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
             let prev = std::mem::replace(

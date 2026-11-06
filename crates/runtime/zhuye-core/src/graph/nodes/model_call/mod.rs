@@ -161,13 +161,14 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             .resolve(&spec)
             .map(|c| c.capabilities())
             .unwrap_or_default();
+        // 指纹只由 system/工具/模型名构成(不含 messages),这里只需
+        // 预热 cache 断点观测 —— 借用参与,不为拼装完整请求而克隆
+        // 整个消息列表与工具列表。
         let mut builder = m4.prompt_builder.lock();
-        let _ = builder.build_request(
+        let _ = builder.observe_fingerprint(
             &zhuye_prompt::LayeredPrompt::new(),
-            request.messages.clone(),
-            request.tools.clone(),
-            request.model.clone(),
-            &caps,
+            &request.tools,
+            &request.model,
         );
         if caps.prompt_caching {
             let _ = zhuye_prompt::inject_cache_control(&mut request, &caps);

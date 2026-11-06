@@ -421,7 +421,7 @@ pub async fn submission_loop(
                         let guidance = resolved
                             .injected
                             .iter()
-                            .map(|m| m.content.clone())
+                            .map(|m| m.content.as_str())
                             .collect::<Vec<_>>()
                             .join("\n");
                         merged_items.push(UserInputItem::Text {

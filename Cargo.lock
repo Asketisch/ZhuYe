@@ -7081,7 +7081,6 @@ dependencies = [
 name = "zhuye-config"
 version = "0.1.9"
 dependencies = [
- "anyhow",
  "dirs",
  "notify",
  "opentelemetry",
@@ -7119,7 +7118,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "tracing",
@@ -7257,7 +7255,6 @@ dependencies = [
 name = "zhuye-goal"
 version = "0.1.9"
 dependencies = [
- "anyhow",
  "async-trait",
  "chrono",
  "futures",
@@ -7601,7 +7598,6 @@ dependencies = [
 name = "zhuye-sandbox"
 version = "0.1.9"
 dependencies = [
- "anyhow",
  "async-trait",
  "serde",
  "serde_json",
@@ -7694,7 +7690,6 @@ dependencies = [
 name = "zhuye-subagent"
 version = "0.1.9"
 dependencies = [
- "anyhow",
  "async-trait",
  "chrono",
  "futures",
@@ -7746,7 +7741,6 @@ dependencies = [
 name = "zhuye-telemetry"
 version = "0.1.9"
 dependencies = [
- "anyhow",
  "chrono",
  "fs2",
  "parking_lot",

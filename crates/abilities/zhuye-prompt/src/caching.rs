@@ -15,6 +15,7 @@ use sha1::{Digest, Sha1};
 use thiserror::Error;
 use zhuye_llm::{
     CacheControl, CacheControlKind, CacheTtl, Capabilities, ChatMessage, ChatRequest, SystemBlock,
+    SystemBlocks, ToolSpec,
 };
 
 /// 前缀锚点 breakpoint 的默认偏移。-1 = 最后一条非 meta 消息
@@ -71,7 +72,20 @@ impl CacheBreakDetector {
     /// 计算当前请求指纹,返回 `(changed, hash)`。
     /// hash 与上次观测不同时 `changed = true`。
     pub fn observe(&mut self, req: &ChatRequest) -> (bool, String) {
-        let h = fingerprint(req);
+        self.observe_parts(&req.system, &req.tools, &req.model)
+    }
+
+    /// 与 [`Self::observe`] 等价,但直接以指纹的三类输入(system
+    /// blocks、工具列表、模型名)参与观测,调用方无需为预热指纹而
+    /// 构造(或克隆消息列表去拼装)完整 `ChatRequest` —— 指纹不含
+    /// messages,构造完整请求是纯浪费。
+    pub fn observe_parts(
+        &mut self,
+        system: &SystemBlocks,
+        tools: &[ToolSpec],
+        model: &str,
+    ) -> (bool, String) {
+        let h = fingerprint_parts(system, tools, model);
         let changed = self.last_hash.as_deref() != Some(&h);
         self.last_hash = Some(h.clone());
         self.stats.observe_count += 1;
@@ -107,10 +121,12 @@ impl CacheBreakDetector {
 
 /// 请求「形状」(影响缓存命中的部分)的稳定 sha1 指纹。
 /// 覆盖 system blocks、tool specs 与模型名。
-fn fingerprint(req: &ChatRequest) -> String {
+/// 指纹的三类输入粒度计算:system blocks、工具(name + JSON 参数)、
+/// 模型名。messages 不参与指纹,故无需为算指纹构造完整请求。
+fn fingerprint_parts(system: &SystemBlocks, tools: &[ToolSpec], model: &str) -> String {
     let mut hasher = Sha1::new();
     // system blocks(参与指纹的部分)
-    for b in &req.system.0 {
+    for b in &system.0 {
         hasher.update(b.text.as_bytes());
         hasher.update([0x00]);
         if b.ephemeral {
@@ -120,7 +136,7 @@ fn fingerprint(req: &ChatRequest) -> String {
     hasher.update([0xff]);
     // 工具(name + JSON 参数;description 不参与 —— 与 Zhuye 行为
     // 一致:工具 description 变化不影响缓存命中)。
-    for t in &req.tools {
+    for t in tools {
         let zhuye_llm::ToolSpec::Function {
             name, parameters, ..
         } = t;
@@ -130,7 +146,7 @@ fn fingerprint(req: &ChatRequest) -> String {
         hasher.update([0x00]);
     }
     hasher.update([0xff]);
-    hasher.update(req.model.as_bytes());
+    hasher.update(model.as_bytes());
     let digest = hasher.finalize();
     let mut out = String::with_capacity(40);
     for b in digest {
