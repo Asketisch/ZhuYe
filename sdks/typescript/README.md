@@ -210,7 +210,7 @@ for await (const e of await agent.submit({ type: 'set_permission_mode', mode: 'p
 for await (const e of await agent.submit({
   type: 'user_input',
   items: [{ type: 'text', text: '调研一下' }],
-  thread_settings: { effort: 'high' },
+  thread_settings: { effort: 'high' }, // 档位 'low'|'medium'|'high'|'max'|'ultra';引擎按模型族钳制
 })) {}
 ```
 

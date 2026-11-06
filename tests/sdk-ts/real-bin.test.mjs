@@ -159,6 +159,35 @@ describe('TS SDK 绑定层 × 真二进制', () => {
     }
   });
 
+  it('K4b: set_effort 新档位 max/ultra 经真二进制透传', async () => {
+    // v1.10 功能4:additive 新档位;引擎与 high 同型静默收尾,SDK 与 serve
+    // 都不得因新增字面量崩溃(协议 additive 变更的绑定层回归);
+    // thread_settings.effort 形态同样接受新档位并正常收尾 turn。
+    const agent = await ZhuyeAgent.spawn(
+      makeOptions(['{"type":"text","text":"t1"}'])
+    );
+    try {
+      for (const effort of ['max', 'ultra']) {
+        const types = [];
+        for await (const ev of await agent.submit({ type: 'set_effort', effort })) {
+          types.push(ev.msg.type);
+        }
+        assert.deepEqual(types, ['submission_closed'], `收尾异常:${types}`);
+      }
+      const turnTypes = [];
+      for await (const ev of await agent.submit({
+        type: 'user_input',
+        items: [{ type: 'text', text: 'hi' }],
+        thread_settings: { effort: 'ultra' },
+      })) {
+        turnTypes.push(ev.msg.type);
+      }
+      assert.ok(turnTypes.includes('turn_complete'), `turn 未收尾:${turnTypes}`);
+    } finally {
+      await agent.close();
+    }
+  });
+
   it('K10: side-channel 查询 Op 返回 status 快照 + submission_closed 收尾', async () => {
     // WP9 新能力面:exec 已装配 side-channel driver(WP13),查询有真实
     // 应答(与 K4 的 set_effort 静默不同)。纯逻辑层同型用例在
