@@ -342,4 +342,45 @@ mod tests {
         assert_eq!(strip_frontmatter("# no fm\n"), "# no fm\n");
         assert_eq!(strip_frontmatter("---\nno closing\n"), "---\nno closing\n");
     }
+
+    /// B4:用户级命令目录发现 —— 裸名命中(`/review` 直达)、嵌套目录
+    /// 递归、非 md 跳过、目录不存在返 0、重复调用幂等(整体替换)。
+    #[test]
+    fn register_user_dir_scans_and_replaces_idempotently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("review.md"), "# review body\n").unwrap();
+        std::fs::create_dir(dir.path().join("ns")).unwrap();
+        std::fs::write(dir.path().join("ns").join("lint.md"), "body\n").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "非 md 不收\n").unwrap();
+
+        let r = CommandRegistry::default();
+        let n = r.register_user_dir(dir.path());
+        assert_eq!(n, 2, "review + ns/lint(裸名):got {n}");
+
+        // 裸名直达:lookup("review") 命中(无需 user: 前缀)。
+        assert!(r.lookup("review").is_some(), "裸名应命中");
+        assert!(r.lookup("lint").is_some(), "嵌套目录按 stem 裸名");
+        assert!(r.lookup("notes").is_none(), "非 md 不注册");
+
+        // 幂等:重复调用整体替换,不翻倍。
+        let n2 = r.register_user_dir(dir.path());
+        assert_eq!(n2, 2);
+        assert_eq!(r.list().len(), 2);
+
+        // 与 plugin 命令同表共存:plugin 名带前缀,互不影响。
+        r.add_plugin(
+            "demo",
+            vec![LoadedCommand {
+                name: "demo:hello".into(),
+                file_path: dir.path().join("hello.md"),
+                description: None,
+            }],
+        );
+        assert!(r.lookup("demo:hello").is_some());
+        assert!(r.lookup("review").is_some(), "plugin 挂载不清用户命令");
+
+        // 目录不存在 → 0(常态,不算错)。
+        let r2 = CommandRegistry::default();
+        assert_eq!(r2.register_user_dir(&dir.path().join("missing")), 0);
+    }
 }

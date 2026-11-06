@@ -123,6 +123,32 @@ def test_K13_工具图片回执经SDK往返(env_home: Path) -> None:
         agent.close()
 
 
+# ── K14 rescan_extensions(additive Op)真二进制字段级 ───────────────────
+
+
+def test_K14_rescan_extensions_真二进制字段级(env_home: Path) -> None:
+    """v1.x additive:`Op::RescanExtensions` → `extensions_rescanned`
+
+    字段级断言(skills 计数非负、commands=false、submission_closed
+    收尾)—— 绑定层对新 Op / 新事件的双向透传,与 V11(serve 直发)、
+    逻辑层(python tests)三层互补。
+    """
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"t1"}']))
+    try:
+        evs = drain(agent.submit_op(
+            {"type": "rescan_extensions", "skills": True, "commands": False}
+        ))
+        types = msg_types(evs)
+        assert "extensions_rescanned" in types, f"缺回执事件:{types}"
+        evt = next(e["msg"] for e in evs
+                   if e["msg"]["type"] == "extensions_rescanned")
+        assert isinstance(evt["skills"], int) and evt["skills"] >= 0, f"skills 字段:{evt}"
+        assert evt["commands"] is False, f"commands 位恒 false:{evt}"
+        assert types[-1] == "submission_closed", f"收尾异常:{types}"
+    finally:
+        agent.close()
+
+
 # ── K4 非 turn op 收尾 ──────────────────────────────────────────────────
 
 

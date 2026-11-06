@@ -1572,6 +1572,13 @@ pub async fn submission_loop(
                     let dir_refs: Vec<&std::path::Path> =
                         m4.skill_dirs.iter().map(|p| p.as_path()).collect();
                     skills_count = m4.skills.rescan(&dir_refs);
+                    // bundled 与 bootstrap 同口径:配置开启时补挂(否则
+                    // rescan 替换文件型后内置包整体丢失;merge_bundled
+                    // 幂等,同名以文件目录扫描结果优先)。
+                    if m4.bundled_skills {
+                        zhuye_skills::merge_bundled(&m4.skills);
+                        skills_count = m4.skills.names().len();
+                    }
                     tracing::info!(skills = skills_count, "extensions rescan: skills");
                 }
                 if commands {

@@ -45,6 +45,10 @@ pub struct M4Deps {
     /// `Op::RescanExtensions` 的 skills 重扫按此序装配,与 bootstrap
     /// 同源 —— core 不反推目录(分层约束)。默认空(rescan 无文件目录)。
     pub skill_dirs: Vec<std::path::PathBuf>,
+    /// v1.x:`[active].bundled_skills` 的 bootstrap 表态。rescan 替换
+    /// 文件型 skills 后按此标志补挂内置包(与 bootstrap 同口径);core
+    /// 不读 config(分层约束),状态由装配方注入。
+    pub bundled_skills: bool,
 }
 
 impl std::fmt::Debug for M4Deps {
@@ -126,5 +130,6 @@ pub fn default_m4_deps(agent_name: &str) -> M4Deps {
         subagent_registry,
         prompt_dirs: Vec::new(),
         skill_dirs: Vec::new(),
+        bundled_skills: false,
     }
 }

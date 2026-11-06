@@ -171,6 +171,7 @@ fn make_m4() -> M4Deps {
         subagent_registry,
         prompt_dirs: Vec::new(),
         skill_dirs: Vec::new(),
+        bundled_skills: false,
     }
 }
 
