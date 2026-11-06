@@ -6,6 +6,9 @@
 //!
 //! 完整规范参见 `sdks/PROTOCOL.md`。
 
+// 协议层是公共契约:pub item 缺文档在 CI 即告警,防止新增项裸奔。
+#![warn(missing_docs)]
+
 pub mod actor;
 pub mod ask_user_input;
 pub mod bash_command;

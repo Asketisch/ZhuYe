@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 /// 时提示。`at` 用 `SystemTime` 而非 `Instant`,因为事件可能跨进程持久化。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigReloadedEvent {
+    /// 触发重载的配置文件路径。
     pub path: PathBuf,
+    /// 受影响的配置段名列表(如 `["anthropic", "compact"]`)。
     pub sections_changed: Vec<String>,
+    /// 重载发生时间(序列化为 UNIX 秒数)。
     #[serde(with = "systemtime_serde")]
     pub at: SystemTime,
 }

@@ -15,7 +15,10 @@ use crate::op::Op;
 /// 不在 `Op::UserInput` 加字段是为了避免破坏既有 `match` 派生。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Submission {
+    /// 提交 id(客户端生成,建议 uuid);由此产生的事件均以同一 id 回传
+    /// (`Event.id`),是客户端路由事件的关联键。
     pub id: String,
+    /// 要执行的操作。
     pub op: Op,
     /// 客户端提供的用户消息 ID(用于跨 rollout 日志的链路追踪)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,10 +100,14 @@ impl Submission {
 /// W3C trace 上下文(W3C Trace Context 规范的子集)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct W3cTraceContext {
+    /// trace 标识(W3C `trace-id`,规范为 32 位小写十六进制)。
     pub trace_id: String,
+    /// 当前 span 标识(W3C 规范为 16 位小写十六进制)。
     pub span_id: String,
+    /// 父 span 标识;`None` = 根 span 或未提供。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_span_id: Option<String>,
+    /// trace 标志位(W3C `trace-flags`,如 `"01"` 表示已采样);`None` = 未提供。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_flags: Option<String>,
 }

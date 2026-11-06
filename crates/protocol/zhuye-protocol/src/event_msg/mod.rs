@@ -64,14 +64,19 @@ pub use turn::{
 /// 用于日志的稳定字符串判别值。
 pub type EventMsgDiscriminant = &'static str;
 
+/// core 发往客户端(TUI / exec / SDK)的全部事件。serde 以 `type` 字段
+/// (snake_case)区分变体;新增变体属 additive,客户端须容忍未知 `type`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventMsg {
     // 生命周期(6)
     /// 一个线程的首 turn 触发一次。id 字段会是 `EVENT_ID_NONE`。
     SessionConfigured(SessionConfiguredEvent),
+    /// turn 开始(由 `Op::UserInput` 触发)。
     TurnStarted(TurnStartedEvent),
+    /// turn 收尾(含触达迭代上限 / token 预算耗尽),携带累计用量与终止状态。
     TurnComplete(TurnCompleteEvent),
+    /// turn 被中止(用户中断或错误),终态。
     TurnAborted(TurnAbortedEvent),
     /// 批次十九:`Op::Rewind` 成功后发出(TUI 据此裁剪显示)。
     TurnRewound(TurnRewoundEvent),
@@ -81,6 +86,8 @@ pub enum EventMsg {
     /// 权限模式切换 / goal 等)没有 `TurnComplete` 之类的终态事件,
     /// SDK 的 `submit_op` 迭代器靠本变体收尾,否则会永久阻塞。
     SubmissionClosed,
+    /// 会话收尾完成(响应 `Op::Shutdown`,终态);`Event.id` 携带该 shutdown
+    /// submission 的 id。
     ShutdownComplete,
 
     // LLM 输出(4)
@@ -94,10 +101,12 @@ pub enum EventMsg {
     TokenCount(TokenCountEvent),
 
     // 工具(4;v1.4 A3 新增 ToolCallOutputDelta / v1.5 新增 ToolCallArgsDelta)
+    /// 工具调用开始(模型开始生成 tool_use 时即发出)。
     ToolCallBegin(ToolCallBeginEvent),
     /// v1.5:流式工具参数增量(模型生成 tool_use 参数期间逐段转发,
     /// `call_id` 与后续 `ToolCallBegin` 的工具对应;新增变体 = additive 兼容)。
     ToolCallArgsDelta(ToolCallArgsDeltaEvent),
+    /// 工具调用结束(成功或失败),携带完整输出。
     ToolCallEnd(ToolCallEndEvent),
     /// v1.4 A3:工具输出流式增量 —— 长工具(构建 / 测试)执行期间逐段
     /// 上报 stdout/stderr,客户端实时可见;最终完整输出仍以
@@ -143,6 +152,7 @@ pub enum EventMsg {
     PermissionBubble(PermissionBubbleEvent),
 
     // 压缩(1)
+    /// 上下文已压缩;`Op::Compact` 受理时先发一条策略为 `Noop` 的回执。
     ContextCompacted(ContextCompactedEvent),
 
     // Error (2)
@@ -157,6 +167,7 @@ pub enum EventMsg {
     ConfigReloaded(ConfigReloadedEvent),
 
     // Routing (1; v1.0) — 多 Provider 路由的 failover / cooldown 事件
+    /// 多 Provider 路由状态变化(credential 切换 / cooldown / 跨模型降级)。
     Routing(RoutingEvent),
 
     // Collab (3; M10 / v0.2.4) — 讨论生命周期,TUI / headless 都可观察
@@ -301,6 +312,8 @@ impl EventMsg {
 }
 
 impl SessionConfiguredEvent {
+    /// 以给定 model spec / provider 构造:新生成 session id,审批策略取
+    /// `Auto`、沙箱策略取 `WorkspaceOnly`,上下文窗口未知(`None`)。
     pub fn new(model: impl Into<String>, provider: impl Into<String>) -> Self {
         Self {
             session_id: ThreadId::new(),

@@ -30,8 +30,9 @@ pub const MAX_HEADER_CHARS: usize = 12;
 /// 一组问题的最大数量(由 config `[tool.ask_user_question].max_questions` 控制,默认 4)。
 pub const MAX_QUESTIONS: usize = 4;
 
-/// 单题选项的最小/最大数量。
+/// 单题选项的最小数量。
 pub const MIN_OPTIONS: usize = 2;
+/// 单题选项的最大数量。
 pub const MAX_OPTIONS: usize = 4;
 
 /// 一道结构化问题:头部 chip + 题目文字 + 候选选项 + 是否多选。
@@ -163,6 +164,7 @@ impl Answer {
 /// 多题答案集合,`answers.len() == AskUserQuestionEvent.questions.len()`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AskUserAnswer {
+    /// 逐题答案,下标与 `AskUserQuestionEvent.questions` 一一对应。
     pub answers: Vec<Answer>,
 }
 
@@ -188,6 +190,8 @@ pub struct AskUserQuestionEvent {
 }
 
 impl AskUserQuestionEvent {
+    /// 构造事件;`request_id` 与后续回执 `Op::AskUserQuestionResponse.id`
+    /// 配对,`questions` 不再做数量校验(构造前应由工具层校验)。
     pub fn new(request_id: impl Into<String>, questions: Vec<Question>) -> Self {
         Self {
             request_id: request_id.into(),
@@ -199,12 +203,30 @@ impl AskUserQuestionEvent {
 /// 问题构造或校验失败的错误。
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum QuestionError {
+    /// `header` 超过 [`MAX_HEADER_CHARS`] 上限。
     #[error("header too long: {len} chars (max {max})")]
-    HeaderTooLong { len: usize, max: usize },
+    HeaderTooLong {
+        /// 实际字符数。
+        len: usize,
+        /// 上限(常量 [`MAX_HEADER_CHARS`])。
+        max: usize,
+    },
+    /// 选项数量低于 [`MIN_OPTIONS`]。
     #[error("too few options: {got} (min {min})")]
-    TooFewOptions { got: usize, min: usize },
+    TooFewOptions {
+        /// 实际选项数。
+        got: usize,
+        /// 下限(常量 [`MIN_OPTIONS`])。
+        min: usize,
+    },
+    /// 选项数量超过 [`MAX_OPTIONS`]。
     #[error("too many options: {got} (max {max})")]
-    TooManyOptions { got: usize, max: usize },
+    TooManyOptions {
+        /// 实际选项数。
+        got: usize,
+        /// 上限(常量 [`MAX_OPTIONS`])。
+        max: usize,
+    },
 }
 
 #[cfg(test)]

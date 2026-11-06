@@ -10,11 +10,15 @@ use serde::{Deserialize, Serialize};
 /// `zhuye-mcp::config` 提供 `From<McpTransportMirror> for McpTransport`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerStartedEvent {
+    /// MCP server 名(`[mcp_servers.<name>]` 的键;插件提供的 server 为
+    /// `plugin:<plugin_id>:<原名>`)。
     pub server: String,
+    /// 该 server 暴露的工具数(`list_tools` 结果)。
     pub tool_count: usize,
     /// 批次十八:工具全名列表(供 TUI `/mcp` overlay 展示工具清单)。
     #[serde(default)]
     pub tool_names: Vec<String>,
+    /// 连接所用的传输方式。
     pub transport: McpTransportMirror,
 }
 
@@ -24,8 +28,11 @@ pub struct McpServerStartedEvent {
 /// stdio 路径永远为 `false`(不重连,配置错就让用户修)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerFailedEvent {
+    /// MCP server 名(同 `McpServerStarted.server`)。
     pub server: String,
+    /// 失败原因描述。
     pub error: String,
+    /// 是否还会自动重试(HTTP 重连循环;stdio 恒为 `false`)。
     pub will_retry: bool,
 }
 
@@ -35,8 +42,11 @@ pub struct McpServerFailedEvent {
 /// `call_id` 与 `EventMsg::ToolCallEnd.call_id` 一致,便于前端配对渲染。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpToolInvokedEvent {
+    /// 提供该工具的 MCP server 名。
     pub server: String,
+    /// MCP 原始工具名(不含 `mcp__<server>__` 命名空间前缀)。
     pub tool: String,
+    /// 工具调用标识(与 `ToolCallEnd.call_id` 一致)。
     pub call_id: String,
 }
 
@@ -46,7 +56,9 @@ pub struct McpToolInvokedEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum McpTransportMirror {
+    /// 子进程 stdio 传输。
     Stdio,
+    /// Streamable HTTP 传输。
     Http,
     /// Legacy MCP HTTP+SSE transport。
     Sse,

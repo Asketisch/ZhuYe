@@ -25,9 +25,13 @@ use crate::item::{PermissionMode, PlanId, ThreadId, TurnId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRole {
+    /// 系统消息。
     System,
+    /// 用户输入。
     User,
+    /// 助手(模型)输出。
     Assistant,
+    /// 工具结果。
     Tool,
 }
 
@@ -52,9 +56,14 @@ pub enum MemoryOp {
 /// `HashMap` / `HashSet` 的 key(只作 value),移除 `Eq` 不影响任何调用方。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
+    /// 会话 ID(同 `SessionMeta.session_id`)。
     pub session_id: ThreadId,
+    /// 会话级模型 spec(同 `SessionMeta.model`,如 `"openai/gpt-4o"`)。
     pub model: String,
+    /// 会话开始时间(UTC,同 `SessionMeta.started_at`)。
     pub started_at: DateTime<Utc>,
+    /// 记录条数:JSONL 非空行数扣除 `SessionMeta` 行(计全部记录类型,
+    /// 不限于 `Message`)。
     pub message_count: usize,
     /// v1.x:会话标题(从首条 User 消息预览生成,见
     /// [`derive_title`])。`None` = 无首条 user 文本(空会话 / 旧文件)。
@@ -99,8 +108,11 @@ pub struct SessionInfo {
 pub enum RolloutRecord {
     /// 每个线程恰好发送一次,先于所有其它记录。
     SessionMeta {
+        /// 会话 ID;与 `SessionConfigured.session_id` 及 JSONL 文件名一致。
         session_id: ThreadId,
+        /// 会话启动时的模型 spec(如 `"openai/gpt-4o"`)。
         model: String,
+        /// 会话开始时间(UTC)。
         started_at: DateTime<Utc>,
         /// v1.x: 会话归属工作区(绝对路径)。`None` = 旧文件 / CLI 创建未指定。
         /// 旧 JSONL 反序列化为 `None`(#[serde(default)])。
@@ -110,8 +122,12 @@ pub enum RolloutRecord {
     /// 一条持久化对话回合。`content` 是对 JSON 不透明的负载,让 recorder
     /// 既能携带 `ContentBlock`,也能携带纯文本或工具 payload。
     Message {
+        /// 消息所属 turn。
         turn_id: TurnId,
+        /// 消息来源方。
         role: MessageRole,
+        /// 消息内容:新格式为序列化的 `Vec<ContentBlock>`(JSON 数组),
+        /// 旧格式为纯文本字符串。
         content: serde_json::Value,
     },
     /// 由 `pre_loop` 在 `Compactor::compact` 执行完且策略不为 `Noop` 时发出。
@@ -122,18 +138,27 @@ pub enum RolloutRecord {
     /// 里,落盘即丢,导致会话统计无法回答「压缩省了多少 token」。
     /// `#[serde(default)]` 保证旧 JSONL(无这两字段)反序列化为 0。
     Compaction {
+        /// 发生压缩的 turn。
         turn_id: TurnId,
+        /// 生效的压缩策略名(snake_case,如 `"microcompact"` /
+        /// `"smart_prune"` / `"llm_summarize"`)。
         strategy: String,
+        /// 本次压缩移除的消息条数。
         removed_count: usize,
+        /// 合成 `<summary>` System 消息的正文;压缩后上下文中无摘要时为空串。
         summary: String,
+        /// 压缩前上下文 token 估算;旧 JSONL 缺省为 0。
         #[serde(default)]
         before_tokens: u32,
+        /// 压缩后上下文 token 估算;旧 JSONL 缺省为 0。
         #[serde(default)]
         after_tokens: u32,
     },
     /// 由 `SubAgentFactory::fork` 发出,标记一个分支会话。
     Fork {
+        /// 父会话 ID(派生子代理的会话)。
         parent_session_id: ThreadId,
+        /// 分支名,当前取子代理角色名(`SubAgentSpec.role`,如 `"explorer"`)。
         branch_name: String,
     },
     /// v1.2 P0-3:`CheckpointTool` 在 `git_auto_commit` 后发出,记录工作区
@@ -142,22 +167,27 @@ pub enum RolloutRecord {
     /// 工具返回给 LLM 的稳定标识(此处 = sha,但保留独立字段以便未来用
     /// uuid 而 sha 仅作恢复目标)。
     Checkpoint {
+        /// 创建 checkpoint 时所在 turn;`rewind` 的 conversation 作用域以此
+        /// 为截断边界。
         turn_id: TurnId,
         /// 工作区 git 快照的 commit sha(`git rev-parse HEAD`)。
         sha: String,
         /// 给人 / LLM 的标签(可选)。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// checkpoint 创建时间(UTC)。
         created_at: DateTime<Utc>,
     },
     /// v1.2 P0-3:`RewindTool` 在 `git_reset_hard` 后发出,记录回退到的
     /// 目标 checkpoint。append-only:会话历史保留,仅工作区文件回退。
     Rewind {
+        /// 执行回退时所在 turn。
         turn_id: TurnId,
         /// 回退到的目标 checkpoint 的 sha。
         target_sha: String,
         /// 回退前的 HEAD sha(便于审计 / 再次前进)。
         from_sha: String,
+        /// 回退执行时间(UTC)。
         at: DateTime<Utc>,
     },
     /// M9: `DiscussionOrchestrator` 在讨论结束(达成共识 / 主动结束 /
@@ -171,11 +201,16 @@ pub enum RolloutRecord {
     /// `Some(agent_id)`。`#[serde(default, skip_serializing_if)]` 保持
     /// 与 M9 记录的 wire 兼容(M9 记录无此字段)。
     DiscussionTranscript {
+        /// 讨论 ID(`DiscussionId` 内含的 v4 UUID)。
         discussion_id: Uuid,
+        /// 讨论执行模式(`"sequential"` / `"concurrent"`)。
         mode: String,
+        /// 参与讨论的 agent 标识列表(即各 `SubAgentSpec.role`)。
         participants: Vec<String>,
+        /// per-agent 切片对应的 agent 标识;`None` = 整场讨论的 transcript。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_id: Option<String>,
+        /// 讨论 transcript 负载(不透明 JSON,由讨论总线序列化而来)。
         transcript: serde_json::Value,
     },
     /// v1.x: 每次 LLM 调用后的 per-turn usage 快照。
@@ -190,24 +225,33 @@ pub enum RolloutRecord {
     /// 同一兼容模式 —— 旧 JSONL 无这两字段时反序列化为 `None`,聚合方
     /// 回退到会话级 `SessionMeta.model`。
     TokenCount {
+        /// 发起该次 LLM 调用的 turn。
         turn_id: TurnId,
         /// 标准 5 段 usage: input / output / cached / cache_write / total。
         /// `cached` 与 `cache_write` 是 `input` 的子集,刻意不进 `total`。
         usage: TokenUsage,
+        /// 本次调用的 USD 费用;`None` = 模型不在 pricing 表。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
+        /// 实际命中的完整模型 spec(如 `"openai/gpt-4o"`);旧 JSONL 缺省为 `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// 实际命中的 provider 名(如 `"openai"`);旧 JSONL 缺省为 `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<String>,
+        /// 记录时间(UTC)。
         at: DateTime<Utc>,
     },
     /// v1.x Plan mode:agent 请求进入 Plan mode。镜像 `PlanRequestEvent`,
     /// 但带上 `plan_id`(dispatch 时生成)与 `at`,让 session JSONL 能独立
     /// 还原 plan 生命周期,不依赖内存事件。
     PlanRequest {
+        /// 本次进入请求的 plan ID(dispatch 时生成,即 `Op::PlanApproval.id`
+        /// 回传的值)。
         plan_id: PlanId,
+        /// 规划目标描述(同 `PlanRequestEvent.task`)。
         task: String,
+        /// 请求发出时间(UTC)。
         at: DateTime<Utc>,
     },
     /// v1.x Plan mode:agent 调研完成,plan markdown 已生成。**双写**:
@@ -215,18 +259,26 @@ pub enum RolloutRecord {
     /// `path` 指向 `.zhuye/plan/<plan_id>.md`(LLM `cat` 引用、
     /// `PlanReadyEvent.path` 契约不破)。两者用途不同,互不替代。
     PlanReady {
+        /// 本次 plan 审批的 ID(同 `PlanReadyEvent.plan_id`)。
         plan_id: PlanId,
+        /// plan markdown 全文。
         markdown: String,
+        /// plan 落盘路径(`<workspace>/.zhuye/plan/<plan_id>.md`);写盘失败
+        /// 时为 `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<PathBuf>,
+        /// plan 就绪时间(UTC)。
         at: DateTime<Utc>,
     },
     /// v1.x Plan mode:用户拒绝 / 要求 revise。镜像 `PlanRejectedEvent`,
     /// 与 `PlanReady` 同 `plan_id` 配对。
     PlanRejected {
+        /// 被拒绝的 plan ID(用户选择 revise 时与对应 `PlanReady.plan_id` 相同)。
         plan_id: PlanId,
+        /// 拒绝原因 / 用户反馈;`None` = 未提供。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// 拒绝时间(UTC)。
         at: DateTime<Utc>,
     },
     /// v1.x:PermissionMode 状态机切换通知。覆盖 plan 进入/退出、
@@ -234,8 +286,11 @@ pub enum RolloutRecord {
     /// `PermissionModeChangedEvent` 同构,但持久化到 JSONL 后让
     /// session 记录里可见完整的权限状态轨迹。
     PermissionModeChanged {
+        /// 切换前的权限模式。
         from: PermissionMode,
+        /// 切换后的权限模式。
         to: PermissionMode,
+        /// 切换时间(UTC)。
         at: DateTime<Utc>,
     },
     /// v1.x:记忆访问审计。读 = pre_loop 检索注入(每轮迭代);写 = compact
@@ -243,7 +298,9 @@ pub enum RolloutRecord {
     /// 日志,无持久化 —— 用户无法回答「这个会话注入了哪些记忆 / 固化
     /// 了什么」。审计轨迹,不参与 `resume` 回放(与 TokenCount 同类)。
     MemoryAccess {
+        /// 发生记忆访问的 turn。
         turn_id: TurnId,
+        /// 访问类型(读 = 检索注入;写 = 固化)。
         op: MemoryOp,
         /// 记忆作用域。读 = agent 配置的 scope 列表(逗号 join,如
         /// `"project,user"`);写 = 实际写入的单一 scope。
@@ -254,6 +311,7 @@ pub enum RolloutRecord {
         chars: u32,
         /// 写 = 固化的记忆条目数;读 = 0(检索结果不拆条计数)。
         entries: u32,
+        /// 访问时间(UTC)。
         at: DateTime<Utc>,
     },
 }
