@@ -17,10 +17,11 @@ use zhuye_hooks::{HookContext, HookEngine, HookEvent};
 use zhuye_llm::{ChatMessage, SharedModelRegistry, SharedQuotaTracker};
 use zhuye_protocol::{
     AbortReason, ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, Event, EventMsg,
-    MessageRole, PermissionMode, PermissionModeChangedEvent, PlanApprovedEvent, PlanId,
-    PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent, ReasoningEffortMirror, RolloutRecord,
-    RolloutRecorder, SessionConfiguredEvent, Submission, TokenCountEvent, TurnAbortedEvent,
-    TurnCompleteEvent, TurnId, TurnStartedEvent, TurnStatus, UserInputItem,
+    ExtensionsRescannedEvent, MessageRole, PermissionMode, PermissionModeChangedEvent,
+    PlanApprovedEvent, PlanId, PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent,
+    ReasoningEffortMirror, RolloutRecord, RolloutRecorder, SessionConfiguredEvent, Submission,
+    TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnId, TurnStartedEvent, TurnStatus,
+    UserInputItem,
 };
 use zhuye_tools::{
     ApprovalGate, ApprovalWaiters, AskUserInputWaiters, AskUserQuestionWaiters, PlanApprovalGate,
@@ -1555,6 +1556,38 @@ pub async fn submission_loop(
                         fan_out_session(&session_subs, &ev);
                     }
                 }
+            }
+            // v1.x:`Op::RescanExtensions` 的引擎端 —— 运行时重扫扩展目录。
+            // skills 经 m4.skills(`SkillsCatalog::rescan` 替换文件型并保留
+            // 插件注入;bundled 补挂对齐 bootstrap 语义);目录序与
+            // bootstrap 一致(workspace → 用户级)。commands 当前无运行时
+            // 索引重扫(正文实时读盘),请求位照常应答回执 `false`。
+            // 不开 turn —— 应答经 per-submission 通道 + 会话扇出双路送达
+            // (与 PromptCommand 同款),收尾由 serve/SDK 层负责。
+            zhuye_protocol::Op::RescanExtensions { skills, commands } => {
+                let mut skills_count = 0usize;
+                if skills && let Some(m4) = cfg.m4.as_ref() {
+                    // 目录序与 bootstrap 同源(M4Deps.skill_dirs,core 不
+                    // 反推目录);空序 = rescan 仅保插件型不变。
+                    let dir_refs: Vec<&std::path::Path> =
+                        m4.skill_dirs.iter().map(|p| p.as_path()).collect();
+                    skills_count = m4.skills.rescan(&dir_refs);
+                    tracing::info!(skills = skills_count, "extensions rescan: skills");
+                }
+                if commands {
+                    tracing::info!(
+                        "extensions rescan: commands 索引运行时重扫尚未接线(正文实时读盘)"
+                    );
+                }
+                let ev = Event::new(
+                    sub.id.clone(),
+                    EventMsg::ExtensionsRescanned(ExtensionsRescannedEvent {
+                        skills: skills_count,
+                        commands: false,
+                    }),
+                );
+                let _ = turn_tx.send(ev.clone()).await;
+                fan_out_session(&session_subs, &ev);
             }
             // v1.3 SDK:`RegisterTools` / `ToolExecutionResponse` 是 serve
             // 模式的**进程内控制 Op**,由 `zhuye serve` 的 stdin 循环就

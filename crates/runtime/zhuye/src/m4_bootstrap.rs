@@ -188,6 +188,7 @@ pub fn build_default_m4_with_prompts(
         file_recovery,
         subagent_registry,
         prompt_dirs,
+        skill_dirs: vec![ws_skills, home_skills],
     }
 }
 

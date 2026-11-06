@@ -427,3 +427,34 @@ def test_V10_配置导入后serve可用导入的mcp与凭证配置(sandbox, tmp_
             timeout=DRAIN_TIMEOUT,
         )
     assert "turn_complete" in msg_types(evs), f"导入配置不应破坏启动:{msg_types(evs)}"
+
+
+def test_V11_rescan_extensions_skills重扫回执字段级(serve_session, mock_script) -> None:
+    """`Op::RescanExtensions` → `extensions_rescanned`(字段级)。
+
+    依据:op.rs RescanExtensions 变体(additive);submission_loop 的
+    RescanExtensions 分支 —— skills=true 时按 M4Deps.skill_dirs(与
+    bootstrap 同源)重扫,回执 skills 总数;commands 位当前索引重扫
+    未接线,恒回 `false`。事件恰一条、不开 turn。
+    """
+    require_binary()
+    script = mock_script(['{"type":"text","text":"t1"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        # 1) skills 重扫:目录可为空,回执必为非负 int;commands 恒 false。
+        evs = s.submit({"type": "rescan_extensions", "skills": True, "commands": False})
+        m = first_event(evs, "extensions_rescanned")
+        assert m is not None, f"未见 extensions_rescanned:{msg_types(evs)}"
+        # 事件经 per-submission + session 扇出双路送达(prompt_list 同款),
+        # 客户端按 sub_id 去重 —— 这里断言字段级而非唯一性。
+        assert all(
+            isinstance(e["msg"].get("skills"), int) for e in evs
+            if e["msg"].get("type") == "extensions_rescanned"
+        ), f"skills 应为 int:{msg_types(evs)}"
+        assert m["msg"]["skills"] >= 0
+        assert m["msg"]["commands"] is False, f"commands 当前恒回 false:{m['msg']}"
+
+        # 2) 未请求任何重扫 → 照常应答(skills=0)。
+        evs = s.submit({"type": "rescan_extensions", "skills": False, "commands": False})
+        m = first_event(evs, "extensions_rescanned")
+        assert m is not None, f"未见 extensions_rescanned:{msg_types(evs)}"
+        assert m["msg"]["skills"] == 0, f"未请求 skills 重扫应回 0:{m['msg']}"

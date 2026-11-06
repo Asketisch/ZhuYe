@@ -36,7 +36,9 @@ pub use collab::{CollabFinishedEvent, CollabMessageEvent, CollabStartedEvent};
 pub use compaction::{
     ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, StreamErrorEvent, TriedCredential,
 };
-pub use config::{ConfigReloadedEvent, PromptListEvent, PromptSwitchedEvent};
+pub use config::{
+    ConfigReloadedEvent, ExtensionsRescannedEvent, PromptListEvent, PromptSwitchedEvent,
+};
 pub use lsp::{LspServerFailedEvent, LspServerStartedEvent};
 pub use mcp::{
     McpServerFailedEvent, McpServerStartedEvent, McpToolInvokedEvent, McpTransportMirror,
@@ -254,6 +256,8 @@ pub enum EventMsg {
     PromptList(PromptListEvent),
     /// `Op::PromptCommand { action: Switch }` 的应答:提示词库已重扫。
     PromptSwitched(PromptSwitchedEvent),
+    /// v1.x:`Op::RescanExtensions` 的应答:扩展目录已重扫。
+    ExtensionsRescanned(ExtensionsRescannedEvent),
 }
 
 impl EventMsg {
@@ -309,6 +313,7 @@ impl EventMsg {
             EventMsg::QuotaExhausted(_) => "quota_exhausted",
             EventMsg::PromptList(_) => "prompt_list",
             EventMsg::PromptSwitched(_) => "prompt_switched",
+            EventMsg::ExtensionsRescanned(_) => "extensions_rescanned",
         }
     }
 }

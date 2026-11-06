@@ -121,6 +121,7 @@ fn make_m4_deps(agent_name: &str, system_prompt: &str) -> M4Deps {
         file_recovery,
         subagent_registry,
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
     }
 }
 

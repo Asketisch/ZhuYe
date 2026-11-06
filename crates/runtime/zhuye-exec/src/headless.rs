@@ -807,12 +807,16 @@ pub async fn bootstrap_normal(
         mcp_manager,
         tools.clone(),
         Some(plugin_runtime.clone()),
+        Some(hook_engine.clone()),
     );
     let (sync_tx, sync_rx) = std::sync::mpsc::channel::<Event>();
     std::thread::spawn(move || {
-        // writer 复用(config-reload 事件低频,但不必逐条重建 writer)。
-        let mut w = JsonlWriter::new(std::io::stdout().lock());
+        // writer 必须逐事件构造:`stdout().lock()` 的锁随 writer 存活,
+        // 若在此线程持久持有,serve 主 writer task 对 stdout 锁的竞争
+        // 会永久阻塞 —— serve stdout 从此零输出(实测回归)。本线程
+        // 低频(config-reload 事件),逐条拿锁开销可接受。
         for event in sync_rx {
+            let mut w = JsonlWriter::new(std::io::stdout().lock());
             if let Err(e) = w.write_event(&event) {
                 tracing::warn!(error = %e, "config-reload jsonl write failed; dropping");
                 break;
@@ -1053,6 +1057,7 @@ pub async fn bootstrap_resumed(
         mcp_manager,
         tools.clone(),
         Some(plugin_runtime.clone()),
+        Some(thread.hook_engine()),
     );
     // resume 分支历史上没有 reload drainer(事件静默丢弃),保持原行为:
     // 这里同样不桥接 reload_rx,drop 即让 reload task 的发送端自然退出。

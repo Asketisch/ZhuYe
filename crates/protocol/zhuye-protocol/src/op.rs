@@ -186,6 +186,20 @@ pub enum Op {
         action: PromptAction,
     },
 
+    /// v1.x:运行时重扫扩展目录。skills / 用户级 commands 此前只能重启
+    /// 加载;本 Op 让 `.zhuye/skills/` 的新增 / 修改不重启即生效。
+    /// 不开 turn —— 应答 `EventMsg::ExtensionsRescanned` 经
+    /// per-submission 通道 + 会话扇出双路送达,与 `PromptCommand` 同款。
+    RescanExtensions {
+        /// 是否重扫 skills 目录(`.zhuye/skills`,workspace + 用户级;
+        /// 插件注入的 skills 不受影响)。
+        skills: bool,
+        /// 是否重扫用户级 commands 目录。当前 commands 索引的运行时
+        /// 重扫尚未接线(命令正文实时读盘,增删文件走插件重挂路径),
+        /// 请求位照常应答,回执 `commands = false`。
+        commands: bool,
+    },
+
     /// v1.3 SDK:客户端(serve 模式)注册跨语言自定义工具。
     ///
     /// 工具的**实现留在客户端进程**(Python / TS 函数):core 侧为每个
@@ -309,6 +323,7 @@ impl Op {
             Op::EnterGoalMode { .. } => "enter_goal_mode",
             Op::ExitGoalMode => "exit_goal_mode",
             Op::PromptCommand { .. } => "prompt_command",
+            Op::RescanExtensions { .. } => "rescan_extensions",
             Op::RegisterTools { .. } => "register_tools",
             Op::ToolExecutionResponse { .. } => "tool_execution_response",
             Op::Steer { .. } => "steer",
@@ -657,5 +672,29 @@ mod tests {
             Op::QuerySubagents { child_id } => assert_eq!(child_id.as_deref(), Some("c-9")),
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod rescan_serde_tests {
+    use super::*;
+
+    /// wire 形状锁定:tag=type + 两个 bool 字段,additive 变体不得漂移。
+    #[test]
+    fn rescan_extensions_serde_roundtrip() {
+        let j = r#"{"type":"rescan_extensions","skills":true,"commands":false}"#;
+        let op: Op = serde_json::from_str(j).expect("反序列化失败");
+        assert!(matches!(
+            op,
+            Op::RescanExtensions {
+                skills: true,
+                commands: false
+            }
+        ));
+        let back = serde_json::to_string(&op).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&back).unwrap();
+        assert_eq!(v["type"], "rescan_extensions");
+        assert_eq!(v["skills"], true);
+        assert_eq!(v["commands"], false);
     }
 }
