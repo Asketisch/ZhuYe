@@ -130,6 +130,15 @@ pub struct AgentState {
     pub turn_tool_errors: u32,
     /// v1.9 C3:本 turn 工具超时数(结果 metadata 带 `timeout_ms`)。
     pub turn_tool_timeouts: u32,
+    /// v1.x:记忆检索的 turn 级缓存(截断后的注入文本)。`AgentState` 每
+    /// turn 新建,天然 turn 作用域:turn 内查询固定(`ctx.messages` 不变),
+    /// BM25 检索 + MEMORY.md 读盘每 turn 一次即可,不为每次 model_call
+    /// 迭代重复付磁盘 IO。压缩固化(consolidation append MEMORY.md)发生
+    /// 时置回 `None` 失效。`None` = 本 turn 尚未检索过。
+    pub memory_retrieval_cache: Option<String>,
+    /// v1.x:本 turn 是否已落盘过 `MemoryAccess::Read` 审计(与缓存配套:
+    /// 审计每 turn 一条,而非每迭代一条)。
+    pub memory_read_recorded: bool,
 }
 
 /// v1.x progress-nudge:每条 web_fetch 的 URL + 200 字符片段摘要,供

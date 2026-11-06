@@ -810,8 +810,9 @@ pub async fn bootstrap_normal(
     );
     let (sync_tx, sync_rx) = std::sync::mpsc::channel::<Event>();
     std::thread::spawn(move || {
+        // writer 复用(config-reload 事件低频,但不必逐条重建 writer)。
+        let mut w = JsonlWriter::new(std::io::stdout().lock());
         for event in sync_rx {
-            let mut w = JsonlWriter::new(std::io::stdout().lock());
             if let Err(e) = w.write_event(&event) {
                 tracing::warn!(error = %e, "config-reload jsonl write failed; dropping");
                 break;

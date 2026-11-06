@@ -117,6 +117,8 @@ fn jsonl_writer_emits_one_event_per_line() {
         w.write_event(&sess()).unwrap();
         w.write_event(&turn_started()).unwrap();
         w.write_event(&delta()).unwrap();
+        // 显式冲出攒批滞留的尾部 delta(不依赖 Drop 尽力而为)。
+        w.flush().unwrap();
     }
     let s = String::from_utf8(buf).unwrap();
     let lines: Vec<&str> = s.lines().collect();
@@ -128,6 +130,28 @@ fn jsonl_writer_emits_one_event_per_line() {
     assert!(lines[0].contains("session_configured"));
     assert!(lines[1].contains("turn_started"));
     assert!(lines[2].contains("agent_message_delta"));
+}
+
+/// 攒批语义:delta 未达阈值时不冲(滞留缓冲),非 delta 事件立即冲出
+/// 并顺带带走此前攒批的 delta。
+#[test]
+fn jsonl_writer_batches_deltas_until_threshold_or_boundary() {
+    let mut buf = Vec::new();
+    let retained_after_delta;
+    {
+        let mut w = JsonlWriter::new(&mut buf);
+        w.write_event(&sess()).unwrap();
+        w.write_event(&turn_started()).unwrap();
+        // 单条小 delta:低于阈值 → 滞留在 BufWriter 缓冲。
+        w.write_event(&delta()).unwrap();
+        retained_after_delta = w.buffered_len();
+        assert!(retained_after_delta > 0, "小 delta 攒批后应滞留缓冲");
+        // 非 delta 事件:立即冲,顺带带走攒批内容。
+        w.write_event(&turn_started()).unwrap();
+        assert_eq!(w.buffered_len(), 0, "非 delta 事件应冲空缓冲");
+        w.flush().unwrap();
+    }
+    assert!(String::from_utf8_lossy(&buf).contains("agent_message_delta"));
 }
 
 #[test]

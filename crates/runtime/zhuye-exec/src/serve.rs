@@ -265,11 +265,14 @@ where
                 let sub_id = sub.id.clone();
                 let mut handle = thread.submit(sub).await;
                 while let Some(ev) = handle.next().await {
-                    if let (Some(logger), Some(a)) = (&activity, zhuye_telemetry::map_event(&ev)) {
-                        let _ = logger.record(a);
-                    }
+                    // 审计事件在 send 移走 ev 前先算好;record 在转发之后
+                    // 执行,不阻塞事件到客户端的通路。
+                    let act = zhuye_telemetry::map_event(&ev);
                     if sink.send(ev).await.is_err() {
                         break;
+                    }
+                    if let (Some(logger), Some(a)) = (&activity, act) {
+                        let _ = logger.record(a);
                     }
                 }
                 // 收尾标记:客户端迭代器已被 shutdown_complete 终结,
@@ -301,16 +304,17 @@ where
                         let activity5 = activity.clone();
                         tokio::spawn(async move {
                             while let Some(ev) = handle.next().await {
-                                if let (Some(logger), Some(a)) =
-                                    (&activity5, zhuye_telemetry::map_event(&ev))
-                                {
-                                    let _ = logger.record(a);
-                                }
+                                // SessionConfigured 同时走 session 扇出通道,此处
+                                // 跳过避免重复;审计先算后记,不阻塞客户端通路。
                                 if matches!(ev.msg, EventMsg::SessionConfigured(_)) {
                                     continue;
                                 }
+                                let act = zhuye_telemetry::map_event(&ev);
                                 if sink5.send(ev).await.is_err() {
                                     break;
+                                }
+                                if let (Some(logger), Some(a)) = (&activity5, act) {
+                                    let _ = logger.record(a);
                                 }
                             }
                             let _ = sink5
@@ -330,19 +334,18 @@ where
                 let activity4 = activity.clone();
                 tokio::spawn(async move {
                     while let Some(ev) = handle.next().await {
-                        if let (Some(logger), Some(a)) =
-                            (&activity4, zhuye_telemetry::map_event(&ev))
-                        {
-                            let _ = logger.record(a);
-                        }
                         // SessionConfigured 同时走 session 扇出通道(见
                         // submission_loop),由 session 转发 task 统一写出;
-                        // 此处跳过避免重复。
+                        // 此处跳过避免重复。审计先算后记,不阻塞客户端通路。
                         if matches!(ev.msg, EventMsg::SessionConfigured(_)) {
                             continue;
                         }
+                        let act = zhuye_telemetry::map_event(&ev);
                         if sink4.send(ev).await.is_err() {
                             break;
+                        }
+                        if let (Some(logger), Some(a)) = (&activity4, act) {
+                            let _ = logger.record(a);
                         }
                     }
                     // v1.3 SDK:per-turn 通道排空 = 该 submission 在 core

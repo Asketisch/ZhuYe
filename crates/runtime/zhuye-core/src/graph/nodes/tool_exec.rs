@@ -98,7 +98,8 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         return Some(GraphNode::PreLoop);
     }
     // v1.2 P1:记录 call_id → tool_name + args 映射,供 telemetry 在结果
-    // 返回后恢复工具名 / 参数(retain 会移除 ToolUse blocks)。
+    // 返回后恢复工具名 / 参数(retain 会移除 ToolUse blocks)。必须持有
+    // 克隆:`calls` 随后按值 move 进执行队列,结果阶段无法反查借用。
     let call_meta: std::collections::HashMap<String, (String, serde_json::Value)> = calls
         .iter()
         .map(|c| (c.id.clone(), (c.name.clone(), c.args.clone())))
