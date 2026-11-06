@@ -67,6 +67,7 @@
 | 缺陷修复回归(预算耗尽显性化 / 配置隔离 / 工具裁切 / 提示词关闭 / mock 显性化) | ✔(12 条,见 `test_bugfixes.py`) | config(show 的 ZHUYE_HOME 断言) | — | ✅(provider 层非 SSE 校验 / 版本段拼接 / 采样参数默认值有 wiremock 回归) | — |
 | 模型自动输出预算与配置优先级 | ✔(本地 HTTP 网关断言模型、输出字段、中文输入余量,见 `test_bugfixes.py`) | — | — | ✅(模型上限、余量、未知型号及请求体) | — |
 | 提示注入检测库(凭据外传规则) | —(尚无运行时入口) | — | — | ✅(zhuye-sanitize 检测及误报边界) | — |
+| v1.10 功能:配置一键导入 / goal+队列插件 / 上下文窗口 / 思考强度分级 / 空 key | V1–V10 | —(独立二进制 `zhuye-import config`,非 zhuye 参数面) | ✅(effort 阶梯字面量双侧断言) | ✅(llm 能力表钳制 / override 表 / builder 免 key / queue 调度 / config_import 合并) | — |
 
 ## 2. 能力覆盖层明细(`tests/functional/`)
 
@@ -239,6 +240,33 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 (no runner / team not found)/ goal 模式与其他 op 共存。
 O6 验证任务更新后的字段与元数据;O7 验证跨进程并发创建的 ID 和文件;
 O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存后端);O9 验证损坏、落后或丢失的高水位不会覆盖旧任务;O10 验证超大任务输出的读取上限和截断字段。
+
+### V 组 v1.10 功能面(`test_v110.py`)
+- **V1 思考强度配置**:`config set model.reasoning_effort ultra/Max` 落盘
+  字段级断言、非法档位拒绝(文案含合法值清单)、`config ls` 可见、
+  `unset` 清空;
+- **V2 set_effort 新档位**:`set_effort max` / `ultra` Op 提交无 error
+  事件、后续 turn 正常收尾(SDK / serve 面);
+- **V3 上下文窗口**:`config set model.context_window 307200` → exec 的
+  `session_configured.context_window_size == 307200`(字段级);
+- **V4 覆盖表归一化**:`[context_windows] "Mock" = 204800` 对模型
+  `mock/mock-1` 前缀命中,且 per-model 条目优先于 `[model].context_window`;
+- **V5 空 key**:`[anthropic] api_key=""` 无 base_url → 未配置(对照);
+  加显式 `base_url` → doctor 识别 active provider 为 anthropic;
+- **V6 插件门控对照**:未启用 goal-queue → `queue` 工具 tool not found;
+- **V7 队列全链路**:plugin install + enable → mock 调 `queue add/start`
+  成功 → 任务落 `~/.zhuye/queue/<thread_id>.json`(id / prompt / name
+  字段级)→ Stop hook 结清后状态 `done`(started_at / finished_at 记录);
+- **V8 goal 工具**:`goal status` 报未激活;`goal enter` 提交 Op(输出
+  回显目标)、无 `GOAL_NO_CLIENT` 错误;
+- **V9 一键导入**:`zhuye-import config --home <fixture> --output` dry-run
+  不写文件 + 报告集合断言(claude-code / opencode×2 / codex 凭证与
+  fetch / http-one / linter MCP);真实导入逐字段断言(凭证 label /
+  api_key / base_url / model;MCP command / args / env / url;codex
+  env_key → 进程 env 解析;空 key 本地端点照常导入);重复导入幂等
+  (providers_skipped / mcp_skipped 集合);
+- **V10 导入产物可运行**:导入后的 config.toml 下 serve 以 mock 正常
+  起会话并收尾 turn。
 
 ### 缺陷修复回归(`test_bugfixes.py`)
 - **预算耗尽显性化(P-13)**:迭代预算 / token 预算耗尽且**零文本**时,
@@ -455,7 +483,8 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_orchestration.py` | 10 条(O 组) |
 | `functional/test_cli.py` | 10 条(C1–C9) |
 | `functional/test_bugfixes.py` | 19 条(缺陷修复回归) |
-| **能力覆盖层合计** | **171 条** |
+| `functional/test_v110.py` | 10 条(V 组,v1.10 五项功能) |
+| **能力覆盖层合计** | **181 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |

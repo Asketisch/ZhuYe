@@ -76,10 +76,16 @@ zhuye exec "/my-plugin:hello 世界"
 
 可运行的完整示例见 [`plugins/plugin-demo/`](../plugins/plugin-demo/)。
 仓库自带插件统一放在 [`plugins/`](../plugins/) 目录(约定见其 README);
-功能型插件实例:[`plugins/harness-import/`](../plugins/harness-import/) ——
-把 Claude Code / Codex / ZCode 历史会话导入为烛夜会话(能力核心是
-`crates/integrations/zhuye-import`,经 MCP server 工具 + slash 命令接入,
-二进制同时支持终端直跑批量导入)。
+功能型插件实例:
+- [`plugins/harness-import/`](../plugins/harness-import/) —— 把 Claude Code /
+  Codex / ZCode 历史会话导入为烛夜会话,以及**一键导入其他本地 agent 的
+  模型 / MCP 配置**(`zhuye-import config`;能力核心是
+  `crates/integrations/zhuye-import`,经 MCP server 工具 + slash 命令接入,
+  二进制同时支持终端直跑批量导入);
+- [`plugins/goal-queue/`](../plugins/goal-queue/) —— goal(目标模式)与
+  queue(队列模式)的工具入口:启用后在 headless / serve / SDK 会话注册
+  `goal` / `queue` 内置工具并启动队列 driver(FIFO 串行消费,完成信号走
+  引擎 Stop hook,任务持久化 `~/.zhuye/queue/<session>.json`)。
 
 ## CLI 命令参考
 

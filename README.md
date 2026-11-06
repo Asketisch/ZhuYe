@@ -96,7 +96,14 @@ agent.close()
 
 完整列表看 `zhuye --help`，参数看 `zhuye <命令> --help`。
 
-另外有个独立二进制 `zhuye-import`，把 Claude Code / Codex / ZCode 的历史会话导入成烛夜会话，导入后就能 `zhuye exec --resume` 接着跑。
+另外有个独立二进制 `zhuye-import`，把 Claude Code / Codex / ZCode 的历史会话导入成烛夜会话，导入后就能 `zhuye exec --resume` 接着跑。它还能**一键导入其他本地 agent 的配置**（v1.10）：
+
+```bash
+zhuye-import config            # 扫描 Claude Code / Codex / Gemini / opencode / crush
+                                # 的模型 provider 与 MCP server 配置,增量合并进
+                                # ~/.zhuye/config.toml(已有配置不覆盖,重复执行幂等)
+zhuye-import config --from claude-code --dry-run   # 只看会导入什么
+```
 
 ## 配置
 
@@ -112,8 +119,20 @@ base_url = "https://api.kilo.ai/api/gateway"
 model = "free"                                # 免费模型：运行时从清单里挑一个
 temperature = 0.3
 max_tokens = 4096
+
+[model]
+context_window = 128000                       # 模型上下文最大长度(token);自适应输出
+                                              # 预算与压缩阈值都会跟着走。私端/新模型
+                                              # 也可用 [context_windows] 表按模型配:
+                                              # [context_windows]
+                                              # "MiniMax-M3" = 1000000
+reasoning_effort = "high"                     # 思考强度:low|medium|high|max|ultra。
+                                              # 实际上 wire 前会按模型族钳制 ——
+                                              # qwen 系最高 high、deepseek 到 max、
+                                              # OpenAI(gpt-5/o 系)到 ultra
 ```
 
+anthropic 段同样支持免 key 本地网关（`api_key = ""` + 显式 `base_url`，如 LM Studio）。
 改完不用重启进程，配置监听器会热重载。完整的配置项见 [`zhuye-config`](crates/resources/zhuye-config/src/schema/mod.rs)。
 
 ## 环境变量
