@@ -265,7 +265,7 @@ fn replace_jwt(caps: &Captures, marker: &str) -> String {
 
 /// 数据库连接串。保留 scheme 前缀,替换后续整段(含 user:pass@host)。
 fn replace_db_url(caps: &Captures, marker: &str) -> String {
-    let scheme = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+    let scheme = caps.get(1).map_or("", |m| m.as_str());
     format!("{scheme}{marker}")
 }
 
@@ -357,9 +357,9 @@ pub fn default_patterns() -> Vec<CompiledPattern> {
             )
             .expect("KEY_ASSIGN regex must compile"),
             replace: |caps, marker| {
-                let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                let key = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                let sep = caps.get(3).map(|m| m.as_str()).unwrap_or("=");
+                let prefix = caps.get(1).map_or("", |m| m.as_str());
+                let key = caps.get(2).map_or("", |m| m.as_str());
+                let sep = caps.get(3).map_or("=", |m| m.as_str());
                 format!("{prefix}{key}{sep}{marker}")
             },
         },

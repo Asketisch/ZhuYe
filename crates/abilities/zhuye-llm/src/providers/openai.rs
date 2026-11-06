@@ -267,7 +267,7 @@ fn extract_is_free(entry: &Value) -> Option<bool> {
     let prompt = pricing.get("prompt").and_then(Value::as_str)?;
     let completion = pricing.get("completion").and_then(Value::as_str)?;
     // 价格字段是字符串("0" / "0.00" / "0.000");非零一律视为收费。
-    let is_zero = |raw: &str| raw.trim().parse::<f64>().map(|v| v == 0.0).unwrap_or(false);
+    let is_zero = |raw: &str| raw.trim().parse::<f64>().is_ok_and(|v| v == 0.0);
     Some(is_zero(prompt) && is_zero(completion))
 }
 

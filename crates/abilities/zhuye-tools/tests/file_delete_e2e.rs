@@ -295,12 +295,8 @@ fn registry_register_silently_overwrites_same_name() {
     r.register_with_source(ToolSource::Builtin, Arc::new(DeleteTool));
     r.register_with_source(ToolSource::Builtin, Arc::new(DeleteTool));
     // 只一份 delete_file 在 registry 里
-    let names: Vec<String> = r
-        .list()
-        .into_iter()
-        .filter(|n| n == "delete_file")
-        .collect();
-    assert_eq!(names.len(), 1, "同名 tool 重复 register 应合并(覆盖语义)");
+    let count = r.list().into_iter().filter(|n| n == "delete_file").count();
+    assert_eq!(count, 1, "同名 tool 重复 register 应合并(覆盖语义)");
 }
 
 // ── E2E:链路 — 删除后 read ─────────────────────────────────────────────

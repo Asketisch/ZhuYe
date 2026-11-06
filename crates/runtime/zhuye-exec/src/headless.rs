@@ -441,7 +441,7 @@ fn build_side_channel_factory(
             })?;
             // 不写主历史:摘掉 recorder。
             m4.recorder = None;
-            let mut thread_cfg = AgentConfig::new(model.clone(), workspace.clone())
+            let mut thread_cfg = AgentConfig::new(model.clone(), workspace)
                 .with_m4(m4)
                 .with_policy(Arc::new(cfg.routing_policy_with(&model)))
                 .with_sandbox_default(security.sandbox_default)
@@ -701,8 +701,7 @@ pub async fn bootstrap_normal(
     if initial_cfg
         .telemetry
         .as_ref()
-        .map(|t| t.activity_enabled())
-        .unwrap_or(true)
+        .is_none_or(|t| t.activity_enabled())
     {
         let logger = zhuye_telemetry::ActivityLogger::with_default_home();
         let rx = thread.subscribe_session();
@@ -971,8 +970,7 @@ pub async fn bootstrap_resumed(
     if initial_cfg
         .telemetry
         .as_ref()
-        .map(|t| t.activity_enabled())
-        .unwrap_or(true)
+        .is_none_or(|t| t.activity_enabled())
     {
         let logger = zhuye_telemetry::ActivityLogger::with_default_home();
         let rx = thread.subscribe_session();

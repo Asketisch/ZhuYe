@@ -570,7 +570,7 @@ impl CronScheduler {
         let sub_tx = self.sub_tx.clone();
         let store_path = self.store_path.clone();
         let store_lock = self.store_lock.clone();
-        let store_error = self.store_error.clone();
+        let store_error = self.store_error;
         let join = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

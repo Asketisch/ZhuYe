@@ -327,7 +327,7 @@ fn add_spec_and_get_spec_roundtrip() {
     let factory = dummy_factory();
     let mut s = dummy_spec("architect");
     s.system_prompt = "design".into();
-    assert!(factory.add_spec(s.clone()));
+    assert!(factory.add_spec(s));
     let back = factory.get_spec("architect").unwrap();
     assert_eq!(back.role, "architect");
     assert_eq!(back.system_prompt, "design");

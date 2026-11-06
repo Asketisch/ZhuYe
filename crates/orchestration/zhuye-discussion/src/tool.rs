@@ -190,7 +190,7 @@ mod tests {
     fn discussion_tool_set_is_cloneable() {
         // 多个 agent 场景需要 clone(共享 bus inner,独立 registry)
         let set = mk_set(AgentId("a".into()));
-        let set2 = set.clone();
+        let set2 = set;
         // 两个 registry 都拿到 send_message
         assert!(set2.registry.get("send_message").is_some());
     }

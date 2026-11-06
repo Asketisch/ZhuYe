@@ -219,8 +219,7 @@ impl GoalTool {
                     s.turn_count,
                     s.tokens_used,
                     s.token_budget
-                        .map(|b| b.to_string())
-                        .unwrap_or_else(|| "默认 500k".into())
+                        .map_or_else(|| "默认 500k".into(), |b| b.to_string())
                 ),
             ),
             None => goal_output(

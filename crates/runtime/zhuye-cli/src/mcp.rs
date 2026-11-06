@@ -44,8 +44,7 @@ pub fn ls() -> anyhow::Result<()> {
         };
         let timeout = entry
             .timeout_ms
-            .map(|t| format!("{t}ms"))
-            .unwrap_or_else(|| "30000ms".into());
+            .map_or_else(|| "30000ms".into(), |t| format!("{t}ms"));
         let endpoint = entry
             .command
             .clone()

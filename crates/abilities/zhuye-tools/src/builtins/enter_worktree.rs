@@ -70,8 +70,7 @@ impl Tool for EnterWorktreeTool {
         let worktree_path = args
             .get("path")
             .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| default_worktree_path(&git_root, &branch));
+            .map_or_else(|| default_worktree_path(&git_root, &branch), PathBuf::from);
 
         if worktree_path.exists() {
             return Err(ToolError::Execution(format!(

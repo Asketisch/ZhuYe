@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn merge_with_no_toml_returns_md_unchanged() {
         let md = parse_agent_str(MD).unwrap();
-        let merged = merge_with_toml(md.clone(), None);
+        let merged = merge_with_toml(md, None);
         assert_eq!(merged.name, "from-md");
         assert_eq!(merged.description, "desc");
         assert_eq!(merged.system_prompt, "MD body");

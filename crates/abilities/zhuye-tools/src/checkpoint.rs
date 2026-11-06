@@ -94,6 +94,5 @@ pub fn is_valid_commit(workspace: &Path, sha: &str) -> bool {
         .args(["cat-file", "-e", &format!("{sha}^{{commit}}")])
         .current_dir(workspace)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }

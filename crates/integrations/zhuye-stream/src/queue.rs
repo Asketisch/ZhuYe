@@ -393,7 +393,7 @@ impl QueueScheduler {
     /// 的 interval 只兜底(hook 丢失 / pause 后重新 start 的场景)。
     /// 返回的 `QueueDriverHandle` drop 时停止 driver。
     pub fn start(self, tick_secs: u64) -> QueueDriverHandle {
-        let scheduler = self.clone();
+        let scheduler = self;
         let join = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(tick_secs.max(1)));

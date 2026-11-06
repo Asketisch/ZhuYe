@@ -128,9 +128,9 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                     parameters,
                     ..
                 } => zhuye_llm::ToolSpec::Function {
-                    name: name.clone(),
-                    description: description.clone(),
-                    parameters: parameters.clone(),
+                    name,
+                    description,
+                    parameters,
                 },
             })
             .collect()
@@ -142,8 +142,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     let mut request = ChatRequest {
         model: spec
             .split_once('/')
-            .map(|(_, m)| m)
-            .unwrap_or(&spec)
+            .map_or(spec.as_str(), |(_, m)| m)
             .to_string(),
         messages,
         tools,
@@ -197,8 +196,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                     // 换模型 → 请求体的 model 与工具描述覆盖都要跟着换。
                     request.model = spec
                         .split_once('/')
-                        .map(|(_, m)| m)
-                        .unwrap_or(&spec)
+                        .map_or(spec.as_str(), |(_, m)| m)
                         .to_string();
                     zhuye_prompt::apply_model_overrides(
                         &mut request.tools,
@@ -604,7 +602,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             return None;
         }
     }
-    let bare_model = model.split_once('/').map(|(_, m)| m).unwrap_or(&model);
+    let bare_model = model.split_once('/').map_or(model.as_str(), |(_, m)| m);
     let cost_usd = zhuye_llm::providers::price(bare_model, &usage);
     let _ = ctx
         .event_tx
@@ -823,7 +821,7 @@ fn record_failed_model_call(
     if !sink.enabled() {
         return;
     }
-    let bare_model = model.split_once('/').map(|(_, m)| m).unwrap_or(model);
+    let bare_model = model.split_once('/').map_or(model, |(_, m)| m);
     let model_ref = zhuye_telemetry::ModelRef {
         model_id: bare_model.to_string(),
         provider_id: provider.map(|s| s.to_string()),

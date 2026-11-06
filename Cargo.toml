@@ -73,10 +73,10 @@ repository = "https://github.com/Asketisch/ZhuYe"
 [workspace.lints.clippy]
 # 基线:默认 lint 全拒(显式化 CI 的 -D warnings 语义)。
 all = "deny"
-# 性能纪律:冗余克隆与多余 collect 直接拒绝(存量清零后开启;
-# 见后续「收紧」提交)。
-redundant_clone  = { level = "allow", priority = 10 }
-needless_collect = { level = "allow", priority = 10 }
+# 性能纪律:冗余克隆、多余 collect、map 后立即 unwrap_or 均拒绝。
+redundant_clone  = "deny"
+needless_collect = "deny"
+map_unwrap_or    = "deny"
 # M1 宽松清单(原 16 个 lib.rs 顶部逐字复制的 11 条 allow,集中于此)。
 # 逐项修复后收紧:每收紧一条,同一次提交内清零其存量告警。
 # priority 必须高于 all(数值更大者优先),否则会被 all=deny 压掉。

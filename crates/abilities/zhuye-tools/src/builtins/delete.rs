@@ -90,7 +90,7 @@ impl Tool for DeleteTool {
                 message: "path must not be empty".into(),
             });
         }
-        if args.as_object().map(|o| o.len()).unwrap_or(0) != 1 {
+        if args.as_object().map_or(0, |o| o.len()) != 1 {
             return Err(ToolError::InvalidArgs {
                 message: "delete_file only accepts the 'path' field".into(),
             });

@@ -45,8 +45,7 @@ fn mock_binary_path() -> std::path::PathBuf {
             .and_then(|p| p.parent())
             .expect("workspace root");
         let target = std::env::var("CARGO_TARGET_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| workspace_root.join("target"));
+            .map_or_else(|_| workspace_root.join("target"), std::path::PathBuf::from);
         let release = !cfg!(debug_assertions);
         let profile = if release { "release" } else { "debug" };
         let bin = target.join(profile).join("mock_mcp_server");

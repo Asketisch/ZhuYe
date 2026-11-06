@@ -158,7 +158,7 @@ impl PluginManager {
         } else {
             PluginId::new(&manifest.name, marketplace.as_str())?
         };
-        let version = manifest.version.clone().unwrap_or_else(|| "0.0.0".into());
+        let version = manifest.version.unwrap_or_else(|| "0.0.0".into());
 
         // 已装检查 —— 同 (id, scope) 已存在则报错。
         if self.state.entries_for(&id).iter().any(|e| e.scope == scope) {

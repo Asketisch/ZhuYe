@@ -33,8 +33,7 @@ pub(super) fn modified_ms(file: &File) -> u64 {
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 pub(super) fn read_file_at(parent: &OwnedFd, name: &str) -> io::Result<(String, u64)> {

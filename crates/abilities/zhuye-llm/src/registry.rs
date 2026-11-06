@@ -184,7 +184,7 @@ impl ModelRegistry {
 
     /// 解析 `"provider/model"` spec 的 model 部分(纯字符串,无锁)。
     pub fn model_name<'a>(spec: &'a str) -> &'a str {
-        spec.split_once('/').map(|(_, m)| m).unwrap_or(spec)
+        spec.split_once('/').map_or(spec, |(_, m)| m)
     }
 
     /// 列出已注册的所有 provider 名(按字典序)。
@@ -206,7 +206,7 @@ impl ModelRegistry {
     ///
     /// 返回 `None` 表示该 provider 下所有 credential 都不可用。
     pub fn next_for(&self, spec: &str, exclude: &[Arc<dyn ModelClient>]) -> Option<NextClient> {
-        let provider = spec.split_once('/').map(|(p, _)| p).unwrap_or(spec);
+        let provider = spec.split_once('/').map_or(spec, |(p, _)| p);
         let pools = self.pools.read();
         let pool = pools.get(provider)?;
         if pool.entries.is_empty() {
@@ -380,7 +380,7 @@ impl ModelRegistry {
     /// 列出某 provider 下当前不在 cooldown 的 client,供 TUI `/status` /
     /// `healthy_clients` 等只读接口用。
     pub fn healthy_clients(&self, spec: &str) -> Vec<NextClient> {
-        let provider = spec.split_once('/').map(|(p, _)| p).unwrap_or(spec);
+        let provider = spec.split_once('/').map_or(spec, |(p, _)| p);
         let pools = self.pools.read();
         let Some(pool) = pools.get(provider) else {
             return Vec::new();

@@ -177,10 +177,7 @@ fn replace_compactable(
             // review 修复:表内混有大小写(write 小写 / TaskCreate 驼峰),
             // 精确比较会让注册名大小写不一致的工具(如 `Write`)的结果被
             // 误替换掉。改 eq_ignore_ascii_case。
-            let tool_name = call_id_map
-                .get(&t.call_id)
-                .map(String::as_str)
-                .unwrap_or("");
+            let tool_name = call_id_map.get(&t.call_id).map_or("", String::as_str);
             let preserved = PRESERVE_TOOL_NAMES
                 .iter()
                 .any(|p| p.eq_ignore_ascii_case(tool_name));
@@ -249,7 +246,7 @@ mod tests {
     #[test]
     fn below_threshold_noop() {
         let msgs = vec![ChatMessage::System("hi".into())];
-        let (_, r) = microcompact(msgs.clone(), &MicrocompactConfig::default());
+        let (_, r) = microcompact(msgs, &MicrocompactConfig::default());
         assert!(!r.was_compacted);
         assert_eq!(r.before_tokens, r.after_tokens);
     }

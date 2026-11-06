@@ -221,12 +221,10 @@ pub async fn register(
             );
             continue;
         };
-        let timeout = hook
-            .command
-            .get("timeout")
-            .and_then(|v| v.as_u64())
-            .map(std::time::Duration::from_secs)
-            .unwrap_or(zhuye_hooks::DEFAULT_SHELL_HOOK_TIMEOUT);
+        let timeout = hook.command.get("timeout").and_then(|v| v.as_u64()).map_or(
+            zhuye_hooks::DEFAULT_SHELL_HOOK_TIMEOUT,
+            std::time::Duration::from_secs,
+        );
         // 0.12:hooks.json 可用 `env: ["NAME", ...]` 显式放行本应被剔除的
         // 敏感环境变量(白名单优先于 secret 剔除)。未声明时 hook 拿不到
         // ANTHROPIC_API_KEY 等 —— 装插件已等同授权任意代码执行,但没必要
@@ -645,6 +643,6 @@ mod tests {
     fn derive_role_replaces_colons_and_truncates() {
         assert_eq!(derive_role("foo:bar"), "foo_bar");
         assert_eq!(derive_role("a:b:c:d"), "a_b_c_d");
-        assert_eq!(derive_role(&"x".repeat(50).to_string()).len(), 32);
+        assert_eq!(derive_role(&"x".repeat(50)).len(), 32);
     }
 }

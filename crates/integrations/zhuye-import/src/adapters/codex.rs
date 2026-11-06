@@ -80,7 +80,7 @@ impl HarnessAdapter for CodexAdapter {
             return false;
         };
         v.get("type").and_then(Value::as_str) == Some("session_meta")
-            && v.get("payload").map(Value::is_object).unwrap_or(false)
+            && v.get("payload").is_some_and(Value::is_object)
     }
 
     fn parse(

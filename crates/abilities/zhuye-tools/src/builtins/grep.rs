@@ -68,8 +68,7 @@ impl Tool for GrepTool {
         let max_results = args
             .get("max_results")
             .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(DEFAULT_MAX_RESULTS);
+            .map_or(DEFAULT_MAX_RESULTS, |n| n as usize);
         // 0.6:`path` 此前未做任何 workspace 包含校验,直接喂给
         // `WalkBuilder::new(root)` —— `{"pattern": "x", "path": "/"}`
         // 会遍历整个文件系统并把匹配行内容(含绝对路径)吐给模型。

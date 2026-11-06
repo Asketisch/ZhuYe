@@ -254,7 +254,7 @@ mod tests {
     fn ask_user_question_event_serde_roundtrip() {
         let opts = vec![opt("Rust"), opt("Go")];
         let q = Question::new("Lang", "Pick one", opts, false).unwrap();
-        let ev = AskUserQuestionEvent::new("req-1", vec![q.clone()]);
+        let ev = AskUserQuestionEvent::new("req-1", vec![q]);
         let j = serde_json::to_string(&ev).unwrap();
         assert!(j.contains(r#""request_id":"req-1""#));
         assert!(j.contains(r#""header":"Lang""#));

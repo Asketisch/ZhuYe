@@ -191,11 +191,7 @@ pub async fn run_team(team_name: &str, topic: &str) -> anyhow::Result<()> {
         zhuye_pipeline::run_team_pipeline(manager, team_name, topic.to_string(), factory, cancel)
             .await
             .map_err(|e| anyhow!("team pipeline failed: {e}"))?;
-    let failed: Vec<_> = report
-        .nodes
-        .iter()
-        .filter(|n| n.status != "success")
-        .collect();
+    let has_failed = report.nodes.iter().any(|n| n.status != "success");
     println!(
         "Team pipeline '{team_name}' completed: {} ({} ms)",
         report.status, report.total_elapsed_ms
@@ -208,7 +204,7 @@ pub async fn run_team(team_name: &str, topic: &str) -> anyhow::Result<()> {
             println!("      error: {err}");
         }
     }
-    if !failed.is_empty() {
+    if has_failed {
         std::process::exit(1);
     }
     Ok(())

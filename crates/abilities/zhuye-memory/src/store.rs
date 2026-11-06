@@ -625,7 +625,7 @@ mod tests {
         let file = Arc::new(FileMemoryStore::new(dir.path(), home.path()));
         let composite = CompositeMemoryStore {
             memory: Arc::new(InMemoryStore::new()),
-            file: file.clone(),
+            file,
         };
         composite
             .memory

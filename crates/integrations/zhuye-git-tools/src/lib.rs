@@ -62,11 +62,10 @@ pub async fn dispatch_tool(params: &Value, runner: &dyn CommandRunner) -> Value 
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     let result: Result<String, String> = async {
-        let cwd = args
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let cwd = args.get("cwd").and_then(Value::as_str).map_or_else(
+            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            PathBuf::from,
+        );
         match name {
             "git_branch_summary" => {
                 if !zhuye_git::checkpoint::is_repo(&cwd) {

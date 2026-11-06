@@ -143,7 +143,7 @@ async fn register_unregister_full_cycle() {
 
     // 验证 skills 已挂到 catalog
     assert!(skills.plugin_ids().contains(&id.to_string()));
-    let lint_plugin_id = skills.get("lint").and_then(|s| s.plugin_id.clone());
+    let lint_plugin_id = skills.get("lint").and_then(|s| s.plugin_id);
     assert_eq!(lint_plugin_id.as_deref(), Some("phase-b-fixture@inline"));
 
     // 验证 commands 已挂到 CommandRegistry(展开在用户输入层做)

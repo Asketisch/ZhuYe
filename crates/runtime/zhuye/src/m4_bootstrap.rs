@@ -160,7 +160,7 @@ pub fn build_default_m4_with_prompts(
     if coord_cfg.enabled {
         prompt_builder
             .lock()
-            .upsert_section("Coordinator", coord_cfg.system_prompt.clone());
+            .upsert_section("Coordinator", coord_cfg.system_prompt);
     }
 
     // ── Recorder:默认挂 JsonlRolloutWriter ──────────────────
@@ -168,9 +168,7 @@ pub fn build_default_m4_with_prompts(
     // Some(dir) 用自定义目录(SDK 消费者经 ZhuyeBuilder::with_rollout_dir
     // 传入)。完全关闭 rollout 由调用方在拿到 M4Deps 后置
     // `recorder = None`(ZhuyeBuilder::without_rollout)。
-    let base = rollout_base
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(default_base);
+    let base = rollout_base.map_or_else(default_base, |p| p.to_path_buf());
     let recorder: Arc<dyn RolloutRecorder> = Arc::new(JsonlRolloutWriter::new(base, thread_id));
 
     // ── file recovery + subagent registry ────────────────────

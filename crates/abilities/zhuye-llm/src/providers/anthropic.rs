@@ -139,8 +139,7 @@ impl ModelClient for AnthropicClient {
             .config
             .base_url
             .as_deref()
-            .map(|u| u.contains("api.anthropic.com"))
-            .unwrap_or(true);
+            .map_or(true, |u| u.contains("api.anthropic.com"));
         let mut req = self.http.post(&url);
         if !self.config.api_key.is_empty() {
             if is_official {
@@ -1247,12 +1246,7 @@ mod tests {
         };
         let wire = serde_json::to_value(AnthropicRequest::from(req)).unwrap();
         assert!(wire.get("tool_choice").is_none());
-        assert!(
-            wire["tools"]
-                .as_array()
-                .map(|a| a.is_empty())
-                .unwrap_or(true)
-        );
+        assert!(wire["tools"].as_array().is_none_or(|a| a.is_empty()));
     }
 
     /// 流解包:structured_output 的 tool_use 参数被还原为 ContentDelta,

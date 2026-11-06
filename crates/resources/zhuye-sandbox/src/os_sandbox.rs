@@ -181,15 +181,12 @@ impl OsSandbox {
     /// .sandbox_policy` 每 turn 覆盖时使用,绕过 env。strict 仍读 env
     /// (`ZHUYE_SANDBOX_STRICT`,fail-closed 基线不变)。
     pub fn with_enabled(on: bool) -> Self {
-        let strict = std::env::var("ZHUYE_SANDBOX_STRICT")
-            .ok()
-            .map(|s| {
-                !matches!(
-                    s.trim().to_ascii_lowercase().as_str(),
-                    "0" | "false" | "no" | "off"
-                )
-            })
-            .unwrap_or(true);
+        let strict = std::env::var("ZHUYE_SANDBOX_STRICT").ok().is_none_or(|s| {
+            !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        });
         if on {
             let mut s = Self::enabled(extra_writable_from_env());
             s.strict = strict;
@@ -1106,7 +1103,7 @@ mod tests {
         // Seatbelt + allow_network = true → 允许。
         let sb_net = OsSandbox {
             allow_network: true,
-            ..sb.clone()
+            ..sb
         };
         assert!(sb_net.status_line().contains("网络:允许"));
     }

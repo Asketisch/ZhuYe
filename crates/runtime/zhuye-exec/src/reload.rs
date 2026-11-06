@@ -341,6 +341,5 @@ pub(crate) fn diff_sections(
 fn provider_of_spec(model_spec: &str) -> String {
     model_spec
         .split_once('/')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .map_or_else(|| "unknown".to_string(), |(p, _)| p.to_string())
 }

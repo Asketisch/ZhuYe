@@ -166,8 +166,7 @@ where
     let activity = zhuye_config::load_default()
         .telemetry
         .as_ref()
-        .map(|config| config.activity_enabled())
-        .unwrap_or(true)
+        .is_none_or(|config| config.activity_enabled())
         .then(zhuye_telemetry::ActivityLogger::with_default_home);
     // 远程工具桥:请求事件经独立通道产出,由专职 task 转发到 sink。
     let (bridge, mut bridge_rx) = RemoteBridge::new(64);
@@ -460,8 +459,7 @@ fn proactive_session_configured(thread: &Arc<AgentThread>) -> Event {
     let model = cfg.current_model();
     let provider = model
         .split_once('/')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map_or_else(|| "unknown".to_string(), |(p, _)| p.to_string());
     let mut sc = zhuye_protocol::SessionConfiguredEvent::new(model.clone(), provider);
     // v1.x:外部预分配了 session_id 时覆盖随机 id,与 recorder 文件名 /
     // SessionMeta 保持一致(见 submission_loop 同款修复)。

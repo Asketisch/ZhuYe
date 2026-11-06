@@ -410,9 +410,9 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             } => {
                 if effective.contains(name.as_str()) {
                     Some(zhuye_llm::ToolSpec::Function {
-                        name: name.clone(),
-                        description: description.clone(),
-                        parameters: parameters.clone(),
+                        name,
+                        description,
+                        parameters,
                     })
                 } else {
                     None

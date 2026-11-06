@@ -177,12 +177,10 @@ impl LoopGuard {
             }
         }
 
-        let count = self.states.get(&fp).map(|s| s.count).unwrap_or(1);
-        let (same_streak, preview) = self
-            .states
-            .get(&fp)
-            .map(|s| (s.same_result_streak, s.preview.clone()))
-            .unwrap_or((0, String::new()));
+        let count = self.states.get(&fp).map_or(1, |s| s.count);
+        let (same_streak, preview) = self.states.get(&fp).map_or((0, String::new()), |s| {
+            (s.same_result_streak, s.preview.clone())
+        });
         let preview_line = if preview.is_empty() {
             String::new()
         } else {

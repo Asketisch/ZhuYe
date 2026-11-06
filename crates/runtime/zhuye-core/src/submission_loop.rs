@@ -332,10 +332,10 @@ pub async fn submission_loop(
                 // 共享 `cfg.model` 的 Arc 副本,让后续 graph 节点的每次
                 // LLM 调用都读最新值(配合热重载)。`thread_settings.model`
                 // 仍是 String,这里做一次 String→Arc<RwLock> 适配。
-                let model: Arc<parking_lot::RwLock<String>> = thread_settings
-                    .model
-                    .map(|s| Arc::new(parking_lot::RwLock::new(s)))
-                    .unwrap_or_else(|| Arc::clone(&cfg.model));
+                let model: Arc<parking_lot::RwLock<String>> = thread_settings.model.map_or_else(
+                    || Arc::clone(&cfg.model),
+                    |s| Arc::new(parking_lot::RwLock::new(s)),
+                );
                 // review 修复:turn 用 session cancel 的**子令牌** —— 此前
                 // 直接共享 cfg.cancel,`Op::Interrupt` 无法只取消当前 turn
                 // (cancel session 令牌会连整个会话一起杀)。子令牌继承父级
@@ -1602,8 +1602,7 @@ fn sanitize_permission_mode_for_baseline(
 fn provider_of(model_spec: &str) -> String {
     model_spec
         .split_once('/')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .map_or_else(|| "unknown".to_string(), |(p, _)| p.to_string())
 }
 
 /// 把会话级事件扇出给所有订阅者。用 `try_send`,让慢速 / 无界消费的
@@ -1636,8 +1635,7 @@ fn protocol_side_channel_info(
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn fan_out_session(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {

@@ -98,9 +98,7 @@ fn make_m4_deps(agent_name: &str, system_prompt: &str) -> M4Deps {
     let prompt_builder = Arc::new(Mutex::new(PromptBuilder::new()));
     let note_store: Arc<dyn zhuye_notes::NoteStore> =
         Arc::new(zhuye_notes::InMemoryNoteStore::new());
-    let file_recovery = Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(
-        tmp.clone(),
-    )));
+    let file_recovery = Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(tmp)));
     let subagent_registry = zhuye_recovery::SubagentRegistry::shared();
     let mut def = AgentDefinition::default();
     #[allow(clippy::field_reassign_with_default)] // pre-M5

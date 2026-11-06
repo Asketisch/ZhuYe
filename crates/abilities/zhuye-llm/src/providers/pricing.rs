@@ -240,7 +240,7 @@ pub fn pricing_table() -> &'static [ModelPricing] {
 /// 已做);本函数面向展示场景(GUI / CLI 拿到的是完整 spec,如
 /// `"anthropic/claude-sonnet-4-latest"`),自行剥离。大小写不敏感。
 pub fn pricing_for(model_id: &str) -> Option<&'static ModelPricing> {
-    let bare = model_id.split_once('/').map(|(_, m)| m).unwrap_or(model_id);
+    let bare = model_id.split_once('/').map_or(model_id, |(_, m)| m);
     lookup(bare)
 }
 

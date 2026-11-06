@@ -50,8 +50,7 @@ pub fn merge_into_config(cfg: &mut ReflectConfig, imported: &ImportedAgentConfig
     let mut report = MergeReport::default();
     let agent = imported
         .kind
-        .map(|k| k.as_str().to_string())
-        .unwrap_or_else(|| "unknown".into());
+        .map_or_else(|| "unknown".into(), |k| k.as_str().to_string());
 
     // ── providers:按兼容面落到 anthropic / openai 的 credentials 数组 ──
     for p in &imported.providers {

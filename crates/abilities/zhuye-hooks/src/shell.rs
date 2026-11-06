@@ -242,11 +242,7 @@ impl ShellHook {
         let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
         if exit_code != 0 {
             let excerpt: String = {
-                let mut e = if err.trim().is_empty() {
-                    out.clone()
-                } else {
-                    err.clone()
-                };
+                let mut e = if err.trim().is_empty() { out } else { err };
                 e.truncate(200);
                 e
             };

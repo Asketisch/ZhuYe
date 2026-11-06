@@ -478,8 +478,7 @@ pub fn search(query: &str, limit: usize, json: bool) -> anyhow::Result<()> {
         // session id 取前 8 位前缀(resume / show 均支持前缀定位)。
         let id_prefix: String = h
             .session_id
-            .map(|s| s.to_string()[..8].to_string())
-            .unwrap_or_else(|| "-".into());
+            .map_or_else(|| "-".into(), |s| s.to_string()[..8].to_string());
         let role = h.role.as_deref().unwrap_or("-");
         println!("{:<10}  {:<10}  {}", id_prefix, role, h.snippet);
     }
@@ -585,8 +584,7 @@ fn dedupe_prefix_files(files: &[std::path::PathBuf]) -> Vec<(ThreadId, std::path
             .file_name()
             .and_then(|n| n.to_str())
             .and_then(|n| n.strip_suffix(".jsonl"))
-            .map(|stem| !stem.contains('.'))
-            .unwrap_or(false);
+            .is_some_and(|stem| !stem.contains('.'));
         match out.iter_mut().find(|(s, _)| *s == sid) {
             Some((_, prev)) if active => *prev = f.clone(),
             None => out.push((sid, f.clone())),

@@ -120,7 +120,7 @@ impl FileReadStateTracker {
     pub fn canonicalize(workspace: &Path, path: &Path) -> std::io::Result<PathBuf> {
         use std::path::Component;
         let canonical_workspace = workspace.canonicalize()?;
-        let mut final_path = canonical_workspace.clone();
+        let mut final_path = canonical_workspace;
         for component in path.components() {
             match component {
                 Component::CurDir
@@ -424,7 +424,7 @@ mod tests {
         // 分支(conservative stale)。
         let mtime = std::fs::metadata(&p1).unwrap().modified().unwrap();
         let tracker = FileReadStateTracker::new();
-        tracker.mark_read(p1.clone(), mtime, Some(mtime));
+        tracker.mark_read(p1, mtime, Some(mtime));
         assert!(tracker.check_write_safe(&p2, 500).is_ok());
     }
 
@@ -584,7 +584,7 @@ mod tests {
         // 触发"时钟回拨"分支(conservative stale)。
         let mtime = std::fs::metadata(&canonical).unwrap().modified().unwrap();
         shared.mark_read(canonical.clone(), mtime, Some(mtime));
-        let shared2 = shared.clone();
+        let shared2 = shared;
         let h = std::thread::spawn(move || shared2.check_write_safe(&canonical, 500).is_ok());
         assert!(h.join().unwrap());
     }

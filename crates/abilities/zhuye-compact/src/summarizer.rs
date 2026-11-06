@@ -281,8 +281,7 @@ async fn call_summarizer(
         let provider = client.name().to_string();
         let model_name = spec
             .split_once('/')
-            .map(|(_, m)| m)
-            .unwrap_or(&spec)
+            .map_or(spec.as_str(), |(_, m)| m)
             .to_string();
         let req = ChatRequest {
             // 剥掉 "provider/" 前缀，符合 `ChatRequest.model` 纯模型名契约，

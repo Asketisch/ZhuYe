@@ -212,7 +212,7 @@ fn show_missing_manifest_errors() {
         checksum_sha256: None,
     };
     let mut f = InstalledPluginsFile::new();
-    f.upsert(id.clone(), entry);
+    f.upsert(id, entry);
     fs::write(&mgr_path, serde_json::to_string_pretty(&f).unwrap()).unwrap();
 
     let err = show_manifest("ghost@inline").unwrap_err();

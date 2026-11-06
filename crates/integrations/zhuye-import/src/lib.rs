@@ -76,8 +76,7 @@ impl ImportOutcome {
         let target = self
             .path
             .as_deref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(dry-run)".to_string());
+            .map_or_else(|| "(dry-run)".to_string(), |p| p.display().to_string());
         format!(
             "imported {} -> {} ({} turns, {} records, {} warnings) -> {}",
             self.source_id,

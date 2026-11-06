@@ -107,7 +107,7 @@ impl SpanLogWriter {
             }
             ensure_parent(&path)?;
             let file = OpenOptions::new().create(true).append(true).open(&path)?;
-            let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+            let size = file.metadata().map_or(0, |m| m.len());
             g.writer = Some(BufWriter::new(file));
             g.current_path = Some(path);
             g.current_size = size;
@@ -218,7 +218,7 @@ impl ModelIoWriter {
         let path = self.session_path();
         ensure_parent(&path)?;
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let size = file.metadata().map_or(0, |m| m.len());
         g.writer = Some(BufWriter::new(file));
         g.current_path = Some(path);
         g.current_size = size;
@@ -426,12 +426,10 @@ mod tests {
         let files = list_span_log_files(dir.path(), 1);
         let log_dir = dir.path().join(SPAN_LOG_SUBDIR);
         // 应存在至少一个 .1.jsonl 轮转副本。
-        let has_rotated = std::fs::read_dir(&log_dir)
-            .map(|rd| {
-                rd.flatten()
-                    .any(|e| e.file_name().to_string_lossy().contains(".1.jsonl"))
-            })
-            .unwrap_or(false);
+        let has_rotated = std::fs::read_dir(&log_dir).is_ok_and(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().contains(".1.jsonl"))
+        });
         assert!(has_rotated, "expected a rotated .1.jsonl");
         let _ = files;
     }
