@@ -1,14 +1,3 @@
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::or_fun_call)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::manual_div_ceil)]
 //! `zhuye-hooks` —— Hook trait、HookEngine、12 类事件、7 种决策、内置 hook。
 //!
 //! 协议参见 `docs/tools-and-hooks.md §4`。`PermissionMode` 从

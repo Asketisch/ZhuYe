@@ -19,3 +19,6 @@ path = "src/bin/zhuye-git-tools-server.rs"
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

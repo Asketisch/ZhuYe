@@ -32,3 +32,6 @@ tempfile = "3"
 name = "mock_lsp_server"
 path = "src/bin/mock_lsp_server.rs"
 required-features = []
+
+[lints]
+workspace = true

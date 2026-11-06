@@ -1,14 +1,3 @@
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::or_fun_call)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::manual_div_ceil)]
 //! zhuye-llm — ModelClient trait, Capabilities, provider 实现,以及 v1.0
 //! 多 Provider 路由(`ModelRegistry` credential pool / `Credential` /
 //! `RoutingPolicy` / `CooldownEntry`)。

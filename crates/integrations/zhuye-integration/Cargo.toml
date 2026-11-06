@@ -20,3 +20,6 @@ webhook = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
