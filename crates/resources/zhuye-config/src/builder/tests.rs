@@ -385,6 +385,45 @@ fn keyless_openai_with_base_url_is_active_provider() {
     assert_eq!(cfg.active_provider(), Some("openai"));
 }
 
+/// v1.10 功能5:**免 Key 的 Anthropic 兼容端点也要注册** —— 显式
+/// `base_url` + 空 `api_key`(与 openai 段同口径)。本地网关
+/// (LM Studio / claude-code-router 等)不需要 key;client 侧空 key
+/// 不发认证头。
+#[test]
+fn keyless_anthropic_with_base_url_registers_pool() {
+    let cfg = ReflectConfig {
+        anthropic: Some(AnthropicSection {
+            api_key: Some(String::new()),
+            base_url: Some("http://127.0.0.1:1234/v1".into()),
+            model: Some("claude-sonnet-4-latest".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let r = cfg.to_registry().unwrap();
+    assert!(
+        r.get("anthropic").is_some(),
+        "免 Key 的 Anthropic 兼容端点(显式 base_url)必须注册"
+    );
+    // 也能推出 active provider(与注册条件同口径)。
+    assert_eq!(cfg.active_provider(), Some("anthropic"));
+}
+
+/// v1.10 功能5:anthropic 既没 key 也没 base_url → 仍不注册。
+#[test]
+fn keyless_anthropic_without_base_url_still_skipped() {
+    let cfg = ReflectConfig {
+        anthropic: Some(AnthropicSection {
+            api_key: Some(String::new()),
+            base_url: None,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let r = cfg.to_registry().unwrap();
+    assert!(r.get("anthropic").is_none());
+}
+
 /// `[[openai.credentials]]` 的 `api_key` **可以整条省略** —— GUI 的 plan
 /// 编辑器在 key 为空时会省略该行,此前写出的 TOML 直接反序列化失败
 /// (整份配置保存被拒)。
