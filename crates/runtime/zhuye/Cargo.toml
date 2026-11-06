@@ -32,7 +32,7 @@ zhuye-stream     = { workspace = true }
 # WP13:build()/build_async() 的 [sandbox] 装配(OsSandbox::resolve)。
 zhuye-sandbox    = { workspace = true }
 async-trait          = { workspace = true }
-anyhow               = { workspace = true }
+thiserror            = { workspace = true }
 tokio                = { workspace = true }
 tokio-util           = { workspace = true }
 futures              = { workspace = true }
@@ -41,6 +41,7 @@ tracing              = { workspace = true }
 uuid                 = { workspace = true }
 
 [dev-dependencies]
+anyhow     = { workspace = true }
 tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = { workspace = true }
 serde_json = { workspace = true }
