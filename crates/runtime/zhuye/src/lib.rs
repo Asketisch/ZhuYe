@@ -126,6 +126,8 @@ pub use zhuye_telemetry::{
 pub use zhuye_stream::{
     AutopilotConfig, AutopilotManager, AutopilotRun, AutopilotRunStatus, CronDriverHandle,
     CronJobSpec, CronSchedule, CronScheduler, CronStatus, HISTORY_CAP as AUTOPILOT_HISTORY_CAP,
+    QueueCounts, QueueDriverHandle, QueueScheduler, QueueState, QueueStatusSummary, QueueTask,
+    QueueTaskStatus,
 };
 
 // ── 编排:任务 / 团队 / squad(WP10)───────────────────────────────────

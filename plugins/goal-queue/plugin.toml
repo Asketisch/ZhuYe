@@ -1,0 +1,16 @@
+# goal + 队列模式插件 —— v1.10 功能2。
+#
+# goal 模式(引擎内建,Op::EnterGoalMode / Op::ExitGoalMode)与队列模式
+# (zhuye-stream QueueScheduler)的工具入口以插件形态交付:启用本插件后
+# headless / serve / SDK 会话注册 `goal` / `queue` 两个内置工具并启动
+# 队列 driver(FIFO 串行消费,持久化 ~/.zhuye/queue/<session>.json)。
+#
+# 安装:zhuye plugin install plugins/goal-queue --scope user
+# 启用:zhuye plugin enable goal-queue@inline
+#      (等价于把 "goal-queue@inline" 写进 ~/.zhuye/config.toml 的
+#       [plugins].enabled_plugins)
+name = "goal-queue"
+version = "0.1.0"
+description = "目标模式(goal)与队列模式(queue):设定自校验目标、把任务排成 FIFO 队列串行执行"
+keywords = ["goal", "queue", "orchestration"]
+commands = "./commands"
