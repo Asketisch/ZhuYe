@@ -205,7 +205,7 @@ evs = list(agent.submit_op({"type": "query_side_channels"}))
 evs = list(agent.submit_op({
     "type": "user_input",
     "items": [{"type": "text", "text": "调研一下"}],
-    "thread_settings": {"effort": "high"},
+    "thread_settings": {"effort": "high"},  # 档位 low|medium|high|max|ultra;引擎按模型族钳制
 }))
 ```
 

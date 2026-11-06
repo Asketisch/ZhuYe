@@ -140,6 +140,33 @@ def test_K4_非turn_op_迭代器以submission_closed收尾(env_home: Path) -> No
         agent.close()
 
 
+def test_K4b_set_effort新档位max_ultra_真二进制透传(env_home: Path) -> None:
+    """v1.10 功能4:additive 新档位 `max` / `ultra` 经真二进制透传。
+
+    协议 additive 变更的绑定层回归:引擎对新档位与 high 同型静默
+    (submission_closed 收尾),SDK 与 serve 都不得因新增字面量崩溃;
+    `thread_settings.effort` 形态同样接受新档位并正常收尾 turn。
+    """
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"t1"}']))
+    try:
+        for effort in ("max", "ultra"):
+            evs = drain(agent.submit_op({"type": "set_effort", "effort": effort}))
+            assert msg_types(evs) == ["submission_closed"], f"{effort} 收尾异常:{msg_types(evs)}"
+        # thread_settings 形态:随 user_input 下发,turn 正常收尾。
+        evs = drain(
+            agent.submit_op(
+                {
+                    "type": "user_input",
+                    "items": [{"type": "text", "text": "hi"}],
+                    "thread_settings": {"effort": "ultra"},
+                }
+            )
+        )
+        assert "turn_complete" in msg_types(evs), f"turn 未收尾:{msg_types(evs)}"
+    finally:
+        agent.close()
+
+
 # ── K5 interrupt ────────────────────────────────────────────────────────
 
 
