@@ -724,3 +724,58 @@ async fn request_timeout_maps_to_retryable_http_error() {
         "超时应早于服务端响应触发,实际耗时 {elapsed:?}"
     );
 }
+
+/// v1.10 功能5:空 `api_key` 时**任何认证头都不发** —— 免 Key 的
+/// Anthropic 兼容端点(LM Studio / claude-code-router 等本地网关)。
+/// 此前空串也会拼出 `Authorization: Bearer `,部分网关按「提供了错误
+/// 凭据」直接 401。
+#[tokio::test]
+async fn anthropic_empty_api_key_omits_auth_headers() {
+    let server = MockServer::start().await;
+    let sse = make_sse(&[
+        "event: message_start\ndata: {\"message\":{\"id\":\"msg_k\",\"model\":\"claude-3-5-sonnet-latest\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}",
+        "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+        "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}",
+        "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}",
+        "event: message_stop\ndata: {}",
+    ]);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let client = AnthropicClient::new(AnthropicConfig {
+        api_key: String::new(),
+        base_url: Some(server.uri()),
+        timeout: Duration::from_secs(5),
+        temperature: None,
+        max_tokens: None,
+    })
+    .unwrap();
+    let mut stream = client
+        .stream(basic_request(), CancellationToken::new())
+        .await
+        .unwrap();
+    let mut ok = false;
+    while let Some(e) = stream.next().await {
+        if matches!(e, Ok(ChatEvent::ContentDelta(s)) if s == "ok") {
+            ok = true;
+        }
+    }
+    assert!(ok, "空 key 请求应正常收到响应");
+    // 关键断言(事后检查 received_requests,与 openai 空 key 用例同款):
+    // 两种认证头都必须缺席。
+    let received = server.received_requests().await.unwrap();
+    assert!(!received.is_empty(), "expected a request");
+    assert!(
+        received[0].headers.get("Authorization").is_none(),
+        "空 api_key 不应带 Authorization 头,实际:{:?}",
+        received[0].headers.get("Authorization")
+    );
+    assert!(
+        received[0].headers.get("x-api-key").is_none(),
+        "空 api_key 不应带 x-api-key 头,实际:{:?}",
+        received[0].headers.get("x-api-key")
+    );
+}

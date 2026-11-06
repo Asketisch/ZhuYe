@@ -321,13 +321,54 @@ pub enum RiskLevel {
 ///
 /// `Default = Low` 与 Anthropic / OpenAI 默认 reasoning 强度一致;`/effort`
 /// 不带参数时也按 Low 处理,避免 "未设置 = 不思考" 的歧义。
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// v1.10 功能4:新增 `Max` / `Ultra` 两档(变体级 additive,旧端不识别时
+/// 按 serde 未知变体降级)。不同模型族支持的最高档不同(qwen 系到 High、
+/// deepseek 到 Max、OpenAI 到 Ultra),由 `zhuye_llm` 的能力表在**发 wire
+/// 前**钳制 —— 本枚举表达「用户想要的强度」,不代表目标模型一定支持。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffortMirror {
     #[default]
     Low,
     Medium,
     High,
+    Max,
+    Ultra,
+}
+
+impl ReasoningEffortMirror {
+    /// 档位 wire 字符串(`low` / `medium` / `high` / `max` / `ultra`),
+    /// 与 serde snake_case 序列化保持同一口径,供配置解析 / CLI 校验复用。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffortMirror::Low => "low",
+            ReasoningEffortMirror::Medium => "medium",
+            ReasoningEffortMirror::High => "high",
+            ReasoningEffortMirror::Max => "max",
+            ReasoningEffortMirror::Ultra => "ultra",
+        }
+    }
+}
+
+impl std::str::FromStr for ReasoningEffortMirror {
+    type Err = String;
+
+    /// 大小写不敏感解析(`"high"` / `"High"` / `"HIGH"` 均可);
+    /// 未知字符串返回 `Err`(带合法档位清单,便于直接拼进错误提示)。
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lowered = s.trim().to_ascii_lowercase();
+        match lowered.as_str() {
+            "low" => Ok(ReasoningEffortMirror::Low),
+            "medium" => Ok(ReasoningEffortMirror::Medium),
+            "high" => Ok(ReasoningEffortMirror::High),
+            "max" => Ok(ReasoningEffortMirror::Max),
+            "ultra" => Ok(ReasoningEffortMirror::Ultra),
+            _ => Err(format!(
+                "unknown reasoning effort '{s}' (expected one of low|medium|high|max|ultra)"
+            )),
+        }
+    }
 }
 
 /// v1.4 A2:转向消息优先级的协议层镜像(与实现层
