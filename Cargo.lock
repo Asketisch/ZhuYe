@@ -7102,6 +7102,7 @@ dependencies = [
  "zhuye-fs",
  "zhuye-llm",
  "zhuye-permissions",
+ "zhuye-protocol",
 ]
 
 [[package]]
@@ -7193,6 +7194,7 @@ dependencies = [
  "zhuye-config",
  "zhuye-core",
  "zhuye-git",
+ "zhuye-goal",
  "zhuye-hooks",
  "zhuye-llm",
  "zhuye-lsp",
@@ -7305,8 +7307,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+ "toml 0.8.23",
  "tracing",
  "uuid",
+ "zhuye-config",
  "zhuye-protocol",
  "zhuye-rollout",
 ]
