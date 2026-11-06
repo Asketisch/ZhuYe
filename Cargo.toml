@@ -1,5 +1,9 @@
 [workspace]
 resolver = "2"
+# WASM 样例是独立 cargo 项目(不进主构建面,免 wasm target 传染依赖)。
+exclude = [
+    "plugins/plugin-demo/wasm",
+]
 members = [
     # ── protocol ── 底层契约(被所有层依赖)
     "crates/protocol/zhuye-protocol",
@@ -31,6 +35,7 @@ members = [
     "crates/resources/zhuye-fs",
     "crates/resources/zhuye-git",
     "crates/resources/zhuye-ast",
+    "crates/resources/zhuye-wasm",
 
     # ── orchestration ── 多 agent 编排层
     "crates/orchestration/zhuye-subagent",
@@ -122,6 +127,7 @@ zhuye-secrets     = { path = "crates/resources/zhuye-secrets" }
 zhuye-fs          = { path = "crates/resources/zhuye-fs" }
 zhuye-git         = { path = "crates/resources/zhuye-git" }
 zhuye-ast         = { path = "crates/resources/zhuye-ast" }
+zhuye-wasm        = { path = "crates/resources/zhuye-wasm" }
 
 # ── orchestration ── 多 agent 编排层
 zhuye-subagent    = { path = "crates/orchestration/zhuye-subagent" }
@@ -226,6 +232,17 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 
 # 并发原语
 parking_lot = "0.12"
+# v1.x WASM 插件宿主(组件模型;C2):features 裁剪 —— 只要运行时 +
+# 组件模型 + Cranelift 编译器 + async(epoch 中断计时)。default 的
+# cache/gc/wat/profiling 等不进依赖面,控制二进制体积。
+wasmtime = { version = "=30.0.1", default-features = false, features = [
+    "async", "cranelift", "component-model", "runtime",
+] }
+# WASI 实现(wasip2 组件规范隐式 import wasi:io/poll;宿主 linker 必须提供)。
+# 版本锁定 30:与 guest 侧 wit-bindgen 0.40(产 wasi 0.2.3 组件)同代 ——
+# 组件模型接口版本要求精确匹配,宿主与社区组件的 wasi 小版本必须一致;
+# 组合见 wit/README.md 的「工具链矩阵」。
+wasmtime-wasi = { version = "=30.0.1", default-features = false }
 # v1.0.0-rc3:`read_before_edit` hook 测试可控 mtime 漂移。
 filetime    = "0.2"
 

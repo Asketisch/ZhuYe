@@ -224,6 +224,49 @@ pub async fn register(
     // 的声明跳过并 warn,不阻断其余能力挂载。
     let mut registered_hooks = 0usize;
     for (i, hook) in loaded.hooks.iter().enumerate() {
+        // v1.x C3:WASM 组件 hook(command 对象带 `"wasm": "<path>"`)
+        // —— 进程内实例化,决策 JSON 协议与 shell hook 一致,超时 /
+        // Err / 非法 JSON fail-closed Deny。
+        if let Some(wasm_rel) = hook.command.get("wasm").and_then(|v| v.as_str()) {
+            let resolved =
+                wasm_rel.replace("${PLUGIN_ROOT}", &loaded.install_path.to_string_lossy());
+            let name = format!("plugin:{}:{}#{}", loaded.plugin_id, hook.event, i);
+            let Some(kind) = zhuye_hooks::shell::ShellHook::parse_kind(&hook.event) else {
+                tracing::warn!(plugin = %loaded.plugin_id, event = %hook.event, "plugin wasm hook: unknown event name, skipping");
+                continue;
+            };
+            #[cfg(feature = "wasm")]
+            match zhuye_wasm::WasmHook::from_file(std::path::Path::new(&resolved), name.clone()) {
+                Ok(mut wh) => {
+                    if let Some(t) = hook.command.get("timeout").and_then(|v| v.as_u64()) {
+                        wh = wh.with_deadline(std::time::Duration::from_secs(t));
+                    }
+                    let _ = kind; // 事件 kind 由 matcher/dispatch 侧消费,组件对全部事件可达
+                    registries.hooks.register_dyn(std::sync::Arc::new(wh));
+                    registered_hooks += 1;
+                    tracing::info!(plugin = %loaded.plugin_id, hook = %name, "wasm hook registered");
+                    continue;
+                }
+                Err(e) => {
+                    errors.push(RegisterError {
+                        capability: "hooks",
+                        name: hook.event.clone(),
+                        message: format!("WASM 组件加载失败: {e}"),
+                    });
+                    continue;
+                }
+            }
+            #[cfg(not(feature = "wasm"))]
+            {
+                let _ = (name, resolved);
+                tracing::warn!(
+                    plugin = %loaded.plugin_id,
+                    event = %hook.event,
+                    "zhuye-plugin 编译未启用 wasm feature;wasm hook 跳过"
+                );
+                continue;
+            }
+        }
         let Some(kind) = zhuye_hooks::shell::ShellHook::parse_kind(&hook.event) else {
             tracing::warn!(
                 plugin = %loaded.plugin_id,
@@ -282,11 +325,60 @@ pub async fn register(
         );
     }
 
+    // 5. WASM 组件工具(v1.x C3):进程内实例化(zhuye-wasm)。组件
+    // 按 wit/plugin.wit 的 zhuye-tool 世界实现;加载失败显式报错
+    // (RegisterError),不注册半成品。工具经 ToolSource::Plugin(id)
+    // 注册 —— 卸载走精确反注册(B1 粒度化)。
+    for wt in &loaded.wasm_tools {
+        #[cfg(feature = "wasm")]
+        match register_wasm_tool(registries, loaded.plugin_id.as_str(), wt).await {
+            Ok(()) => {}
+            Err(e) => errors.push(RegisterError {
+                capability: "wasm_tools",
+                name: wt.name.clone(),
+                message: e,
+            }),
+        }
+        #[cfg(not(feature = "wasm"))]
+        {
+            let _ = wt;
+            tracing::warn!(
+                plugin = %loaded.plugin_id,
+                tool = %wt.name,
+                "zhuye-plugin 编译未启用 wasm feature;wasm 工具跳过"
+            );
+        }
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
     }
+}
+
+/// 注册单个 WASM 工具(feature `wasm`):组件加载 + describe 校验 +
+/// 注册(外部工具 floor=Prompt 由 registry 侧统一包装)。
+#[cfg(feature = "wasm")]
+async fn register_wasm_tool(
+    registries: &LoaderRegistries,
+    plugin_id: &str,
+    wt: &crate::capabilities::WasmToolLoaded,
+) -> Result<(), String> {
+    let mut tool = zhuye_wasm::WasmTool::from_file(&wt.path)
+        .await
+        .map_err(|e| e.to_string())?;
+    // manifest 显式覆盖描述(可选;describe() 优先 —— 覆盖仅当描述为空)。
+    if tool.description.is_empty()
+        && let Some(d) = &wt.description
+    {
+        tool = tool.with_description_override(d.clone());
+    }
+    registries
+        .tools
+        .register_plugin_tool(plugin_id, Arc::new(tool));
+    tracing::info!(plugin = %plugin_id, tool = %wt.name, "wasm tool registered");
+    Ok(())
 }
 
 /// 反注册 plugin 的所有能力。

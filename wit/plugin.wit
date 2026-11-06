@@ -1,0 +1,49 @@
+package zhuye:plugin@0.1.0;
+
+// ── 烛夜 WASM 插件契约(社区接口的权威定义)────────────────────────────
+//
+// 设计原则:
+// 1. **语言无关**:Rust(wit-bindgen)/ TypeScript(jco)/
+//    Python(componentize-py)/ Go 等任何能产出组件模型 .wasm 的工具链
+//    都可实现本世界;单一 .wasm 文件交付,经 plugin manifest 声明后
+//    由宿主进程内实例化(零子进程、零 JSON-RPC 样板)。
+// 2. **JSON 字符串 ABI**:进出均为 JSON 文本(而非细粒度 WIT record)——
+//    动态语言作者无需生成强类型绑定即可参与;schema 由本文档与
+//    docs/plugins.md 定义,文本契约自描述。
+// 3. **确定性超时 + fail-closed**:宿主对每次导出函数调用施加 deadline
+//    (epoch 中断);调用超时或返回 Err 一律按「Deny(hook)/ 工具错误
+//    (tool)」处理,绝不 panic 主进程。
+//
+// 版本策略:见 wit/README.md(@0.x 期间允许 additive 演进,破坏性
+// 变更升主版本并保持旧世界共存;宿主按包名 + 版本实例化,未知版本
+// 显式报错不降级 panic)。
+
+/// hook 世界:订阅引擎事件的进程内决策函数。
+///
+/// 事件 JSON 为 `HookEvent` 的 wire 形态(与 shell hook 的 stdin 一致);
+/// 返回 JSON 为决策对象,字段与 shell hook 的 stdout 协议逐字段一致:
+/// `{"action": "allow"}` / `{"action": "deny", "reason": "..."}`
+/// / `{"action": "ask", "reason": "..."}` / `{"action": "modify_args",
+/// "args": {...}}` / `{"action": "inject", "content": "..."}`(以
+/// docs/plugins.md 的 hooks 章节为权威)。未知字段被宿主忽略,
+/// 缺省 action 按 Deny(fail-closed)处理。
+world zhuye-hook {
+    /// 处理一次事件。`event` = HookEvent JSON;返回决策 JSON。
+    /// Err(String)= 组件侧显式错误(宿主按 Deny 处理并记录)。
+    export handle: func(event: string) -> result<string, string>;
+}
+
+/// 工具世界:进程内工具实现。
+///
+/// `describe()` 返回 ToolSpec JSON:`{"name": "...", "description": "...",
+/// "parameters": {<JSON Schema>}}`;宿主在插件挂载时调用一次并注册进
+/// ToolRegistry(外部工具 floor=Prompt,权限与 MCP 工具同基线)。
+/// `invoke(args)` 收 `Op::ToolExecutionResponse.output` 同款 JSON 入参,
+/// 返回工具输出 JSON `{"content": [{"type": "text", "text": "..."}],
+/// "is_error": false}`;Err 即工具错误(is_error = true)。
+world zhuye-tool {
+    /// 返回工具声明 JSON(挂载时调用一次)。
+    export describe: func() -> string;
+    /// 执行一次工具调用。
+    export invoke: func(args: string) -> result<string, string>;
+}

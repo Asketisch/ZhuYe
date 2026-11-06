@@ -242,6 +242,8 @@ O6 验证任务更新后的字段与元数据;O7 验证跨进程并发创建的 
 O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存后端);O9 验证损坏、落后或丢失的高水位不会覆盖旧任务;O10 验证超大任务输出的读取上限和截断字段。
 
 ### V 组 v1.10 功能面(`test_v110.py`)
+
+<!-- WASM 插件能力行:V12 -->
 - **V1 思考强度配置**:`config set model.reasoning_effort ultra/Max` 落盘
   字段级断言、非法档位拒绝(文案含合法值清单)、`config ls` 可见、
   `unset` 清空;
@@ -295,6 +297,14 @@ O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存�
   拼接)/ **P-12**(temperature / max_tokens 段配置)落在
   `zhuye-llm` 的 wiremock 回归(openai_non_sse_* / join_endpoint_* /
   openai_config_temperature_*),不在离线 serve 套件(无真实网关)。
+
+### V 组补:v1.x WASM 插件(多语言生态,`test_v110.py`)
+
+- V12:Rust 组件(demo_echo 工具 + wasm hook)经 demo 插件端到端 ——
+  安装/启用 → 进程内实例化 → 回合完成无 error(wasm tool 注册 +
+  hook 决策路径 fail-closed 未误触发)。产物缺失即 skip
+  (`scripts/build_plugin_demo_wasm.sh` 构建)。宿主-组件契约闭环
+  (allow/inject/超时 Deny/describe/invoke)由 `zhuye-wasm` 单测覆盖。
 
 ### C 组 CLI 能力面(`test_cli.py`)
 `serve` 三个恢复入口 / `exec` 输出每行是合法 JSON 且含 turn 事件 /

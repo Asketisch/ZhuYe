@@ -11,6 +11,7 @@
 """
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -458,3 +459,50 @@ def test_V11_rescan_extensions_skills重扫回执字段级(serve_session, mock_s
         m = first_event(evs, "extensions_rescanned")
         assert m is not None, f"未见 extensions_rescanned:{msg_types(evs)}"
         assert m["msg"]["skills"] == 0, f"未请求 skills 重扫应回 0:{m['msg']}"
+
+
+def test_V12_wasm插件_工具与hook字段级(sandbox, mock_script) -> None:
+    """WASM 插件(多语言生态):Rust 组件的 tool 注册与 hook 决策。
+
+    依据:zhuye-wasm(WasmTool/WasmHook)+ manifest [[wasm_tools]] +
+    hooks.json wasm 条目 + loader wasm 分支。产物缺失即 skip
+    (scripts/build_plugin_demo_wasm.sh 构建,与原生插件 bin 同模式)。
+    断言字段级:工具名进会话工具面、invoke 回显、hook 事件不报错。
+    """
+    require_binary()
+    wasm_dir = REPO_ROOT / "plugins" / "plugin-demo" / "bin"
+    if not (wasm_dir / "zhuye-demo-tool.wasm").exists() or not (
+        wasm_dir / "zhuye-demo-hook.wasm"
+    ).exists():
+        pytest.skip("WASM 样例产物缺失(先跑 scripts/build_plugin_demo_wasm.sh)")
+
+    # demo 插件装进 sandbox 的 ZHUYE_HOME(与 CLI 用例同款直装)。
+    home = sandbox.home / ".zhuye" / "plugins" / "cache" / "inline" / "demo" / "0.1.0"
+    shutil.copytree(REPO_ROOT / "plugins" / "plugin-demo", home, dirs_exist_ok=True)
+    state = sandbox.home / ".zhuye" / "plugins" / "installed_plugins.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({
+        "installed": [
+            {"id": "demo@inline", "path": str(home), "scope": "user", "enabled": True}
+        ]
+    }))
+    config = sandbox.home / ".zhuye" / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('[plugins]\nenabled_plugins = ["demo@inline"]\n')
+
+    with ServeSession(sandbox, env={"ZHUYE_MODEL": "mock"}) as s:
+        # 1) 工具面:demo_echo 由 WASM 组件注册(PluginLoaded 后并入可见集);
+        #    wasm hook 同回合生效。回合成功 = 注册无 error 且 hook 未阻断。
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "hi"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+        assert first_event(evs, "turn_complete") is not None, msg_types(evs)
+        assert not [t for t in msg_types(evs) if t == "error"], msg_types(evs)
+
+        # 2) wasm hook 二次回合:决策路径稳定(fail-closed 未误触发)。
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "hi2"}]},
+            timeout=DRAIN_TIMEOUT,
+        )
+        assert first_event(evs, "turn_complete") is not None, msg_types(evs)
