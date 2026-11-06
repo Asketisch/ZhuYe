@@ -32,7 +32,8 @@ UserInputItem = Union[TextItem, ImageItem]
 
 
 class ThreadSettings(TypedDict, total=False):
-    effort: Literal["low", "medium", "high"] | None
+    # v1.10 功能4:max / ultra 为新增档位(不同模型族上限不同,由引擎按模型钳制)
+    effort: Literal["low", "medium", "high", "max", "ultra"] | None
     permission_mode: str | None
     model: str | None
 
@@ -111,7 +112,8 @@ class PlanApprovalOp(TypedDict):
 
 class SetEffortOp(TypedDict):
     type: Literal["set_effort"]
-    effort: Literal["low", "medium", "high"]
+    # v1.10 功能4:max / ultra 为新增档位(不同模型族上限不同,由引擎按模型钳制)
+    effort: Literal["low", "medium", "high", "max", "ultra"]
 
 
 class Answer(TypedDict, total=False):

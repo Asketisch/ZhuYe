@@ -58,7 +58,8 @@ export interface ThreadSettings {
   model?: string | null;
 }
 
-export type ReasoningEffort = 'low' | 'medium' | 'high';
+// v1.10 功能4:max / ultra 为新增档位(不同模型族上限不同,由引擎按模型钳制)
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max' | 'ultra';
 
 export type PermissionMode = 'auto' | 'prompt' | 'plan' | 'deny' | 'bubble';
 
