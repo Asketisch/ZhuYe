@@ -20,3 +20,11 @@ skills = "./skills"
 hooks = "./hooks/hooks.json"
 # mcp_servers:MCP server 声明(工具以 mcp__plugin:demo:<名>__<工具> 注入)
 mcp_servers = "./.mcp.json"
+
+# ── WASM 组件工具(v1.x C3;产物经 scripts/build_plugin_demo_wasm.sh 构建)──
+# 组件按 wit/plugin.wit 的 zhuye-tool 世界实现,宿主进程内实例化。
+# bin/*.wasm 不入库(与原生插件二进制同模式);产物缺失时该工具
+# 注册失败仅 warn,不影响其余能力。
+[[wasm_tools]]
+path = "bin/zhuye-demo-tool.wasm"
+name = "demo_echo"

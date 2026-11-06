@@ -12,6 +12,7 @@ zhuye-tools    = { workspace = true }
 zhuye-hooks    = { workspace = true }
 zhuye-mcp      = { workspace = true }
 zhuye-skills   = { workspace = true }
+zhuye-wasm     = { workspace = true, optional = true }
 zhuye-subagent = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
@@ -36,3 +37,7 @@ zhuye-protocol = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+wasm = ["dep:zhuye-wasm"]
+default = ["wasm"]

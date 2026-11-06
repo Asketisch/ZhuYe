@@ -218,6 +218,18 @@ pub enum McpServerSpec {
     Inline(BTreeMap<String, McpServerConfig>),
 }
 
+/// v1.x C3:单个 WASM 工具声明。`path` 相对 plugin 根(通常
+/// `bin/<name>.wasm`);`description` 可选(manifest 覆盖 describe())。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WasmToolSpec {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 // ── 用户配置 ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,6 +306,12 @@ pub struct PluginManifest {
 
     #[serde(default)]
     pub mcp_servers: McpServerSpec,
+
+    /// v1.x C3:WASM 组件工具(多语言插件生态)。组件按 `wit/plugin.wit`
+    /// 的 `zhuye-tool` 世界实现;运行时经 zhuye-wasm 进程内实例化。
+    /// 旧 zhuye 对本字段静默忽略(向后兼容)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wasm_tools: Vec<WasmToolSpec>,
 
     /// 启用时询问用户的配置项。**敏感字段不进 settings.json,进 OS keychain**(v1)。
     #[serde(default)]

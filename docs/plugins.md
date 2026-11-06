@@ -571,3 +571,51 @@ server 是干净 env(只有 HOME / PATH + 显式 env),依赖宿主变量会炸;
 | [`tools-and-hooks.md`](tools-and-hooks.md) | 内置工具与 hooks 设计契约(12 事件 / 7 决策) |
 | [`architecture.md`](architecture.md) | 六层架构与 `zhuye-plugin` 定位 |
 | [`../plugins/README.md`](../plugins/README.md) | 仓库自带插件目录约定 |
+
+## WASM 插件(多语言)
+
+v1.x 支持 **WebAssembly 组件** 形态的插件能力(进程内热插拔,面向社区
+生态):任何语言(Rust / TypeScript / Python / Go …)按 `wit/plugin.wit`
+契约产出单个 `.wasm` 文件即可交付 —— 零子进程、零 JSON-RPC 样板、零
+cargo 依赖(对使用者)。
+
+### 契约与 ABI
+
+- 权威定义:`wit/plugin.wit`(`package zhuye:plugin@0.1.0`),两个世界:
+  - `zhuye-hook`:`handle(event: string) -> result<string, string>` —
+    事件 JSON 进 / 决策 JSON 出,与 shell hook 的 stdin/stdout 协议
+    **逐字段一致**;
+  - `zhuye-tool`:`describe()` 返回工具声明 JSON(name/description/
+    parameters),`invoke(args)` 返回协议层 `ToolOutput` 完整 wire 形态
+    (`content` / `is_error` / `metadata` / `elapsed_ms` 字段必须齐全)。
+- ABI 刻意选 **JSON 字符串**:动态语言作者无需生成强类型绑定。
+- 版本策略与语言矩阵见 `wit/README.md`。**工具链矩阵锁定**:宿主
+  wasmtime 30.0.1 ↔ guest wit-bindgen 0.40(组件 wasi 小版本要求精确
+  匹配,升级须宿主与样例同步)。
+
+### 安全语义
+
+- **确定性超时**:每次调用 deadline(epoch 中断)默认 30s,hooks.json
+  的 `timeout` 可覆盖;超时 → hook Deny / tool `is_error`(fail-closed)。
+- **沙箱**:组件默认无文件系统 / 无网络 / 无环境变量(纯计算)。
+- **权限**:WASM 工具走外部工具 floor = `Prompt`(与 MCP 工具同基线,
+  组件声明 `Auto` 不生效)。
+- **热插拔**:挂载/卸载复用 `[plugins]` 现有控制面(config 变更 →
+  diff 挂卸),卸载按 plugin id 精确反注册。
+
+### 构建(Rust 样例)
+
+```bash
+scripts/build_plugin_demo_wasm.sh   # 产 plugins/plugin-demo/bin/*.wasm
+```
+
+样例:`plugins/plugin-demo/wasm/rust/`(hook:PostToolUse 注入提醒;
+tool:echo)。声明方式:`plugin.toml` 的 `[[wasm_tools]]` 段 +
+`hooks.json` 条目的 `"wasm": "${PLUGIN_ROOT}/bin/x.wasm"` 字段。
+产物缺失时该能力注册仅 warn,不影响其余挂载。
+
+### 路线图
+
+TypeScript(jco)/ Python(componentize-py)样例与
+`zhuye plugin new --lang` 脚手架在后续版本提供;契约(`wit/`)已
+按语言无关设计,先行实现不因宿主演进破坏。

@@ -10,6 +10,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "wasm",
+            "wasm": "${PLUGIN_ROOT}/bin/zhuye-demo-hook.wasm",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }

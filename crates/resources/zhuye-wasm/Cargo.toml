@@ -1,0 +1,21 @@
+[package]
+name = "zhuye-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: WASM 组件插件宿主(wasmtime 组件模型;多语言插件运行时)"
+
+[dependencies]
+wasmtime      = { workspace = true }
+wasmtime-wasi = { workspace = true }
+async-trait  = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+zhuye-hooks    = { workspace = true }
+zhuye-tools    = { workspace = true }
+zhuye-protocol = { workspace = true }
+
+[lints]
+workspace = true
