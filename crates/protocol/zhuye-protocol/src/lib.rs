@@ -56,7 +56,8 @@ pub use question::{
     MIN_OPTIONS, Question, QuestionError, QuestionOption,
 };
 pub use recorder::{
-    MemoryOp, MessageRole, NullRecorder, RolloutRecord, RolloutRecorder, SessionInfo, derive_title,
+    MemoryOp, MessageRole, NullRecorder, RolloutError, RolloutRecord, RolloutRecorder, SessionInfo,
+    derive_title,
 };
 pub use stats::{ModelUsage, SessionStats};
 pub use submission::{Submission, W3cTraceContext};

@@ -1351,23 +1351,28 @@ struct MemRecorder {
 
 #[async_trait]
 impl zhuye_protocol::RolloutRecorder for MemRecorder {
-    async fn record(&self, r: zhuye_protocol::RolloutRecord) -> anyhow::Result<()> {
+    async fn record(
+        &self,
+        r: zhuye_protocol::RolloutRecord,
+    ) -> Result<(), zhuye_protocol::RolloutError> {
         self.records.lock().push(r);
         Ok(())
     }
     async fn replay(
         &self,
         _session_id: zhuye_protocol::ThreadId,
-    ) -> anyhow::Result<Vec<zhuye_protocol::RolloutRecord>> {
+    ) -> Result<Vec<zhuye_protocol::RolloutRecord>, zhuye_protocol::RolloutError> {
         Ok(self.records.lock().clone())
     }
-    async fn list_sessions(&self) -> anyhow::Result<Vec<zhuye_protocol::SessionInfo>> {
+    async fn list_sessions(
+        &self,
+    ) -> Result<Vec<zhuye_protocol::SessionInfo>, zhuye_protocol::RolloutError> {
         Ok(vec![])
     }
     async fn truncate_after(
         &self,
         to_turn_id: Option<&zhuye_protocol::TurnId>,
-    ) -> anyhow::Result<usize> {
+    ) -> Result<usize, zhuye_protocol::RolloutError> {
         let mut records = self.records.lock();
         let Some(target) = to_turn_id else {
             return Ok(0);

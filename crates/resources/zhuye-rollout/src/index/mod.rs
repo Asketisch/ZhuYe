@@ -598,7 +598,7 @@ pub fn truncate_session_after_turn(
     base: &Path,
     session_id: ThreadId,
     to_turn_id: Option<&TurnId>,
-) -> anyhow::Result<usize> {
+) -> Result<usize, zhuye_protocol::RolloutError> {
     match find_session_path(base, session_id) {
         Some(path) => crate::writer::truncate_file_after_turn(&path, to_turn_id),
         None => Ok(0),

@@ -37,7 +37,7 @@ use crate::path::session_path_at;
 use crate::redact::serialize_redacted;
 use crate::types::{MAX_ROTATED_FILES, ROTATE_AFTER_BYTES};
 use chrono::{DateTime, Utc};
-use zhuye_protocol::{RolloutRecord, RolloutRecorder, SessionInfo, ThreadId, TurnId};
+use zhuye_protocol::{RolloutError, RolloutRecord, RolloutRecorder, SessionInfo, ThreadId, TurnId};
 
 /// 缓存的 `SessionMeta` 快照,用于轮转时重写。`session_id` 直接挂在
 /// [`JsonlRolloutWriter`] 上;此处只缓存 `model` + `started_at` 以便
@@ -198,7 +198,7 @@ impl JsonlRolloutWriter {
 
 #[async_trait]
 impl RolloutRecorder for JsonlRolloutWriter {
-    async fn record(&self, r: RolloutRecord) -> anyhow::Result<()> {
+    async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError> {
         let line = serialize_redacted(&r)?;
         let line_bytes = line.len() as u64 + 1; // +1 是换行符
 
@@ -234,12 +234,12 @@ impl RolloutRecorder for JsonlRolloutWriter {
         Ok(())
     }
 
-    async fn replay(&self, session_id: ThreadId) -> anyhow::Result<Vec<RolloutRecord>> {
+    async fn replay(&self, session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
         crate::reader::replay(&self.base_dir, session_id).await
     }
 
-    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
-        crate::index::list_sessions(&self.base_dir).map_err(anyhow::Error::from)
+    async fn list_sessions(&self) -> Result<Vec<SessionInfo>, RolloutError> {
+        Ok(crate::index::list_sessions(&self.base_dir)?)
     }
 
     /// 破坏性回退:`to_turn_id`(含)及其后的记录全部丢弃,只保留之前的。
@@ -255,7 +255,7 @@ impl RolloutRecorder for JsonlRolloutWriter {
     ///
     /// 仅作用于当前活跃文件;已 rotate 的 `.N` 文件不处理
     /// (罕见边界,/fork 是替代)。
-    async fn truncate_after(&self, to_turn_id: Option<&TurnId>) -> anyhow::Result<usize> {
+    async fn truncate_after(&self, to_turn_id: Option<&TurnId>) -> Result<usize, RolloutError> {
         let mut g = self.inner.lock();
         Self::ensure_open(self, &mut g)?;
         Self::truncate_inner(&mut g, to_turn_id)
@@ -266,11 +266,8 @@ impl JsonlRolloutWriter {
     /// `truncate_after` 的同步核心,持有 `inner` 锁的调用方使用。
     /// 解析当前活跃文件,定位 `to_turn_id`(或 None = 最后一个 turn)所在行,
     /// 备份 + 原子 rewrite 到该行之前(不含)。返回丢弃的 `Message` 记录数。
-    fn truncate_inner(g: &mut Inner, to_turn_id: Option<&TurnId>) -> anyhow::Result<usize> {
-        let path = g
-            .current_path
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("truncate_after: no active rollout file"))?;
+    fn truncate_inner(g: &mut Inner, to_turn_id: Option<&TurnId>) -> Result<usize, RolloutError> {
+        let path = g.current_path.clone().ok_or(RolloutError::NoActiveFile)?;
 
         // 共享纯核心:解析 + 定位 + 计算保留文本。
         let content = std::fs::read_to_string(&path)?;
@@ -342,7 +339,10 @@ fn truncate_content(content: &str, to_turn_id: Option<&TurnId>) -> Option<(Strin
 /// 一致的(截断后追加的记录天然落在截断点之后)。
 ///
 /// 返回被丢弃的 `Message` 记录数;未找到目标 turn 时 no-op 返回 0。
-pub fn truncate_file_after_turn(path: &Path, to_turn_id: Option<&TurnId>) -> anyhow::Result<usize> {
+pub fn truncate_file_after_turn(
+    path: &Path,
+    to_turn_id: Option<&TurnId>,
+) -> Result<usize, RolloutError> {
     let content = std::fs::read_to_string(path)?;
     let Some((kept, dropped)) = truncate_content(&content, to_turn_id) else {
         return Ok(0);
@@ -390,7 +390,7 @@ fn locate_cut(
 
 /// 把截断前的全文复制到 `<path>.rewind-<unix_ts>.bak`(同目录),可恢复。
 /// 失败不致命:warn 后继续(用户已通过原子 rewrite 得到一致性保证)。
-fn write_backup(path: &Path, content: &str) -> anyhow::Result<()> {
+fn write_backup(path: &Path, content: &str) -> std::io::Result<()> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
