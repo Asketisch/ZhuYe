@@ -52,6 +52,19 @@ fn tools_json() -> Value {
                     },
                     "required": ["source_kind"]
                 }
+            },
+            {
+                "name": "import_config",
+                "description": "一键导入其他主流本地 agent(Claude Code / Codex / Gemini / opencode / crush)的模型 provider 与 MCP server 配置到烛夜 config.toml。只做增量合并:已有同名 MCP / 同 label 凭证跳过,不覆盖用户已有配置。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source_kind": {"type": "string", "enum": ["auto", "claude-code", "codex", "gemini", "opencode", "crush"], "description": "来源种类,默认 auto(全部已知来源)"},
+                        "dry_run": {"type": "boolean", "description": "只报告不写入"},
+                        "home": {"type": "string", "description": "来源 HOME 根目录(默认 $HOME)"},
+                        "output": {"type": "string", "description": "目标 config.toml 路径(默认 ~/.zhuye/config.toml)"}
+                    }
+                }
             }
         ]
     })
@@ -121,6 +134,7 @@ fn dispatch_tool(params: &Value, base: &std::path::Path) -> Value {
     let result = match name {
         "import_session" => tool_import_session(&args, base),
         "list_importable" => tool_list_importable(&args),
+        "import_config" => tool_import_config(&args),
         other => Err(format!("unknown tool: {other}")),
     };
     match result {
@@ -245,6 +259,85 @@ fn tool_list_importable(args: &Value) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// v1.10 功能1:配置导入 MCP 工具(与 CLI `zhuye-import config` 同一管线)。
+fn tool_import_config(args: &Value) -> Result<String, String> {
+    use crate::config_import::{self, merge};
+
+    let raw_kind = args
+        .get("source_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("auto");
+    let kinds: Vec<config_import::ConfigSourceKind> = if raw_kind == "auto" {
+        config_import::ConfigSourceKind::all().to_vec()
+    } else {
+        let k = config_import::ConfigSourceKind::parse(raw_kind)
+            .ok_or_else(|| format!("未知 source_kind: {raw_kind}"))?;
+        vec![k]
+    };
+    let home = args
+        .get("home")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .ok_or("无法确定来源 HOME")?;
+    let target = args
+        .get("output")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .or_else(zhuye_config::default_config_path)
+        .ok_or("无法确定目标 config.toml 路径")?;
+    let dry_run = args
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let (mut cfg, load_warnings) = merge::load_target(&target);
+    let (mut imported_list, mut warnings) = (Vec::new(), load_warnings);
+    for kind in kinds {
+        match config_import::sources::parse_source(kind, &home) {
+            Ok(c) => imported_list.push(c),
+            Err(e) => warnings.push(format!("{}: {e}", kind.as_str())),
+        }
+    }
+    let mut report = merge::MergeReport::default();
+    for imported in &imported_list {
+        let r = merge::merge_into_config(&mut cfg, imported);
+        report.providers_added.extend(r.providers_added);
+        report.providers_skipped.extend(r.providers_skipped);
+        report.mcp_added.extend(r.mcp_added);
+        report.mcp_skipped.extend(r.mcp_skipped);
+        report.warnings.extend(r.warnings);
+    }
+    report.warnings.extend(warnings);
+
+    let mut lines = vec![format!("目标配置:{}", target.display())];
+    for l in &report.providers_added {
+        lines.push(format!("  + provider 凭证:{l}"));
+    }
+    for l in &report.providers_skipped {
+        lines.push(format!("  = provider 凭证(已存在,跳过):{l}"));
+    }
+    for n in &report.mcp_added {
+        lines.push(format!("  + mcp server:{n}"));
+    }
+    for n in &report.mcp_skipped {
+        lines.push(format!("  = mcp server(已存在,跳过):{n}"));
+    }
+    if report.is_empty() && report.warnings.is_empty() {
+        lines.push("未发现可导入的配置(未安装这些 agent 或配置为空)".into());
+    }
+    for w in &report.warnings {
+        lines.push(format!("  ! {w}"));
+    }
+    if dry_run {
+        lines.push("(dry-run:以上内容未写入)".into());
+    } else {
+        merge::write_target(&target, &cfg)?;
+        lines.push(format!("已写入:{}", target.display()));
+    }
+    Ok(lines.join("\n"))
+}
+
 /// 递归收集目录下的 .jsonl(深度上限 8,防御符号循环)。
 fn collect_jsonl(dir: &std::path::Path, out: &mut Vec<ImportSource>, depth: usize) {
     if depth > 8 {
@@ -291,7 +384,10 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["import_session", "list_importable"]);
+        assert_eq!(
+            names,
+            ["import_session", "list_importable", "import_config"]
+        );
 
         assert!(
             handle_request("ping", &Value::Null, std::path::Path::new("/tmp/unused")).is_object()
@@ -338,6 +434,62 @@ mod tests {
         let text2 = out2["content"][0]["text"].as_str().unwrap();
         assert!(text2.contains("skipped"), "{text2}");
         assert!(text2.contains("已存在"));
+    }
+
+    /// v1.10 功能1:import_config 端到端(临时 HOME + 显式 output)。
+    #[test]
+    fn import_config_tool_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let output = dir.path().join("out").join("config.toml");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude").join("settings.json"),
+            r#"{"env": {"ANTHROPIC_API_KEY": "sk-ant-x"}, "model": "claude-sonnet-4-latest"}"#,
+        )
+        .unwrap();
+
+        let out = dispatch_tool(
+            &json!({
+                "name": "import_config",
+                "arguments": {
+                    "source_kind": "claude-code",
+                    "home": home.display().to_string(),
+                    "output": output.display().to_string()
+                }
+            }),
+            std::path::Path::new("/tmp/unused"),
+        );
+        assert_eq!(out["isError"], false, "{out}");
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("imported:claude-code:anthropic"), "{text}");
+
+        // 落盘字段级校验。
+        let body = std::fs::read_to_string(&output).unwrap();
+        let cfg: zhuye_config::ReflectConfig = toml::from_str(&body).unwrap();
+        let anth = cfg.anthropic.as_ref().unwrap();
+        assert_eq!(anth.credentials.len(), 1);
+        assert_eq!(anth.credentials[0].label, "imported:claude-code:anthropic");
+        assert_eq!(anth.credentials[0].api_key, "sk-ant-x");
+        assert_eq!(
+            anth.credentials[0].model.as_deref(),
+            Some("claude-sonnet-4-latest")
+        );
+
+        // 再跑一次:幂等跳过。
+        let out2 = dispatch_tool(
+            &json!({
+                "name": "import_config",
+                "arguments": {
+                    "source_kind": "claude-code",
+                    "home": home.display().to_string(),
+                    "output": output.display().to_string()
+                }
+            }),
+            std::path::Path::new("/tmp/unused"),
+        );
+        let text2 = out2["content"][0]["text"].as_str().unwrap();
+        assert!(text2.contains("已存在,跳过"), "{text2}");
     }
 
     /// list_importable 缺 kind 报错文案。
