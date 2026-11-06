@@ -170,6 +170,7 @@ fn make_m4() -> M4Deps {
         file_recovery,
         subagent_registry,
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
     }
 }
 

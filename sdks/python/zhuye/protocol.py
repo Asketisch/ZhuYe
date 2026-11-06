@@ -483,6 +483,15 @@ class ConfigReloaded(_ConfigReloadedOptionalFields):
     type: Literal["config_reloaded"]
 
 
+class _ExtensionsRescannedOptionalFields(TypedDict, total=False):
+    skills: int
+    commands: bool
+
+
+class ExtensionsRescanned(_ExtensionsRescannedOptionalFields):
+    type: Literal["extensions_rescanned"]
+
+
 class CollabStarted(TypedDict):
     type: Literal["collab_started"]
     discussion_id: str
@@ -652,6 +661,7 @@ EventMsg = Union[
     ErrorEvent,
     StreamError,
     ConfigReloaded,
+    ExtensionsRescanned,
     CollabStarted,
     CollabMessage,
     CollabFinished,

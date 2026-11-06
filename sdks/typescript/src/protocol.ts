@@ -152,6 +152,7 @@ export type EventMsg =
   | ErrorEvent
   | StreamError
   | ConfigReloaded
+  | ExtensionsRescanned
   | CollabStarted
   | CollabMessage
   | CollabFinished
@@ -377,6 +378,12 @@ export interface StreamError {
 export interface ConfigReloaded {
   type: 'config_reloaded';
   sections_changed?: string[];
+}
+
+export interface ExtensionsRescanned {
+  type: 'extensions_rescanned';
+  skills?: number;
+  commands?: boolean;
 }
 
 export interface CollabStarted {

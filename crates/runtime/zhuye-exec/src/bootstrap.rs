@@ -173,6 +173,8 @@ pub(crate) fn bootstrap_m4(
     let skill_dirs: Vec<&std::path::Path> = vec![&ws_skills, &home_skills];
     let skills_catalog = SkillsCatalog::new();
     skills_catalog.scan(&skill_dirs);
+    // owned 目录序进 M4Deps:运行时 RescanExtensions 与 bootstrap 同源
+    // (scan 结束后 move,免 clone)。
     // 内置 skill 包(15 项编码技能,编译期嵌入)**默认关闭**:框架层不向
     // 会话注入应用层偏好的目录死文本,`[active] bundled_skills = true` 显式
     // 开启。同名 skill 以文件目录扫描结果优先(`merge_bundled` 内部
@@ -181,6 +183,9 @@ pub(crate) fn bootstrap_m4(
         zhuye_skills::merge_bundled(&skills_catalog);
     }
     let skills_catalog = Arc::new(skills_catalog);
+    // owned 目录序进 M4Deps:运行时 RescanExtensions 与 bootstrap 同源
+    // (scan 结束后 move,免 clone)。
+    let skill_dirs_owned = vec![ws_skills, home_skills];
 
     // 注册 `load_skill` 工具。
     // v1.3:走 `register_runtime_tool`,触发 Runtime 源的 `Prompt` 安全
@@ -339,6 +344,7 @@ pub(crate) fn bootstrap_m4(
         // v1.6.1:`/prompt` Switch 重扫用的目录序(home 在前、workspace 在后,
         // 与启动时 init_library 同序)。
         prompt_dirs: vec![home_prompts, ws_prompts],
+        skill_dirs: skill_dirs_owned,
     })
 }
 

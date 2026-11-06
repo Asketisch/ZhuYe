@@ -200,6 +200,7 @@ async fn handle_reload_pushes_config_reloaded_event() {
         None,
         &ToolRegistry::default(),
         None,
+        None,
     )
     .await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -256,6 +257,7 @@ async fn handle_reload_returns_err_when_channel_closed() {
         None,
         &ToolRegistry::default(),
         None,
+        None,
     )
     .await;
     assert!(result.is_err(), "expected Err when channel is closed");
@@ -298,6 +300,7 @@ async fn handle_reload_updates_agent_config_model_when_section_changes() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await;
@@ -343,6 +346,7 @@ async fn handle_reload_does_not_touch_model_when_credentials_change() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await;
@@ -395,6 +399,7 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await
@@ -466,6 +471,7 @@ async fn handle_reload_swaps_active_provider_spec() {
         None,
         &ToolRegistry::default(),
         None,
+        None,
     )
     .await
     .expect("handle_reload ok");
@@ -523,6 +529,7 @@ async fn handle_reload_applies_coordinator_section() {
         None,
         &tools,
         None,
+        None,
     )
     .await
     .expect("enable coordinator reload");
@@ -553,6 +560,7 @@ async fn handle_reload_applies_coordinator_section() {
         &tx,
         None,
         &tools,
+        None,
         None,
     )
     .await

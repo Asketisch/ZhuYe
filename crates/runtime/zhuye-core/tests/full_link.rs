@@ -395,6 +395,7 @@ fn make_m4(recorder: Option<Arc<dyn RolloutRecorder>>, compactor: Arc<Compactor>
         file_recovery: Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(tmp))),
         subagent_registry: zhuye_recovery::SubagentRegistry::shared(),
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
     }
 }
 

@@ -50,6 +50,7 @@ async fn model_field_change_propagates_to_agent_config() {
         None,
         &ToolRegistry::default(),
         None,
+        None,
     )
     .await
     .expect("handle_reload ok");
@@ -113,6 +114,7 @@ async fn no_op_reload_does_not_touch_model() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await

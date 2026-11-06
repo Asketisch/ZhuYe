@@ -115,6 +115,7 @@ fn make_m4(compactor: Arc<Compactor>) -> M4Deps {
         file_recovery: Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(tmp))),
         subagent_registry: zhuye_recovery::SubagentRegistry::shared(),
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
     }
 }
 

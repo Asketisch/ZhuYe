@@ -41,6 +41,17 @@ pub struct PromptSwitchedEvent {
     pub active_layers: Vec<String>,
 }
 
+/// v1.x:`Op::RescanExtensions` 的应答 —— 运行时扩展目录重扫完成。
+/// UI 据此提示「skills 已刷新」并展示新条目数。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtensionsRescannedEvent {
+    /// skills 目录重扫后的条目总数(文件型 + 插件型;未请求重扫时为 0)。
+    pub skills: usize,
+    /// commands 重扫请求是否被处理。当前 commands 索引的运行时重扫尚未
+    /// 接线(命令正文实时读盘,增删文件走插件重挂路径),恒为 `false`。
+    pub commands: bool,
+}
+
 /// `SystemTime` 的 serde 适配 —— 序列化为 UNIX 秒数,跨进程持久化稳定。
 pub(super) mod systemtime_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
