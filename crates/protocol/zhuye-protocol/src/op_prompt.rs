@@ -15,7 +15,11 @@ pub enum PromptAction {
     /// 重扫提示词库(bootstrap 时记录的目录序),让用户对
     /// `.zhuye/prompts/*.md` 的修改即时生效。应答 `EventMsg::PromptSwitched`。
     /// `layer` 保留槽位:未来支持强制聚焦某层;`None` = 全量重扫。
-    Switch { layer: Option<String> },
+    Switch {
+        /// 保留槽位:未来用于强制聚焦的层名。当前一律全量重扫,该值仅回显为
+        /// 应答的 `PromptSwitchedEvent.action`(`None` 时为 `"reload"`)。
+        layer: Option<String>,
+    },
 }
 
 #[cfg(test)]

@@ -20,6 +20,8 @@ pub struct PlanRequestEvent {
     /// 生成并注册到 gate 后,必须把同一个 id 透传给 TUI,否则 waiter 永不唤醒。
     #[serde(default)]
     pub plan_id: PlanId,
+    /// 规划目标描述(如 `"refactor auth module"`),TUI 弹窗与 approval
+    /// reason 均会展示。
     pub task: String,
 }
 
@@ -31,7 +33,9 @@ pub struct PlanRequestEvent {
 /// `PlanRejected`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanReadyEvent {
+    /// plan 标识,与 `PlanApproved` / `PlanRejected` 及 `Op::PlanApproval.id` 配对。
     pub plan_id: PlanId,
+    /// plan 完整 markdown 内容。
     pub markdown: String,
     /// plan markdown 落盘路径(`<workspace>/.zhuye/plan/<plan_id>.md`)。
     ///
@@ -47,6 +51,7 @@ pub struct PlanReadyEvent {
 /// v1.x Plan mode: 用户在 approval modal 上 approve plan。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanApprovedEvent {
+    /// 被批准的 plan 标识(同 `PlanReady.plan_id`)。
     pub plan_id: PlanId,
 }
 /// v1.x Plan mode: 用户在 approval modal 上 reject plan。`reason` 是
@@ -54,7 +59,10 @@ pub struct PlanApprovedEvent {
 /// 加 review comment 时填具体原因)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanRejectedEvent {
+    /// 被拒绝的 plan 标识(同 `PlanReady.plan_id`)。
     pub plan_id: PlanId,
+    /// 可选的拒绝原因(如用户选择修订 plan、Plan 工具调用失败的错误信息);
+    /// `None` = 未提供。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -91,7 +99,9 @@ pub struct PlanDraftUpdatedEvent {
 /// tool queue、TUI status bar)都根据这个事件更新本地视图。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PermissionModeChangedEvent {
+    /// 切换前的权限模式。
     pub from: PermissionMode,
+    /// 切换后的权限模式。
     pub to: PermissionMode,
 }
 
@@ -119,12 +129,16 @@ pub enum PlanStepStatus {
 /// `Vec<PlanStepState>`,按 `index` 就地更新或追加。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanStepEvent {
+    /// 所属 plan 标识(与 `PlanReady.plan_id` 配对)。
     pub plan_id: PlanId,
+    /// step 在 plan 中的序号(从 0 起)。
     pub index: usize,
     /// 已知 step 总数(0 = 未知 / 动态)。TUI 取 max(已知 total, index+1)。
     #[serde(default)]
     pub total: usize,
+    /// step 当前状态。
     pub status: PlanStepStatus,
+    /// step 简短描述(从 plan markdown 提取的清单项文本);`None` = 未提供。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }

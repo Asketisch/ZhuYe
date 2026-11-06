@@ -11,8 +11,11 @@ use serde::{Deserialize, Serialize};
 /// 拥有的 method 数。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LspServerStartedEvent {
+    /// LSP server 名(`[lsp_servers.<name>]` 的键)。
     pub server: String,
+    /// 从 `ServerCapabilities` 推出的已支持 LSP method 列表。
     pub methods: Vec<String>,
+    /// 该 server 接管的 LSP languageId 集合(去重)。
     pub language_ids: Vec<String>,
 }
 
@@ -21,7 +24,10 @@ pub struct LspServerStartedEvent {
 /// `will_retry` 永远为 `false`(LSP 不自动重连,配置错就让用户修)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LspServerFailedEvent {
+    /// LSP server 名(同 `LspServerStarted.server`)。
     pub server: String,
+    /// 失败原因描述。
     pub error: String,
+    /// 是否还会自动重试(LSP 不自动重连,恒为 `false`)。
     pub will_retry: bool,
 }

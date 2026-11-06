@@ -4,10 +4,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::item::ToolOutput;
 
+/// 工具调用开始:模型开始生成某个 tool_use 时即发出(早于参数增量与执行)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallBeginEvent {
+    /// 工具调用标识(LLM tool_use id),与同一调用的 `ToolCallArgsDelta` /
+    /// `ToolCallOutputDelta` / `ToolCallEnd` 配对。
     pub call_id: String,
+    /// 被调用的工具名。
     pub tool_name: String,
+    /// 调用参数(JSON);core 流式路径在参数生成前即发出本事件,此处为
+    /// `null`(参数增量见 `ToolCallArgsDelta`)。
     pub args: serde_json::Value,
     /// B1/B2:子 agent 会话 id(嵌套工具调用链追踪)。`None` = 直接工具调用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -31,11 +37,16 @@ pub struct ToolCallArgsDeltaEvent {
     pub delta: String,
 }
 
+/// 工具调用结束:工具执行完毕(成功或失败)后发出,携带完整输出。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallEndEvent {
+    /// 工具调用标识(与 `ToolCallBegin.call_id` 配对)。
     pub call_id: String,
+    /// 工具完整输出(内容块 + 错误标记 + metadata + 耗时)。
     pub output: ToolOutput,
+    /// 工具执行是否失败(同 `output.is_error`)。
     pub is_error: bool,
+    /// 工具执行耗时(毫秒,同 `output.elapsed_ms`)。
     pub elapsed_ms: u64,
     /// B1/B2:与 `ToolCallBeginEvent.child_id` 对应。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,6 +79,7 @@ pub struct ToolExecutionRequestEvent {
 /// `call_id` 与 Begin/End 配对;`is_stderr` 区分流(界面可着色)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallOutputDeltaEvent {
+    /// 工具调用标识(与 `ToolCallBegin` / `ToolCallEnd` 的 `call_id` 配对)。
     pub call_id: String,
     /// 本段增量文本(按行或按块,由工具侧决定粒度)。
     pub delta: String,

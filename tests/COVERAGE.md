@@ -391,6 +391,12 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
   `session_meta.session_id`、会话**文件名**里的 thread id 是三个不同的
   uuid(exec/serve 路径未注入 `with_session_id`)。`--resume` 支持**文件名**
   thread id 与 SessionMeta 内部 id;`zhuye session ls` 显示后者(P5 覆盖双 ID)。
+- **双 SDK `ThreadSettings` 字段与 Rust 侧错配**(2026-11 文档补齐时发现):
+  Python / TS SDK 的 `ThreadSettings` 声明了 `effort` / `permission_mode` /
+  `model`,而 Rust `ThreadSettingsOverrides` 实际字段为 `model` /
+  `approval_policy` / `sandbox_policy` / `max_tool_concurrency` —— SDK 传入的
+  `effort` / `permission_mode` 会被**静默丢弃**,后三个字段 SDK 侧无法传入。
+  修复需同步双 SDK 类型与 Rust 侧,属 wire 兼容的 additive 变更,待专项处理。
 
 ## 6. 已知缺陷与修复状态
 

@@ -6895,6 +6895,7 @@ dependencies = [
  "parking_lot",
  "serde_json",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "tracing",
@@ -7118,6 +7119,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "tracing",
@@ -7316,10 +7318,10 @@ dependencies = [
 name = "zhuye-integration"
 version = "0.1.9"
 dependencies = [
- "anyhow",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]

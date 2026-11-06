@@ -24,6 +24,7 @@ pub struct SubagentProgressEvent {
     pub child_id: String,
     /// 子代理角色(spec.role,如 `"explorer"`)。
     pub role: String,
+    /// 进度类别(助手文本 / 工具开始 / 工具结束),决定 `text` 的含义。
     pub kind: SubagentProgressKind,
     /// 文本载荷:Message = 助手文本;ToolBegin = 工具名;ToolEnd =
     /// `工具名`(由调用方从 Begin 事件积累的 call_id → 工具名映射回填;
@@ -39,9 +40,13 @@ pub struct SubagentProgressEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentRunStateMirror {
+    /// 正在运行。
     Running,
+    /// 已正常完成(子代理 turn 以 `TurnComplete` 收尾)。
     Completed,
+    /// 执行失败。
     Failed,
+    /// 已取消(定向中断、`TurnAborted` / `ShutdownComplete` 收尾或父级提前放弃)。
     Cancelled,
 }
 
@@ -49,8 +54,11 @@ pub enum SubagentRunStateMirror {
 /// 在查询时点从共享状态槽克隆 —— 读取方永不阻塞子代理本身。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentStatusSnapshot {
+    /// 子代理会话号(同 `SubagentProgressEvent.child_id`)。
     pub child_id: String,
+    /// 子代理角色(spec.role,如 `"explorer"`)。
     pub role: String,
+    /// 运行状态(首个终态为准,进入终态后不再变化)。
     pub state: SubagentRunStateMirror,
     /// 启动时间(RFC3339)。
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -73,6 +81,8 @@ pub struct SubagentStatusSnapshot {
 /// 为空表示没有匹配的在飞/近期子代理(或引擎未启用状态中心)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentStatusEvent {
+    /// 子代理状态快照列表(在飞 + 保留期内的近期终态);
+    /// `Op::QuerySubagents.child_id` 指定时只含该子代理。
     pub children: Vec<SubagentStatusSnapshot>,
 }
 
