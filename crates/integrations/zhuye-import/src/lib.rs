@@ -33,6 +33,7 @@
 
 pub mod adapter;
 pub mod adapters;
+pub mod config_import;
 pub mod convert;
 pub mod error;
 pub mod mcp_server;
