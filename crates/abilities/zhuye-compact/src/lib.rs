@@ -1,14 +1,3 @@
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::or_fun_call)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::manual_div_ceil)]
 //! zhuye-compact —— 上下文压缩策略。
 //!
 //! Zhuye 路线图的 M4 阶段。对应 zhuye 的 `graph.py:330-609`

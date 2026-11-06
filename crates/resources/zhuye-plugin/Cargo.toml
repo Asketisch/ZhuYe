@@ -33,3 +33,6 @@ tokio-util    = { workspace = true }
 wiremock      = { workspace = true }
 zhuye-llm   = { workspace = true }
 zhuye-protocol = { workspace = true }
+
+[lints]
+workspace = true

@@ -32,3 +32,6 @@ tracing-opentelemetry = { workspace = true }
 tempfile = "3"
 wiremock = { workspace = true }
 tokio    = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

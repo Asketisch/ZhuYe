@@ -25,3 +25,6 @@ tempfile       = "3"
 rusqlite = { workspace = true, features = ["backup"] }
 # 仅二进制入口用(clap derive 解析直跑模式参数)。
 clap = { workspace = true }
+
+[lints]
+workspace = true

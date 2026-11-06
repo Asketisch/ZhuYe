@@ -66,6 +66,32 @@ rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/Asketisch/ZhuYe"
 
+# ── workspace 统一 lint 配置 ──────────────────────────────
+# 各 crate 的 Cargo.toml 通过 `[lints] workspace = true` 接线;
+# 收紧 / 放宽只改这一处,不再在 lib.rs 顶部散装复制。
+# CI 门槛 `cargo clippy --workspace --all-targets -- -D warnings` 不变。
+[workspace.lints.clippy]
+# 基线:默认 lint 全拒(显式化 CI 的 -D warnings 语义)。
+all = "deny"
+# 性能纪律:冗余克隆与多余 collect 直接拒绝(存量清零后开启;
+# 见后续「收紧」提交)。
+redundant_clone  = { level = "allow", priority = 10 }
+needless_collect = { level = "allow", priority = 10 }
+# M1 宽松清单(原 16 个 lib.rs 顶部逐字复制的 11 条 allow,集中于此)。
+# 逐项修复后收紧:每收紧一条,同一次提交内清零其存量告警。
+# priority 必须高于 all(数值更大者优先),否则会被 all=deny 压掉。
+derivable_impls    = { level = "allow", priority = 10 }
+needless_lifetimes = { level = "allow", priority = 10 }
+collapsible_if     = { level = "allow", priority = 10 }
+io_other_error     = { level = "allow", priority = 10 }
+collapsible_match  = { level = "allow", priority = 10 }
+needless_borrow    = { level = "allow", priority = 10 }
+redundant_closure  = { level = "allow", priority = 10 }
+or_fun_call        = { level = "allow", priority = 10 }
+option_if_let_else = { level = "allow", priority = 10 }
+nonminimal_bool    = { level = "allow", priority = 10 }
+manual_div_ceil    = { level = "allow", priority = 10 }
+
 [workspace.dependencies]
 # ── protocol ── 底层契约
 zhuye-protocol = { path = "crates/protocol/zhuye-protocol" }

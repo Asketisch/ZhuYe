@@ -29,3 +29,6 @@ futures             = { workspace = true }
 tempfile            = "3"
 # 仅测试桩(RolloutRecorder 的测试实现)使用;生产代码不依赖。
 anyhow              = { workspace = true }
+
+[lints]
+workspace = true

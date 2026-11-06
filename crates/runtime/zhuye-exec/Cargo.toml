@@ -80,3 +80,6 @@ zhuye-llm      = { workspace = true }
 # `zhuye-exec` 集成测试通过 workspace 路径推算定位该 binary。
 # cargo 在 build zhuye-exec 时会先 build zhuye-mcp(dependency),
 # 所以 `target/{debug,release}/mock_mcp_server` 总在 test 运行前就生成。
+
+[lints]
+workspace = true

@@ -46,3 +46,5 @@ tokio-util = { workspace = true }
 serde_json = { workspace = true }
 tempfile   = "3"
 zhuye-plugin = { workspace = true }
+[lints]
+workspace = true

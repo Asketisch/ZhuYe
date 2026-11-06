@@ -26,3 +26,5 @@ zhuye-tools  = { workspace = true }
 [dev-dependencies]
 zhuye-llm    = { workspace = true }
 tempfile = "3"
+[lints]
+workspace = true
