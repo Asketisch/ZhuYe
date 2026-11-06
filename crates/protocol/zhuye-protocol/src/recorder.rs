@@ -366,6 +366,26 @@ pub fn derive_title(text: &str) -> Option<String> {
 /// [`derive_title`] 的最大字符数(视觉宽度,非字节)。
 pub const TITLE_MAX_CHARS: usize = 48;
 
+/// Rollout 持久化错误。
+///
+/// JSONL 实现的失败来源:文件 I/O 与行级 JSON 解析。`record` 走
+/// best-effort 语义(实现方吞错误记日志,不打断进行中的 turn),本错误
+/// 主要出现在 `replay` / `list_sessions` / `truncate_after` 的调用方。
+#[derive(Debug, thiserror::Error)]
+pub enum RolloutError {
+    /// 文件系统 I/O 失败(读写、目录遍历、备份写入)。
+    #[error("rollout io error: {0}")]
+    Io(#[from] std::io::Error),
+    /// 记录行不是合法 JSON 或不符合 `RolloutRecord` 结构。replay 语义
+    /// 要求格式错误的行以 `tracing::warn!` 跳过,只有不可恢复的解析
+    /// 失败才返回本错误。
+    #[error("rollout serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+    /// 目标会话没有已落盘的 rollout 文件可操作(如尚未写过任何记录)。
+    #[error("rollout: no active rollout file")]
+    NoActiveFile,
+}
+
 /// [`RolloutRecord`] 的可插拔持久化后端。
 ///
 /// `Send + Sync` 使其可挂在 `NodeContext` 上;`Debug` 使其在错误路径中
@@ -375,14 +395,14 @@ pub const TITLE_MAX_CHARS: usize = 48;
 pub trait RolloutRecorder: Send + Sync + std::fmt::Debug {
     /// 追加一条记录到底层存储。实现应当遵循 best-effort:写入失败仅
     /// 记录日志并继续,避免磁盘满等错误中断正在进行的 turn。
-    async fn record(&self, r: RolloutRecord) -> anyhow::Result<()>;
+    async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError>;
 
     /// 重放 `session_id` 的全部记录。格式错误的行应以 `tracing::warn!`
     /// 跳过,不应中断整体 replay。
-    async fn replay(&self, session_id: ThreadId) -> anyhow::Result<Vec<RolloutRecord>>;
+    async fn replay(&self, session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError>;
 
     /// 列出全部已持久化的会话,按时间倒序。开销低(只读每个文件的第一行)。
-    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>>;
+    async fn list_sessions(&self) -> Result<Vec<SessionInfo>, RolloutError>;
 
     /// 破坏性回退:丢弃 `to_turn_id`(含)及其之后的所有记录,只保留
     /// 出现在该 turn *之前* 的记录。`to_turn_id = None` 表示丢弃最后一轮
@@ -394,7 +414,7 @@ pub trait RolloutRecorder: Send + Sync + std::fmt::Debug {
     ///
     /// 安全性:JSONL 实现会在截断前先写一个 `.bak` 兄弟文件,因此被丢弃
     /// 的 turn 仍可在磁盘上恢复。
-    async fn truncate_after(&self, to_turn_id: Option<&TurnId>) -> anyhow::Result<usize>;
+    async fn truncate_after(&self, to_turn_id: Option<&TurnId>) -> Result<usize, RolloutError>;
 }
 
 /// 空操作的 recorder。供不关心持久化的测试使用,也用于 `AgentConfig::default`,
@@ -404,19 +424,19 @@ pub struct NullRecorder;
 
 #[async_trait]
 impl RolloutRecorder for NullRecorder {
-    async fn record(&self, _r: RolloutRecord) -> anyhow::Result<()> {
+    async fn record(&self, _r: RolloutRecord) -> Result<(), RolloutError> {
         Ok(())
     }
 
-    async fn replay(&self, _session_id: ThreadId) -> anyhow::Result<Vec<RolloutRecord>> {
+    async fn replay(&self, _session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
         Ok(Vec::new())
     }
 
-    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+    async fn list_sessions(&self) -> Result<Vec<SessionInfo>, RolloutError> {
         Ok(Vec::new())
     }
 
-    async fn truncate_after(&self, _to_turn_id: Option<&TurnId>) -> anyhow::Result<usize> {
+    async fn truncate_after(&self, _to_turn_id: Option<&TurnId>) -> Result<usize, RolloutError> {
         Ok(0)
     }
 }

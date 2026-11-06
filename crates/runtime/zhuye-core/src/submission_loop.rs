@@ -2250,6 +2250,7 @@ fn user_input_items_to_messages(items: Vec<UserInputItem>) -> Vec<ChatMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zhuye_protocol::RolloutError;
 
     #[test]
     fn provider_of_strips_model_name() {
@@ -2542,20 +2543,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RolloutRecorder for CapturingRecorder {
-        async fn record(&self, r: RolloutRecord) -> anyhow::Result<()> {
+        async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError> {
             self.0.lock().push(r);
             Ok(())
         }
         async fn replay(
             &self,
             _session_id: zhuye_protocol::ThreadId,
-        ) -> anyhow::Result<Vec<RolloutRecord>> {
+        ) -> Result<Vec<RolloutRecord>, RolloutError> {
             Ok(self.0.lock().clone())
         }
-        async fn list_sessions(&self) -> anyhow::Result<Vec<zhuye_protocol::SessionInfo>> {
+        async fn list_sessions(&self) -> Result<Vec<zhuye_protocol::SessionInfo>, RolloutError> {
             Ok(Vec::new())
         }
-        async fn truncate_after(&self, _to_turn_id: Option<&TurnId>) -> anyhow::Result<usize> {
+        async fn truncate_after(
+            &self,
+            _to_turn_id: Option<&TurnId>,
+        ) -> Result<usize, RolloutError> {
             Ok(0)
         }
     }

@@ -7535,7 +7535,6 @@ dependencies = [
 name = "zhuye-protocol"
 version = "0.1.9"
 dependencies = [
- "anyhow",
  "async-trait",
  "chrono",
  "schemars 0.8.22",
