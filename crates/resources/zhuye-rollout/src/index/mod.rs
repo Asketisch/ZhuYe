@@ -769,10 +769,7 @@ pub fn write_session_sidecar(
     #[cfg(not(unix))]
     {
         let path = sidecar_dir.join(format!("{id}.{kind}"));
-        if std::fs::symlink_metadata(&path)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-        {
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "session sidecar path is a symlink",
