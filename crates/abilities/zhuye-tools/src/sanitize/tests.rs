@@ -531,3 +531,52 @@ fn multiline_tool_output_redacts_per_line() {
         "line 1\nAPI_KEY=[REDACTED]\nline 3\nTOKEN=[REDACTED]\nline 5"
     );
 }
+
+// ── property-based(v1.x,rust-testing skill 落地)───────────────────
+// 脱敏的核心不变式:幂等、不 panic、原始文本短路零改写。用随机输入
+// (含密钥形态 / 多字节 / 空串)探索正则组合的盲区。
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::sanitize::sanitize_text;
+    use proptest::prelude::*;
+
+    fn probe_sanitizer() -> Sanitizer {
+        Sanitizer::with_defaults()
+    }
+
+    /// 任意文本策略:混入常见密钥前缀形态,提高命中替换路径的概率。
+    fn arb_text() -> impl Strategy<Value = String> {
+        "(.*([A-Za-z_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Za-z_]*=[^\\s]{6,40}|[\\u{4e00}-\\u{9fff}a-zA-Z0-9:/.=_-]){0,60}){0,10}"
+    }
+
+    proptest! {
+        /// 不变式 1:幂等 —— 脱敏两次结果与一次相同(输出里不再含
+        /// 可再脱敏的密钥形态;即便含,幂等性保证不会二次破坏)。
+        #[test]
+        fn sanitize_is_idempotent(s in arb_text()) {
+            let san = probe_sanitizer();
+            let once = sanitize_text(&s, &san);
+            let twice = sanitize_text(&once, &san);
+            prop_assert_eq!(once.as_ref(), twice.as_ref(), "脱敏必须幂等: 输入={:?}", s);
+        }
+
+        /// 不变式 2:永不 panic(任意字节输入,含无效 UTF-8 邻界情形的
+        /// 正则引擎边界)。
+        #[test]
+        fn sanitize_never_panics(s in "(.*\\.){0,40}") {
+            let san = probe_sanitizer();
+            let _ = sanitize_text(&s, &san);
+        }
+
+        /// 不变式 3:空输入 → 空输出;非空输入 → 非空输出
+        /// (脱敏不吞掉整段文本)。
+        #[test]
+        fn sanitize_preserves_emptiness(s in arb_text()) {
+            let san = probe_sanitizer();
+            let out = sanitize_text(&s, &san);
+            prop_assert_eq!(s.is_empty(), out.is_empty());
+        }
+    }
+}

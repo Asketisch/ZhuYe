@@ -389,7 +389,18 @@ zhuye plugin enable my-formatter@my-tools
 
 ---
 
-## 7. 版本兼容须知
+## 7. 测试建议(插件作者)
+
+插件仓库的 Rust 部分建议:
+
+- 纯函数(参数替换、状态机、解析)用 **property-based 测试**
+  (`proptest`)探索手写用例盲区 —— 本仓 `zhuye-protocol` / `zhuye-tools`
+  / `zhuye-compact` 各有现成范例(`mod proptests`);
+- 覆盖率用 `cargo llvm-cov --summary-only`(基线 80%+);
+- hook 决策 JSON 请按 §3.4 的字段表写**正反用例**(缺 `decision` →
+  fail-closed 是协议行为,不是 bug)。
+
+## 8. 版本兼容须知
 
 - **wire 协议 v0 冻结**:引擎与 SDK / 客户端之间只做 additive 演进,
   旧插件与旧客户端不因新增能力破坏。
@@ -402,7 +413,7 @@ zhuye plugin enable my-formatter@my-tools
 
 ---
 
-## 8. 参考与样例
+## 9. 参考与样例
 
 - 参考手册(字段级):[`plugins.md`](plugins.md)
 - marketplace 发布:[`plugin-marketplace.md`](plugin-marketplace.md)

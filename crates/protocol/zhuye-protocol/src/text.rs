@@ -155,3 +155,65 @@ mod tests {
         assert_eq!(truncate_chars("😀😀", 1), "😀");
     }
 }
+
+// ── property-based(v1.x,rust-testing skill 落地)───────────────────
+// UTF-8 边界处理是本模块的核心不变式;手写用例难以穷举多字节组合,
+// 用随机输入(含 emoji / CJK / 拉丁混合)探索截断函数的盲区。
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// 任意字符串策略:拉丁 + CJK + emoji + 组合字符混合,专打多字节边界。
+    fn arb_text() -> impl Strategy<Value = String> {
+        "(.*[\\u{0}-\\u{10FFFF}]){0,40}"
+    }
+
+    proptest! {
+        /// 不变式 1:floor_char_boundary 永远返回合法 char 边界
+        /// (在返回值处切片不 panic),且 ≤ min(idx, len)。
+        #[test]
+        fn floor_boundary_is_valid(
+            s in arb_text(),
+            idx in 0..200usize,
+        ) {
+            let b = floor_char_boundary(&s, idx);
+            prop_assert!(b <= idx, "floor 结果 {} 不得超过 idx {}", b, idx);
+            prop_assert!(b <= s.len(), "floor 结果 {} 不得超过 len {}", b, s.len());
+            prop_assert!(s.is_char_boundary(b), "返回值必须是 char 边界: s={:?} idx={} b={}", s, idx, b);
+        }
+
+        /// 不变式 2:truncate_str 永不 panic、长度 ≤ max_bytes、
+        /// 结果是原串前缀且落在 char 边界上。
+        #[test]
+        fn truncate_str_never_panics_and_respects_limit(
+            s in arb_text(),
+            max in 0..80usize,
+        ) {
+            let t = truncate_str(&s, max);
+            prop_assert!(t.len() <= max, "截断后 {} 超过上限 {}", t.len(), max);
+            prop_assert!(s.starts_with(t), "截断结果必须是原串前缀");
+            prop_assert!(s.is_char_boundary(t.len()), "截断点必须是 char 边界");
+        }
+
+        /// 不变式 3:truncate_chars 按**字符**截断 —— 结果字符数 ≤ max,
+        /// 且永不 panic(emoji / CJK 混合是历史踩坑区)。
+        #[test]
+        fn truncate_chars_counts_chars_not_bytes(
+            s in arb_text(),
+            max in 0..30usize,
+        ) {
+            let t = truncate_chars(&s, max);
+            prop_assert!(t.chars().count() <= max, "字符数 {} 超过上限 {}", t.chars().count(), max);
+        }
+
+        /// 不变式 4:两次截断幂等(先按大上限再按同值,结果不变)。
+        #[test]
+        fn truncate_str_is_idempotent(s in arb_text(), max in 0..80usize) {
+            let once = truncate_str(&s, max);
+            let twice = truncate_str(once, max);
+            prop_assert_eq!(once, twice);
+        }
+    }
+}

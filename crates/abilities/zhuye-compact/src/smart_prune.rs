@@ -745,3 +745,41 @@ mod tests {
         );
     }
 }
+
+// ── property-based(v1.x,rust-testing skill 落地)───────────────────
+// derive_title 与 truncate_tool_result 是纯函数:字符/字节边界与省略号
+// 不变式用随机输入(多字节 / 空白 / 超长)探索。
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// truncate_tool_result 不变式:永不 panic、max_chars=0 时结果
+        /// 极短(≤ 省略号标记大小),任意 call_id_map 均安全。
+        #[test]
+        fn truncate_tool_result_never_panics(
+            content in "(.*[\\u{0}-\\u{10FFFF}]){0,300}",
+            max_chars in 0..500usize,
+        ) {
+            let map = std::collections::HashMap::new();
+            let out = truncate_tool_result("tool:unknown:0", &content, max_chars, 5, &map);
+            // max_chars=0 时:任意形态都应截到极短(标记或空)。
+            if max_chars == 0 {
+                prop_assert!(out.chars().count() <= 40, "零上限时不应保留正文: {}", out.chars().count());
+            }
+        }
+
+        /// truncate_chars 幂等不变式(按字符截断不切多字节)。
+        #[test]
+        fn truncate_chars_is_idempotent(
+            s in "(.*[\\u{0}-\\u{10FFFF}]){0,200}",
+            max in 0..80usize,
+        ) {
+            let once = truncate_chars(&s, max);
+            let twice = truncate_chars(&once, max);
+            prop_assert_eq!(once, twice);
+        }
+    }
+}
