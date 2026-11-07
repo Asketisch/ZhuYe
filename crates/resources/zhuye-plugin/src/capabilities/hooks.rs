@@ -61,6 +61,13 @@ struct HookCommandEntry {
     /// command JSON 时静默丢弃,loader 读到的永远是空白名单,声明了也不生效。
     #[serde(default)]
     env: Option<Vec<String>>,
+    /// v1.x C3:WASM 组件 hook —— `"wasm": "${PLUGIN_ROOT}/bin/x.wasm"`。
+    /// 与 `env` 字段同款教训:loader 按 `command.get("wasm")` 判定 wasm
+    /// 路径,但本结构体此前没有该字段,`expand` 重建 JSON 时把它丢了,
+    /// wasm hook 永远落进 shell 路径再因缺 `command` 被跳过 —— 整条
+    /// wasm hook 链路从未生效。
+    #[serde(default)]
+    wasm: Option<String>,
 }
 
 pub fn load(spec: &HookSpec, plugin_root: &Path) -> Result<Vec<LoadedHook>> {
@@ -126,15 +133,17 @@ fn expand(
         for entry in entries {
             for cmd in entry.hooks {
                 // 命令串里的 `${PLUGIN_ROOT}` 展开为插件安装目录 ——
-                // 插件被复制进 cache 后相对路径不再成立。
+                // 插件被复制进 cache 后相对路径不再成立。wasm 路径同款展开。
                 let command = cmd
                     .command
                     .map(|c| super::expand_plugin_root(&c, plugin_root));
+                let wasm = cmd.wasm.map(|w| super::expand_plugin_root(&w, plugin_root));
                 let cmd_value = serde_json::json!({
                     "type": cmd.kind,
                     "command": command,
                     "timeout": cmd.timeout,
                     "env": cmd.env,
+                    "wasm": wasm,
                 });
                 out.push(LoadedHook {
                     source: source.to_string(),
@@ -227,6 +236,32 @@ mod tests {
         // 其余字段不受影响。
         assert!(out[0].command["command"] == "blocked");
         assert!(out[0].command["timeout"] == 5);
+    }
+
+    /// 回归:`wasm` 字段必须经 `expand` 存活并展开 `${PLUGIN_ROOT}` ——
+    /// loader 按 `command.get("wasm")` 判定 wasm hook;此前该字段被丢弃,
+    /// wasm hook 永远落进 shell 路径再因缺 `command` 被跳过。
+    #[test]
+    fn load_preserves_wasm_path_and_expands_root() {
+        let json = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "bash", "hooks": [
+                        { "type": "wasm", "wasm": "${PLUGIN_ROOT}/bin/hook.wasm", "timeout": 5 }
+                    ] }
+                ]
+            }
+        });
+        let out = load(&HookSpec::Inline(json), Path::new("/plugins/demo")).unwrap();
+        assert_eq!(out.len(), 1);
+        let wasm = out[0]
+            .command
+            .get("wasm")
+            .and_then(|v| v.as_str())
+            .expect("wasm path must survive expand");
+        assert_eq!(wasm, "/plugins/demo/bin/hook.wasm");
+        assert!(out[0].command["command"].is_null(), "wasm hook 无 command");
+        assert_eq!(out[0].matcher.as_deref(), Some("bash"));
     }
 
     #[test]

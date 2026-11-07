@@ -21,12 +21,11 @@ package zhuye:plugin@0.1.0;
 /// hook 世界:订阅引擎事件的进程内决策函数。
 ///
 /// 事件 JSON 为 `HookEvent` 的 wire 形态(与 shell hook 的 stdin 一致);
-/// 返回 JSON 为决策对象,字段与 shell hook 的 stdout 协议逐字段一致:
-/// `{"action": "allow"}` / `{"action": "deny", "reason": "..."}`
-/// / `{"action": "ask", "reason": "..."}` / `{"action": "modify_args",
-/// "args": {...}}` / `{"action": "inject", "content": "..."}`(以
-/// docs/plugins.md 的 hooks 章节为权威)。未知字段被宿主忽略,
-/// 缺省 action 按 Deny(fail-closed)处理。
+/// 返回 JSON 为决策对象,兼容 shell hook 的 stdout 协议:决策键
+/// `action`(wasm)或 `decision`(shell)均可,取值 allow/ok(缺省)/
+/// deny/block、ask、inject/message(内容键 `content` 或 `reason`);
+/// `modify_args`(带 `args` 对象)为 wasm 扩展。未知取值按 Allow,
+/// 非法 JSON 按 Deny(fail-closed);空输出按 Allow(信息性)。
 world zhuye-hook {
     /// 处理一次事件。`event` = HookEvent JSON;返回决策 JSON。
     /// Err(String)= 组件侧显式错误(宿主按 Deny 处理并记录)。

@@ -235,13 +235,29 @@ pub async fn register(
                 tracing::warn!(plugin = %loaded.plugin_id, event = %hook.event, "plugin wasm hook: unknown event name, skipping");
                 continue;
             };
+            // 产物缺失(如 wasm 构建产物不入库 / 按需构建的插件)→ warn 后
+            // 跳过该条,不阻断整个插件启用 —— 与 shell hook 缺 command 的
+            // 处置对称;组件损坏 / 契约不符才算真错误。
+            if !std::path::Path::new(&resolved).is_file() {
+                tracing::warn!(
+                    plugin = %loaded.plugin_id,
+                    event = %hook.event,
+                    path = %resolved,
+                    "plugin wasm hook: artifact missing, skipping (run scripts/build_plugin_demo_wasm.sh or build the component)"
+                );
+                continue;
+            }
             #[cfg(feature = "wasm")]
-            match zhuye_wasm::WasmHook::from_file(std::path::Path::new(&resolved), name.clone()) {
+            match zhuye_wasm::WasmHook::from_file(
+                std::path::Path::new(&resolved),
+                name.clone(),
+                kind,
+                hook.matcher.clone(),
+            ) {
                 Ok(mut wh) => {
                     if let Some(t) = hook.command.get("timeout").and_then(|v| v.as_u64()) {
                         wh = wh.with_deadline(std::time::Duration::from_secs(t));
                     }
-                    let _ = kind; // 事件 kind 由 matcher/dispatch 侧消费,组件对全部事件可达
                     registries.hooks.register_dyn(std::sync::Arc::new(wh));
                     registered_hooks += 1;
                     tracing::info!(plugin = %loaded.plugin_id, hook = %name, "wasm hook registered");
@@ -258,7 +274,7 @@ pub async fn register(
             }
             #[cfg(not(feature = "wasm"))]
             {
-                let _ = (name, resolved);
+                let _ = (name, resolved, kind);
                 tracing::warn!(
                     plugin = %loaded.plugin_id,
                     event = %hook.event,
@@ -359,15 +375,53 @@ pub async fn register(
 
 /// 注册单个 WASM 工具(feature `wasm`):组件加载 + describe 校验 +
 /// 注册(外部工具 floor=Prompt 由 registry 侧统一包装)。
+///
+/// 工具注册名完全由组件 `describe()` 的 `name` 决定 —— 这是全仓唯一
+/// 一条「名字由第三方内容决定」的注册路径(MCP 固定 `mcp__` 前缀、
+/// agents 固定 `call_` 前缀)。同名工具已存在且 source 不是本插件时
+/// **拒绝注册**:静默覆盖会让组件替换内置工具(如 `bash`),卸载时再
+/// 经 `unregister_source` 把内置工具一起删掉且不恢复。
 #[cfg(feature = "wasm")]
 async fn register_wasm_tool(
     registries: &LoaderRegistries,
     plugin_id: &str,
     wt: &crate::capabilities::WasmToolLoaded,
 ) -> Result<(), String> {
+    // 产物缺失 → 仅 warn 后跳过,不影响其余能力(plugin.toml 声明的
+    // 容错语义,与 wasm hook 同款);组件损坏 / 契约不符才报错。
+    if !wt.path.is_file() {
+        tracing::warn!(
+            plugin = %plugin_id,
+            tool = %wt.name,
+            path = %wt.path.display(),
+            "plugin wasm tool: artifact missing, skipping (build the component first)"
+        );
+        return Ok(());
+    }
     let mut tool = zhuye_wasm::WasmTool::from_file(&wt.path)
         .await
         .map_err(|e| e.to_string())?;
+    // 同名占用检查(防覆盖内置 / 其他来源工具;同插件重复启用由
+    // enable 幂等挡住)。
+    let declared = zhuye_tools::Tool::name(&tool).to_string();
+    if let Some((_, existing)) = registries
+        .tools
+        .list_with_source()
+        .into_iter()
+        .find(|(n, _)| *n == declared)
+    {
+        return Err(format!(
+            "工具名 `{declared}` 已被 {existing:?} 占用;wasm 组件 describe.name 不得覆盖既有工具(改用带命名空间的名字,如 `<plugin>-{declared}`)"
+        ));
+    }
+    if declared != wt.name {
+        tracing::warn!(
+            plugin = %plugin_id,
+            manifest = %wt.name,
+            describe = %declared,
+            "wasm tool: manifest 名与组件 describe.name 不一致(以 describe 为准)"
+        );
+    }
     // manifest 显式覆盖描述(可选;describe() 优先 —— 覆盖仅当描述为空)。
     if tool.description.is_empty()
         && let Some(d) = &wt.description
@@ -377,7 +431,7 @@ async fn register_wasm_tool(
     registries
         .tools
         .register_plugin_tool(plugin_id, Arc::new(tool));
-    tracing::info!(plugin = %plugin_id, tool = %wt.name, "wasm tool registered");
+    tracing::info!(plugin = %plugin_id, tool = %declared, "wasm tool registered");
     Ok(())
 }
 
