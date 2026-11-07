@@ -205,33 +205,38 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                         turn_id: ctx.turn_id,
                         strategy: strategy_str.into(),
                         removed_count,
-                        summary: summary_text.unwrap_or_default(),
+                        summary: summary_text.clone().unwrap_or_default(),
                         // v1.x:压缩前后 token 估算落盘(此前只在内存事件里,
                         // 会话统计无法回答「压缩省了多少」)。
                         before_tokens,
                         after_tokens,
                     })
                     .await;
-                // v1.x:记忆固化写入审计 —— compact 的 LLM 摘要成功后
-                // 把提取的事实 append 进了 MEMORY.md(此前只有 tracing
-                // 日志,无持久化)。
-                if let Some(info) = &memory_write {
-                    // 固化改变了 MEMORY.md:失效本 turn 的检索缓存,
-                    // 让后续迭代重新检索到新写入的事实。
-                    state.memory_retrieval_cache = None;
-                    state.memory_read_recorded = false;
-                    let _ = rec
-                        .record(RolloutRecord::MemoryAccess {
-                            turn_id: ctx.turn_id,
-                            op: zhuye_protocol::MemoryOp::Write,
-                            scope: info.scope.to_string(),
-                            agent_type: info.agent.clone(),
-                            chars: info.chars as u32,
-                            entries: info.facts as u32,
-                            at: chrono::Utc::now(),
-                        })
-                        .await;
-                }
+            }
+        }
+
+        // v1.x:记忆固化写入审计 —— compact 的 LLM 摘要成功后把提取的事实
+        // append 进了 MEMORY.md(此前只有 tracing 日志,无持久化)。
+        // 注意:缓存失效**不能**嵌在 recorder 分支内 —— `M4Config` 默认
+        // `recorder: None`(lib 嵌入等无 rollout 的运行模式),嵌套会让
+        // 固化写入后检索缓存仍然命中,新事实到不了 system prompt。
+        if let Some(info) = &memory_write {
+            // 固化改变了 MEMORY.md:失效本 turn 的检索缓存,让后续迭代
+            // 重新检索到新写入的事实。
+            state.memory_retrieval_cache = None;
+            state.memory_read_recorded = false;
+            if let Some(rec) = ctx.recorder.as_ref() {
+                let _ = rec
+                    .record(RolloutRecord::MemoryAccess {
+                        turn_id: ctx.turn_id,
+                        op: zhuye_protocol::MemoryOp::Write,
+                        scope: info.scope.to_string(),
+                        agent_type: info.agent.clone(),
+                        chars: info.chars as u32,
+                        entries: info.facts as u32,
+                        at: chrono::Utc::now(),
+                    })
+                    .await;
             }
         }
     }

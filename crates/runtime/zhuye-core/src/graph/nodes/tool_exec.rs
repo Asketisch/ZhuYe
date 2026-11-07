@@ -418,6 +418,19 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                 }
             }
         }
+        // `memory` 工具的 write / remove 在 turn 内改写了 MEMORY.md:失效
+        // pre_loop 的 turn 级检索缓存,让下一次 ToolExec → PreLoop 回环
+        // 重新检索 —— 否则新写入的条目直到 turn 结束都进不了 system
+        // prompt(缓存引入前的行为是每次迭代重新读盘,写后立即可见)。
+        if tool_name_for_history == "memory"
+            && matches!(
+                tool_output.metadata.get("action").and_then(|v| v.as_str()),
+                Some("write") | Some("remove")
+            )
+        {
+            state.memory_retrieval_cache = None;
+            state.memory_read_recorded = false;
+        }
         // 清单回灌:`TodoWrite` 把清单写进 `metadata.todos`(输出通道)。
         // 渲染成紧凑文本存进**会话级**槽 —— `pre_loop` 会把它注入进
         // core prompt,让 LLM 在后续轮次仍看得见自己写的清单。
