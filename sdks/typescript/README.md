@@ -9,7 +9,8 @@
 - Node ≥ 18,纯 ESM(`import`),开箱带 `.d.ts` 类型
 - 常驻会话:一个进程 = 一个 AgentThread,多轮共享上下文
 - 宿主函数直接注册为 LLM 可调用的工具(远程工具协议)
-- 流式输出、审批、打断、全局事件、权限模式、计划 / 目标模式
+- 流式输出、审批、打断、全局事件、权限模式、计划 / 目标模式、
+  skills 目录运行时重扫(`rescan_extensions`)
 
 ## 安装
 
@@ -184,7 +185,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 
 `submit(op)` 发任意协议 Op 并返回事件 `AsyncIterable`(非 turn Op 以
 `submission_closed` 收尾;可 `{ submissionId }` 显式指定 id)。Op 全集
-(19 种,`zhuye` 包内同名类型):
+(20 种,`zhuye` 包内同名类型):
 
 | 类别 | Op | 关键字段 |
 |---|---|---|
@@ -198,6 +199,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 | side-channel | `start_side_channel` / `cancel_side_channel` / `query_side_channels` | WP9:用户发起的并发 agent;query 回 `side_channel_status` 快照 |
 | 目标 | `enter_goal_mode` / `exit_goal_mode` | goal + 可选 verify_command / token_budget |
 | 工具 | `register_tools` / `tool_execution_response` | 通常用 `registerTool()` 封装,不必手写 |
+| 扩展 | `rescan_extensions` | **v1.x 新增**:运行时重扫 skills 目录(`.zhuye/skills`,workspace + 用户级;插件注入不受影响);回 `extensions_rescanned`(skills 计数,commands 恒 false) |
 
 示例:切计划模式、带 thread_settings 提交
 

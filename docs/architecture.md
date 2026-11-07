@@ -6,14 +6,14 @@
 
 ## Workspace 分层(依赖方向自上而下)
 
-41 个 crate 按 6 层分组于 `crates/<layer>/<crate>/`,依赖只能自上而下
+42 个 crate 按 6 层分组于 `crates/<layer>/<crate>/`,依赖只能自上而下
 (上层依赖下层,protocol 是所有层的公共契约):
 
 | 层 | Crate | 职责 |
 |----|-------|------|
 | `protocol/` | zhuye-protocol | Submission / Op / EventMsg / Item + RolloutRecorder trait。所有层的公共契约 |
 | `abilities/` | llm, tools, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, bm25, kms | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、HookEngine、压缩 escalation、BM25 相关性排序、本地知识库 wiki 等 |
-| `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, ast, fs, git | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索、共享文件原语(原子写)、git 能力族(checkpoint/branch/指令解析) |
+| `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, ast, fs, git, wasm | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索、共享文件原语(原子写)、git 能力族(checkpoint/branch/指令解析)、WASM 组件插件宿主(wasmtime 组件模型,多语言插件运行时) |
 | `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队/squad 委派、DAG 流水线、目标模式、side-channel 并发 agent(zhuye-core) |
 | `integrations/` | mcp, lsp, integration, stream, import, computer-use, shell, git-tools | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端(含 cron / autopilot)、外部 Harness 会话导入、Computer Use(截屏/键鼠,`real` feature 门控)、常驻 shell 会话池、git 工作流 MCP server —— 后四者是 `plugins/*` 的能力本体,不进 SDK facade |
 | `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(136 个公开名 + Builder)、PyO3 绑定 |

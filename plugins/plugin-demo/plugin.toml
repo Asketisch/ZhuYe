@@ -1,4 +1,4 @@
-# 烛夜示例插件 —— 五类 capability 各配一个最小可运行样例。
+# 烛夜示例插件 —— 五类目录 capability + WASM 组件各配一个最小可运行样例。
 #
 # 安装:zhuye plugin install plugins/plugin-demo
 # 启用:zhuye plugin enable demo@inline
@@ -6,10 +6,10 @@
 #       [plugins].enabled_plugins,运行中改动支持热重载)
 name = "demo"
 version = "0.1.0"
-description = "烛夜插件机制演示:slash 命令 / 子代理 / 技能 / hook / MCP server"
+description = "烛夜插件机制演示:slash 命令 / 子代理 / 技能 / hook / MCP server / WASM 组件"
 keywords = ["example", "demo"]
 
-# ── 五类 capability 声明 ──────────────────────────────────────────────
+# ── capability 声明(五类目录 + WASM 组件)────────────────────────────
 # commands:*.md slash 命令(用户输入 `/demo:<名字> <参数>` 时展开为正文)
 commands = "./commands"
 # agents:子代理定义(frontmatter 解析为 SubAgentSpec + call_<role> 工具)
