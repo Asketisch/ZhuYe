@@ -126,13 +126,14 @@ jobs:
       matrix:
         include:
           - slug: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             exe: ''
             target: ''
-          # macos-13(Intel)runner 已淘汰、无限排队 —— x64 改在 arm64
+          # macos-13(Intel)已淘汰、macos-14 镜像 2026-11-02 淘汰(改用
+          # macos-15)—— x64 交叉编译
           # runner 上交叉编译(macOS 双架构交叉是一等公民)。
           - slug: darwin-x64
-            runner: macos-14
+            runner: macos-15
             exe: ''
             target: 'x86_64-apple-darwin'
           - slug: linux-x64
@@ -302,13 +303,13 @@ jobs:
       matrix:
         include:
           - slug: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             exe: ''
             target: ''
           # 与 binaries 矩阵同理:macos-13 已淘汰,x64 交叉编译;
           # maturin 按 --target 自动给出 macosx_10_12_x86_64 平台 tag。
           - slug: darwin-x64
-            runner: macos-14
+            runner: macos-15
             exe: ''
             target: 'x86_64-apple-darwin'
           - slug: linux-x64
