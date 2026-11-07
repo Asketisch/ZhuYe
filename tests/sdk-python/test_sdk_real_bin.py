@@ -123,6 +123,32 @@ def test_K13_工具图片回执经SDK往返(env_home: Path) -> None:
         agent.close()
 
 
+# ── K14 rescan_extensions(additive Op)真二进制字段级 ───────────────────
+
+
+def test_K14_rescan_extensions_真二进制字段级(env_home: Path) -> None:
+    """v1.x additive:`Op::RescanExtensions` → `extensions_rescanned`
+
+    字段级断言(skills 计数非负、commands=false、submission_closed
+    收尾)—— 绑定层对新 Op / 新事件的双向透传,与 V11(serve 直发)、
+    逻辑层(python tests)三层互补。
+    """
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"t1"}']))
+    try:
+        evs = drain(agent.submit_op(
+            {"type": "rescan_extensions", "skills": True, "commands": False}
+        ))
+        types = msg_types(evs)
+        assert "extensions_rescanned" in types, f"缺回执事件:{types}"
+        evt = next(e["msg"] for e in evs
+                   if e["msg"]["type"] == "extensions_rescanned")
+        assert isinstance(evt["skills"], int) and evt["skills"] >= 0, f"skills 字段:{evt}"
+        assert evt["commands"] is False, f"commands 位恒 false:{evt}"
+        assert types[-1] == "submission_closed", f"收尾异常:{types}"
+    finally:
+        agent.close()
+
+
 # ── K4 非 turn op 收尾 ──────────────────────────────────────────────────
 
 
@@ -136,6 +162,33 @@ def test_K4_非turn_op_迭代器以submission_closed收尾(env_home: Path) -> No
     try:
         evs = drain(agent.submit_op({"type": "set_effort", "effort": "high"}))
         assert msg_types(evs) == ["submission_closed"], f"收尾异常:{msg_types(evs)}"
+    finally:
+        agent.close()
+
+
+def test_K4b_set_effort新档位max_ultra_真二进制透传(env_home: Path) -> None:
+    """v1.10 功能4:additive 新档位 `max` / `ultra` 经真二进制透传。
+
+    协议 additive 变更的绑定层回归:引擎对新档位与 high 同型静默
+    (submission_closed 收尾),SDK 与 serve 都不得因新增字面量崩溃;
+    `thread_settings.effort` 形态同样接受新档位并正常收尾 turn。
+    """
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"t1"}']))
+    try:
+        for effort in ("max", "ultra"):
+            evs = drain(agent.submit_op({"type": "set_effort", "effort": effort}))
+            assert msg_types(evs) == ["submission_closed"], f"{effort} 收尾异常:{msg_types(evs)}"
+        # thread_settings 形态:随 user_input 下发,turn 正常收尾。
+        evs = drain(
+            agent.submit_op(
+                {
+                    "type": "user_input",
+                    "items": [{"type": "text", "text": "hi"}],
+                    "thread_settings": {"effort": "ultra"},
+                }
+            )
+        )
+        assert "turn_complete" in msg_types(evs), f"turn 未收尾:{msg_types(evs)}"
     finally:
         agent.close()
 

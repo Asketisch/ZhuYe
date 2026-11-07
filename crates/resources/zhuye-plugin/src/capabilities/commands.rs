@@ -139,7 +139,7 @@ fn build_command_name(plugin_name: &str, rel_path: &Path) -> String {
 /// 从 markdown frontmatter 提取 `description` 字段。v0 简化版:只解析
 /// YAML frontmatter(用 `---` 包裹)的最顶层 `description` 键。
 /// 不依赖 `serde_yaml`,自己手撕以避免引入大依赖。
-fn extract_description(path: &Path) -> Result<Option<String>> {
+pub(crate) fn extract_description(path: &Path) -> Result<Option<String>> {
     let text = std::fs::read_to_string(path).map_err(|e| PluginError::ManifestIo {
         path: path.to_path_buf(),
         source: e,

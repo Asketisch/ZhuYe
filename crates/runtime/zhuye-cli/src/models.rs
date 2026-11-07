@@ -164,8 +164,7 @@ pub async fn list(args: ListArgs) -> anyhow::Result<i32> {
             "{:<52} {:<6} {:>10}  {}",
             id,
             free_cell,
-            ctx.map(|c| c.to_string())
-                .unwrap_or_else(|| "-".to_string()),
+            ctx.map_or_else(|| "-".to_string(), |c| c.to_string()),
             owner.as_deref().unwrap_or("-")
         );
     }
@@ -201,7 +200,7 @@ pub async fn pick(args: PickArgs) -> anyhow::Result<i32> {
         pick_free_model(&catalog, &section)
     } else {
         // 不限免费 → 按 id 字典序取第一个(确定性)。
-        let mut sorted = catalog.models.clone();
+        let mut sorted = catalog.models;
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
         match sorted.into_iter().next() {
             Some(info) => Ok(info),

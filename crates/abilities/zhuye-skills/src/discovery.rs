@@ -36,8 +36,7 @@ pub fn skills_for_path(skills: &[SkillMeta], rel_path: &str) -> Vec<String> {
         if s.when_paths.iter().any(|g| {
             Glob::new(g)
                 .ok()
-                .map(|x| x.compile_matcher().is_match(rel_path))
-                .unwrap_or(false)
+                .is_some_and(|x| x.compile_matcher().is_match(rel_path))
         }) {
             out.push(s.name.clone());
         }
@@ -55,8 +54,7 @@ pub fn skill_matches_path(skill: &SkillMeta, rel_path: &str) -> bool {
     skill.when_paths.iter().any(|g| {
         Glob::new(g)
             .ok()
-            .map(|x| x.compile_matcher().is_match(rel_path))
-            .unwrap_or(false)
+            .is_some_and(|x| x.compile_matcher().is_match(rel_path))
     })
 }
 

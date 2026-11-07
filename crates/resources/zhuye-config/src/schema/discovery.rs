@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn 缺省时发现能力开启() {
         let cfg = ReflectConfig::default();
-        let section = cfg.model_discovery.clone().unwrap_or_default();
+        let section = cfg.model_discovery.unwrap_or_default();
         assert!(section.enabled);
     }
 

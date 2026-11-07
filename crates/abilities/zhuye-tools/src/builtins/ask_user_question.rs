@@ -148,7 +148,7 @@ impl Tool for AskUserQuestionTool {
         })?;
 
         Ok(ToolOutput {
-            content: vec![ContentBlock::text(answer_json.clone())],
+            content: vec![ContentBlock::text(answer_json)],
             is_error: false,
             metadata: serde_json::json!({
                 "questions_count": answers.answers.len(),

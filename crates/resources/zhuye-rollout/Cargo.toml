@@ -26,3 +26,6 @@ rustix = { version = "1.1", features = ["fs"] }
 [dev-dependencies]
 tempfile  = "3"
 filetime  = { workspace = true }
+
+[lints]
+workspace = true

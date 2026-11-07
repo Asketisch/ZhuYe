@@ -19,9 +19,7 @@ use crate::client::ModelClient;
 use crate::error::LlmError;
 use crate::event::ChatEvent;
 use crate::model_catalog::ModelInfo;
-use crate::request::{
-    ChatMessage, ChatRequest, ContentBlock, ReasoningEffort, ThinkingConfig, ToolSpec,
-};
+use crate::request::{ChatMessage, ChatRequest, ContentBlock, ThinkingConfig, ToolSpec};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 
@@ -269,7 +267,7 @@ fn extract_is_free(entry: &Value) -> Option<bool> {
     let prompt = pricing.get("prompt").and_then(Value::as_str)?;
     let completion = pricing.get("completion").and_then(Value::as_str)?;
     // 价格字段是字符串("0" / "0.00" / "0.000");非零一律视为收费。
-    let is_zero = |raw: &str| raw.trim().parse::<f64>().map(|v| v == 0.0).unwrap_or(false);
+    let is_zero = |raw: &str| raw.trim().parse::<f64>().is_ok_and(|v| v == 0.0);
     Some(is_zero(prompt) && is_zero(completion))
 }
 
@@ -580,7 +578,15 @@ impl From<ChatRequest> for OpenAIRequest {
             .collect();
         let reasoning_effort = match &req.thinking {
             Some(ThinkingConfig::OpenAIReasoning { effort }) => {
-                Some(effort_str(*effort).to_string())
+                // v1.10 功能4:发 wire 前按目标模型钳制档位 —— 不同模型族
+                // 上限不同(qwen→high / deepseek→max / OpenAI→ultra /
+                // 未知→high),超出上限的档位被降到模型支持的最高档。
+                Some(
+                    crate::reasoning_effort::effort_wire_str(
+                        crate::reasoning_effort::clamp_effort_for_model(*effort, &req.model),
+                    )
+                    .to_string(),
+                )
             }
             _ => None,
         };
@@ -687,14 +693,6 @@ fn push_message(m: ChatMessage, out: &mut Vec<Value>) {
                 "content": t.content_as_text(),
             }));
         }
-    }
-}
-
-fn effort_str(e: ReasoningEffort) -> &'static str {
-    match e {
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
     }
 }
 
@@ -992,6 +990,88 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    // ── v1.10 功能4:思考强度按模型族钳制后上 wire ──────────────────
+
+    /// 构造带 thinking 的最小请求(不发网络,只走 From<ChatRequest> 转换)。
+    fn req_with_effort(model: &str, effort: crate::request::ReasoningEffort) -> ChatRequest {
+        ChatRequest {
+            model: model.to_string(),
+            thinking: Some(ThinkingConfig::OpenAIReasoning { effort }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn 思考强度_qwen系ultra钳制到high() {
+        let wire = serde_json::to_value(OpenAIRequest::from(req_with_effort(
+            "qwen3-max",
+            crate::request::ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(wire["reasoning_effort"], "high", "qwen 系最高 high");
+    }
+
+    #[test]
+    fn 思考强度_deepseek系ultra钳制到max() {
+        let wire = serde_json::to_value(OpenAIRequest::from(req_with_effort(
+            "deepseek-reasoner",
+            crate::request::ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(wire["reasoning_effort"], "max", "deepseek 系最高 max");
+    }
+
+    #[test]
+    fn 思考强度_openai系ultra原样上wire() {
+        let wire = serde_json::to_value(OpenAIRequest::from(req_with_effort(
+            "gpt-5.1",
+            crate::request::ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(
+            wire["reasoning_effort"], "ultra",
+            "OpenAI gpt-5/o 系支持 ultra"
+        );
+        // o 系前缀同理。
+        let wire_o = serde_json::to_value(OpenAIRequest::from(req_with_effort(
+            "o3-mini",
+            crate::request::ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(wire_o["reasoning_effort"], "ultra");
+    }
+
+    #[test]
+    fn 思考强度_未知模型ultra钳制到high() {
+        let wire = serde_json::to_value(OpenAIRequest::from(req_with_effort(
+            "some-private-model",
+            crate::request::ReasoningEffort::Ultra,
+        )))
+        .unwrap();
+        assert_eq!(
+            wire["reasoning_effort"], "high",
+            "未知模型保守只发到 high,避免整请求被兼容端点拒绝"
+        );
+    }
+
+    #[test]
+    fn 思考强度_低档位不被抬升() {
+        // 钳制只降不升:qwen 上请求 low 仍是 low。
+        let wire = serde_json::to_value(OpenAIRequest::from(req_with_effort(
+            "qwen3-max",
+            crate::request::ReasoningEffort::Low,
+        )))
+        .unwrap();
+        assert_eq!(wire["reasoning_effort"], "low");
+        // 未设置 thinking → 不发 reasoning_effort 字段(历史行为不变)。
+        let wire_none = serde_json::to_value(OpenAIRequest::from(ChatRequest {
+            model: "gpt-5.1".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(wire_none.get("reasoning_effort").is_none());
     }
 
     #[test]

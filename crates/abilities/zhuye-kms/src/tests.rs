@@ -30,6 +30,8 @@ fn concurrent_stale_saves_do_not_overwrite_the_winner() {
         .save_page("wiki", "page", "original", None, vec![])
         .unwrap();
     let barrier = Arc::new(Barrier::new(2));
+    // 先 collect 再统一 join:保证线程全部 spawn 后才进入临界区。
+    #[expect(clippy::needless_collect)]
     let threads: Vec<_> = ["first", "second"]
         .into_iter()
         .map(|content| {
@@ -230,6 +232,9 @@ fn concurrent_dreams_preserve_each_result() {
     let (manager, _dir) = create_test_manager();
     let manager = std::sync::Arc::new(manager);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    // 先 collect 再统一 join:8 个线程经 barrier 同步并发,链式 map+join
+    // 会退化成串行导致 barrier 永久等待。
+    #[expect(clippy::needless_collect)]
     let workers: Vec<_> = (0..8)
         .map(|i| {
             let manager = manager.clone();
@@ -254,6 +259,9 @@ fn concurrent_wiki_creation_has_one_winner() {
     let (manager, _dir) = create_test_manager();
     let manager = std::sync::Arc::new(manager);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    // 先 collect 再统一 join:8 个线程经 barrier 同步并发,链式 map+join
+    // 会退化成串行导致 barrier 永久等待。
+    #[expect(clippy::needless_collect)]
     let workers: Vec<_> = (0..8)
         .map(|_| {
             let manager = manager.clone();

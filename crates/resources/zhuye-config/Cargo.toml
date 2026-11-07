@@ -7,13 +7,13 @@ description = "ZhuYe: unified TOML config loader with hot reload"
 
 [dependencies]
 zhuye-llm  = { workspace = true }
+zhuye-protocol = { workspace = true }
 zhuye-permissions = { workspace = true }
 zhuye-fs   = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 toml           = { workspace = true }
 thiserror      = { workspace = true }
-anyhow         = { workspace = true }
 tracing        = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio          = { workspace = true, features = ["sync", "rt-multi-thread", "macros", "time"] }
@@ -32,3 +32,6 @@ tracing-opentelemetry = { workspace = true }
 tempfile = "3"
 wiremock = { workspace = true }
 tokio    = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

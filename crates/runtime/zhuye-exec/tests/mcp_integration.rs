@@ -45,8 +45,7 @@ fn mock_binary_path() -> std::path::PathBuf {
             .and_then(|p| p.parent())
             .expect("workspace root");
         let target = std::env::var("CARGO_TARGET_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| workspace_root.join("target"));
+            .map_or_else(|_| workspace_root.join("target"), std::path::PathBuf::from);
         let release = !cfg!(debug_assertions);
         let profile = if release { "release" } else { "debug" };
         let bin = target.join(profile).join("mock_mcp_server");
@@ -132,7 +131,7 @@ async fn mcp_reload_diff_incremental_added_registers_tool() {
     handle_reload(
         &old, &new, &registry, &agent_cfg, None, None, &path, &tx,
         None, // 不传 manager — 只验证 ConfigReloaded event 仍能发出
-        &tools, None,
+        &tools, None, None,
     )
     .await
     .expect("reload ok");
@@ -165,7 +164,7 @@ async fn mcp_reload_diff_incremental_removed() {
     let path = std::path::PathBuf::from("/tmp/test.toml");
 
     handle_reload(
-        &old, &new, &registry, &agent_cfg, None, None, &path, &tx, None, &tools, None,
+        &old, &new, &registry, &agent_cfg, None, None, &path, &tx, None, &tools, None, None,
     )
     .await
     .expect("reload ok");
@@ -213,7 +212,7 @@ async fn mcp_server_start_failure_does_not_block_reload() {
 
     // reload 不传 manager:即便配置 invalid,也不阻塞 ConfigReloaded。
     let result = handle_reload(
-        &old, &new, &registry, &agent_cfg, None, None, &path, &tx, None, &tools, None,
+        &old, &new, &registry, &agent_cfg, None, None, &path, &tx, None, &tools, None, None,
     )
     .await;
     assert!(

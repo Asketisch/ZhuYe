@@ -21,6 +21,7 @@ zhuye plugin enable <插件名>@inline
 |---|---|---|
 | [`plugin-demo/`](plugin-demo/) | 五类 capability 全量示例(命令 / 子代理 / 技能 / hook / MCP echo) | 否(纯声明 + Python 脚本) |
 | [`harness-import/`](harness-import/) | 导入外部 Harness(Claude Code / Codex / ZCode)历史会话为烛夜会话 | 是(`./scripts/build_import_plugin.sh` 构建并装配 `bin/zhuye-import`) |
+| [`goal-queue/`](goal-queue/) | 目标模式(goal 工具)+ 队列模式(queue 工具,FIFO 串行消费) | 否(纯声明;启用后在 headless 侧注册内置工具) |
 
 ## 约定
 

@@ -74,8 +74,7 @@ pub(crate) fn build_telemetry_sink(
         redact: section.should_redact(),
         max_bytes: section
             .max_bytes
-            .map(|n| n as usize)
-            .unwrap_or(zhuye_telemetry::model::MAX_FIELD_CHARS),
+            .map_or(zhuye_telemetry::model::MAX_FIELD_CHARS, |n| n as usize),
     };
     let sink = zhuye_telemetry::TelemetrySink::new_with_config(
         base_dir,

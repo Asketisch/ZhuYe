@@ -397,7 +397,7 @@ fn discover_lists(m: &TaskManager) -> anyhow::Result<Vec<String>> {
     for entry in std::fs::read_dir(&base).with_context(|| format!("read_dir {}", base.display()))? {
         let entry = entry?;
         let ft = entry.file_type().ok();
-        if !ft.map(|t| t.is_dir()).unwrap_or(false) {
+        if !ft.is_some_and(|t| t.is_dir()) {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
@@ -447,15 +447,13 @@ fn print_task_detail(t: &Task) {
         "  created_at   : {:?}",
         t.created_at
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_secs())
     );
     println!(
         "  updated_at   : {:?}",
         t.updated_at
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_secs())
     );
 }
 
@@ -480,8 +478,7 @@ fn print_team_detail(t: &TeamFile) {
         "  created_at   : {:?}",
         t.created_at
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_secs())
     );
 }
 

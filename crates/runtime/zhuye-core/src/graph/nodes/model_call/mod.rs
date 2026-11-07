@@ -128,9 +128,9 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                     parameters,
                     ..
                 } => zhuye_llm::ToolSpec::Function {
-                    name: name.clone(),
-                    description: description.clone(),
-                    parameters: parameters.clone(),
+                    name,
+                    description,
+                    parameters,
                 },
             })
             .collect()
@@ -142,8 +142,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     let mut request = ChatRequest {
         model: spec
             .split_once('/')
-            .map(|(_, m)| m)
-            .unwrap_or(&spec)
+            .map_or(spec.as_str(), |(_, m)| m)
             .to_string(),
         messages,
         tools,
@@ -161,13 +160,14 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             .resolve(&spec)
             .map(|c| c.capabilities())
             .unwrap_or_default();
+        // 指纹只由 system/工具/模型名构成(不含 messages),这里只需
+        // 预热 cache 断点观测 —— 借用参与,不为拼装完整请求而克隆
+        // 整个消息列表与工具列表。
         let mut builder = m4.prompt_builder.lock();
-        let _ = builder.build_request(
+        let _ = builder.observe_fingerprint(
             &zhuye_prompt::LayeredPrompt::new(),
-            request.messages.clone(),
-            request.tools.clone(),
-            request.model.clone(),
-            &caps,
+            &request.tools,
+            &request.model,
         );
         if caps.prompt_caching {
             let _ = zhuye_prompt::inject_cache_control(&mut request, &caps);
@@ -196,8 +196,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                     // 换模型 → 请求体的 model 与工具描述覆盖都要跟着换。
                     request.model = spec
                         .split_once('/')
-                        .map(|(_, m)| m)
-                        .unwrap_or(&spec)
+                        .map_or(spec.as_str(), |(_, m)| m)
                         .to_string();
                     zhuye_prompt::apply_model_overrides(
                         &mut request.tools,
@@ -603,7 +602,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             return None;
         }
     }
-    let bare_model = model.split_once('/').map(|(_, m)| m).unwrap_or(&model);
+    let bare_model = model.split_once('/').map_or(model.as_str(), |(_, m)| m);
     let cost_usd = zhuye_llm::providers::price(bare_model, &usage);
     let _ = ctx
         .event_tx
@@ -822,7 +821,7 @@ fn record_failed_model_call(
     if !sink.enabled() {
         return;
     }
-    let bare_model = model.split_once('/').map(|(_, m)| m).unwrap_or(model);
+    let bare_model = model.split_once('/').map_or(model, |(_, m)| m);
     let model_ref = zhuye_telemetry::ModelRef {
         model_id: bare_model.to_string(),
         provider_id: provider.map(|s| s.to_string()),

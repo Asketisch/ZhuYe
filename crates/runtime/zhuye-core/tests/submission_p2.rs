@@ -20,8 +20,8 @@ fn steering_and_background_merge_order() {
     bg.register("t1", "bash", "echo");
     bg.complete("t1", "done");
 
-    let steering: Vec<_> = sq.drain_all().into_iter().flat_map(|m| m.items).collect();
+    let steering_count = sq.drain_all().into_iter().flat_map(|m| m.items).count();
     let bg_done = bg.drain_completed();
-    assert_eq!(steering.len(), 1);
+    assert_eq!(steering_count, 1);
     assert_eq!(bg_done.len(), 1);
 }

@@ -9,6 +9,9 @@ description = "ZhuYe: 外部 Harness 会话历史导入(Claude Code / Codex / ZC
 [dependencies]
 zhuye-protocol = { workspace = true }
 zhuye-rollout  = { workspace = true }
+# v1.10 功能1:配置导入要读写烛夜 config.toml(ReflectConfig schema + TOML)。
+zhuye-config   = { workspace = true }
+toml           = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 chrono         = { workspace = true }
@@ -22,3 +25,6 @@ tempfile       = "3"
 rusqlite = { workspace = true, features = ["backup"] }
 # 仅二进制入口用(clap derive 解析直跑模式参数)。
 clap = { workspace = true }
+
+[lints]
+workspace = true

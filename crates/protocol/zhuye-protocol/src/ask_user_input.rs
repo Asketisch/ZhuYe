@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 /// (非破坏,参照 `TokenCountEvent.cost_usd` 先例)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AskUserInputEvent {
+    /// 请求唯一 id(uuid v4);客户端在 `Op::AskUserInputResponse.id` 中原样
+    /// 回传以配对等待中的 waiter。
     pub request_id: String,
+    /// 展示给用户的询问文本(由 LLM 经 `ask_user` / `request_human_input`
+    /// 工具提供,非空)。
     pub prompt: String,
     /// 是否以掩码渲染输入(敏感数据)。默认 `None`(明文)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -29,6 +33,8 @@ pub struct AskUserInputEvent {
 }
 
 impl AskUserInputEvent {
+    /// 以请求 id 与询问文本构造事件;`secret` / `placeholder` 默认 `None`,
+    /// 可再经 builder 方法设置。
     pub fn new(request_id: impl Into<String>, prompt: impl Into<String>) -> Self {
         Self {
             request_id: request_id.into(),

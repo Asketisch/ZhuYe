@@ -84,6 +84,52 @@ fn apply_to_registry_is_additive() {
     assert_eq!(r.list().len(), 2);
 }
 
+/// 回归(v1.10 功能3):`apply_to_registry` 灌入 zhuye-llm 全局窗口覆盖表的
+/// 必须是**合并表**(`effective_context_window_overrides`)——
+/// `[model].context_window`(作用于活跃模型)也要进。此前只灌
+/// `[context_windows]` 段,单模型用户最常见的 `[model] context_window = N`
+/// 写法进不了 llm 侧,`output_budget` 读到的口径与引擎 `SessionConfigured`
+/// 不一致。
+///
+/// 直接断言纯函数(`apply_to_registry` 传给 `set_context_window_overrides`
+/// 的就是它的返回值),不读进程级全局表 —— 并行用例的
+/// `apply_to_registry` 会随时清空全局表,读全局的断言在压测下必闪。
+#[test]
+fn apply_to_registry_feeds_merged_context_window_overrides() {
+    let cfg = ReflectConfig {
+        anthropic: Some(AnthropicSection {
+            api_key: Some("sk-a".into()),
+            base_url: Some("https://example.test".into()),
+            model: Some("zz-merge-model".into()),
+            credentials: vec![],
+            ..Default::default()
+        }),
+        active: crate::schema::ActiveSection {
+            provider: Some("anthropic".into()),
+            ..Default::default()
+        },
+        model: Some(crate::schema::ModelSection {
+            context_window: Some(262_144),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    // [model].context_window 以(归一化后的)活跃模型为键进合并表;
+    // 活跃模型带 provider 前缀 / 大小写差异时同样归一到同一键。
+    let merged = cfg.effective_context_window_overrides("anthropic/ZZ-Merge-Model");
+    assert_eq!(merged.get("zz-merge-model"), Some(&262_144));
+    // [context_windows] per-model 条目照常并入。
+    let cfg2 = ReflectConfig {
+        context_windows: Some(crate::schema::ContextWindowsSection {
+            entries: [("zz-merge-other".to_string(), 32_768)].into(),
+        }),
+        ..cfg
+    };
+    let merged2 = cfg2.effective_context_window_overrides("anthropic/zz-merge-model");
+    assert_eq!(merged2.get("zz-merge-other"), Some(&32_768));
+    assert_eq!(merged2.get("zz-merge-model"), Some(&262_144));
+}
+
 // ── Ollama (v0.3.1) ──────────────────────────────────────────────
 
 #[test]
@@ -383,6 +429,45 @@ fn keyless_openai_with_base_url_is_active_provider() {
         ..Default::default()
     };
     assert_eq!(cfg.active_provider(), Some("openai"));
+}
+
+/// v1.10 功能5:**免 Key 的 Anthropic 兼容端点也要注册** —— 显式
+/// `base_url` + 空 `api_key`(与 openai 段同口径)。本地网关
+/// (LM Studio / claude-code-router 等)不需要 key;client 侧空 key
+/// 不发认证头。
+#[test]
+fn keyless_anthropic_with_base_url_registers_pool() {
+    let cfg = ReflectConfig {
+        anthropic: Some(AnthropicSection {
+            api_key: Some(String::new()),
+            base_url: Some("http://127.0.0.1:1234/v1".into()),
+            model: Some("claude-sonnet-4-latest".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let r = cfg.to_registry().unwrap();
+    assert!(
+        r.get("anthropic").is_some(),
+        "免 Key 的 Anthropic 兼容端点(显式 base_url)必须注册"
+    );
+    // 也能推出 active provider(与注册条件同口径)。
+    assert_eq!(cfg.active_provider(), Some("anthropic"));
+}
+
+/// v1.10 功能5:anthropic 既没 key 也没 base_url → 仍不注册。
+#[test]
+fn keyless_anthropic_without_base_url_still_skipped() {
+    let cfg = ReflectConfig {
+        anthropic: Some(AnthropicSection {
+            api_key: Some(String::new()),
+            base_url: None,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let r = cfg.to_registry().unwrap();
+    assert!(r.get("anthropic").is_none());
 }
 
 /// `[[openai.credentials]]` 的 `api_key` **可以整条省略** —— GUI 的 plan

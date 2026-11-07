@@ -32,3 +32,6 @@ serde_json = { workspace = true }
 # `read_before_edit` 测试用 `filetime::set_file_mtime` 制造 mtime
 # 漂移,免去 `std::thread::sleep` 不可靠等待。
 filetime   = { workspace = true }
+
+[lints]
+workspace = true

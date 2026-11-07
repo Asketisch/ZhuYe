@@ -87,8 +87,7 @@ impl HumanInputStore {
             prompt: prompt.to_string(),
             asked_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_millis()),
         };
         self.write_json(&self.pending_path(context_id), &record);
     }

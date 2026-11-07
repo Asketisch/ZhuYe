@@ -20,3 +20,6 @@ libc = "0.2"
 tempfile = "3"
 tokio    = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 pretty_assertions = "1"
+
+[lints]
+workspace = true

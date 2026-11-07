@@ -22,9 +22,10 @@ pub fn session_path_at(base: &Path, session_id: ThreadId, at: DateTime<Utc>) -> 
 
 /// 默认 base 目录:`$ZHUYE_HOME/sessions`，未设置时为 `$HOME/.zhuye/sessions`。
 pub fn default_base() -> PathBuf {
-    zhuye_fs::data_dir()
-        .map(|dir| dir.join("sessions"))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ROLLOUT_DIR))
+    zhuye_fs::data_dir().map_or_else(
+        || PathBuf::from(DEFAULT_ROLLOUT_DIR),
+        |dir| dir.join("sessions"),
+    )
 }
 
 #[cfg(test)]
@@ -48,9 +49,10 @@ mod tests {
     #[test]
     fn default_base_uses_data_directory() {
         let p = default_base();
-        let expected = zhuye_fs::data_dir()
-            .map(|dir| dir.join("sessions"))
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_ROLLOUT_DIR));
+        let expected = zhuye_fs::data_dir().map_or_else(
+            || PathBuf::from(DEFAULT_ROLLOUT_DIR),
+            |dir| dir.join("sessions"),
+        );
         assert_eq!(p, expected);
     }
 }

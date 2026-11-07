@@ -6,7 +6,7 @@
 #      (插件 .mcp.json 引用 ${PLUGIN_ROOT}/bin/zhuye-import)
 name = "harness-import"
 version = "0.1.0"
-description = "导入外部 Harness(Claude Code / Codex / ZCode)历史会话为烛夜会话"
+description = "导入外部 Harness(Claude Code / Codex / ZCode)历史会话为烛夜会话;一键导入其他本地 agent 的模型 / MCP 配置"
 keywords = ["import", "claude-code", "codex", "zcode", "migration"]
 
 # commands:/harness:import <路径> 展开 → 指引模型调用 MCP 导入工具。

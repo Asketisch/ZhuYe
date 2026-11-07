@@ -4,7 +4,15 @@
 //! 让 exec / CLI 可以编译期注入后端。
 
 use async_trait::async_trait;
-use zhuye_protocol::{RolloutRecord, RolloutRecorder, SessionInfo, ThreadId};
+use zhuye_protocol::{RolloutError, RolloutRecord, RolloutRecorder, SessionInfo, ThreadId};
+
+/// PostgreSQL 会话存储操作错误(当前仅 stub 实现,真实 DB 后端留 v2.x)。
+#[derive(Debug, thiserror::Error)]
+pub enum PostgresSessionError {
+    /// 未配置 `database_url`(stub 实现一律返回本错误)。
+    #[error("postgres_session stub: 未配置 database_url")]
+    NotConfigured,
+}
 
 /// PostgreSQL 连接配置(对应 TOML `[postgres_session]` 段)。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -41,10 +49,10 @@ impl PostgresSessionConfig {
 #[async_trait]
 pub trait PostgresSessionStore: RolloutRecorder {
     /// 健康检查( ping / SELECT 1 )。
-    async fn health_check(&self) -> anyhow::Result<()>;
+    async fn health_check(&self) -> Result<(), PostgresSessionError>;
 
     /// 按 session 删除所有记录(checkpoint purge)。
-    async fn delete_session(&self, session_id: ThreadId) -> anyhow::Result<()>;
+    async fn delete_session(&self, session_id: ThreadId) -> Result<(), PostgresSessionError>;
 }
 
 /// 未配置 DB 时的 stub —— 所有写操作 no-op,读返回空。
@@ -53,33 +61,33 @@ pub struct StubPostgresSessionStore;
 
 #[async_trait]
 impl RolloutRecorder for StubPostgresSessionStore {
-    async fn record(&self, _r: RolloutRecord) -> anyhow::Result<()> {
+    async fn record(&self, _r: RolloutRecord) -> Result<(), RolloutError> {
         Ok(())
     }
 
-    async fn replay(&self, _session_id: ThreadId) -> anyhow::Result<Vec<RolloutRecord>> {
+    async fn replay(&self, _session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
         Ok(Vec::new())
     }
 
-    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+    async fn list_sessions(&self) -> Result<Vec<SessionInfo>, RolloutError> {
         Ok(Vec::new())
     }
 
     async fn truncate_after(
         &self,
         _to_turn_id: Option<&zhuye_protocol::TurnId>,
-    ) -> anyhow::Result<usize> {
+    ) -> Result<usize, RolloutError> {
         Ok(0)
     }
 }
 
 #[async_trait]
 impl PostgresSessionStore for StubPostgresSessionStore {
-    async fn health_check(&self) -> anyhow::Result<()> {
-        anyhow::bail!("postgres_session stub: 未配置 database_url")
+    async fn health_check(&self) -> Result<(), PostgresSessionError> {
+        Err(PostgresSessionError::NotConfigured)
     }
 
-    async fn delete_session(&self, _session_id: ThreadId) -> anyhow::Result<()> {
+    async fn delete_session(&self, _session_id: ThreadId) -> Result<(), PostgresSessionError> {
         Ok(())
     }
 }

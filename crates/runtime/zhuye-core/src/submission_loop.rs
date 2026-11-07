@@ -17,10 +17,11 @@ use zhuye_hooks::{HookContext, HookEngine, HookEvent};
 use zhuye_llm::{ChatMessage, SharedModelRegistry, SharedQuotaTracker};
 use zhuye_protocol::{
     AbortReason, ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, Event, EventMsg,
-    MessageRole, PermissionMode, PermissionModeChangedEvent, PlanApprovedEvent, PlanId,
-    PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent, ReasoningEffortMirror, RolloutRecord,
-    RolloutRecorder, SessionConfiguredEvent, Submission, TokenCountEvent, TurnAbortedEvent,
-    TurnCompleteEvent, TurnId, TurnStartedEvent, TurnStatus, UserInputItem,
+    ExtensionsRescannedEvent, MessageRole, PermissionMode, PermissionModeChangedEvent,
+    PlanApprovedEvent, PlanId, PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent,
+    ReasoningEffortMirror, RolloutRecord, RolloutRecorder, SessionConfiguredEvent, Submission,
+    TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnId, TurnStartedEvent, TurnStatus,
+    UserInputItem,
 };
 use zhuye_tools::{
     ApprovalGate, ApprovalWaiters, AskUserInputWaiters, AskUserQuestionWaiters, PlanApprovalGate,
@@ -294,8 +295,11 @@ pub async fn submission_loop(
                     // 级联:config.toml `[context_windows]` per-model 覆盖表(优先)
                     // → 内置 `context_window_for` 静态回退表 → None。
                     // 让用户能为新/私端模型直接配窗口,无需改代码 + 重新编译。
+                    // v1.10 功能3:覆盖查询改为归一化匹配(去 provider 前缀 /
+                    // tag、小写、前缀兜底),且覆盖表已合并
+                    // `[model].context_window`(exec bootstrap 装配)。
                     // 注意:RwLock guard 不是 Send,先把值拷出来再 await。
-                    let override_hit = cfg.context_window_overrides.read().get(&sc.model).copied();
+                    let override_hit = cfg.context_window_override_for(&sc.model);
                     sc.context_window_size =
                         override_hit.or_else(|| zhuye_llm::context_window_for(&sc.model));
                     // v1.2 P1-12:同步写入共享句柄,让 `get_context_remaining`
@@ -329,10 +333,10 @@ pub async fn submission_loop(
                 // 共享 `cfg.model` 的 Arc 副本,让后续 graph 节点的每次
                 // LLM 调用都读最新值(配合热重载)。`thread_settings.model`
                 // 仍是 String,这里做一次 String→Arc<RwLock> 适配。
-                let model: Arc<parking_lot::RwLock<String>> = thread_settings
-                    .model
-                    .map(|s| Arc::new(parking_lot::RwLock::new(s)))
-                    .unwrap_or_else(|| Arc::clone(&cfg.model));
+                let model: Arc<parking_lot::RwLock<String>> = thread_settings.model.map_or_else(
+                    || Arc::clone(&cfg.model),
+                    |s| Arc::new(parking_lot::RwLock::new(s)),
+                );
                 // review 修复:turn 用 session cancel 的**子令牌** —— 此前
                 // 直接共享 cfg.cancel,`Op::Interrupt` 无法只取消当前 turn
                 // (cancel session 令牌会连整个会话一起杀)。子令牌继承父级
@@ -418,7 +422,7 @@ pub async fn submission_loop(
                         let guidance = resolved
                             .injected
                             .iter()
-                            .map(|m| m.content.clone())
+                            .map(|m| m.content.as_str())
                             .collect::<Vec<_>>()
                             .join("\n");
                         merged_items.push(UserInputItem::Text {
@@ -1553,6 +1557,45 @@ pub async fn submission_loop(
                     }
                 }
             }
+            // v1.x:`Op::RescanExtensions` 的引擎端 —— 运行时重扫扩展目录。
+            // skills 经 m4.skills(`SkillsCatalog::rescan` 替换文件型并保留
+            // 插件注入;bundled 补挂对齐 bootstrap 语义);目录序与
+            // bootstrap 一致(workspace → 用户级)。commands 当前无运行时
+            // 索引重扫(正文实时读盘),请求位照常应答回执 `false`。
+            // 不开 turn —— 应答经 per-submission 通道 + 会话扇出双路送达
+            // (与 PromptCommand 同款),收尾由 serve/SDK 层负责。
+            zhuye_protocol::Op::RescanExtensions { skills, commands } => {
+                let mut skills_count = 0usize;
+                if skills && let Some(m4) = cfg.m4.as_ref() {
+                    // 目录序与 bootstrap 同源(M4Deps.skill_dirs,core 不
+                    // 反推目录);空序 = rescan 仅保插件型不变。
+                    let dir_refs: Vec<&std::path::Path> =
+                        m4.skill_dirs.iter().map(|p| p.as_path()).collect();
+                    skills_count = m4.skills.rescan(&dir_refs);
+                    // bundled 与 bootstrap 同口径:配置开启时补挂(否则
+                    // rescan 替换文件型后内置包整体丢失;merge_bundled
+                    // 幂等,同名以文件目录扫描结果优先)。
+                    if m4.bundled_skills {
+                        zhuye_skills::merge_bundled(&m4.skills);
+                        skills_count = m4.skills.names().len();
+                    }
+                    tracing::info!(skills = skills_count, "extensions rescan: skills");
+                }
+                if commands {
+                    tracing::info!(
+                        "extensions rescan: commands 索引运行时重扫尚未接线(正文实时读盘)"
+                    );
+                }
+                let ev = Event::new(
+                    sub.id.clone(),
+                    EventMsg::ExtensionsRescanned(ExtensionsRescannedEvent {
+                        skills: skills_count,
+                        commands: false,
+                    }),
+                );
+                let _ = turn_tx.send(ev.clone()).await;
+                fan_out_session(&session_subs, &ev);
+            }
             // v1.3 SDK:`RegisterTools` / `ToolExecutionResponse` 是 serve
             // 模式的**进程内控制 Op**,由 `zhuye serve` 的 stdin 循环就
             // 地处理,正常不进 submission_loop。误入时(如 exec 转发 /
@@ -1599,8 +1642,7 @@ fn sanitize_permission_mode_for_baseline(
 fn provider_of(model_spec: &str) -> String {
     model_spec
         .split_once('/')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .map_or_else(|| "unknown".to_string(), |(p, _)| p.to_string())
 }
 
 /// 把会话级事件扇出给所有订阅者。用 `try_send`,让慢速 / 无界消费的
@@ -1633,8 +1675,7 @@ fn protocol_side_channel_info(
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn fan_out_session(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {
@@ -2249,6 +2290,7 @@ fn user_input_items_to_messages(items: Vec<UserInputItem>) -> Vec<ChatMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zhuye_protocol::RolloutError;
 
     #[test]
     fn provider_of_strips_model_name() {
@@ -2541,20 +2583,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RolloutRecorder for CapturingRecorder {
-        async fn record(&self, r: RolloutRecord) -> anyhow::Result<()> {
+        async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError> {
             self.0.lock().push(r);
             Ok(())
         }
         async fn replay(
             &self,
             _session_id: zhuye_protocol::ThreadId,
-        ) -> anyhow::Result<Vec<RolloutRecord>> {
+        ) -> Result<Vec<RolloutRecord>, RolloutError> {
             Ok(self.0.lock().clone())
         }
-        async fn list_sessions(&self) -> anyhow::Result<Vec<zhuye_protocol::SessionInfo>> {
+        async fn list_sessions(&self) -> Result<Vec<zhuye_protocol::SessionInfo>, RolloutError> {
             Ok(Vec::new())
         }
-        async fn truncate_after(&self, _to_turn_id: Option<&TurnId>) -> anyhow::Result<usize> {
+        async fn truncate_after(
+            &self,
+            _to_turn_id: Option<&TurnId>,
+        ) -> Result<usize, RolloutError> {
             Ok(0)
         }
     }

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use zhuye_protocol::{RolloutRecord, ThreadId};
+use zhuye_protocol::{RolloutError, RolloutRecord, ThreadId};
 
 /// 逐行读取 `path` 里的所有 record。
 ///
@@ -18,7 +18,7 @@ use zhuye_protocol::{RolloutRecord, ThreadId};
 ///
 /// 未知 variant 走 debug 是为了避免 v0.2 → v0.3 升级后日志刷屏;且**不打印
 /// line 内容**(可能含 prompt/工具结果),防敏感信息泄露到 stderr。
-pub async fn replay_path(path: &Path) -> anyhow::Result<Vec<RolloutRecord>> {
+pub async fn replay_path(path: &Path) -> Result<Vec<RolloutRecord>, RolloutError> {
     let mut out = Vec::new();
     if !path.exists() {
         return Ok(out);
@@ -53,7 +53,7 @@ pub async fn replay_path(path: &Path) -> anyhow::Result<Vec<RolloutRecord>> {
 }
 
 /// 按时间顺序读取会话的全部保留记录,包括任意日期目录和轮转副本。
-pub async fn replay(base: &Path, session_id: ThreadId) -> anyhow::Result<Vec<RolloutRecord>> {
+pub async fn replay(base: &Path, session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
     let mut combined = Vec::new();
     for path in session_files(base, session_id)? {
         combined.extend(replay_path(&path).await?);

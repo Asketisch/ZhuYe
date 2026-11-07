@@ -178,7 +178,7 @@ pub fn spawn_command(
     let id = format!("bg-{}", uuid_stub_like());
     queue.register(id.clone(), "bash", display);
     let id_for_task = id.clone();
-    let q = queue.clone();
+    let q = queue;
     let handle = tokio::spawn(async move {
         let id = id_for_task;
         q.mark_running(&id);

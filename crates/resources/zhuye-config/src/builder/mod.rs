@@ -101,12 +101,27 @@ impl ReflectConfig {
             );
         }
         // v1.5:[active].credential 钉住 —— active provider 池内同名条目
-        // 健康则始终优先派位,其余条目只在其 cooldown 时作 failover。
+        // 健康则始终优先派位,其余条目只在该条目 cooldown 时作 failover。
         // label 未命中池内条目时 registry 侧静默忽略(全池 round-robin),
         // 不让一个手写错的 label 阻断启动。
         if let (Some(provider), Some(label)) = (self.active_provider(), self.active_credential()) {
             registry.set_preferred(provider, &label);
         }
+        // v1.10 功能3:窗口覆盖表同步到 zhuye-llm 进程级全局表 ——
+        // bootstrap 与热重载共用本 choke point,让 `output_budget`(自适应
+        // 输出预算)等 provider 侧消费方读到与引擎 `SessionConfigured`
+        // 一致的窗口口径。键在 llm 侧归一化。
+        //
+        // 用**合并表**(`[context_windows]` + `[model].context_window`):
+        // 此前只灌 `[context_windows]` 段,单模型用户最常见的
+        // `[model] context_window = N` 写法进不了 llm 侧全局表,引擎事件
+        // 报 N 而 output_budget 查不到,自适应输出预算对这类配置不生效。
+        // 模型 spec 用静态解析;`model = "free"` 这类运行时动态值由
+        // headless 在 `resolve_model_spec` 后再同步一次(见 bootstrap_common)。
+        let static_spec = self.resolved_model_spec().unwrap_or_default();
+        zhuye_llm::set_context_window_overrides(
+            &self.effective_context_window_overrides(&static_spec),
+        );
         Ok(())
     }
 
@@ -378,7 +393,11 @@ fn resolve_openai_key(s: &OpenAISection) -> String {
 /// 2. 数组空 + 单值 `api_key` 非空 / `ANTHROPIC_API_KEY` env 存在 →
 ///    wrap 为 `label = "default"` / `weight = 1` 的单 entry pool(行为
 ///    与 v0.x 一致);
-/// 3. 都空 → 返回 `None`,该 provider 不注册。
+/// 3. 数组空 + key 空 + **显式 `base_url`** → 仍注册(v1.10 功能5:免 Key
+///    的 Anthropic 兼容端点,与 `build_openai_pool` 同口径 —— LM Studio /
+///    claude-code-router 等本地网关不需要 key,client 侧空 key 不发
+///    认证头);
+/// 4. 都空(既没 key 也没 base_url)→ 返回 `None`,该 provider 不注册。
 ///
 /// 出错:任一 `AnthropicClient::new` 失败 → `ConfigError::Build`。
 fn build_anthropic_pool(section: &AnthropicSection) -> Result<Option<CredentialPool>, ConfigError> {
@@ -386,7 +405,16 @@ fn build_anthropic_pool(section: &AnthropicSection) -> Result<Option<CredentialP
         section.credentials.clone()
     } else {
         let key = resolve_anthropic_key(section);
-        if key.is_empty() {
+        // **免 Key 端点也要注册** —— 显式配了 `base_url` 就是「我把这个
+        // 端点接进来了」,哪怕它不要 key(本地 Anthropic 兼容网关就是
+        // 这种形态:`api_key = ""` → client 不发认证头)。与
+        // `build_openai_pool` 的注册条件保持同口径,避免两个 provider
+        // 的配置语义分叉。既没 key 也没 base_url = 用户没配,不注册。
+        let has_custom_endpoint = section
+            .base_url
+            .as_deref()
+            .is_some_and(|b| !b.trim().is_empty());
+        if key.is_empty() && !has_custom_endpoint {
             return Ok(None);
         }
         vec![CredentialConfig {
@@ -447,8 +475,7 @@ fn build_openai_pool(section: &OpenAISection) -> Result<Option<CredentialPool>, 
         let has_custom_endpoint = section
             .base_url
             .as_deref()
-            .map(|b| !b.trim().is_empty())
-            .unwrap_or(false);
+            .is_some_and(|b| !b.trim().is_empty());
         if key.is_empty() && !has_custom_endpoint {
             return Ok(None);
         }
@@ -586,6 +613,10 @@ fn has_anthropic_credential(s: &AnthropicSection) -> bool {
     !s.credentials.is_empty()
         || s.api_key.as_deref().is_some_and(|k| !k.is_empty())
         || env_has(ENV_ANTHROPIC_API_KEY)
+        // 免 Key 端点:显式 `base_url` 就是一次「我接了这个端点」的声明 ——
+        // 与 `build_anthropic_pool` 的注册条件保持同口径(否则配置能注册
+        // 却推不出 active provider,状态栏会显示「未配置」)。
+        || s.base_url.as_deref().is_some_and(|b| !b.trim().is_empty())
 }
 
 fn has_openai_credential(s: &OpenAISection) -> bool {

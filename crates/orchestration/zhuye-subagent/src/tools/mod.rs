@@ -94,11 +94,11 @@ impl Tool for CallSubAgentTool {
         let pass_n = args
             .get("context_tail")
             .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(self.spec.data_transfer.pass_context_messages);
+            .map_or(self.spec.data_transfer.pass_context_messages, |n| {
+                n as usize
+            });
         let parent_tail: Vec<zhuye_llm::ChatMessage> = if pass_n > 0 {
             ctx.parent_tail_json
-                .read()
                 .iter()
                 .rev()
                 .take(pass_n)
@@ -210,7 +210,7 @@ impl Tool for CallSubAgentTool {
             reg.record(zhuye_recovery::SubagentRegistryEntry {
                 tool_name: format!("call_{}", self.spec.role),
                 task_summary,
-                result_summary: result.clone(),
+                result_summary: result,
                 iteration: ctx.turn_id.0.as_u128() as u32,
                 created_at: chrono::Utc::now(),
             });
@@ -218,8 +218,7 @@ impl Tool for CallSubAgentTool {
         let active_workers = self
             .factory
             .subagent_registry()
-            .map(|r| r.snapshot().len())
-            .unwrap_or(0);
+            .map_or(0, |r| r.snapshot().len());
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::Text { text: result_text }],
             is_error: false,

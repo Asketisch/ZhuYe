@@ -10,13 +10,18 @@ use serde::{Deserialize, Serialize};
 /// `LoadedPlugin.skills.len()` / `commands.len()`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginLoadedEvent {
+    /// 插件 id 字符串(通常为 `<name>@<marketplace>`,与 `/plugin` overlay 的 key 一致)。
     pub plugin: String,
+    /// 安装作用域(`"managed"` / `"user"` / `"project"` / `"local"`)。
     #[serde(default)]
     pub scope: String,
+    /// 插件版本号(manifest 声明,缺省 `"0.0.0"`)。
     #[serde(default)]
     pub version: String,
+    /// 该插件注册的 skill 数。
     #[serde(default)]
     pub skill_count: usize,
+    /// 该插件注册的 slash 命令数。
     #[serde(default)]
     pub command_count: usize,
 }

@@ -36,7 +36,7 @@ async fn four_concurrent_claims_get_distinct_tasks() {
             m.claim_next_available(&list_c, "w0@team")
                 .await
                 .unwrap()
-                .map(|t| (t.id, t.claimed_by.clone()))
+                .map(|t| (t.id, t.claimed_by))
         },
         {
             let m = manager.clone();
@@ -45,7 +45,7 @@ async fn four_concurrent_claims_get_distinct_tasks() {
                 m.claim_next_available(&list, "w1@team")
                     .await
                     .unwrap()
-                    .map(|t| (t.id, t.claimed_by.clone()))
+                    .map(|t| (t.id, t.claimed_by))
             }
         },
         {
@@ -55,7 +55,7 @@ async fn four_concurrent_claims_get_distinct_tasks() {
                 m.claim_next_available(&list, "w2@team")
                     .await
                     .unwrap()
-                    .map(|t| (t.id, t.claimed_by.clone()))
+                    .map(|t| (t.id, t.claimed_by))
             }
         },
         async move {
@@ -63,7 +63,7 @@ async fn four_concurrent_claims_get_distinct_tasks() {
                 .claim_next_available(&list, "w3@team")
                 .await
                 .unwrap()
-                .map(|t| (t.id, t.claimed_by.clone()))
+                .map(|t| (t.id, t.claimed_by))
         },
     );
 

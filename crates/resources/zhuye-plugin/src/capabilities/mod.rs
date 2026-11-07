@@ -25,7 +25,7 @@ use crate::manifest::PluginManifest;
 ///
 /// 各字段都是 `Vec` 而非 `HashMap` 以保留顺序。Phase B 真正挂载时,
 /// loader 会遍历这个结构,逐项注册。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct LoadedPlugin {
     pub plugin_id: PluginId,
     pub install_path: PathBuf,
@@ -34,6 +34,21 @@ pub struct LoadedPlugin {
     pub hooks: Vec<hooks::LoadedHook>,
     pub skills: Vec<skills::LoadedSkill>,
     pub mcp_servers: Vec<mcp::LoadedMcpServer>,
+    /// v1.x C3:WASM 组件工具(manifest `[[wasm_tools]]`)。组件实现
+    /// `zhuye:plugin/zhuye-tool` 世界;loader 进程内实例化注册。
+    pub wasm_tools: Vec<WasmToolLoaded>,
+}
+
+/// 单个 WASM 工具的已解析形态(路径已展开为绝对)。
+#[derive(Debug, Clone)]
+pub struct WasmToolLoaded {
+    /// 组件文件绝对路径(`.wasm`)。
+    pub path: PathBuf,
+    /// 工具名(缺省取组件 describe() 的 name;此处是 manifest 显式名
+    /// 用于错误报告与去重)。
+    pub name: String,
+    /// manifest 覆盖描述(describe() 优先)。
+    pub description: Option<String>,
 }
 
 impl LoadedPlugin {
@@ -47,6 +62,7 @@ impl LoadedPlugin {
             hooks: Vec::new(),
             skills: Vec::new(),
             mcp_servers: Vec::new(),
+            wasm_tools: Vec::new(),
         }
     }
 }
@@ -106,6 +122,25 @@ pub fn scan_all(
             capability: "skills",
             message: e.to_string(),
         }),
+    }
+    // WASM 工具(v1.x C3):路径展开为绝对,缺失字段到 loader 期报错
+    // (组件加载需要 wasmtime,scan 阶段只收集声明)。
+    for (i, spec) in manifest.wasm_tools.iter().enumerate() {
+        let Some(rel) = spec.path.as_deref() else {
+            errors.push(CapabilityError {
+                capability: "wasm_tools",
+                message: format!("第 {i} 条缺 path"),
+            });
+            continue;
+        };
+        loaded.wasm_tools.push(WasmToolLoaded {
+            path: install_path.join(rel),
+            name: spec
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("wasm_tool_{i}")),
+            description: spec.description.clone(),
+        });
     }
     // MCP(服务器)
     match mcp::load(&manifest.mcp_servers, install_path, plugin_name) {

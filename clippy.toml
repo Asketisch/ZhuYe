@@ -1,4 +1,5 @@
-# M1 宽松 lint —— 等 CI 基线覆盖建立后在 M2 收紧。
-# 这些 pedantic 风格 lint 在初始实现阶段会产生大量误报;
-# 随代码逐步稳定,再渐进式重新启用。
+# clippy 行为配置。
+# lint 级别(not allow / warn / deny)统一在根 Cargo.toml 的
+# [workspace.lints] 集中管理,各 crate 经 `[lints] workspace = true` 接线;
+# 本文件只放 clippy.toml 专属的行为选项。
 avoid-breaking-exported-api = false

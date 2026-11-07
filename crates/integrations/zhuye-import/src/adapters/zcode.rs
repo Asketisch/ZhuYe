@@ -545,7 +545,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = make_fixture_db(dir.path());
         let source = ImportSource::SqliteSession {
-            db: db.clone(),
+            db,
             key: "sess_9a1b0000-0000-4000-8000-000000000001".into(),
         };
         let s = ZcodeAdapter

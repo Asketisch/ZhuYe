@@ -155,7 +155,8 @@ pub struct ToolContext {
     /// `DataTransferConfig.pass_context_messages` / 调用参数截取后传给
     /// `factory.spawn` 的 `parent_tail`。其余工具忽略。元素是协议层
     /// `ChatMessage` 的 JSON 形态,避免 zhuye-tools 反向依赖 llm 层。
-    pub parent_tail_json: Arc<RwLock<Vec<serde_json::Value>>>,
+    /// 构造后不可变:`Arc` 跨调用共享同一份快照,不逐调用深拷贝。
+    pub parent_tail_json: Arc<Vec<serde_json::Value>>,
 }
 
 /// v1.4 C1:工具 → 引擎事件通道的转发器。`tool_exec` 在每批执行前构造
@@ -168,8 +169,9 @@ pub struct ToolEventForwarder {
     pub sub_id: String,
     tx: tokio::sync::mpsc::Sender<zhuye_protocol::Event>,
     /// 父会话历史尾部快照(`state.messages` 最近若干条的 JSON 形态)。
-    /// `CallSubAgentTool` 经 `ctx.parent_tail_json` 读取。
-    pub parent_tail_json: Arc<RwLock<Vec<serde_json::Value>>>,
+    /// 每批构造时冻结一次;`CallSubAgentTool` 经 `ctx.parent_tail_json`
+    /// 读取,批次内所有调用共享同一份(零拷贝)。
+    pub parent_tail_json: Arc<Vec<serde_json::Value>>,
     /// v1.5 R1:本批执行生效的 OS 沙箱覆盖(每 turn 可变)。
     pub os_sandbox: Option<bool>,
 }
@@ -191,7 +193,7 @@ impl ToolEventForwarder {
         Self {
             sub_id: sub_id.into(),
             tx,
-            parent_tail_json: Arc::new(RwLock::new(parent_tail_json)),
+            parent_tail_json: Arc::new(parent_tail_json),
             os_sandbox: None,
         }
     }
@@ -334,7 +336,7 @@ impl Default for ToolContext {
             os_sandbox: None,
             background: None,
             human_input: None,
-            parent_tail_json: Arc::new(RwLock::new(Vec::new())),
+            parent_tail_json: Arc::new(Vec::new()),
             os_sandbox_writable: Vec::new(),
             os_sandbox_network: None,
             command_origin: None,

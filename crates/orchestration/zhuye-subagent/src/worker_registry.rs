@@ -51,12 +51,14 @@ pub fn build_worker_tool_registry(parent: &ToolRegistry) -> ToolRegistry {
             continue;
         }
         if let Some(tool) = parent.get(&name) {
-            by_source.entry(source).or_default().push(tool);
+            // source 无 Copy(Plugin 携带 id):entry 键克隆。
+            by_source.entry(source.clone()).or_default().push(tool);
         }
     }
     let worker = ToolRegistry::default();
     for (source, tools) in by_source {
-        let registered = worker.register_except(source, tools, INTERNAL_WORKER_TOOLS);
+        // source 无 Copy:注册拿所有权,日志克隆一份。
+        let registered = worker.register_except(source.clone(), tools, INTERNAL_WORKER_TOOLS);
         tracing::debug!(
             source = ?source,
             registered,

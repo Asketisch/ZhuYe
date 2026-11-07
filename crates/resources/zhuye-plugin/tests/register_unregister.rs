@@ -143,7 +143,7 @@ async fn register_unregister_full_cycle() {
 
     // 验证 skills 已挂到 catalog
     assert!(skills.plugin_ids().contains(&id.to_string()));
-    let lint_plugin_id = skills.get("lint").and_then(|s| s.plugin_id.clone());
+    let lint_plugin_id = skills.get("lint").and_then(|s| s.plugin_id);
     assert_eq!(lint_plugin_id.as_deref(), Some("phase-b-fixture@inline"));
 
     // 验证 commands 已挂到 CommandRegistry(展开在用户输入层做)
@@ -159,7 +159,7 @@ async fn register_unregister_full_cycle() {
     let tool_names = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .map(|(n, _)| n)
         .collect::<Vec<_>>();
     assert!(
@@ -195,7 +195,7 @@ async fn register_unregister_full_cycle() {
     let remaining_plugin_tools = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert_eq!(remaining_plugin_tools, 0);
     // Subagent specs 清除
@@ -224,7 +224,7 @@ async fn register_then_unregister_then_register_idempotent() {
     let count_after_first = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert!(count_after_first > 0);
 
@@ -233,7 +233,7 @@ async fn register_then_unregister_then_register_idempotent() {
     let count_after_unregister = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert_eq!(count_after_unregister, 0);
 
@@ -241,7 +241,7 @@ async fn register_then_unregister_then_register_idempotent() {
     let count_after_second = tools
         .list_with_source()
         .into_iter()
-        .filter(|(_, s)| *s == zhuye_tools::ToolSource::Plugin)
+        .filter(|(_, s)| matches!(s, zhuye_tools::ToolSource::Plugin(_)))
         .count();
     assert_eq!(count_after_first, count_after_second);
 }

@@ -13,6 +13,7 @@ use crate::question::AskUserAnswer;
 pub struct ThreadId(pub Uuid);
 
 impl ThreadId {
+    /// 生成新的线程标识(UUID v4)。
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -42,6 +43,7 @@ impl std::fmt::Display for ThreadId {
 pub struct TurnId(pub Uuid);
 
 impl TurnId {
+    /// 生成新的回合标识(UUID v4)。
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -78,18 +80,30 @@ impl std::fmt::Display for TurnId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UserInputItem {
+    /// 纯文本输入,投递给模型时成为用户消息中的文本块。
     Text {
+        /// 用户输入的文本内容。
         text: String,
     },
+    /// 内联图片输入(多模态),与同批 Text / File 按序合并进同一条用户消息。
     Image {
+        /// 图片原始字节(JSON wire 上为 0-255 整数数组,非 base64)。
         data: Vec<u8>,
+        /// 图片 MIME 类型,如 `image/png` / `image/jpeg`。
         mime_type: String,
     },
+    /// 按路径引用的本地图片(区别于内联字节的 `Image`)。
+    /// 注:core 尚未接通该变体,投递给模型时会被跳过。
     LocalImage {
+        /// 图片文件在本机上的路径(按引用传递,不内联字节)。
         path: PathBuf,
     },
+    /// 显式激活一个技能(skill)。
+    /// 注:core 尚未接通该变体,投递给模型时会被跳过。
     Skill {
+        /// 技能名,对应技能目录(catalog)中登记的名称。
         name: String,
+        /// 可选的激活参数(任意 JSON);wire 上可省略,缺省为 `None`。
         #[serde(default)]
         args: Option<serde_json::Value>,
     },
@@ -97,7 +111,9 @@ pub enum UserInputItem {
     /// `EventMsg::AskUserQuestion.request_id` 配对。`None` 表示用户按
     /// Esc 取消(LLM 收到空答案)。
     QuestionAnswer {
+        /// 所回答问题的请求 id,与 `AskUserQuestionEvent.request_id` 配对。
         request_id: String,
+        /// 逐题答案集合:每题给出选中 option 的下标列表与可选自定义文本。
         answers: AskUserAnswer,
     },
     /// v1.x:在工作区中 @ 一个文件路径。投递到 LLM 时由
@@ -116,7 +132,10 @@ pub enum UserInputItem {
 /// `UserInputItem::File` 的可选行区间。1-indexed,含端点。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileRange {
+    /// 起始行号(1-indexed,含该行)。
     pub start_line: u32,
+    /// 结束行号(1-indexed,含该行);与 `start_line` 一起渲染为
+    /// `@<path>:L<start>-L<end>` 标注。
     pub end_line: u32,
 }
 
@@ -243,11 +262,20 @@ impl std::str::FromStr for PlanId {
     }
 }
 
+/// 用户对工具 / Hook 审批请求的裁决,经 `Op::ToolApproval` / `Op::HookApproval`
+/// 回传给审批门。wire 形态:`"approve"` / `"approve_for_session"` /
+/// `{"deny":{"reason":"..."}}`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewDecision {
+    /// 仅批准本次调用。
     Approve,
-    Deny { reason: String },
+    /// 拒绝本次调用,工具不执行;`reason` 作为错误结果反馈给模型。
+    Deny {
+        /// 拒绝原因;审批门在取消、中断、超时或命中拒绝规则时也会自行合成。
+        reason: String,
+    },
+    /// 批准并在本会话内放行该工具:后续同名调用免审批(`High` 风险调用除外)。
     ApproveForSession,
 }
 
@@ -270,30 +298,48 @@ pub enum PlanApprovalChoice {
     Revise,
 }
 
+/// `Op::UserInput.thread_settings` 携带的设置覆盖,在处理该条输入时生效;
+/// 各字段 `None` 表示不覆盖、沿用会话配置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThreadSettingsOverrides {
+    /// 本回合使用的模型 spec(如 `openai/gpt-4o`);`None` 跟随会话当前模型
+    /// (可随配置热重载切换)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 本回合审批策略覆盖:`Prompt` 强制启用审批门,`Deny` 拒绝所有需审批的
+    /// 工具;`Auto` / `None` 跟随会话级审批配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<ApprovalPolicy>,
+    /// 本回合 OS 沙箱覆盖:`OsSandbox` 强制启用,`WorkspaceOnly` / `FullAccess`
+    /// 关闭 OS 层(文件工具的工作区路径校验不受影响);`None` 回退到配置 / 环境变量。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<SandboxPolicy>,
+    /// 工具执行队列的并发上限(0 按 1 处理);调整作用于会话级队列,
+    /// 对后续回合持续生效直到再次覆盖。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_concurrency: Option<usize>,
 }
 
+/// 审批策略:用于 `ThreadSettingsOverrides` 的回合级覆盖,以及
+/// `SessionConfiguredEvent` 的会话快照。
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalPolicy {
+    /// 不强制审批,沿用会话级审批配置(默认值)。
     #[default]
     Auto,
+    /// 强制启用审批门(即使会话级审批关闭),需审批的工具走审批流程。
     Prompt,
+    /// 拒绝所有需审批的工具调用:不弹审批、直接以拒绝结果返回模型。
     Deny,
 }
 
+/// 沙箱策略:用于 `ThreadSettingsOverrides` 的回合级 OS 沙箱覆盖,以及
+/// `SessionConfiguredEvent` 的会话快照。
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxPolicy {
+    /// 仅工作区路径约束:文件类工具拒绝越界路径,不启用 OS 级沙箱(默认值)。
     #[default]
     WorkspaceOnly,
     /// M3+ (requires landlock/mac-sandbox).
@@ -302,12 +348,19 @@ pub enum SandboxPolicy {
     FullAccess,
 }
 
+/// 工具调用的审批风险等级(按声明序可比较,`Low < Medium < High`),
+/// 随 `ApprovalRequestEvent` / `PermissionBubbleEvent` 下发供 UI 提示。
+/// bash 由命令分类器动态定级,其余工具经执行队列时默认 `Medium`。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
+    /// 低风险:只读 / 无副作用(如分类为 Safe 的 bash 命令);默认值。
     #[default]
     Low,
+    /// 中风险:有副作用但可控(如分类为 Risky 的 bash 命令)。
     Medium,
+    /// 高风险:破坏性 / 系统级操作;审批门不会以会话内放行或
+    /// `AcceptEdits` / `Bubble` 模式的自动批准跳过它。
     High,
 }
 
@@ -321,13 +374,60 @@ pub enum RiskLevel {
 ///
 /// `Default = Low` 与 Anthropic / OpenAI 默认 reasoning 强度一致;`/effort`
 /// 不带参数时也按 Low 处理,避免 "未设置 = 不思考" 的歧义。
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// v1.10 功能4:新增 `Max` / `Ultra` 两档(变体级 additive,旧端不识别时
+/// 按 serde 未知变体降级)。不同模型族支持的最高档不同(qwen 系到 High、
+/// deepseek 到 Max、OpenAI 到 Ultra),由 `zhuye_llm` 的能力表在**发 wire
+/// 前**钳制 —— 本枚举表达「用户想要的强度」,不代表目标模型一定支持。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffortMirror {
+    /// 低强度思考(默认档)。
     #[default]
     Low,
+    /// 中等强度思考。
     Medium,
+    /// 高强度思考;qwen 系及未知模型族可用的最高档。
     High,
+    /// 极高强度思考(v1.10 新增);deepseek 系的最高档,超出目标模型上限时向下钳制。
+    Max,
+    /// 最高强度思考(v1.10 新增);仅 OpenAI 推理系(`gpt-5*` / `gpt-6*` / o 系)
+    /// 支持,其余模型向下钳制到各自上限。
+    Ultra,
+}
+
+impl ReasoningEffortMirror {
+    /// 档位 wire 字符串(`low` / `medium` / `high` / `max` / `ultra`),
+    /// 与 serde snake_case 序列化保持同一口径,供配置解析 / CLI 校验复用。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffortMirror::Low => "low",
+            ReasoningEffortMirror::Medium => "medium",
+            ReasoningEffortMirror::High => "high",
+            ReasoningEffortMirror::Max => "max",
+            ReasoningEffortMirror::Ultra => "ultra",
+        }
+    }
+}
+
+impl std::str::FromStr for ReasoningEffortMirror {
+    type Err = String;
+
+    /// 大小写不敏感解析(`"high"` / `"High"` / `"HIGH"` 均可);
+    /// 未知字符串返回 `Err`(带合法档位清单,便于直接拼进错误提示)。
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lowered = s.trim().to_ascii_lowercase();
+        match lowered.as_str() {
+            "low" => Ok(ReasoningEffortMirror::Low),
+            "medium" => Ok(ReasoningEffortMirror::Medium),
+            "high" => Ok(ReasoningEffortMirror::High),
+            "max" => Ok(ReasoningEffortMirror::Max),
+            "ultra" => Ok(ReasoningEffortMirror::Ultra),
+            _ => Err(format!(
+                "unknown reasoning effort '{s}' (expected one of low|medium|high|max|ultra)"
+            )),
+        }
+    }
 }
 
 /// v1.4 A2:转向消息优先级的协议层镜像(与实现层
@@ -344,12 +444,19 @@ pub enum SteeringPriorityMirror {
     Now,
 }
 
+/// `EventMsg::SessionConfigured` 载荷:会话就绪握手事件(全局事件,`id` 为空),
+/// 报告会话 id 与当前模型配置;热重载切换模型后会重新下发。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfiguredEvent {
+    /// 本会话的线程标识,与 rollout 文件名及 `SessionMeta.session_id` 一致。
     pub session_id: ThreadId,
+    /// 当前生效的模型 spec(如 `openai/gpt-4o`)。
     pub model: String,
+    /// 模型提供方名称,取自模型 spec 的 `/` 前缀;无前缀时为 `"unknown"`。
     pub provider: String,
+    /// 会话审批策略。注:引擎目前恒填默认值 `Auto`,并不反映实际审批配置。
     pub approval_policy: ApprovalPolicy,
+    /// 会话沙箱策略。注:引擎目前恒填默认值 `WorkspaceOnly`,并不反映实际沙箱状态。
     pub sandbox_policy: SandboxPolicy,
     /// 引擎报告的模型上下文窗口大小(token),供 TUI 上下文用量条做分母。
     /// 缺省 `None`(未知模型 / 旧 payload),TUI 此时优雅省略上下文条。
@@ -361,9 +468,15 @@ pub struct SessionConfiguredEvent {
 /// 工具产生的输出内容。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
+    /// 输出内容块,随工具结果回传给模型(`Text` / `Image` 原样传递,
+    /// 其余变体序列化为 JSON 文本)。
     pub content: Vec<ContentBlock>,
+    /// 是否为失败结果(执行出错、被拒、超时等),随工具结果一并告知模型。
     pub is_error: bool,
+    /// 结构化附加信息(如 `{"approval":"denied"}`、`{"timeout_ms":...}`);
+    /// 不随工具结果发给模型,供客户端、hooks 与引擎内部逻辑读取。
     pub metadata: serde_json::Value,
+    /// 工具执行耗时(毫秒);未实际执行即返回(如审批被拒、hook 拦截)时为 0。
     pub elapsed_ms: u64,
 }
 
@@ -373,26 +486,53 @@ pub struct ToolOutput {
 #[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolError {
+    /// 参数非法:缺失必填项、类型错误或取值越界。
     #[error("invalid arguments: {message}")]
-    InvalidArgs { message: String },
+    InvalidArgs {
+        /// 错误说明(指出哪个参数有何问题),经 Display 拼入错误文本反馈给模型。
+        message: String,
+    },
+    /// 工具执行失败的通用错误,内含失败描述。
     #[error("execution failed: {0}")]
     Execution(String),
+    /// 因权限不足被拒绝执行。
     #[error("permission denied: {reason}")]
-    PermissionDenied { reason: String },
+    PermissionDenied {
+        /// 拒绝原因,经 Display 拼入错误文本反馈给模型。
+        reason: String,
+    },
+    /// 执行超时(执行队列的统一超时,或工具内部的命令 / 网络请求超时)。
     #[error("timeout after {elapsed_ms}ms")]
-    Timeout { elapsed_ms: u64 },
+    Timeout {
+        /// 超时时的耗时(毫秒);部分工具直接取所配置的超时阈值。
+        elapsed_ms: u64,
+    },
+    /// 执行被取消(取消令牌触发,如用户中断或会话关闭)。
     #[error("cancelled")]
     Cancelled,
+    /// 路径越界:目标路径解析后不在工作区内。
     #[error("path escaped sandbox: {path}")]
-    PathEscape { path: std::path::PathBuf },
+    PathEscape {
+        /// 被拒绝的越界路径(原始参数或解析后的绝对路径,视工具而定)。
+        path: std::path::PathBuf,
+    },
+    /// I/O 错误(文件读写、网络请求等),内含错误描述;`std::io::Error` 可经
+    /// `From` 自动转换为此变体。
     #[error("io: {0}")]
     Io(String),
+    /// 被 hook 否决执行。
     #[error("hook denied: {reason}")]
-    HookDenied { reason: String },
+    HookDenied {
+        /// hook 给出的否决原因,经 Display 拼入错误文本反馈给模型。
+        reason: String,
+    },
     /// v1.3:OS 沙箱不可用且安全基线要求严格模式,fail-closed。
     /// BashTool 不会回退到裸 `sh -c`;直接返回此错误。
     #[error("sandbox unavailable: {reason}")]
-    SandboxUnavailable { reason: String },
+    SandboxUnavailable {
+        /// 不可用的具体原因(后端缺失 / 初始化失败,或不可信命令被拒绝裸执行)。
+        reason: String,
+    },
 }
 
 impl From<std::io::Error> for ToolError {
@@ -401,30 +541,44 @@ impl From<std::io::Error> for ToolError {
     }
 }
 
+/// 内容块:工具输出(`ToolOutput.content`)、回合内容历史(模型文本 / 工具调用 /
+/// 工具结果)与 rollout 持久化共用的基本单元。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    /// 纯文本块。
     Text {
+        /// 文本正文(模型输出或工具输出)。
         text: String,
     },
+    /// 图片块(多模态),以原始字节内联。
     Image {
+        /// 图片原始字节(JSON wire 上为 0-255 整数数组,非 base64)。
         data: Vec<u8>,
+        /// 图片 MIME 类型,如 `image/png`。
         mime_type: String,
     },
+    /// 文件改动 diff(由 `edit` / `write` / `ast` 等文件改写类工具产出)。
     Diff {
+        /// unified diff 格式的改动文本。
         unified_diff: String,
     },
     /// LLM 请求的工具调用(M2+)。在模型调用后通过 `latest_content`
     /// 暴露,供 graph 决定是否 dispatch。
     ToolUse {
+        /// 模型分配的工具调用 id,与对应 `ToolResult.call_id` 配对。
         id: String,
+        /// 被调用的工具名。
         name: String,
+        /// 模型给出的调用参数(已解析的 JSON)。
         args: serde_json::Value,
     },
     /// 工具执行结果(M2+)。在队列运行后追加到 `latest_content`,
     /// 使下一次模型调用能看到工具输出。
     ToolResult {
+        /// 所对应工具调用的 id(即 `ToolUse.id`)。
         call_id: String,
+        /// 工具执行输出(内容块、错误标记、元数据与耗时)。
         output: ToolOutput,
     },
 }

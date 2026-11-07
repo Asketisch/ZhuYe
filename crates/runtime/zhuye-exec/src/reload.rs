@@ -43,6 +43,7 @@ pub fn spawn_reload_task(
     mcp_manager: Option<Arc<McpConnectionManager>>,
     tools: Arc<ToolRegistry>,
     plugin_runtime: Option<SharedPluginRuntime>,
+    hook_engine: Option<Arc<zhuye_hooks::HookEngine>>,
 ) {
     tokio::spawn(async move {
         let mut rx = watcher.subscribe();
@@ -66,6 +67,7 @@ pub fn spawn_reload_task(
                 mcp_manager.as_deref(),
                 &tools,
                 plugin_runtime.as_ref(),
+                hook_engine.as_ref(),
             )
             .await
             {
@@ -110,6 +112,7 @@ pub async fn handle_reload(
     mcp_manager: Option<&McpConnectionManager>,
     tools: &ToolRegistry,
     plugin_runtime: Option<&SharedPluginRuntime>,
+    hook_engine: Option<&Arc<zhuye_hooks::HookEngine>>,
 ) -> Result<(), String> {
     if let Err(e) = new_cfg.apply_to_registry(registry) {
         return Err(format!("apply_to_registry failed: {e}"));
@@ -215,6 +218,15 @@ pub async fn handle_reload(
         }
     }
 
+    // v1.x:`[hooks]` 段变更 → 应用引擎级 enable/disable。此前 diff 检出
+    // hooks 变更但无 handler —— 用户改 hook 开关静默不生效。引擎 API
+    // 按名字幂等(未知名字 no-op),差集应用安全。
+    if sections_changed.iter().any(|s| s == "hooks") {
+        if let Some(engine) = hook_engine {
+            apply_hook_toggles(engine, &old_cfg.hooks, &new_cfg.hooks);
+        }
+    }
+
     // v1.2 P1-12:`[token_budget]` 段变更 → 更新会话预算上限。env
     // `ZHUYE_TOKEN_BUDGET` 优先于 TOML;`None` = 关闭预算(仅靠
     // max_iterations)。下一轮 `model_call` 读最新值。
@@ -256,6 +268,45 @@ pub async fn handle_reload(
         .send(event)
         .await
         .map_err(|e| format!("event_tx closed: {e}"))
+}
+
+/// `[hooks]` 段的 `enabled` / `disabled` 差集 → 引擎级 enable/disable。
+/// `enabled` 是显式白名单(离开 = disable,进入 = enable);`disabled`
+/// 是显式黑名单(进入 = disable,离开 = enable)。引擎 API 幂等,
+/// 未知名字 no-op。
+fn apply_hook_toggles(
+    engine: &Arc<zhuye_hooks::HookEngine>,
+    old: &zhuye_config::HooksSection,
+    new: &zhuye_config::HooksSection,
+) {
+    // owned 集合:两个 &Option 输入的生命周期不同,借用集合无法统一。
+    let set = |opt: &Option<Vec<String>>| -> std::collections::HashSet<String> {
+        opt.as_deref().unwrap_or_default().iter().cloned().collect()
+    };
+    let (old_enabled, new_enabled) = (set(&old.enabled), set(&new.enabled));
+    let (old_disabled, new_disabled) = (set(&old.disabled), set(&new.disabled));
+    let mut toggles: Vec<(bool, String)> = Vec::new();
+    for name in new_disabled.difference(&old_disabled) {
+        toggles.push((false, name.clone()));
+    }
+    for name in old_disabled.difference(&new_disabled) {
+        toggles.push((true, name.clone()));
+    }
+    for name in old_enabled.difference(&new_enabled) {
+        toggles.push((false, name.clone()));
+    }
+    for name in new_enabled.difference(&old_enabled) {
+        toggles.push((true, name.clone()));
+    }
+    for (enable, name) in toggles {
+        // 引擎 API 收 &str:借用后日志再拿所有权值。
+        let applied = if enable {
+            engine.enable(&name)
+        } else {
+            engine.disable(&name)
+        };
+        tracing::info!(hook = %name, enable, applied, "config reload: hook toggle");
+    }
 }
 
 /// 比较两份 `ReflectConfig`,返回发生变化的 section 名列表。
@@ -341,6 +392,5 @@ pub(crate) fn diff_sections(
 fn provider_of_spec(model_spec: &str) -> String {
     model_spec
         .split_once('/')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .map_or_else(|| "unknown".to_string(), |(p, _)| p.to_string())
 }

@@ -98,9 +98,7 @@ fn make_m4_deps(agent_name: &str, system_prompt: &str) -> M4Deps {
     let prompt_builder = Arc::new(Mutex::new(PromptBuilder::new()));
     let note_store: Arc<dyn zhuye_notes::NoteStore> =
         Arc::new(zhuye_notes::InMemoryNoteStore::new());
-    let file_recovery = Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(
-        tmp.clone(),
-    )));
+    let file_recovery = Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(tmp)));
     let subagent_registry = zhuye_recovery::SubagentRegistry::shared();
     let mut def = AgentDefinition::default();
     #[allow(clippy::field_reassign_with_default)] // pre-M5
@@ -123,6 +121,8 @@ fn make_m4_deps(agent_name: &str, system_prompt: &str) -> M4Deps {
         file_recovery,
         subagent_registry,
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
+        bundled_skills: false,
     }
 }
 
@@ -1353,23 +1353,28 @@ struct MemRecorder {
 
 #[async_trait]
 impl zhuye_protocol::RolloutRecorder for MemRecorder {
-    async fn record(&self, r: zhuye_protocol::RolloutRecord) -> anyhow::Result<()> {
+    async fn record(
+        &self,
+        r: zhuye_protocol::RolloutRecord,
+    ) -> Result<(), zhuye_protocol::RolloutError> {
         self.records.lock().push(r);
         Ok(())
     }
     async fn replay(
         &self,
         _session_id: zhuye_protocol::ThreadId,
-    ) -> anyhow::Result<Vec<zhuye_protocol::RolloutRecord>> {
+    ) -> Result<Vec<zhuye_protocol::RolloutRecord>, zhuye_protocol::RolloutError> {
         Ok(self.records.lock().clone())
     }
-    async fn list_sessions(&self) -> anyhow::Result<Vec<zhuye_protocol::SessionInfo>> {
+    async fn list_sessions(
+        &self,
+    ) -> Result<Vec<zhuye_protocol::SessionInfo>, zhuye_protocol::RolloutError> {
         Ok(vec![])
     }
     async fn truncate_after(
         &self,
         to_turn_id: Option<&zhuye_protocol::TurnId>,
-    ) -> anyhow::Result<usize> {
+    ) -> Result<usize, zhuye_protocol::RolloutError> {
         let mut records = self.records.lock();
         let Some(target) = to_turn_id else {
             return Ok(0);

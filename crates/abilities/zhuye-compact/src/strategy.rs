@@ -128,8 +128,8 @@ impl Compactor {
     /// 产生增量更新而非从零重新摘要。
     pub async fn compact(
         &self,
-        messages: Vec<ChatMessage>,
-    ) -> (Vec<ChatMessage>, ContextCompactedEvent) {
+        messages: &[ChatMessage],
+    ) -> (Option<Vec<ChatMessage>>, ContextCompactedEvent) {
         let (out, evt, _memory_write) = self
             .compact_with_prior_and_tokens(messages, None, None)
             .await;
@@ -150,17 +150,22 @@ impl Compactor {
     /// v1.x:第三返回值是本次压缩期间发生的记忆固化写入摘要 —— `Some`
     /// 表示有事实被 append 进 MEMORY.md(供上层落盘审计);无固化 /
     /// 未配置 consolidation 时为 `None`。
+    ///
+    /// 消息入参为借用;返回的消息列表为 `Option` —— `None` 表示未触发
+    /// 压缩(Noop),调用方保持原列表不回写。只有真正触发压缩时才做
+    /// 一次 `to_vec()`:压缩判定每迭代执行,绝大多数迭代走 Noop,若
+    /// 按值收 `Vec` 则每次迭代都要为「借一下」深拷贝整个会话历史。
     pub async fn compact_with_prior_and_tokens(
         &self,
-        messages: Vec<ChatMessage>,
+        messages: &[ChatMessage],
         prev_summary: Option<&str>,
         llm_reported_input_tokens: Option<u32>,
     ) -> (
-        Vec<ChatMessage>,
+        Option<Vec<ChatMessage>>,
         ContextCompactedEvent,
         Option<MemoryWriteInfo>,
     ) {
-        let local_estimate = estimate_messages(&messages);
+        let local_estimate = estimate_messages(messages);
         let before_tokens = match llm_reported_input_tokens {
             Some(n) => n.max(local_estimate),
             None => local_estimate,
@@ -168,10 +173,10 @@ impl Compactor {
         let micro_threshold =
             ((self.cfg.trigger_tokens as f32) * self.cfg.microcompact_ratio) as u32;
 
-        // 第 1 步:低于 micro 阈值 → noop。
+        // 第 1 步:低于 micro 阈值 → noop(不回写,调用方保持原列表)。
         if before_tokens < micro_threshold {
             return (
-                messages,
+                None,
                 ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::Noop,
                     removed_messages: 0,
@@ -182,20 +187,20 @@ impl Compactor {
             );
         }
 
-        // 第 2 步:microcompact。
+        // 第 2 步:microcompact(仅在真正触发压缩时克隆一次)。
         let mc_cfg = MicrocompactConfig {
             trigger_tokens: self.cfg.trigger_tokens,
             keep_recent: self.cfg.keep_recent_microcompact,
             trigger_ratio: self.cfg.microcompact_ratio,
         };
-        let (after_mc, mc_report) = microcompact(messages, &mc_cfg);
+        let (after_mc, mc_report) = microcompact(messages.to_vec(), &mc_cfg);
         if !mc_report.was_compacted {
             // Microcompact 提前退出(例如 n <= keep_recent)。
             // 直接尝试 smart_prune。
         } else if estimate_messages(&after_mc) < self.cfg.trigger_tokens {
             let after_tokens = estimate_messages(&after_mc);
             return (
-                after_mc,
+                Some(after_mc),
                 ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::Microcompact,
                     removed_messages: mc_report.removed_count,
@@ -217,7 +222,7 @@ impl Compactor {
         let after_sp_tokens = estimate_messages(&after_sp);
         if after_sp_tokens < self.cfg.target_tokens() {
             return (
-                after_sp,
+                Some(after_sp),
                 ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::SmartPrune,
                     removed_messages: sp_report.removed_count,
@@ -271,7 +276,7 @@ impl Compactor {
                     summary_msg.extend(tail);
                     let after_tokens = estimate_messages(&summary_msg);
                     return (
-                        summary_msg,
+                        Some(summary_msg),
                         ContextCompactedEvent {
                             strategy: ContextCompactedStrategy::LlMSummarize,
                             removed_messages: sp_report.removed_count + 1,
@@ -289,7 +294,7 @@ impl Compactor {
 
         // 回退:返回 smart_prune 的结果。
         (
-            after_sp,
+            Some(after_sp),
             ContextCompactedEvent {
                 strategy: ContextCompactedStrategy::SmartPrune,
                 removed_messages: sp_report.removed_count,
@@ -438,7 +443,7 @@ mod tests {
         let msgs = vec![ChatMessage::User(UserContent {
             blocks: vec![ContentBlock::text("hi")],
         })];
-        let (_, evt) = c.compact(msgs).await;
+        let (_, evt) = c.compact(&msgs).await;
         assert!(matches!(evt.strategy, ContextCompactedStrategy::Noop));
     }
 
@@ -456,7 +461,7 @@ mod tests {
             }),
         );
         let msgs = huge_message_list();
-        let (out, evt) = c.compact(msgs).await;
+        let (out, evt) = c.compact(&msgs).await;
         // tokens ≈ 200k,threshold = 100 → 明显超限。
         // 200 条工具结果、keep_recent=5 时,microcompact 会替换大多数
         // 旧工具结果。若能压到 trigger_tokens=100 以下,返回 Microcompact;
@@ -468,7 +473,7 @@ mod tests {
                 | ContextCompactedStrategy::SmartPrune
                 | ContextCompactedStrategy::LlMSummarize
         ));
-        assert!(out.len() <= 205);
+        assert!(out.as_ref().is_some_and(|o| o.len() <= 205));
     }
 
     #[tokio::test]
@@ -488,7 +493,7 @@ mod tests {
             }),
         );
         let msgs = huge_message_list();
-        let (_, evt) = c.compact(msgs).await;
+        let (_, evt) = c.compact(&msgs).await;
         // 目标紧 → 升级到 summarize。
         assert!(matches!(
             evt.strategy,
@@ -548,7 +553,7 @@ mod tests {
         )
         .with_memory_consolidation(store, MemoryScope::Session, "tester");
         let msgs = huge_message_list();
-        let (_, evt) = c.compact(msgs).await;
+        let (_, evt) = c.compact(&msgs).await;
         assert!(matches!(
             evt.strategy,
             ContextCompactedStrategy::LlMSummarize
@@ -606,7 +611,7 @@ mod tests {
         )
         .with_memory_consolidation(store, MemoryScope::Session, "tester");
         let msgs = huge_message_list();
-        let (_, evt, mem) = c.compact_with_prior_and_tokens(msgs, None, None).await;
+        let (_, evt, mem) = c.compact_with_prior_and_tokens(&msgs, None, None).await;
         assert!(matches!(
             evt.strategy,
             ContextCompactedStrategy::LlMSummarize
@@ -636,7 +641,7 @@ mod tests {
             }),
         );
         let msgs = huge_message_list();
-        let (_, _evt, mem) = c.compact_with_prior_and_tokens(msgs, None, None).await;
+        let (_, _evt, mem) = c.compact_with_prior_and_tokens(&msgs, None, None).await;
         assert!(mem.is_none());
     }
 
@@ -657,7 +662,7 @@ mod tests {
             }),
         );
         let msgs = huge_message_list();
-        let (_, evt) = c.compact(msgs).await;
+        let (_, evt) = c.compact(&msgs).await;
         // Summarizer 失败 → 返回 best-effort 的 smart_prune。
         assert!(matches!(evt.strategy, ContextCompactedStrategy::SmartPrune));
     }
@@ -769,7 +774,7 @@ mod tests {
             }),
         );
         let msgs = huge_message_list();
-        let (_out, evt, _mem) = c.compact_with_prior_and_tokens(msgs, None, None).await;
+        let (_out, evt, _mem) = c.compact_with_prior_and_tokens(&msgs, None, None).await;
         assert!(!matches!(evt.strategy, ContextCompactedStrategy::Noop));
     }
 
@@ -793,7 +798,7 @@ mod tests {
             blocks: vec![ContentBlock::text("hi")],
         })];
         let (_out, evt, _mem) = c
-            .compact_with_prior_and_tokens(msgs, None, Some(50_000))
+            .compact_with_prior_and_tokens(&msgs, None, Some(50_000))
             .await;
         assert!(
             !matches!(evt.strategy, ContextCompactedStrategy::Noop),
@@ -821,7 +826,7 @@ mod tests {
         );
         let msgs = huge_message_list();
         let (_out, evt, _mem) = c
-            .compact_with_prior_and_tokens(msgs, None, Some(8_000))
+            .compact_with_prior_and_tokens(&msgs, None, Some(8_000))
             .await;
         assert!(
             !matches!(evt.strategy, ContextCompactedStrategy::Noop),
@@ -866,7 +871,7 @@ mod tests {
             local > 7000,
             "test setup wrong: local estimate {local} should exceed micro-threshold 7000"
         );
-        let (_out, evt, _mem) = c.compact_with_prior_and_tokens(msgs, None, Some(0)).await;
+        let (_out, evt, _mem) = c.compact_with_prior_and_tokens(&msgs, None, Some(0)).await;
         assert!(
             !matches!(evt.strategy, ContextCompactedStrategy::Noop),
             "llm=0 must not suppress local-estimate over-budget, got strategy {:?}",

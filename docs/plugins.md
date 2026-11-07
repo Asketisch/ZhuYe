@@ -76,10 +76,16 @@ zhuye exec "/my-plugin:hello 世界"
 
 可运行的完整示例见 [`plugins/plugin-demo/`](../plugins/plugin-demo/)。
 仓库自带插件统一放在 [`plugins/`](../plugins/) 目录(约定见其 README);
-功能型插件实例:[`plugins/harness-import/`](../plugins/harness-import/) ——
-把 Claude Code / Codex / ZCode 历史会话导入为烛夜会话(能力核心是
-`crates/integrations/zhuye-import`,经 MCP server 工具 + slash 命令接入,
-二进制同时支持终端直跑批量导入)。
+功能型插件实例:
+- [`plugins/harness-import/`](../plugins/harness-import/) —— 把 Claude Code /
+  Codex / ZCode 历史会话导入为烛夜会话,以及**一键导入其他本地 agent 的
+  模型 / MCP 配置**(`zhuye-import config`;能力核心是
+  `crates/integrations/zhuye-import`,经 MCP server 工具 + slash 命令接入,
+  二进制同时支持终端直跑批量导入);
+- [`plugins/goal-queue/`](../plugins/goal-queue/) —— goal(目标模式)与
+  queue(队列模式)的工具入口:启用后在 headless / serve / SDK 会话注册
+  `goal` / `queue` 内置工具并启动队列 driver(FIFO 串行消费,完成信号走
+  引擎 Stop hook,任务持久化 `~/.zhuye/queue/<session>.json`)。
 
 ## CLI 命令参考
 
@@ -565,3 +571,57 @@ server 是干净 env(只有 HOME / PATH + 显式 env),依赖宿主变量会炸;
 | [`tools-and-hooks.md`](tools-and-hooks.md) | 内置工具与 hooks 设计契约(12 事件 / 7 决策) |
 | [`architecture.md`](architecture.md) | 六层架构与 `zhuye-plugin` 定位 |
 | [`../plugins/README.md`](../plugins/README.md) | 仓库自带插件目录约定 |
+
+## WASM 插件(多语言)
+
+v1.x 支持 **WebAssembly 组件** 形态的插件能力(进程内热插拔,面向社区
+生态):任何语言(Rust / TypeScript / Python / Go …)按 `wit/plugin.wit`
+契约产出单个 `.wasm` 文件即可交付 —— 零子进程、零 JSON-RPC 样板、零
+cargo 依赖(对使用者)。
+
+### 契约与 ABI
+
+- 权威定义:`wit/plugin.wit`(`package zhuye:plugin@0.1.0`),两个世界:
+  - `zhuye-hook`:`handle(event: string) -> result<string, string>` —
+    事件 JSON 进 / 决策 JSON 出,兼容 shell hook 的 stdout 协议
+    (决策键 `action` 或 `decision` 均可,`block` / `message` 别名同
+    shell;`modify_args` 为 wasm 扩展;缺省 / 未知值 → Allow,非法
+    JSON → Deny fail-closed);
+  - `zhuye-tool`:`describe()` 返回工具声明 JSON(name/description/
+    parameters;parameters 缺省为空 object),`invoke(args)` 返回工具
+    输出 JSON(wit 契约只要求 `content` / `is_error`;`metadata` 可省,
+    `elapsed_ms` 由宿主计时填充)。
+- ABI 刻意选 **JSON 字符串**:动态语言作者无需生成强类型绑定。
+- 版本策略与语言矩阵见 `wit/README.md`。**工具链矩阵锁定**:宿主
+  wasmtime 30.0.1 ↔ guest wit-bindgen 0.40(组件 wasi 小版本要求精确
+  匹配,升级须宿主与样例同步)。
+
+### 安全语义
+
+- **确定性超时**:每次调用 deadline(epoch 中断)默认 30s,hooks.json
+  的 `timeout` 可覆盖;超时 → hook Deny / tool `is_error`(fail-closed)。
+- **沙箱**:组件默认无文件系统 / 无网络 / 无环境变量(纯计算)。
+- **权限**:WASM 工具走外部工具 floor = `Prompt`(与 MCP 工具同基线,
+  组件声明 `Auto` 不生效)。
+- **热插拔**:挂载/卸载复用 `[plugins]` 现有控制面(config 变更 →
+  diff 挂卸),卸载按 plugin id 精确反注册。
+
+### 构建(Rust 样例)
+
+```bash
+scripts/build_plugin_demo_wasm.sh   # 产 plugins/plugin-demo/bin/*.wasm
+```
+
+样例:`plugins/plugin-demo/wasm/rust/`(hook:PostToolUse 注入提醒;
+tool:echo)。声明方式:`plugin.toml` 的 `[[wasm_tools]]` 段 +
+`hooks.json` 条目的 `"wasm": "${PLUGIN_ROOT}/bin/x.wasm"` 字段。
+产物缺失时该能力注册仅 warn,不影响其余挂载。**同名保护**:组件
+`describe().name` 与既有工具(内置 / 其他来源)重名时拒绝注册 ——
+WASM 工具名不得覆盖既有工具。样例产物 `bin/*.wasm` 随插件入库,
+可直接安装体验;改源码后用构建脚本重产。
+
+### 路线图
+
+TypeScript(jco)/ Python(componentize-py)样例与
+`zhuye plugin new --lang` 脚手架在后续版本提供;契约(`wit/`)已
+按语言无关设计,先行实现不因宿主演进破坏。

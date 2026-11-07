@@ -75,8 +75,7 @@ impl From<&TeamMemberSpec> for SubAgentSpec {
         // 不 panic:agent_id 校验已在 TeamCreateTool::parse_member 阶段完成,这里
         // 看到的 member 一定含 `@`,但仍写兜底以防 phase 0/1 数据走旁路写入。
         let role = parse_agent_id(&member.agent_id)
-            .map(|(r, _)| r.to_string())
-            .unwrap_or_else(|| member.role.clone());
+            .map_or_else(|| member.role.clone(), |(r, _)| r.to_string());
         SubAgentSpec {
             name: member.name.clone(),
             role,

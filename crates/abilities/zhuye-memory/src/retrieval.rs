@@ -55,7 +55,7 @@ pub fn split_sections(scope: MemoryScope, body: &str) -> Vec<MemorySection> {
     }
     if has_content {
         let title = if any_title || !current_title.is_empty() {
-            current_title.clone()
+            current_title
         } else {
             String::new()
         };
@@ -129,8 +129,7 @@ pub fn retrieve_relevant(
     let score_of = |idx: usize| -> f64 {
         hits.iter()
             .find(|h| h.line_no == idx)
-            .map(|h| h.score)
-            .unwrap_or(0.0)
+            .map_or(0.0, |h| h.score)
     };
 
     // 排序:有分的按分数降序;零分的按条目新→旧(逆文件序)。

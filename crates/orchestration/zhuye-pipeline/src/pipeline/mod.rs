@@ -420,8 +420,8 @@ impl Pipeline {
             // 失败,之后才进入 Abort / ContinueCollect 判定。取消令牌触发
             // 时立即停止重试。
             let retry_cfg = pipeline_ref.retries.get(&label);
-            let max_attempts = retry_cfg.map(|r| r.max_attempts.max(1)).unwrap_or(1);
-            let backoff_ms = retry_cfg.map(|r| r.backoff_ms).unwrap_or(0);
+            let max_attempts = retry_cfg.map_or(1, |r| r.max_attempts.max(1));
+            let backoff_ms = retry_cfg.map_or(0, |r| r.backoff_ms);
             let mut attempt: u32 = 1;
             let mut outcome = loop {
                 let o = match runner.run(&node_ctx).await {
@@ -451,8 +451,7 @@ impl Pipeline {
                     .outputs
                     .get("approved")
                     .and_then(|v| v.as_bool())
-                    .map(|b| !b)
-                    .unwrap_or(false);
+                    .is_some_and(|b| !b);
             if is_gate_fail && let Some(cb) = gate {
                 let message = outcome
                     .outputs
@@ -697,8 +696,7 @@ fn system_time_ms() -> u64 {
     use std::time::SystemTime;
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[cfg(test)]

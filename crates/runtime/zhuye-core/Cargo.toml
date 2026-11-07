@@ -51,3 +51,6 @@ zhuye-agent-def = { workspace = true }
 zhuye-notes = { workspace = true }
 zhuye-recovery = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

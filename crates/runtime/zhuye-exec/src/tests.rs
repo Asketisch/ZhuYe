@@ -117,6 +117,8 @@ fn jsonl_writer_emits_one_event_per_line() {
         w.write_event(&sess()).unwrap();
         w.write_event(&turn_started()).unwrap();
         w.write_event(&delta()).unwrap();
+        // 显式冲出攒批滞留的尾部 delta(不依赖 Drop 尽力而为)。
+        w.flush().unwrap();
     }
     let s = String::from_utf8(buf).unwrap();
     let lines: Vec<&str> = s.lines().collect();
@@ -128,6 +130,28 @@ fn jsonl_writer_emits_one_event_per_line() {
     assert!(lines[0].contains("session_configured"));
     assert!(lines[1].contains("turn_started"));
     assert!(lines[2].contains("agent_message_delta"));
+}
+
+/// 攒批语义:delta 未达阈值时不冲(滞留缓冲),非 delta 事件立即冲出
+/// 并顺带带走此前攒批的 delta。
+#[test]
+fn jsonl_writer_batches_deltas_until_threshold_or_boundary() {
+    let mut buf = Vec::new();
+    let retained_after_delta;
+    {
+        let mut w = JsonlWriter::new(&mut buf);
+        w.write_event(&sess()).unwrap();
+        w.write_event(&turn_started()).unwrap();
+        // 单条小 delta:低于阈值 → 滞留在 BufWriter 缓冲。
+        w.write_event(&delta()).unwrap();
+        retained_after_delta = w.buffered_len();
+        assert!(retained_after_delta > 0, "小 delta 攒批后应滞留缓冲");
+        // 非 delta 事件:立即冲,顺带带走攒批内容。
+        w.write_event(&turn_started()).unwrap();
+        assert_eq!(w.buffered_len(), 0, "非 delta 事件应冲空缓冲");
+        w.flush().unwrap();
+    }
+    assert!(String::from_utf8_lossy(&buf).contains("agent_message_delta"));
 }
 
 #[test]
@@ -175,6 +199,7 @@ async fn handle_reload_pushes_config_reloaded_event() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await;
@@ -232,6 +257,7 @@ async fn handle_reload_returns_err_when_channel_closed() {
         None,
         &ToolRegistry::default(),
         None,
+        None,
     )
     .await;
     assert!(result.is_err(), "expected Err when channel is closed");
@@ -274,6 +300,7 @@ async fn handle_reload_updates_agent_config_model_when_section_changes() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await;
@@ -319,6 +346,7 @@ async fn handle_reload_does_not_touch_model_when_credentials_change() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await;
@@ -371,6 +399,7 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
         &tx,
         None,
         &ToolRegistry::default(),
+        None,
         None,
     )
     .await
@@ -442,6 +471,7 @@ async fn handle_reload_swaps_active_provider_spec() {
         None,
         &ToolRegistry::default(),
         None,
+        None,
     )
     .await
     .expect("handle_reload ok");
@@ -499,6 +529,7 @@ async fn handle_reload_applies_coordinator_section() {
         None,
         &tools,
         None,
+        None,
     )
     .await
     .expect("enable coordinator reload");
@@ -529,6 +560,7 @@ async fn handle_reload_applies_coordinator_section() {
         &tx,
         None,
         &tools,
+        None,
         None,
     )
     .await

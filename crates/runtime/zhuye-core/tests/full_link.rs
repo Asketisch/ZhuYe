@@ -41,8 +41,9 @@ use zhuye_llm::{
 use zhuye_memory::{FileMemoryStore, MemoryStore};
 use zhuye_prompt::PromptBuilder;
 use zhuye_protocol::{
-    AbortReason, EventMsg, MessageRole, Op, RolloutRecord, RolloutRecorder, SessionInfo,
-    SubagentProgressKind, SubagentRunStateMirror, Submission, ThreadId, TurnId, UserInputItem,
+    AbortReason, EventMsg, MessageRole, Op, RolloutError, RolloutRecord, RolloutRecorder,
+    SessionInfo, SubagentProgressKind, SubagentRunStateMirror, Submission, ThreadId, TurnId,
+    UserInputItem,
 };
 use zhuye_subagent::{CallSubAgentTool, SubAgentFactory, SubAgentSpec};
 use zhuye_tools::{ToolRegistry, ToolSource, builtins::EchoTool};
@@ -220,17 +221,17 @@ struct InMemoryRecorder(Mutex<Vec<RolloutRecord>>);
 
 #[async_trait]
 impl RolloutRecorder for InMemoryRecorder {
-    async fn record(&self, r: RolloutRecord) -> anyhow::Result<()> {
+    async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError> {
         self.0.lock().push(r);
         Ok(())
     }
-    async fn replay(&self, _session_id: ThreadId) -> anyhow::Result<Vec<RolloutRecord>> {
+    async fn replay(&self, _session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
         Ok(self.0.lock().clone())
     }
-    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+    async fn list_sessions(&self) -> Result<Vec<SessionInfo>, RolloutError> {
         Ok(Vec::new())
     }
-    async fn truncate_after(&self, to_turn_id: Option<&TurnId>) -> anyhow::Result<usize> {
+    async fn truncate_after(&self, to_turn_id: Option<&TurnId>) -> Result<usize, RolloutError> {
         let mut g = self.0.lock();
         let pos = match to_turn_id {
             Some(t) => g
@@ -394,6 +395,8 @@ fn make_m4(recorder: Option<Arc<dyn RolloutRecorder>>, compactor: Arc<Compactor>
         file_recovery: Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(tmp))),
         subagent_registry: zhuye_recovery::SubagentRegistry::shared(),
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
+        bundled_skills: false,
     }
 }
 

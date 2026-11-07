@@ -292,8 +292,7 @@ pub fn shared_manager(root: PathBuf) -> Arc<AutopilotManager> {
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn ms_to_datetime(ms: u64) -> DateTime<Utc> {
@@ -492,7 +491,7 @@ mod tests {
         manager.save_config(&config).unwrap();
         assert!(!manager.should_run().unwrap(), "禁用 → false");
 
-        let mut enabled = config.clone();
+        let mut enabled = config;
         enabled.enabled = true;
         manager.save_config(&enabled).unwrap();
         // 首次无历史 → 以配置修改时间为起点,每分钟 schedule 的下一次还没到。

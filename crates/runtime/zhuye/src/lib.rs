@@ -1,36 +1,35 @@
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::or_fun_call)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::manual_div_ceil)]
 //! `zhuye` —— 顶层库门面。
 //!
 //! 支持两种访问方式:
 //!
 //! 1. **扁平 re-export**(扁平重导出)—— 适合希望显式写出类型名的深度用户:
 //!
-//!    ```ignore
+//!    ```rust
 //!    use zhuye::{AgentThread, Submission, Op, Event, EventMsg, ModelRegistry};
-//!    // 上方为常用类型的扁平 re-export 路径
 //!    ```
 //!
 //! 2. **Builder**(构建器)—— 一行启动 + 合理默认:
 //!
-//!    ```ignore
-//!    let agent = Zhuye::builder("openai/gpt-4o")   // 指定模型
-//!        .workspace(".");                          // 指定工作目录
-//!    // build() 自带完整 M4(压缩器 + 记忆 + 技能 + JSONL recorder)
-//!    let mut stream = agent.submit(Submission::user_input("hello"));  // 提交输入
-//!    while let Some(event) = stream.next().await { /* 消费事件 */ }
+//!    ```rust,no_run
+//!    use zhuye::{Submission, Zhuye};
+//!
+//!    #[tokio::main]
+//!    async fn main() {
+//!        let agent = Zhuye::builder("openai/gpt-4o") // 指定模型
+//!            .workspace(".")                         // 指定工作目录
+//!            .build() // 自带完整 M4(压缩器 + 记忆 + 技能 + JSONL recorder)
+//!            .expect("builder 初始化失败");
+//!        // 提交输入并消费事件流
+//!        let mut stream = agent.submit(Submission::user_input("hello")).await;
+//!        while let Some(_event) = stream.next().await {}
+//!    }
 //!    ```
 //!
 //! 门面映射关系见 `docs/architecture.md` 的「门面映射」一节。
+
+// 门面是对外 SDK 形象:本 crate 内新定义的 pub item 缺文档即告警
+// (re-export 不受影响,沿用来源 crate 的文档)。
+#![warn(missing_docs)]
 
 pub mod builder;
 pub mod m4_bootstrap;
@@ -59,9 +58,9 @@ pub use zhuye_protocol::{
     AbortReason, AgentMessage, AgentMessageDelta, ApprovalKind, ApprovalRequestEvent, ContentBlock,
     ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, Event, EventMsg, MessageRole,
     ModelUsage, NullRecorder, Op, PromptAction, PromptListEvent, PromptSwitchedEvent,
-    ProtocolError, ReviewDecision, RiskLevel, RolloutRecord, RolloutRecorder, SandboxPolicy,
-    SessionConfiguredEvent, SessionInfo, SessionStats, StreamErrorEvent, Submission, ThreadId,
-    TokenCountEvent, TokenUsage, ToolCallBeginEvent, ToolCallEndEvent, ToolOutput,
+    ProtocolError, ReviewDecision, RiskLevel, RolloutError, RolloutRecord, RolloutRecorder,
+    SandboxPolicy, SessionConfiguredEvent, SessionInfo, SessionStats, StreamErrorEvent, Submission,
+    ThreadId, TokenCountEvent, TokenUsage, ToolCallBeginEvent, ToolCallEndEvent, ToolOutput,
     TurnAbortedEvent, TurnCompleteEvent, TurnId, TurnStartedEvent, TurnStatus, UserInputItem,
 };
 
@@ -126,6 +125,8 @@ pub use zhuye_telemetry::{
 pub use zhuye_stream::{
     AutopilotConfig, AutopilotManager, AutopilotRun, AutopilotRunStatus, CronDriverHandle,
     CronJobSpec, CronSchedule, CronScheduler, CronStatus, HISTORY_CAP as AUTOPILOT_HISTORY_CAP,
+    QueueCounts, QueueDriverHandle, QueueScheduler, QueueState, QueueStatusSummary, QueueTask,
+    QueueTaskStatus,
 };
 
 // ── 编排:任务 / 团队 / squad(WP10)───────────────────────────────────
@@ -159,7 +160,7 @@ pub use zhuye_discussion::{
 };
 
 // ── Builder 外观(Builder facade)──────────────────────────────────────
-pub use builder::ZhuyeBuilder;
+pub use builder::{BuilderError, ZhuyeBuilder};
 
 /// 便捷别名:用一条链式调用构造 `Zhuye`。`Zhuye` 即
 /// `zhuye::Zhuye`,包装一个 `AgentThread`。

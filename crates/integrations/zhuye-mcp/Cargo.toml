@@ -35,3 +35,6 @@ tempfile = "3"
 name = "mock_mcp_server"
 path = "src/bin/mock_mcp_server.rs"
 required-features = []  # 测试需要,但生产构建不依赖
+
+[lints]
+workspace = true

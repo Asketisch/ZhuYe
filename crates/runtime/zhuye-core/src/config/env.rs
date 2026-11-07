@@ -84,6 +84,37 @@ pub fn compactor_config_from_env_and_toml(toml_trigger_tokens: Option<u32>) -> C
     cfg
 }
 
+/// v1.10 功能3:窗口感知的压缩触发阈值。优先级:
+/// env `ZHUYE_AUTO_COMPACT_INPUT_TOKENS` > TOML `[compact].trigger_tokens` >
+/// **用户显式配置的模型窗口 × 80%** > `CompactorConfig::default()`
+/// (即 10 000)。
+///
+/// 与 [`compactor_config_from_env_and_toml`] 的差别只在第三级兜底:
+/// 用户在 config.toml 配了上下文窗口(`[context_windows]` /
+/// `[model].context_window`)意味着「我知道这个模型能吃多少」—— 触发
+/// 阈值随窗口走(窗口 80%,留 20% 余量给输出与框架 token),而不是
+/// 一刀切 10k。**仅静态回退表命中(未显式配置)的模型保持 10k 默认**
+/// (M5 v0 的既定行为:microcompact 频繁触发优于攒一次大摘要)。
+///
+/// `configured_window` 只传「用户显式配置」的窗口(调用方
+/// `zhuye-exec::bootstrap_m4` 用 `ReflectConfig::configured_context_window_for`
+/// 解析,不含 `context_window_for` 静态表)。
+pub fn compactor_config_with_window(
+    toml_trigger_tokens: Option<u32>,
+    configured_window: Option<u32>,
+) -> CompactorConfig {
+    let mut cfg = compactor_config_from_env_and_toml(toml_trigger_tokens);
+    // env / TOML 都未显式设置时才走窗口联动 —— 显式值永远最高优先。
+    let env_or_toml_set = std::env::var(AUTO_COMPACT_INPUT_TOKENS_ENV).is_ok_and(|v| !v.is_empty())
+        || toml_trigger_tokens.is_some();
+    if !env_or_toml_set && let Some(window) = configured_window {
+        // 窗口 × 80%(整数运算,向下取整);窗口极小时也至少保留
+        // MIN_OUTPUT_FLOOR 量级的触发点,避免 0。
+        cfg.trigger_tokens = (window / 10 * 8).max(1_024);
+    }
+    cfg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +177,69 @@ mod tests {
         } else {
             unsafe {
                 std::env::remove_var(AUTO_COMPACT_INPUT_TOKENS_ENV);
+            }
+        }
+    }
+
+    // ── v1.10 功能3:窗口感知压缩触发阈值 ──────────────────────
+
+    #[test]
+    fn window_derived_trigger_when_no_explicit_value() {
+        let _g = env_lock().lock().unwrap();
+        let prior = std::env::var(AUTO_COMPACT_INPUT_TOKENS_ENV).ok();
+        unsafe {
+            std::env::remove_var(AUTO_COMPACT_INPUT_TOKENS_ENV);
+        }
+        // 配置了 200k 窗口 → 触发 = 200k × 80% = 160k。
+        let cfg = compactor_config_with_window(None, Some(200_000));
+        assert_eq!(cfg.trigger_tokens, 160_000);
+        // 极小窗口保底 1024。
+        let tiny = compactor_config_with_window(None, Some(1_000));
+        assert_eq!(tiny.trigger_tokens, 1_024);
+        if let Some(p) = prior {
+            unsafe {
+                std::env::set_var(AUTO_COMPACT_INPUT_TOKENS_ENV, p);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_values_beat_window() {
+        let _g = env_lock().lock().unwrap();
+        let prior = std::env::var(AUTO_COMPACT_INPUT_TOKENS_ENV).ok();
+        // TOML 显式值 > 窗口联动。
+        let cfg = compactor_config_with_window(Some(7_000), Some(200_000));
+        assert_eq!(cfg.trigger_tokens, 7_000);
+        // env 显式值 > 一切。
+        unsafe {
+            std::env::set_var(AUTO_COMPACT_INPUT_TOKENS_ENV, "5555");
+        }
+        let cfg2 = compactor_config_with_window(Some(7_000), Some(200_000));
+        assert_eq!(cfg2.trigger_tokens, 5_555);
+        if let Some(p) = prior {
+            unsafe {
+                std::env::set_var(AUTO_COMPACT_INPUT_TOKENS_ENV, p);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(AUTO_COMPACT_INPUT_TOKENS_ENV);
+            }
+        }
+    }
+
+    #[test]
+    fn no_window_no_change() {
+        let _g = env_lock().lock().unwrap();
+        let prior = std::env::var(AUTO_COMPACT_INPUT_TOKENS_ENV).ok();
+        unsafe {
+            std::env::remove_var(AUTO_COMPACT_INPUT_TOKENS_ENV);
+        }
+        // 未配置窗口 → 默认 10k(M5 v0 既定行为不变)。
+        let cfg = compactor_config_with_window(None, None);
+        assert_eq!(cfg.trigger_tokens, 10_000);
+        if let Some(p) = prior {
+            unsafe {
+                std::env::set_var(AUTO_COMPACT_INPUT_TOKENS_ENV, p);
             }
         }
     }

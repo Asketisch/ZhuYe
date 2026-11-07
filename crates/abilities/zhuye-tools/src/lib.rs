@@ -1,14 +1,3 @@
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::or_fun_call)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::manual_div_ceil)]
 //! `zhuye-tools` —— Tool trait、内建工具,以及驱动 M2+ agent 循环的
 //! 按并发安全性切分的 `ToolExecutionQueue`。
 

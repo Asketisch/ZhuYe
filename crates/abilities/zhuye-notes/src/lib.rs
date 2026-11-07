@@ -21,7 +21,6 @@
 //! 本 crate 取**零成本 LLM-free 路径**,但额外加
 //! JSONL 落盘,平衡"零 LLM 成本"和"重启可恢复"两个目标。
 
-#![allow(clippy::derivable_impls)]
 #![allow(clippy::needless_borrows_for_generic_args)]
 
 pub mod error;
