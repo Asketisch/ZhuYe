@@ -306,15 +306,23 @@ def _make_agent_fixture(base: Path) -> Path:
     )
     oc = home / ".config" / "opencode"
     oc.mkdir(parents=True)
+    # deepseek 用真实 opencode 形状(baseURL/apiKey 在 options.*、npm 声明协议);
+    # local 保留扁平旧形状覆盖回落路径。MCP:`command` 数组 + `environment`。
     (oc / "opencode.json").write_text(
         json.dumps(
             {
                 "model": "deepseek/deepseek-chat",
                 "provider": {
-                    "deepseek": {"baseURL": "https://api.deepseek.com/v1", "apiKey": "sk-ds-fx"},
+                    "deepseek": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "options": {"baseURL": "https://api.deepseek.com/v1", "apiKey": "sk-ds-fx"},
+                    },
                     "local": {"baseURL": "http://127.0.0.1:8080/v1", "apiKey": ""},
                 },
-                "mcp": {"http-one": {"url": "https://mcp.example/mcp"}},
+                "mcp": {
+                    "http-one": {"url": "https://mcp.example/mcp"},
+                    "local-arr": {"type": "local", "command": ["uvx", "mcp-x"], "environment": {"E": "1"}},
+                },
             }
         )
     )
@@ -354,7 +362,9 @@ def test_V9_一键导入_字段级合并与幂等(sandbox, tmp_path) -> None:
         "imported:opencode:local",
         "imported:codex:oss",
     }, f"provider 集合:{report['providers_added']}"
-    assert set(report["mcp_added"]) == {"fetch", "http-one", "linter"}
+    assert set(report["mcp_added"]) == {"fetch", "http-one", "local-arr", "linter"}
+    # 新增字段:written —— dry-run 恒 false。
+    assert report["written"] is False
 
     # 真实导入:落盘并逐字段断言。
     run = subprocess.run(
@@ -394,8 +404,17 @@ def test_V9_一键导入_字段级合并与幂等(sandbox, tmp_path) -> None:
     assert mcp["fetch"]["env"] == {"K": "V"}
     assert mcp["http-one"]["url"] == "https://mcp.example/mcp"
     assert mcp["linter"]["command"] == "npx"
+    # opencode 数组 command:首元素可执行文件、其余 args;environment → env。
+    assert mcp["local-arr"]["command"] == "uvx"
+    assert mcp["local-arr"]["args"] == ["mcp-x"]
+    assert mcp["local-arr"]["env"] == {"E": "1"}
+    # 真实写入 → written=true。
+    report_written = json.loads(run.stdout.strip().splitlines()[-1])
+    assert report_written["written"] is True
 
-    # 重复导入:全部跳过(幂等),文件不变。
+    # 重复导入:全部跳过(幂等),文件不变 —— 且 written=false(无新增不写回,
+    # 不重排 / 不丢用户注释)。
+    before = target.read_text()
     again = subprocess.run(
         [str(IMPORT_BIN), "config", "--home", str(home), "--output", str(target), "--json"],
         capture_output=True, text=True, env=env, timeout=60,
@@ -406,6 +425,21 @@ def test_V9_一键导入_字段级合并与幂等(sandbox, tmp_path) -> None:
     assert set(report2["providers_skipped"]) == set(report["providers_added"])
     assert report2["mcp_added"] == []
     assert set(report2["mcp_skipped"]) == set(report["mcp_added"])
+    assert report2["written"] is False, "无新增不应写回"
+    assert target.read_text() == before, "无新增时文件必须逐字节不变"
+
+    # P0 回归:目标文件损坏时必须硬失败(退出码非 0),且原文件保持原样,
+    # 不得被覆盖为「全新配置」。
+    broken = sandbox.cwd / "broken-config.toml"
+    broken.write_text('[openai]\napi_key = "sk-KEEP-ME"\nbroken = [oops\n')
+    bad = subprocess.run(
+        [str(IMPORT_BIN), "config", "--home", str(home), "--output", str(broken), "--json"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert bad.returncode != 0, f"坏目标文件应硬失败:{bad.stdout[:300]}"
+    assert "解析失败" in bad.stderr, bad.stderr[:400]
+    assert "sk-KEEP-ME" not in bad.stderr, "错误文本不得泄露密钥所在源码行"
+    assert "sk-KEEP-ME" in broken.read_text(), "原文件必须原样保留"
 
 
 def test_V10_配置导入后serve可用导入的mcp与凭证配置(sandbox, tmp_path) -> None:
@@ -462,12 +496,15 @@ def test_V11_rescan_extensions_skills重扫回执字段级(serve_session, mock_s
 
 
 def test_V12_wasm插件_工具与hook字段级(sandbox, mock_script) -> None:
-    """WASM 插件(多语言生态):Rust 组件的 tool 注册与 hook 决策。
+    """WASM 插件(多语言生态):Rust 组件的 tool 注册与 hook 注册。
 
     依据:zhuye-wasm(WasmTool/WasmHook)+ manifest [[wasm_tools]] +
-    hooks.json wasm 条目 + loader wasm 分支。产物缺失即 skip
-    (scripts/build_plugin_demo_wasm.sh 构建,与原生插件 bin 同模式)。
-    断言字段级:工具名进会话工具面、invoke 回显、hook 事件不报错。
+    hooks.json wasm 条目 + loader wasm 分支。样例产物随插件入库
+    (重建用 scripts/build_plugin_demo_wasm.sh)。断言字段级:demo_echo
+    的 tool_call_end 回显输入文本(is_error=false,覆盖注册 → 模型可见
+    → invoke → 输出全链路);stderr 出现 `wasm hook registered` /
+    `wasm tool registered`(hooks.json 的 `wasm` 字段曾在解析层被丢弃,
+    wasm hook 从未注册过 —— 本行断言即防回归)。
     """
     require_binary()
     wasm_dir = REPO_ROOT / "plugins" / "plugin-demo" / "bin"
@@ -476,33 +513,76 @@ def test_V12_wasm插件_工具与hook字段级(sandbox, mock_script) -> None:
     ).exists():
         pytest.skip("WASM 样例产物缺失(先跑 scripts/build_plugin_demo_wasm.sh)")
 
-    # demo 插件装进 sandbox 的 ZHUYE_HOME(与 CLI 用例同款直装)。
+    # demo 插件装进 sandbox 的 ZHUYE_HOME(直装;state 文件必须是 V2
+    # schema —— 此前 fixture 写的是 `{"installed":[...]}` 旧形态,
+    # PluginManager::load 反序列化失败 → plugin runtime 静默 skip,
+    # 「回合无 error」的弱断言从未暴露这一点)。
     home = sandbox.home / ".zhuye" / "plugins" / "cache" / "inline" / "demo" / "0.1.0"
     shutil.copytree(REPO_ROOT / "plugins" / "plugin-demo", home, dirs_exist_ok=True)
     state = sandbox.home / ".zhuye" / "plugins" / "installed_plugins.json"
     state.parent.mkdir(parents=True, exist_ok=True)
+    now = "2026-01-01T00:00:00Z"
     state.write_text(json.dumps({
-        "installed": [
-            {"id": "demo@inline", "path": str(home), "scope": "user", "enabled": True}
-        ]
+        "version": 2,
+        "plugins": {
+            "demo@inline": [{
+                "scope": "user",
+                "install_path": str(home),
+                "version": "0.1.0",
+                "installed_at": now,
+                "last_updated": now,
+            }]
+        },
     }))
     config = sandbox.home / ".zhuye" / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text('[plugins]\nenabled_plugins = ["demo@inline"]\n')
 
-    with ServeSession(sandbox, env={"ZHUYE_MODEL": "mock"}) as s:
-        # 1) 工具面:demo_echo 由 WASM 组件注册(PluginLoaded 后并入可见集);
-        #    wasm hook 同回合生效。回合成功 = 注册无 error 且 hook 未阻断。
+    # 1) 工具链字段级:mock 调 demo_echo(WASM 组件注册的工具)→
+    #    tool_call_end 回显输入文本、is_error=false。工具未注册会得到
+    #    tool not found,故本断言覆盖「注册 → 模型可见 → invoke → 输出」
+    #    全链路;PostToolUse wasm hook(matcher "*")随工具结束派发,
+    #    不阻断回合。
+    script = mock_script([
+        '{"type":"tool_call","name":"demo_echo","args":{"text":"V12-wasm-echo"}}',
+        '{"type":"text","text":"V12 done"}',
+    ])
+    with ServeSession(sandbox, env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
         evs = s.submit(
-            {"type": "user_input", "items": [{"type": "text", "text": "hi"}]},
+            {"type": "user_input", "items": [{"type": "text", "text": "run wasm"}]},
             timeout=DRAIN_TIMEOUT,
         )
+        ends = [e["msg"] for e in evs if e["msg"]["type"] == "tool_call_end"]
+        # tool_call_end 只带 call_id,工具名在 tool_call_begin —— 按
+        # call_id 关联出 demo_echo 的结束事件。
+        name_by_call: dict[str, str] = {
+            m["call_id"]: m["tool_name"]
+            for m in (e["msg"] for e in evs if e["msg"]["type"] == "tool_call_begin")
+        }
+        echo_end = next(
+            (m for m in ends if name_by_call.get(m.get("call_id")) == "demo_echo"), None
+        )
+        assert echo_end is not None, (
+            f"未见 demo_echo 工具结束事件:{msg_types(evs)} tools={sorted(name_by_call.values())}"
+        )
+        assert not echo_end.get("is_error"), f"demo_echo 不应失败:{echo_end}"
+        echo_text = "".join(
+            b.get("text", "") for b in echo_end.get("output", {}).get("content", []) if isinstance(b, dict)
+        )
+        assert "V12-wasm-echo" in echo_text, f"echo 回显失败:{echo_text}"
         assert first_event(evs, "turn_complete") is not None, msg_types(evs)
         assert not [t for t in msg_types(evs) if t == "error"], msg_types(evs)
 
-        # 2) wasm hook 二次回合:决策路径稳定(fail-closed 未误触发)。
-        evs = s.submit(
-            {"type": "user_input", "items": [{"type": "text", "text": "hi2"}]},
-            timeout=DRAIN_TIMEOUT,
-        )
-        assert first_event(evs, "turn_complete") is not None, msg_types(evs)
+    # 2) 注册链路字段级:loader 的 wasm 分支必须真的注册 hooks.json 里的
+    #    wasm hook(此前 hooks.json 的 `wasm` 字段在解析层被静默丢弃,
+    #    整条 wasm hook 链路从未生效)。stderr(tracing 日志)应出现注册行。
+    stderr_text = ""
+    stderr_file = sandbox.cwd / "serve.stderr"
+    if stderr_file.exists():
+        stderr_text = stderr_file.read_text(errors="replace")
+    assert "wasm hook registered" in stderr_text, (
+        f"loader 应注册 wasm hook(查 stderr serve.stderr):{stderr_text[-2000:]}"
+    )
+    # 同名工具占用防护是注册期校验:demo_echo 未与内置工具同名,正常注册
+    # (不触发);此处断言注册日志出现 wasm tool registered 佐证工具挂载。
+    assert "wasm tool registered" in stderr_text, stderr_text[-2000:]
