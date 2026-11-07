@@ -8,7 +8,8 @@
 - Python ≥ 3.10,零依赖,含 `py.typed` 类型标注
 - 常驻会话:一个进程 = 一个 AgentThread,多轮共享上下文
 - 宿主语言函数直接注册为 LLM 可调用的工具(远程工具协议)
-- 支持 streaming、审批、打断、全局事件、权限模式、计划 / 目标模式
+- 支持 streaming、审批、打断、全局事件、权限模式、计划 / 目标模式、
+  skills 目录运行时重扫(`rescan_extensions`)
 
 ## 安装
 
@@ -182,7 +183,7 @@ event = agent.next_global_event(timeout_secs=5)   # 阻塞读一条;超时抛 qu
 ### 会话控制 Op(submit_op)
 
 `submit_op(op)` 发任意协议 Op 并返回事件迭代器(非 turn Op 以
-`submission_closed` 收尾)。Op 全集(19 种,`zhuye.Op`):
+`submission_closed` 收尾)。Op 全集(20 种,`zhuye.Op`):
 
 | 类别 | Op | 关键字段 |
 |---|---|---|
@@ -195,6 +196,7 @@ event = agent.next_global_event(timeout_secs=5)   # 阻塞读一条;超时抛 qu
 | 状态 | `set_effort` / `set_permission_mode` / `cycle_permission_mode` | mode ∈ auto/prompt/plan/deny/bubble |
 | 目标 | `enter_goal_mode` / `exit_goal_mode` | goal + 可选 verify_command / token_budget |
 | 工具 | `register_tools` / `tool_execution_response` | 通常用 `register_tool()` 封装,不必手写 |
+| 扩展 | `rescan_extensions` | **v1.x 新增**:运行时重扫 skills 目录(`.zhuye/skills`,workspace + 用户级;插件注入不受影响);回 `extensions_rescanned`(skills 计数,commands 恒 false) |
 
 示例:切计划模式、带 thread_settings 提交
 

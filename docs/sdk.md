@@ -101,6 +101,12 @@ await agent.close();
   (`side_channel_started` / `side_channel_finished`)按 additive 变体
   原样透传。四层测试锁定:py/ts mock 层(sdks/*/tests)+
   真二进制层(tests/sdk-python K10 / tests/sdk-ts K10)。
+- **skills 目录运行时重扫(v1.x)**:`submit_op({"type":"rescan_extensions",
+  "skills": true})` → `extensions_rescanned`(skills 计数;commands 位
+  恒 false)。用于 `.zhuye/skills` 目录变更后不重启生效;插件注入与
+  内置包不受影响。四层测试锁定:py/ts mock 层(sdks/*/tests)+
+  真二进制层(tests/sdk-python K14 / tests/sdk-ts K14)+
+  能力覆盖层(tests/functional V11)。
 
 ```python
 # 按需加载插件(不装则完全不加载,零影响)

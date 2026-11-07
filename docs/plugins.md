@@ -1,15 +1,16 @@
 # 烛夜插件开发与使用
 
 烛夜的插件系统是**声明式 / 数据驱动**的:插件是磁盘上一组遵循目录约定
-的文件(`plugin.toml` manifest + 五类 capability 资源),由运行时扫描后挂载
+的文件(`plugin.toml` manifest + capability 资源:五类目录声明 + v1.x
+新增的 `[[wasm_tools]]` 组件声明),由运行时扫描后挂载
 到共享 registry。没有动态库加载,插件不携带原生代码 —— 跨进程逻辑通过
 shell hook 与 MCP server 表达,权限模型与内置工具一致。
 
 > 兼容说明:manifest 同时支持 `plugin.toml`(主格式)与
-> `.claude-plugin/plugin.json`(Claude Code 兼容格式),五类 capability
+> `.claude-plugin/plugin.json`(Claude Code 兼容格式),capability 声明
 > 语义对齐 Claude Code 插件,便于现成插件迁移。
 >
-> 本文覆盖**作者向**(manifest 字段、五类 capability、安全模型)与
+> 本文覆盖**作者向**(manifest 字段、capability 声明、安全模型)与
 > **使用者向**(CLI 命令、状态源、热重载、排障)。marketplace 的发布侧
 > 见 [`plugin-marketplace.md`](plugin-marketplace.md)。
 
@@ -237,7 +238,7 @@ Claude Code 兼容的 JSON 形态。
 | `dependencies` | String[] | 否 | 依赖的其他插件,见下 |
 | `user_config` | 对象 | 否 | 用户配置项声明,见下 |
 
-### 五类 capability 字段
+### capability 字段(五类目录 + wasm_tools)
 
 | 字段 | 可填形态 | 指向 |
 |---|---|---|
@@ -297,9 +298,15 @@ sensitive = true         # 设计意图:敏感值进 OS keychain,不进配置文
 不会弹配置询问,值也不会注入 hook / MCP 的 env。先按纯声明写,行为以
 后续版本为准。
 
-## 五类 capability
+## capability 一览
 
 ### commands —— slash 命令(prompt 模板)
+
+**用户级命令目录(v1.x)**:除插件命令(`<plugin>:<name>` 带前缀)外,
+`<workspace>/.zhuye/commands/*.md` 与 `~/.zhuye/commands/*.md` 直读为
+**裸名命令**(文件 stem 即命令名,`/review args` 直达)—— 加一条命令
+与 skill 同样只放一个文件,不必写整个插件。与插件命令同表共存,启动
+挂载;运行中经 `Op::rescan_extensions` 重扫(命令正文本来就实时读盘)。
 
 `commands/` 下的 `*.md` 文件即命令,文件名(去 `.md`)是命令 basename,
 子目录作为命名空间,全名为 `<插件名>:<命名空间>:<basename>`
@@ -342,6 +349,11 @@ tools: [read, grep]
 
 ### skills —— 技能
 
+**插件 skills 完整解析(v1.x)**:插件 skills 经与文件型 skills 相同的
+SKILL.md 解析器读取 frontmatter 全字段(`triggers` / `tools` /
+`when_paths` / 正文),不再降级拷贝 —— `LoadSkillTool` 能看到插件 skill
+的工具标注与附属资源;SKILL.md 不合规时降级为 manifest 元数据并 warn。
+
 `skills/<name>/SKILL.md`,frontmatter 至少包含 `description`。挂载后进入
 `SkillsCatalog`,模型可经内置 `load_skill` 工具按需激活(渐进披露)。
 没有 `SKILL.md` 的子目录被跳过(不报错)。
@@ -372,8 +384,14 @@ tools: [read, grep]
 写入子进程 stdin,子进程用 stdout 返回决策 JSON(`allow` / `deny` /
 `ask`);**超时或非零退出一律 fail-closed(Deny)**。
 
-两条容错语义:未知事件名 → warn 后跳过;缺 `command` 字段 → warn 后
-跳过;都不阻断同插件其他能力挂载。
+**WASM 组件 hook(v1.x)**:条目对象写 `"wasm": "${PLUGIN_ROOT}/bin/x.wasm"`
+替代 `command` —— 组件实现 `wit/plugin.wit` 的 `zhuye-hook` 世界,宿主
+进程内实例化(零子进程),决策 JSON 协议与 shell hook 完全一致;超时 /
+`Err` / 非法 JSON 同样 fail-closed(Deny),`timeout` 字段语义相同
+(默认 30s)。
+
+两条容错语义:未知事件名 → warn 后跳过;缺 `command`(且无 `wasm`)
+字段 → warn 后跳过;都不阻断同插件其他能力挂载。
 
 **env 白名单**:hook 子进程默认拿不到敏感环境变量
 (如 `ANTHROPIC_API_KEY`)。确需放行时在声明里显式列出:
@@ -400,6 +418,13 @@ demo 插件其工具形如
 
 stdio server 以干净 env 启动(只透传 HOME / PATH 与显式声明的
 `env`),不继承宿主密钥。
+
+### wasm_tools —— WASM 组件工具(v1.x)
+
+`[[wasm_tools]]` 声明实现 `zhuye:plugin/zhuye-tool` 世界的组件(任何语言,
+见 `wit/plugin.wit` 与本文末尾「WASM 插件(多语言)」章节):进程内
+实例化、确定性超时、floor=Prompt。WASM hook 则在 `hooks.json` 条目的
+command 对象里写 `"wasm": "${PLUGIN_ROOT}/bin/x.wasm"`。
 
 ## `${PLUGIN_ROOT}` 占位符
 
@@ -432,7 +457,8 @@ manifest 里的相对路径不再指向原目录。hook 命令与 MCP server 的
   收敛错误,一类坏了不阻断其他类;**register 是部分成功语义** ——
   失败项记录后继续,已注册项保留,不回滚。
 - **反注册顺序**(确定性清理,按 plugin_id 整体挂卸):先停 MCP server
-  并反注册 `mcp__*` 工具 → 按 `ToolSource::Plugin` 清工具 → 移除
+  并反注册 `mcp__*` 工具 → 按 `ToolSource::Plugin(id)` **精确**清本插件
+  工具(v1.x 携带插件身份,不影响其他插件的工具)→ 移除本插件
   skills / commands → 取回 subagent specs → 按 `plugin:{id}:` 前缀
   清 hooks。
 - **作用域**:`installed_plugins.json` 支持 Managed / User / Project /
@@ -460,6 +486,11 @@ manifest 里的相对路径不再指向原目录。hook 命令与 MCP server 的
 | Rust 门面 `ZhuyeBuilder::build_async` | ✅(`with_plugins(None)` 按 config) | 调用方用 `ZhuYe::plugin_runtime()` + `expand_user_input` 自行展开 |
 | Rust 门面 `ZhuyeBuilder::build`(同步) | ❌(保持最小语义) | ❌ |
 | Python `zhuye_py.ZhuyeBuilder(...).plugins().build()` | ✅(内部走 build_async) | 调用方自行展开 |
+
+**Rust 嵌入注入点(v1.x)**:`ZhuyeBuilder` 的 `with_tool`(Runtime
+floor)/ `with_hook` / `with_skills_dir` 在 `build` 与 `build_async`
+两条路径同权生效 —— 嵌入方不再需要下沉到底层 API 或写插件即可注入
+自定义工具 / hook / 技能目录。
 
 ## 安全模型
 
