@@ -116,6 +116,7 @@ make gc                                   # 清 target/debug 中 cargo 不 GC �
 | 仅 SDK 绑定逻辑 | `./tests/run_all.sh sdk-python` + `./tests/run_all.sh sdk-ts` |
 | CLI 子命令参数面 | `./tests/run_all.sh rust` |
 | 文档 / 注释 | 无需跑测试,自查链接与命令是否仍有效 |
+| 覆盖率检查(可选) | `cargo llvm-cov --workspace --lib --summary-only`(基线 83% 行覆盖;纯函数不变式另有 proptest) |
 
 ## 约定
 
