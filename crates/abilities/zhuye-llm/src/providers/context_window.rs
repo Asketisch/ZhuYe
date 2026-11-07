@@ -93,6 +93,12 @@ pub fn set_context_window_overrides(entries: &HashMap<String, u32>) {
 /// 查运行时 override 表(归一化精确匹配 → 前缀匹配)。
 /// 不查静态表 —— 调用方(`context_window_for` / output_budget)用它
 /// 区分「窗口来自用户配置」与「窗口来自内置回退表」。
+///
+/// 前缀只做**单向**:查询名以配置键为前缀(`qwen3` 覆盖
+/// `qwen3-coder-480b`);多候选命中时取**最长配置键**(最具体),
+/// 不随 HashMap 迭代序漂移。反方向(配置键比查询名更具体,如配置
+/// `gpt-4o` 被查询 `gpt-4` 命中)不匹配 —— 否则短查询名会拿到更长
+/// 型号的窗口,输入 + 自适应输出预算可能超出实际窗口。
 pub fn context_window_override_for(model_spec: &str) -> Option<u32> {
     let key = normalize_model_spec(model_spec);
     if key.is_empty() {
@@ -103,10 +109,11 @@ pub fn context_window_override_for(model_spec: &str) -> Option<u32> {
     if let Some(v) = guard.get(&key) {
         return Some(*v);
     }
-    // 前缀匹配(同静态表策略:配置 "qwen36" 覆盖 "qwen36-1m")。
+    // 单向前缀匹配,多候选取最长键(确定性)。
     guard
         .iter()
-        .find(|(k, _)| k.starts_with(&key) || key.starts_with(k.as_str()))
+        .filter(|(k, _)| key.starts_with(k.as_str()))
+        .max_by_key(|(k, _)| k.len())
         .map(|(_, v)| *v)
 }
 
@@ -219,6 +226,45 @@ mod tests {
         );
         assert_eq!(normalize_model_spec("gpt-4o"), "gpt-4o");
         assert_eq!(normalize_model_spec(""), "");
+    }
+
+    /// 回归:前缀匹配是单向的 —— 配置键必须比查询名更短(更泛)。
+    /// 反方向(配置 `zzfam-long`,查询 `zzfam`)不得命中,否则短名查询
+    /// 拿到更长型号的窗口,输出预算可能超窗。
+    #[test]
+    fn override_prefix_is_forward_only() {
+        let _guard = override_test_lock().lock().unwrap();
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("zzfam-long-name".to_string(), 512_000u32);
+        set_context_window_overrides(&entries);
+        assert_eq!(
+            context_window_override_for("zzfam"),
+            None,
+            "查询短名不得命中更具体的配置键"
+        );
+        assert_eq!(
+            context_window_override_for("zzfam-long-name-pro"),
+            Some(512_000)
+        );
+        set_context_window_overrides(&std::collections::HashMap::new());
+    }
+
+    /// 回归:多候选前缀命中时取最长配置键(确定性,不随 HashMap
+    /// 迭代序漂移)。
+    #[test]
+    fn override_prefix_multiple_candidates_longest_wins() {
+        let _guard = override_test_lock().lock().unwrap();
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("zzgen3".to_string(), 32_000u32);
+        entries.insert("zzgen3-coder".to_string(), 262_144u32);
+        set_context_window_overrides(&entries);
+        assert_eq!(
+            context_window_for("zzgen3-coder-480b"),
+            Some(262_144),
+            "更具体的键(zzgen3-coder)必须赢"
+        );
+        assert_eq!(context_window_for("zzgen3-base"), Some(32_000));
+        set_context_window_overrides(&std::collections::HashMap::new());
     }
 
     #[test]

@@ -181,12 +181,11 @@ impl ReflectConfig {
             let key = normalize_model_key(active_model);
             if !key.is_empty() {
                 // per-model 条目已「覆盖」该模型就不插入 —— 覆盖判定必须
-                // 与消费方的查找规则同口径(精确 → 双向前缀),否则像
-                // 表里写 "Mock" 而活跃模型是 "mock/mock-1" 这种前缀命中
-                // 会被 [model] 段的精确键反超,违背「更具体的赢」。
-                let covered = map
-                    .keys()
-                    .any(|k| *k == key || k.starts_with(&key) || key.starts_with(k.as_str()));
+                // 与消费方的查找规则同口径(精确 → **单向前缀**,见
+                // `ContextWindowsSection::lookup`):查询名以配置键为
+                // 前缀才算命中;表里写 "Mock" 而活跃模型是 "mock/mock-1"
+                // 这种命中会让 per-model 条目(更具体)保持优先。
+                let covered = map.keys().any(|k| *k == key || key.starts_with(k.as_str()));
                 if !covered {
                     map.insert(key, w);
                 }
@@ -500,7 +499,13 @@ impl<'de> Deserialize<'de> for ContextWindowsSection {
 
 impl ContextWindowsSection {
     /// 取归一化(去 provider/ollama-tag,小写化)后的窗口大小。
-    /// key 完全匹配(归一化后优先)→ prefix 匹配 → 首个非空命中。
+    /// key 完全匹配(归一化后优先)→ **单向前缀**匹配(查询名以配置键
+    /// 为前缀;多候选取最长配置键,不随 HashMap 迭代序漂移)→ 首个命中。
+    ///
+    /// 反方向(配置键比查询名更具体)不匹配:否则查询 `gpt-4` 会命中
+    /// 配置 `gpt-4o` 的窗口,把长型号的窗口配给短名模型,自适应输出
+    /// 预算按错误窗口放大即超窗。与 `zhuye_llm::context_window_override_for`
+    /// 同口径。
     pub fn lookup(&self, model_spec: &str) -> Option<u32> {
         let key = normalize_model_key(model_spec);
         if key.is_empty() {
@@ -510,10 +515,11 @@ impl ContextWindowsSection {
         if let Some(v) = self.entries.get(&key) {
             return Some(*v);
         }
-        // 前缀匹配(同 `context_window_for` 静态表的策略)。
+        // 单向前缀匹配,多候选取最长键(确定性)。
         self.entries
             .iter()
-            .find(|(k, _)| k.starts_with(&key) || key.starts_with(k.as_str()))
+            .filter(|(k, _)| key.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len())
             .map(|(_, v)| *v)
     }
 }
