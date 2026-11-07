@@ -59,7 +59,13 @@ fn read_toml(path: &Path, cfg: &mut ImportedAgentConfig) -> Result<Option<Value>
     match toml::from_str::<toml::Value>(&raw) {
         Ok(v) => Ok(Some(toml_to_json(&v))),
         Err(e) => {
-            cfg.push_warning(format!("{} 解析失败,已跳过:{e}", path.display()));
+            // 只回 message,不带 TOML 源码行 —— 出错行可能正是
+            // `api_key = "sk-…"`,随 warning 进 stderr / MCP 结果会泄露密钥。
+            cfg.push_warning(format!(
+                "{} 解析失败({}),已跳过",
+                path.display(),
+                e.message()
+            ));
             Ok(None)
         }
     }
@@ -92,17 +98,66 @@ fn s_of(v: Option<&Value>) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/// 归一化 MCP server 定义(Claude Code / Gemini / opencode / crush 的
-/// `{command?, args?, env?, url?, type?}` 形状一致)。
-fn mcp_entry(name: &str, v: &Value, cfg: &mut ImportedAgentConfig) -> Option<ImportedMcpServer> {
+/// `s_of` 的 `&str` 版(env 变量等已是字符串的字段)。
+fn s_of_val(v: Option<&str>) -> Option<String> {
+    v.map(str::to_string).filter(|s| !s.trim().is_empty())
+}
+
+/// 归一化 MCP server 定义。各家形状大同小异,但字段来源有差异:
+/// - `command`:Claude Code / Codex / crush 为**字符串**;opencode 为
+///   **数组**(首元素是可执行文件,其余是 args);
+/// - env:`env`(Claude Code / Codex)或 `environment`(opencode);
+/// - 远程形态:`url` / `httpUrl`(Gemini:`url` 是 SSE,`httpUrl` 是
+///   streamable HTTP)或 `type: "sse"`(opencode)显式声明;
+/// - `headers`:远程 MCP 的鉴权头。
+///
+/// `url_means_sse`:该来源的裸 `url` 字段默认按 SSE 解析(Gemini 如此;
+/// 其余来源按 streamable HTTP)。显式 `type: "sse"` 总是优先生效。
+fn mcp_entry(
+    name: &str,
+    v: &Value,
+    cfg: &mut ImportedAgentConfig,
+    url_means_sse: bool,
+) -> Option<ImportedMcpServer> {
+    use std::collections::HashMap;
+
     let obj = v.as_object()?;
     // enabled=false(opencode)显式跳过。
     if obj.get("enabled").and_then(Value::as_bool) == Some(false) {
         return None;
     }
-    let transport = if let Some(url) = s_of(obj.get("url")) {
-        ImportedMcpTransport::Http { url }
-    } else if let Some(command) = s_of(obj.get("command")) {
+    let type_str = s_of(obj.get("type"));
+    // env 取 `env` 或 `environment`(opencode 别名)。
+    let env_map = |obj: &serde_json::Map<String, Value>| -> HashMap<String, String> {
+        obj.get("env")
+            .or_else(|| obj.get("environment"))
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let headers = |obj: &serde_json::Map<String, Value>| -> HashMap<String, String> {
+        obj.get("headers")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let transport = if let Some(url) = s_of(obj.get("httpUrl")).or_else(|| s_of(obj.get("url"))) {
+        let is_sse =
+            type_str.as_deref() == Some("sse") || (url_means_sse && !obj.contains_key("httpUrl"));
+        ImportedMcpTransport::Http {
+            url,
+            headers: headers(obj),
+            sse: is_sse,
+        }
+    } else if let Some((command, cmd_args)) = command_of(obj) {
         let args = obj
             .get("args")
             .and_then(Value::as_array)
@@ -110,19 +165,14 @@ fn mcp_entry(name: &str, v: &Value, cfg: &mut ImportedAgentConfig) -> Option<Imp
                 a.iter()
                     .filter_map(Value::as_str)
                     .map(str::to_string)
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let env = obj
-            .get("env")
-            .and_then(Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        ImportedMcpTransport::Stdio { command, args, env }
+        ImportedMcpTransport::Stdio {
+            command,
+            args: cmd_args.unwrap_or(args),
+            env: env_map(obj),
+        }
     } else {
         cfg.push_warning(format!("mcp server `{name}` 既无 command 也无 url,跳过"));
         return None;
@@ -133,13 +183,33 @@ fn mcp_entry(name: &str, v: &Value, cfg: &mut ImportedAgentConfig) -> Option<Imp
     })
 }
 
+/// 解析 `command` 字段:字符串形态 → `(command, None)`;数组形态
+/// (opencode)→ `(首元素, Some(其余为 args))`。
+fn command_of(obj: &serde_json::Map<String, Value>) -> Option<(String, Option<Vec<String>>)> {
+    match obj.get("command")? {
+        Value::String(s) if !s.trim().is_empty() => Some((s.clone(), None)),
+        Value::Array(a) => {
+            let parts: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
+            let (cmd, rest) = parts.split_first()?;
+            if cmd.trim().is_empty() {
+                return None;
+            }
+            Some((
+                cmd.to_string(),
+                Some(rest.iter().map(|s| s.to_string()).collect()),
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// 遍历 `{name: {...}}` 形状的 MCP 表。
-fn collect_mcp_map(map: Option<&Value>, cfg: &mut ImportedAgentConfig) {
+fn collect_mcp_map(map: Option<&Value>, cfg: &mut ImportedAgentConfig, url_means_sse: bool) {
     let Some(obj) = map.and_then(Value::as_object) else {
         return;
     };
     for (name, v) in obj {
-        match mcp_entry(name, v, cfg) {
+        match mcp_entry(name, v, cfg, url_means_sse) {
             Some(server) => cfg.mcp_servers.push(server),
             None => continue,
         }
@@ -147,20 +217,47 @@ fn collect_mcp_map(map: Option<&Value>, cfg: &mut ImportedAgentConfig) {
 }
 
 /// 判定是否为 Anthropic 兼容端点(落 `[[anthropic.credentials]]`)。
-fn is_anthropic_compatible(key: &str, base_url: Option<&str>, model: Option<&str>) -> bool {
-    if key.contains("anthropic") || key.contains("claude") {
-        return true;
+///
+/// 仅用于 opencode / crush 这类**用户自定义** provider(显式协议字段
+/// 优先):opencode 用 `npm` 包名(`@ai-sdk/anthropic`),crush 用显式
+/// `type`(`"anthropic"` / `"messages"`)。名字 / 模型前缀启发式只作
+/// 兜底并记 warning —— 按名字硬判曾把 OpenAI 兼容网关错误落进
+/// anthropic 段,请求必然失败。
+fn is_anthropic_compatible(
+    key: &str,
+    base_url: Option<&str>,
+    model: Option<&str>,
+    explicit: Option<&str>,
+    cfg: &mut ImportedAgentConfig,
+) -> bool {
+    // 显式协议声明。
+    if let Some(t) = explicit {
+        let t = t.to_ascii_lowercase();
+        if t.contains("anthropic") || t == "messages" {
+            return true;
+        }
+        if t.contains("openai") || t == "completions" || t == "responses" || t == "chat" {
+            return false;
+        }
     }
-    if base_url.is_some_and(|u| u.contains("anthropic")) {
-        return true;
+    // 启发式兜底(带警告)。
+    let guessed = key.contains("anthropic")
+        || key.contains("claude")
+        || base_url.is_some_and(|u| u.contains("anthropic"))
+        || model.is_some_and(|m| m.starts_with("claude-"));
+    if guessed {
+        cfg.push_warning(format!(
+            "provider `{key}` 无显式协议声明,按名字推断为 anthropic 兼容;若实际是 OpenAI 兼容端点请手动改到 [[openai.credentials]]"
+        ));
     }
-    model.is_some_and(|m| m.starts_with("claude-"))
+    guessed
 }
 
 // ── Claude Code ──────────────────────────────────────────────────────
 //
 // 两个文件:
-// - ~/.claude/settings.json:env.ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL、model
+// - ~/.claude/settings.json:env.ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN /
+//   ANTHROPIC_BASE_URL / ANTHROPIC_MODEL、model
 // - ~/.claude.json:顶层 mcpServers、primaryApiKey(legacy)
 
 fn parse_claude_code(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), String> {
@@ -171,9 +268,19 @@ fn parse_claude_code(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), S
         found_any = true;
         let env = settings.get("env").and_then(Value::as_object);
         let get_env = |k: &str| env.and_then(|m| m.get(k)).and_then(Value::as_str);
-        let api_key = get_env("ANTHROPIC_API_KEY").unwrap_or_default().to_string();
+        // key 取 API_KEY,回落 AUTH_TOKEN —— 国内网关(GLM / Kimi / MiniMax
+        // 等)官方接入指引普遍用 `ANTHROPIC_AUTH_TOKEN` +
+        // `ANTHROPIC_BASE_URL`;AnthropicClient 两种 token 都会发认证头。
+        let api_key = get_env("ANTHROPIC_API_KEY")
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| get_env("ANTHROPIC_AUTH_TOKEN"))
+            .unwrap_or_default()
+            .to_string();
         let base_url = get_env("ANTHROPIC_BASE_URL").map(str::to_string);
-        let model = s_of(settings.get("model"));
+        // model:env ANTHROPIC_MODEL 优先(Claude Code 自身也这么解析),
+        // 回落 settings 顶层 `model` 字段。
+        let env_model = s_of_val(get_env("ANTHROPIC_MODEL"));
+        let model = env_model.or_else(|| s_of(settings.get("model")));
         if !api_key.is_empty() || base_url.is_some() || model.is_some() {
             cfg.providers.push(ImportedProvider {
                 label: "imported:claude-code:anthropic".into(),
@@ -183,13 +290,13 @@ fn parse_claude_code(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), S
                 anthropic_compatible: true,
             });
         }
-        collect_mcp_map(settings.get("mcpServers"), cfg);
+        collect_mcp_map(settings.get("mcpServers"), cfg, false);
     }
 
     let claude_json_path = home.join(".claude.json");
     if let Some(cj) = read_json(&claude_json_path, cfg)? {
         found_any = true;
-        collect_mcp_map(cj.get("mcpServers"), cfg);
+        collect_mcp_map(cj.get("mcpServers"), cfg, false);
         // primaryApiKey 是 legacy 形态;settings.json 已导入同 label 时跳过。
         if let Some(key) = s_of(cj.get("primaryApiKey")) {
             let already = cfg
@@ -236,11 +343,20 @@ fn parse_codex(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), String>
             let base_url = s_of(def.get("base_url"));
             let env_key = s_of(def.get("env_key"));
             // env_key 引用的密钥在进程 env 里;导入时尽力读取(读不到 = 空,
-            // 落成免 key 形态,由用户后续补)。
+            // 落成免 key 形态,由用户后续补 —— 但要明说,静默空 key 只会在
+            // 运行时表现为 401)。
             let api_key = env_key
+                .as_deref()
                 .and_then(|k| std::env::var(k).ok())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_default();
+            if api_key.is_empty() {
+                if let Some(k) = &env_key {
+                    cfg.push_warning(format!(
+                        "codex: provider `{key}` 的 env_key `{k}` 在当前环境不存在,导入为空 key"
+                    ));
+                }
+            }
             let is_active = active_provider.as_deref() == Some(key.as_str());
             let model = if is_active { top_model.clone() } else { None };
             // 无 base_url 且无 key 的 provider(如官方 openai 默认项)只在其
@@ -251,14 +367,36 @@ fn parse_codex(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), String>
             if base_url.is_none() && api_key.is_empty() && is_active && model.is_none() {
                 continue;
             }
-            let anthropic = is_anthropic_compatible(key, base_url.as_deref(), model.as_deref());
+            // Codex 只以 OpenAI wire(chat/completions / responses)访问
+            // model_providers.*;名字 / 模型带 "anthropic"/"claude" 不代表
+            // 端点讲 Anthropic Messages 协议 —— 按名字启发式落 anthropic 段
+            // 会用错协议必然失败(曾经如此)。
             cfg.providers.push(ImportedProvider {
                 label: format!("imported:codex:{key}"),
                 api_key,
                 base_url,
                 model,
-                anthropic_compatible: anthropic,
+                anthropic_compatible: false,
             });
+        }
+        // 激活 provider 是内建 `openai`(不在 model_providers 表里)且表
+        // 非空时,上面的循环不会为它生成条目,顶层 model 会丢 —— 补一条
+        // 无 base_url 的 openai 条目让模型选择生效。
+        if active_provider.as_deref() == Some("openai") && top_model.is_some() {
+            let exists = cfg
+                .providers
+                .iter()
+                .any(|p| p.label == "imported:codex:openai");
+            if !exists {
+                cfg.providers.push(ImportedProvider {
+                    label: "imported:codex:openai".into(),
+                    api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+                    base_url: None,
+                    // 本分支是 top_model 的最后使用,move 即可。
+                    model: top_model,
+                    anthropic_compatible: false,
+                });
+            }
         }
     } else if top_model.is_some() {
         // 无 model_providers 段但有 model(官方 openai 形态)→ 导入为无
@@ -271,7 +409,7 @@ fn parse_codex(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), String>
             anthropic_compatible: false,
         });
     }
-    collect_mcp_map(v.get("mcp_servers"), cfg);
+    collect_mcp_map(v.get("mcp_servers"), cfg, false);
     Ok(())
 }
 
@@ -291,7 +429,7 @@ fn parse_gemini(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), String
             "gemini: selectedModel `{m}` 暂无对应烛夜 provider(仅导入 MCP servers)"
         ));
     }
-    collect_mcp_map(v.get("mcpServers"), cfg);
+    collect_mcp_map(v.get("mcpServers"), cfg, true);
     Ok(())
 }
 
@@ -309,10 +447,19 @@ fn parse_opencode(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), Stri
     ];
     let mut parsed = false;
     for path in candidates {
-        if let Some(v) = read_json(&path, cfg)? {
-            parsed = true;
-            parse_opencode_like(&v, cfg, "opencode");
-            break;
+        // 非 NotFound 的读错误(权限 / EISDIR 等)降级为 warning 后继续
+        // 尝试下一候选,不让一个坏候选挡住另一个。
+        match read_json(&path, cfg) {
+            Ok(Some(v)) => {
+                parsed = true;
+                parse_opencode_like(&v, cfg, "opencode");
+                break;
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                cfg.push_warning(e);
+                continue;
+            }
         }
     }
     if !parsed {
@@ -328,24 +475,49 @@ fn parse_opencode(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), Stri
 //     "mcp": { "<name>": {...} } }
 
 fn parse_crush(home: &Path, cfg: &mut ImportedAgentConfig) -> Result<(), String> {
-    let path = home.join(".config").join("crush").join("config.json");
-    let Some(v) = read_json(&path, cfg)? else {
-        cfg.push_warning("crush: 未找到 ~/.config/crush/config.json");
+    // crush 全局配置的规范路径是 `~/.config/crush/crush.json`
+    // (XDG 配置目录 + `<app>/<app>.json`);`config.json` 是本导入器早期
+    // 版本写错的路径,保留作兼容回落。
+    let canonical = home.join(".config").join("crush").join("crush.json");
+    let legacy = home.join(".config").join("crush").join("config.json");
+    let path = if canonical.exists() {
+        &canonical
+    } else {
+        &legacy
+    };
+    let Some(v) = read_json(path, cfg)? else {
+        cfg.push_warning("crush: 未找到 ~/.config/crush/crush.json");
         return Ok(());
     };
     parse_crush_config(&v, cfg);
     Ok(())
 }
 
-/// opencode 风格配置(`provider` 键 + baseURL/apiKey camelCase)。
+/// opencode 风格配置。
+///
+/// provider 表的键在 V1 是 `provider`、V2 是 `providers`;baseURL / apiKey
+/// 的真实位置在 `options.*`(V1)/ `settings.*`(V2),而不是 def 顶层
+/// —— 只读顶层的话一个自定义 provider 都导不出来(此前如此)。顶层
+/// 旧位置保留作回落。
 fn parse_opencode_like(v: &Value, cfg: &mut ImportedAgentConfig, agent: &str) {
     let selected = s_of(v.get("model"));
-    if let Some(providers) = v.get("provider").and_then(Value::as_object) {
+    let table = v
+        .get("provider")
+        .or_else(|| v.get("providers"))
+        .and_then(Value::as_object);
+    if let Some(providers) = table {
         for (key, def) in providers {
-            let base_url = s_of(def.get("baseURL"))
+            let opt = def.get("options").or_else(|| def.get("settings"));
+            let base_url = opt
+                .and_then(|o| s_of(o.get("baseURL")))
+                .or_else(|| opt.and_then(|o| s_of(o.get("base_url"))))
+                .or_else(|| s_of(def.get("baseURL")))
                 .or_else(|| s_of(def.get("base_url")))
                 .or_else(|| s_of(def.get("baseUrl")));
-            let api_key = s_of(def.get("apiKey"))
+            let api_key = opt
+                .and_then(|o| s_of(o.get("apiKey")))
+                .or_else(|| opt.and_then(|o| s_of(o.get("api_key"))))
+                .or_else(|| s_of(def.get("apiKey")))
                 .or_else(|| s_of(def.get("api_key")))
                 .unwrap_or_default();
             if base_url.is_none() && api_key.is_empty() {
@@ -356,7 +528,15 @@ fn parse_opencode_like(v: &Value, cfg: &mut ImportedAgentConfig, agent: &str) {
                 sel.split_once('/')
                     .and_then(|(k, m)| (k == key).then(|| m.to_string()))
             });
-            let anthropic = is_anthropic_compatible(key, base_url.as_deref(), model.as_deref());
+            // opencode 的显式协议声明在 `npm` 包名(如 `@ai-sdk/anthropic`)。
+            let npm = s_of(def.get("npm"));
+            let anthropic = is_anthropic_compatible(
+                key,
+                base_url.as_deref(),
+                model.as_deref(),
+                npm.as_deref(),
+                cfg,
+            );
             cfg.providers.push(ImportedProvider {
                 label: format!("imported:{agent}:{key}"),
                 api_key,
@@ -366,7 +546,9 @@ fn parse_opencode_like(v: &Value, cfg: &mut ImportedAgentConfig, agent: &str) {
             });
         }
     }
-    collect_mcp_map(v.get("mcp"), cfg);
+    // MCP 表:opencode V1 在 `mcp` 顶层,V2 下沉到 `mcp.servers`。
+    let mcp_table = v.get("mcp").and_then(|m| m.get("servers").or(Some(m)));
+    collect_mcp_map(mcp_table, cfg, false);
 }
 
 /// crush 风格配置(`providers` 键 + baseUrl/apiKey)。
@@ -388,7 +570,16 @@ fn parse_crush_config(v: &Value, cfg: &mut ImportedAgentConfig) {
                 sel.split_once('/')
                     .and_then(|(k, m)| (k == key).then(|| m.to_string()))
             });
-            let anthropic = is_anthropic_compatible(key, base_url.as_deref(), model.as_deref());
+            // crush 的 provider 带显式 `type`("anthropic"/"messages" vs
+            // "openai"/"completions"/"responses")。
+            let explicit = s_of(def.get("type"));
+            let anthropic = is_anthropic_compatible(
+                key,
+                base_url.as_deref(),
+                model.as_deref(),
+                explicit.as_deref(),
+                cfg,
+            );
             cfg.providers.push(ImportedProvider {
                 label: format!("imported:crush:{key}"),
                 api_key,
@@ -398,7 +589,7 @@ fn parse_crush_config(v: &Value, cfg: &mut ImportedAgentConfig) {
             });
         }
     }
-    collect_mcp_map(v.get("mcp"), cfg);
+    collect_mcp_map(v.get("mcp"), cfg, false);
 }
 
 #[cfg(test)]
@@ -589,5 +780,265 @@ mod tests {
         std::fs::write(home.join(".gemini").join("settings.json"), "{invalid").unwrap();
         let cfg = parse_source(ConfigSourceKind::Gemini, home).unwrap();
         assert!(cfg.warnings.iter().any(|w| w.contains("解析失败")));
+    }
+
+    /// 真实 opencode 形状:baseURL / apiKey 在 `options.*`、`npm` 声明协议、
+    /// MCP `command` 为数组且 env 键叫 `environment`、`type: "sse"` 显式。
+    #[test]
+    fn 解析opencode真实形状_options与数组command() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".config").join("opencode")).unwrap();
+        std::fs::write(
+            home.join(".config").join("opencode").join("opencode.json"),
+            r#"{
+              "model": "gw/claude-sonnet-4",
+              "provider": {
+                "gw": {
+                  "npm": "@ai-sdk/anthropic",
+                  "options": {"baseURL": "https://gw.example.com", "apiKey": "sk-gw"}
+                },
+                "oai": {
+                  "npm": "@ai-sdk/openai-compatible",
+                  "options": {"baseURL": "https://oai.example.com/v1", "apiKey": "sk-oai"}
+                },
+                "claude-named-but-openai": {
+                  "npm": "@ai-sdk/openai-compatible",
+                  "options": {"baseURL": "https://router.example.com/v1", "apiKey": "sk-r"}
+                }
+              },
+              "mcp": {
+                "local-one": {
+                  "type": "local",
+                  "command": ["bun", "run", "server.ts"],
+                  "environment": {"TOKEN": "t"}
+                },
+                "remote-sse": {"type": "sse", "url": "https://mcp.example/sse", "headers": {"Authorization": "Bearer x"}}
+              }
+            }"#,
+        )
+        .unwrap();
+        let cfg = parse_source(ConfigSourceKind::Opencode, home).unwrap();
+        let by_label: std::collections::HashMap<_, _> = cfg
+            .providers
+            .iter()
+            .map(|p| (p.label.as_str(), p))
+            .collect();
+        let gw = by_label["imported:opencode:gw"];
+        assert_eq!(gw.api_key, "sk-gw", "options.apiKey 应被读取");
+        assert_eq!(gw.base_url.as_deref(), Some("https://gw.example.com"));
+        assert_eq!(gw.model.as_deref(), Some("claude-sonnet-4"));
+        assert!(
+            gw.anthropic_compatible,
+            "npm @ai-sdk/anthropic → anthropic 段"
+        );
+        let oai = by_label["imported:opencode:oai"];
+        assert!(!oai.anthropic_compatible);
+        // 名字含 claude 但 npm 显式 openai-compatible → 不落 anthropic。
+        let named = by_label["imported:opencode:claude-named-but-openai"];
+        assert!(
+            !named.anthropic_compatible,
+            "显式协议声明必须覆盖名字启发式"
+        );
+
+        let mcp: std::collections::HashMap<_, _> = cfg
+            .mcp_servers
+            .iter()
+            .map(|s| (s.name.as_str(), s))
+            .collect();
+        match &mcp["local-one"].transport {
+            ImportedMcpTransport::Stdio { command, args, env } => {
+                assert_eq!(command, "bun", "数组 command 首元素是可执行文件");
+                assert_eq!(args, &vec!["run".to_string(), "server.ts".to_string()]);
+                assert_eq!(env["TOKEN"], "t", "environment 应作为 env 别名");
+            }
+            other => panic!("expected stdio, got {other:?}"),
+        }
+        match &mcp["remote-sse"].transport {
+            ImportedMcpTransport::Http { url, headers, sse } => {
+                assert_eq!(url, "https://mcp.example/sse");
+                assert!(*sse, "type: sse 应映射为 SSE 传输");
+                assert_eq!(headers["Authorization"], "Bearer x", "鉴权头不得丢弃");
+            }
+            other => panic!("expected http, got {other:?}"),
+        }
+    }
+
+    /// opencode V2 形状:`providers` 键 + `settings.*`、MCP 下沉到 `mcp.servers`。
+    #[test]
+    fn 解析opencode_v2形状() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".config").join("opencode")).unwrap();
+        std::fs::write(
+            home.join(".config").join("opencode").join("opencode.json"),
+            r#"{
+              "providers": {"p": {"settings": {"baseURL": "https://p.example/v1", "apiKey": "k"}}},
+              "mcp": {"servers": {"s": {"command": ["srv"]}}}
+            }"#,
+        )
+        .unwrap();
+        let cfg = parse_source(ConfigSourceKind::Opencode, home).unwrap();
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(
+            cfg.providers[0].base_url.as_deref(),
+            Some("https://p.example/v1")
+        );
+        assert_eq!(cfg.mcp_servers.len(), 1);
+        assert_eq!(cfg.mcp_servers[0].name, "s");
+    }
+
+    /// Claude Code 网关主流配法:`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`,
+    /// `ANTHROPIC_MODEL` 优先于顶层 `model`。
+    #[test]
+    fn 解析claude_code_auth_token回落与env_model优先() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude").join("settings.json"),
+            r#"{
+              "env": {
+                "ANTHROPIC_AUTH_TOKEN": "tok-glm",
+                "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+                "ANTHROPIC_MODEL": "glm-4.6"
+              },
+              "model": "sonnet"
+            }"#,
+        )
+        .unwrap();
+        let cfg = parse_source(ConfigSourceKind::ClaudeCode, home).unwrap();
+        let p = &cfg.providers[0];
+        assert_eq!(p.api_key, "tok-glm", "API_KEY 缺失时回落 AUTH_TOKEN");
+        assert_eq!(
+            p.model.as_deref(),
+            Some("glm-4.6"),
+            "env ANTHROPIC_MODEL 优先"
+        );
+    }
+
+    /// Codex 一律 OpenAI wire:名字 / 模型带 claude 也不落 anthropic 段;
+    /// env_key 缺失要有 warning;内建 openai 为激活项时顶层 model 不丢。
+    #[test]
+    fn 解析codex_不按名字落anthropic_且env_key缺失有警告() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex").join("config.toml"),
+            r#"
+            model = "gpt-5"
+            model_provider = "openai"
+
+            [model_providers.anthropic-router]
+            base_url = "https://router.example.com/v1"
+            env_key = "ZZ_DEFINITELY_UNSET_KEY_42"
+            "#,
+        )
+        .unwrap();
+        let cfg = parse_source(ConfigSourceKind::Codex, home).unwrap();
+        let router = cfg
+            .providers
+            .iter()
+            .find(|p| p.label == "imported:codex:anthropic-router")
+            .expect("router provider");
+        assert!(
+            !router.anthropic_compatible,
+            "Codex provider 永远是 OpenAI wire"
+        );
+        assert_eq!(router.api_key, "");
+        assert!(
+            cfg.warnings
+                .iter()
+                .any(|w| w.contains("ZZ_DEFINITELY_UNSET_KEY_42")),
+            "env_key 缺失应告知:{:?}",
+            cfg.warnings
+        );
+        // 内建 openai 激活 + 表非空 → 仍导入顶层 model。
+        let builtin = cfg
+            .providers
+            .iter()
+            .find(|p| p.label == "imported:codex:openai")
+            .expect("builtin openai provider");
+        assert_eq!(builtin.model.as_deref(), Some("gpt-5"));
+    }
+
+    /// crush 规范文件名 crush.json;显式 `type` 决定协议。
+    #[test]
+    fn 解析crush_json规范路径与显式type() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".config").join("crush")).unwrap();
+        std::fs::write(
+            home.join(".config").join("crush").join("crush.json"),
+            r#"{
+              "providers": {
+                "claude-ish": {"type": "openai", "base_url": "https://oai.example/v1", "api_key": "k1"},
+                "plain": {"type": "anthropic", "base_url": "https://a.example", "api_key": "k2"}
+              }
+            }"#,
+        )
+        .unwrap();
+        let cfg = parse_source(ConfigSourceKind::Crush, home).unwrap();
+        let by_label: std::collections::HashMap<_, _> = cfg
+            .providers
+            .iter()
+            .map(|p| (p.label.as_str(), p))
+            .collect();
+        assert!(
+            !by_label["imported:crush:claude-ish"].anthropic_compatible,
+            "type: openai 覆盖名字启发式"
+        );
+        assert!(by_label["imported:crush:plain"].anthropic_compatible);
+    }
+
+    /// Gemini:`url` 是 SSE、`httpUrl` 是 streamable HTTP。
+    #[test]
+    fn 解析gemini的http_url与url语义() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(
+            home.join(".gemini").join("settings.json"),
+            r#"{"mcpServers": {
+              "streamable": {"httpUrl": "https://s.example/mcp"},
+              "legacy-sse": {"url": "https://e.example/sse"}
+            }}"#,
+        )
+        .unwrap();
+        let cfg = parse_source(ConfigSourceKind::Gemini, home).unwrap();
+        let mcp: std::collections::HashMap<_, _> = cfg
+            .mcp_servers
+            .iter()
+            .map(|s| (s.name.as_str(), s))
+            .collect();
+        assert!(matches!(
+            &mcp["streamable"].transport,
+            ImportedMcpTransport::Http { sse: false, .. }
+        ));
+        assert!(matches!(
+            &mcp["legacy-sse"].transport,
+            ImportedMcpTransport::Http { sse: true, .. }
+        ));
+    }
+
+    /// TOML 解析失败的 warning 不得携带源码行(可能含密钥)。
+    #[test]
+    fn toml解析失败_警告不泄露源码行() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex").join("config.toml"),
+            "[model_providers.x]\nenv_key = \"K\"\napi_key_leak = \"sk-LEAKME\n",
+        )
+        .unwrap();
+        let cfg = parse_source(ConfigSourceKind::Codex, home).unwrap();
+        let w = cfg
+            .warnings
+            .iter()
+            .find(|w| w.contains("解析失败"))
+            .expect("应有解析失败 warning");
+        assert!(!w.contains("sk-LEAKME"), "警告泄露了源码行:{w}");
     }
 }
