@@ -164,11 +164,11 @@ fn run_config_import(
     }
 
     // 目标配置:--output > 默认(~/.zhuye/config.toml 口径,经 ZHUYE_HOME)。
+    // 目标文件存在但坏 / 不可读 → 硬失败(不覆盖丢数据)。
     let target = output
         .or_else(zhuye_config::default_config_path)
         .ok_or_else(|| "无法确定目标 config.toml 路径(设置 $HOME 或传 --output)".to_string())?;
-    let (mut cfg, load_warnings) = merge::load_target(&target);
-    warnings.extend(load_warnings);
+    let mut cfg = merge::load_target(&target)?;
 
     // 合并(dry-run 也先合并内存态,报告与真实执行完全一致)。
     let mut report = merge::MergeReport::default();
@@ -183,12 +183,15 @@ fn run_config_import(
     report.warnings.extend(warnings);
 
     // 输出。
+    let will_write = !dry_run && !report.is_empty();
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "target": target.display().to_string(),
                 "dry_run": dry_run,
+                // 实际是否写回(无新增时不写,见下)。
+                "written": will_write,
                 "providers_added": report.providers_added,
                 "providers_skipped": report.providers_skipped,
                 "mcp_added": report.mcp_added,
@@ -218,11 +221,18 @@ fn run_config_import(
         }
     }
 
-    // 写回。
+    // 写回。没有任何新增时不写 —— 整文件重序列化会丢注释 / 重排段落,
+    // 「什么也没导入」的一次运行不该碰用户文件。
     if !dry_run {
-        merge::write_target(&target, &cfg)?;
-        if !json {
-            println!("已写入:{}", target.display());
+        if report.is_empty() {
+            if !json {
+                println!("无新增内容,未改动:{}", target.display());
+            }
+        } else {
+            merge::write_target(&target, &cfg)?;
+            if !json {
+                println!("已写入:{}", target.display());
+            }
         }
     }
     Ok(())

@@ -126,6 +126,13 @@ pub enum ImportedMcpTransport {
     },
     Http {
         url: String,
+        /// 远程 MCP 的鉴权头等(Claude Code `headers` / opencode `headers`)。
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+        /// `true` = SSE 传输(如 Gemini 的 `url` 字段、显式 `type: "sse"`);
+        /// `false` = streamable HTTP。
+        #[serde(default)]
+        sse: bool,
     },
 }
 
