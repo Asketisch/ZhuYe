@@ -101,11 +101,19 @@ fn wire_goal_queue_plugin(
     if !goal_queue_plugin_enabled(enabled) {
         return;
     }
-    // 队列:driver 周期 tick 兜底;完成信号走 Stop hook(check_stop 节点
-    // 每 turn 结束触发,结清 active 后立即出队下一条 —— TurnComplete
-    // 只发 per-submission 通道,session 订阅者看不到)。
+    // 队列:完成信号走 per-turn 事件监视(出队时经 `AgentThread::submit`
+    // 拿到该 submission 的事件通道,在 TurnComplete / TurnAborted / 通道
+    // 关闭时按任务 id 结清)—— Stop hook 覆盖不到绕过 check_stop 的结束
+    // 路径(凭证耗尽 / 预算耗尽 / Interrupt),曾致 active 任务永久卡
+    // Running。driver 周期 tick 只作兜底。
     let scheduler = {
-        let mut s = zhuye_stream::QueueScheduler::new(Some(thread.submission_sender()), thread_id);
+        let thread_for_queue = Arc::clone(thread);
+        let submitter: zhuye_stream::TurnSubmitter = Arc::new(move |sub| {
+            let t = Arc::clone(&thread_for_queue);
+            Box::pin(async move { Some(t.submit(sub).await.into_receiver()) })
+        });
+        let mut s = zhuye_stream::QueueScheduler::new(Some(thread.submission_sender()), thread_id)
+            .with_turn_submitter(submitter);
         if let Some(base) = zhuye_stream::default_queue_base() {
             s = s.with_store(zhuye_stream::queue_store_path_for(&base, &thread_id));
         }
@@ -115,7 +123,6 @@ fn wire_goal_queue_plugin(
         ToolSource::Builtin,
         Arc::new(crate::QueueTool::new(scheduler.clone())),
     );
-    thread.register_hook(crate::QueueTurnEndHook::new(scheduler.clone()));
     let queue_driver = (*scheduler).clone().start(2);
     tokio::spawn(async move {
         let _handle = queue_driver;
@@ -249,6 +256,13 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
                 config_path.display()
             )
         })?;
+
+    // v1.10 功能3:`apply_to_registry` 用静态 spec 灌窗口覆盖表;动态模型
+    // (`model = "free"`)解析出的真实 id 可能不同 → 在此按最终 spec 重灌,
+    // 让 `[model].context_window` 精确键到最终模型。
+    zhuye_llm::set_context_window_overrides(
+        &initial_cfg.effective_context_window_overrides(&model),
+    );
 
     // v1.5 实战修复:新用户首次运行(HOME 下无 `~/.zhuye/`)时,notify
     // watcher 要求被监听路径存在,否则 bootstrap 直接失败。先确保父目录

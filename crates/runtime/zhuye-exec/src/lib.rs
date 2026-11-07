@@ -21,7 +21,7 @@ pub use cron_tool::CronTool;
 pub use goal_tool::GoalTool;
 pub use jsonl::JsonlWriter;
 pub use memory_tool::MemoryTool;
-pub use queue_tool::{QueueTool, QueueTurnEndHook};
+pub use queue_tool::QueueTool;
 pub use reload::{diff_sections_for_test, handle_reload, spawn_reload_task};
 
 use clap::Args;

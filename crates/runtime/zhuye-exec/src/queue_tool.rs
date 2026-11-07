@@ -16,7 +16,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use zhuye_hooks::{Hook, HookDecision, HookError, HookEvent, HookEventKind, StopReason};
 use zhuye_protocol::{PermissionMode, ToolError, ToolOutput};
 use zhuye_stream::QueueScheduler;
 use zhuye_tools::{Tool, ToolContext};
@@ -118,6 +117,8 @@ impl Tool for QueueTool {
             "remove" => self.exec_remove(&args),
             "clear" => self.exec_clear(),
             "start" => {
+                // set_running(true) 内部已唤醒 driver 立即尝试出队,
+                // 不等 2s 周期 tick。
                 self.scheduler.set_running(true);
                 Ok(queue_output(
                     "started",
@@ -311,64 +312,13 @@ fn queue_output(action: &str, extra: serde_json::Value, text: &str) -> ToolOutpu
     }
 }
 
-// ── v1.10 功能2:turn 结束 hook(队列完成信号)──────────────────────
-
-/// 队列的 turn 结束 hook:引擎 `check_stop` 节点触发 `Stop` 时结清当前
-/// active 任务(`AgentDecision` → done,`MaxIterations` / `UserInterrupt`
-/// → failed)并立即尝试出队下一条。
-///
-/// 为什么不是订阅事件流:`TurnComplete` 只发往 per-submission 通道,
-/// `AgentThread::subscribe_session` 的会话级订阅者看不到;`Stop` hook
-/// 是引擎侧每轮结束的权威信号(check_stop 节点内同步 dispatch)。
-/// 无 active 任务时 no-op(普通用户输入的 turn 不碰队列)。
-pub struct QueueTurnEndHook {
-    scheduler: Arc<QueueScheduler>,
-}
-
-impl QueueTurnEndHook {
-    pub fn new(scheduler: Arc<QueueScheduler>) -> Self {
-        Self { scheduler }
-    }
-}
-
-impl std::fmt::Debug for QueueTurnEndHook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QueueTurnEndHook").finish()
-    }
-}
-
-#[async_trait]
-impl Hook for QueueTurnEndHook {
-    fn name(&self) -> &str {
-        "queue-turn-end"
-    }
-
-    fn description(&self) -> &str {
-        "队列模式:turn 结束时结清当前队列任务并触发下一条出队(goal-queue 插件)"
-    }
-
-    fn events(&self) -> &[HookEventKind] {
-        &[HookEventKind::Stop]
-    }
-
-    async fn handle(&self, event: &HookEvent) -> Result<HookDecision, HookError> {
-        if let HookEvent::Stop { reason, .. } = event {
-            let success = matches!(reason, StopReason::AgentDecision);
-            if self.scheduler.settle_active(
-                success,
-                (!success).then(|| format!("stop reason: {reason:?}")),
-            ) {
-                // 结清后立即出队下一条;tick() 有通道 await,放 spawn 里
-                // 不阻塞 hook dispatch(hook 在引擎关键路径上)。
-                let scheduler = self.scheduler.clone();
-                tokio::spawn(async move {
-                    let _ = scheduler.tick().await;
-                });
-            }
-        }
-        Ok(HookDecision::Allow)
-    }
-}
+// v1.10 功能2初版曾用 Stop hook(`QueueTurnEndHook`)作唯一结清信号,
+// 但引擎存在绕过 check_stop 的结束路径(凭证耗尽 / 重试上限 / 预算
+// 耗尽 / `Op::Interrupt` / 流取消),Stop hook 在这些路径不触发,active
+// 任务会永久卡 `Running`、整条队列死锁到重启;且 Stop hook 无法归因
+// turn,手动输入先结束会误结清 active 任务。现改为 headless 装配时经
+// `QueueScheduler::with_turn_submitter` 接线 per-turn 事件监视(见
+// `headless::wire_goal_queue_plugin`),按任务 id 结清。
 
 #[cfg(test)]
 mod tests {

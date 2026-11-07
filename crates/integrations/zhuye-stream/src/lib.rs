@@ -23,7 +23,8 @@ pub use cron::{
 pub use postgres_session::{PostgresSessionConfig, PostgresSessionStore, StubPostgresSessionStore};
 pub use queue::{
     QueueCounts, QueueDriverHandle, QueueScheduler, QueueState, QueueStatusSummary, QueueTask,
-    QueueTaskStatus, default_queue_base, load_state, queue_store_path_for, save_state,
+    QueueTaskStatus, TurnSubmitter, default_queue_base, load_state, queue_store_path_for,
+    save_state,
 };
 pub use sse_redis::{SseRedisBackend, SseRedisConfig, SseRedisStubStatus};
 pub use workspace_sync::{WorkspaceSyncOptions, clone_repo, sync_status_line};
