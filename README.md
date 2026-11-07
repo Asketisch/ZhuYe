@@ -156,7 +156,8 @@ anthropic 段同样支持免 key 本地网关（`api_key = ""` + 显式 `base_ur
 | [sdks/PROTOCOL.md](sdks/PROTOCOL.md) | 客户端和服务端之间的 wire 协议 |
 | [docs/tools-and-hooks.md](docs/tools-and-hooks.md) | 内置工具、hook 事件与决策、权限模式、沙箱 |
 | [docs/prompts.md](docs/prompts.md) | 提示词库和分层覆盖 |
-| [docs/plugins.md](docs/plugins.md) | 插件开发与使用 |
+| [docs/plugins.md](docs/plugins.md) | 插件开发与使用（含 WASM 组件插件：多语言、进程内热插拔） |
+| [wit/README.md](wit/README.md) | WASM 插件契约（`zhuye:plugin` WIT 世界、版本策略、语言矩阵） |
 | [docs/plugin-marketplace.md](docs/plugin-marketplace.md) | 插件市场：manifest 与发布 |
 | [docs/PLAN_MODE.md](docs/PLAN_MODE.md) | 只读规划模式 |
 | [docs/sanitize.md](docs/sanitize.md) | 密钥脱敏 |

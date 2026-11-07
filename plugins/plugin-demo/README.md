@@ -1,14 +1,16 @@
 # 烛夜示例插件:`demo`
 
-五类 capability 各配一个最小可运行样例的演示插件:
+capability 各配一个最小可运行样例的演示插件(五类目录声明 + WASM 组件,
+样例源码见 `wasm/rust/`,构建见 `scripts/build_plugin_demo_wasm.sh`):
 
 | Capability | 文件 | 效果 |
 |---|---|---|
 | commands | `commands/hello.md` | `/demo:hello 张三` 展开为命令正文后提交 |
 | agents | `agents/reviewer.md` | 模型可调用 `call_demo_reviewer` 子代理 |
 | skills | `skills/demo-skill/SKILL.md` | 模型可 `load_skill` 激活的演示技能 |
-| hooks | `hooks/hooks.json` | 每次工具调用后在 stderr 打一行日志 |
+| hooks | `hooks/hooks.json` | 每次工具调用后在 stderr 打一行日志(shell hook);`wasm` 条目为进程内组件 hook(PostToolUse 注入提醒) |
 | mcp_servers | `.mcp.json` + `servers/echo_server.py` | `mcp__plugin:demo@inline:echo__echo` 回显工具 |
+| wasm_tools | `bin/*.wasm`(构建产物,不入库) | `demo_echo` 进程内工具 + WASM hook(组件实现 `wit/plugin.wit` 世界) |
 
 ## 安装与启用
 
