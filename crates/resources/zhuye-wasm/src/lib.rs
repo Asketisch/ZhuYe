@@ -130,21 +130,37 @@ pub enum WasmError {
 
 // ── WasmHook:进程内 hook(zhuye-hook 世界)──────────────────────────
 
-/// 进程内 WASM hook:实现 [`zhuye_hooks::Hook`],决策 JSON 协议与
-/// shell hook 的 stdout 逐字段一致(超时 / `Err` / 非法 JSON → Deny)。
+/// 进程内 WASM hook:实现 [`zhuye_hooks::Hook`],决策 JSON 协议兼容
+/// shell hook 的 stdout 协议(见 [`decision_from_json`] 的双键解析;
+/// 超时 / `Err` / 非法 JSON → Deny,保持 fail-closed)。
 pub struct WasmHook {
     component: Component,
     name: String,
+    /// 订阅的事件 kind(来自 hooks.json 的 event 名,loader 传入)。
+    /// 引擎按 `events()` 过滤派发 —— 返回空切片会让 hook 永远不被调用
+    /// (此前如此,整条链路静默失效)。
+    kind: zhuye_hooks::HookEventKind,
+    /// 工具名 matcher(hooks.json 的 `matcher`,与 ShellHook 同语义)。
+    matcher: Option<String>,
     deadline: Duration,
 }
 
 impl WasmHook {
     /// 从 `.wasm` 文件构造。`name` 即引擎注册名(如
-    /// `plugin:<id>:<event>#<i>`,与 shell hook 同款)。
-    pub fn from_file(path: &Path, name: impl Into<String>) -> Result<Self, WasmError> {
+    /// `plugin:<id>:<event>#<i>`,与 shell hook 同款);`kind` 是事件
+    /// 订阅(hooks.json 的 event 名解析结果),`matcher` 是可选的工具名
+    /// 通配(仅对 PreToolUse / PostToolUse 生效)。
+    pub fn from_file(
+        path: &Path,
+        name: impl Into<String>,
+        kind: zhuye_hooks::HookEventKind,
+        matcher: Option<String>,
+    ) -> Result<Self, WasmError> {
         Ok(Self {
             component: load_component(path)?,
             name: name.into(),
+            kind,
+            matcher,
             deadline: DEFAULT_CALL_DEADLINE,
         })
     }
@@ -160,49 +176,96 @@ impl std::fmt::Debug for WasmHook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WasmHook")
             .field("name", &self.name)
+            .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
 }
 
-/// 决策 JSON → [`HookDecision`]。fail-closed:缺 `action` / 未知值 /
-/// 非对象一律 Deny。
-fn decision_from_json(json: &str) -> HookDecision {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+/// 决策 JSON → [`HookDecision`]。
+///
+/// 协议兼容两套字段(wit 注释与 docs/plugins.md 承诺「与 shell hook 的
+/// stdout 协议逐字段一致」,宿主必须兑现):
+/// - 决策键:`action`(wasm 原生)或 `decision`(shell 协议);
+/// - 取值:`allow` / `ok` / 缺省 / 未知 → Allow(hook 未表达拒绝,与
+///   shell 同保守口径;未知值记 warn 便于观测);
+///   `deny` / `block` → Deny;`ask` → Ask;
+///   `inject` / `message` → InjectMessage(内容键 `content` 回落 `reason`);
+/// - wasm 扩展:`modify_args`(带 `args` 对象改写工具入参)。
+///
+/// 非法 JSON → Deny(fail-closed,与 shell 的「非 JSON 当信息性输出放行」
+/// 不同:wasm 契约明确要求返回决策 JSON,非法即组件缺陷)。
+fn decision_from_json(json: &str, hook_name: &str) -> HookDecision {
+    let trimmed = json.trim();
+    if trimmed.is_empty() {
+        return HookDecision::Allow;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
         return HookDecision::Deny {
-            reason: format!("wasm hook: 决策 JSON 非法: {json}"),
+            reason: format!("wasm hook: 决策 JSON 非法: {trimmed}"),
         };
     };
-    match v.get("action").and_then(|a| a.as_str()) {
-        Some("allow") => HookDecision::Allow,
-        Some("deny") => HookDecision::Deny {
-            reason: v
-                .get("reason")
-                .and_then(|r| r.as_str())
-                .unwrap_or("wasm hook denied")
-                .to_string(),
+    if !v.is_object() {
+        return HookDecision::Deny {
+            reason: format!("wasm hook: 决策必须是 JSON 对象: {trimmed}"),
+        };
+    };
+    // 双键:action(wasm)优先,decision(shell)回落。
+    let action = v
+        .get("action")
+        .or_else(|| v.get("decision"))
+        .and_then(|a| a.as_str())
+        .unwrap_or("allow")
+        .to_ascii_lowercase();
+    let reason = || {
+        v.get("reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    match action.as_str() {
+        "deny" | "block" => HookDecision::Deny {
+            reason: {
+                let r = reason();
+                if r.is_empty() {
+                    format!("denied by wasm hook '{hook_name}'")
+                } else {
+                    r
+                }
+            },
         },
-        Some("ask") => HookDecision::Ask {
-            reason: v
-                .get("reason")
-                .and_then(|r| r.as_str())
-                .unwrap_or("wasm hook asked")
-                .to_string(),
+        "ask" => HookDecision::Ask {
+            reason: {
+                let r = reason();
+                if r.is_empty() {
+                    format!("asked by wasm hook '{hook_name}'")
+                } else {
+                    r
+                }
+            },
         },
-        Some("modify_args") => match v.get("args").cloned() {
-            Some(args) if args.is_object() => HookDecision::ModifyArgs(args),
+        "inject" | "message" => {
+            // 内容键:content(wasm)回落 reason(shell 的 inject 用 reason)。
+            let content = v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .map_or_else(reason, str::to_string);
+            HookDecision::InjectMessage(SystemMessage::new(content))
+        }
+        "modify_args" => match v.get("args") {
+            Some(args) if args.is_object() => HookDecision::ModifyArgs(args.clone()),
             _ => HookDecision::Deny {
                 reason: "wasm hook: modify_args 缺 args 对象".into(),
             },
         },
-        Some("inject") => match v.get("content").and_then(|c| c.as_str()) {
-            Some(content) => HookDecision::InjectMessage(SystemMessage::new(content)),
-            None => HookDecision::Deny {
-                reason: "wasm hook: inject 缺 content".into(),
-            },
-        },
-        _ => HookDecision::Deny {
-            reason: format!("wasm hook: 未知或缺 action(来源 JSON: {json})"),
-        },
+        "allow" | "ok" => HookDecision::Allow,
+        other => {
+            tracing::warn!(
+                hook = hook_name,
+                action = other,
+                "wasm hook: 未知决策值,按 allow"
+            );
+            HookDecision::Allow
+        }
     }
 }
 
@@ -216,13 +279,26 @@ impl zhuye_hooks::Hook for WasmHook {
         "WASM 组件 hook(进程内,JSON 决策协议)"
     }
 
-    // 事件订阅由 manifest 的 hooks.json matcher 声明驱动(loader 侧),
-    // 组件本身对全部事件可达 —— 宿主在 dispatch 命中时才调用组件。
+    // 引擎 dispatch 按 events() 过滤(`[].contains(kind)` 恒 false),
+    // 必须如实返回 hooks.json 声明的 kind;matcher 在 handle 内消化
+    // (与 ShellHook 同款两段式)。
     fn events(&self) -> &[zhuye_hooks::HookEventKind] {
-        &[]
+        std::slice::from_ref(&self.kind)
     }
 
     async fn handle(&self, event: &HookEvent) -> Result<HookDecision, HookError> {
+        // matcher:仅对携带工具名的事件生效(与 ShellHook 同语义)。
+        let tool = match event {
+            HookEvent::PreToolUse { tool, .. } => Some(tool.as_str()),
+            HookEvent::PostToolUse { tool, .. } => Some(tool.as_str()),
+            _ => None,
+        };
+        if let Some(pattern) = self.matcher.as_deref() {
+            let allowed = tool.is_some_and(|t| zhuye_hooks::shell::wildcard_match(pattern, t));
+            if !allowed {
+                return Ok(HookDecision::Allow);
+            }
+        }
         let event_json = serde_json::to_string(event)
             .map_err(|e| HookError::Other(format!("wasm hook: 事件序列化失败: {e}")))?;
         // bindgen 生成的是同步调用:wasm 执行是纯 CPU,放 spawn_blocking
@@ -246,7 +322,7 @@ impl zhuye_hooks::Hook for WasmHook {
         .map_err(|e| HookError::Other(format!("wasm hook: blocking join: {e}")))?;
         match call_result {
             // 两层:wasmtime(trap)/ guest result。
-            Ok(Ok(decision_json)) => Ok(decision_from_json(&decision_json)),
+            Ok(Ok(decision_json)) => Ok(decision_from_json(&decision_json, &self.name)),
             Ok(Err(user_err)) => Ok(HookDecision::Deny {
                 reason: format!("wasm hook: 组件返回 Err: {user_err}"),
             }),
@@ -290,6 +366,10 @@ impl WasmTool {
         let component = load_component(path)?;
         let engine = shared_engine();
         let mut store = Store::new(engine, HostState::new());
+        // epoch_interruption 开启时 deadline 缺省 0(视为已耗尽),必须
+        // 在 instantiate **之前**设好 —— 带 start / 初始化代码的组件
+        // (tinygo 等)在实例化期执行 guest 代码,顺序颠倒会在挂载期 trap。
+        store.set_epoch_deadline(DEFAULT_CALL_DEADLINE.as_millis() as u64 / EPOCH_TICK_MS);
         let mut linker: Linker<HostState> = Linker::new(engine);
         // wasi:io/poll@0.2.12 等隐式 imports 由 wasmtime-wasi(p2)提供;
         // p2 实现是 async 注册,实例化走 async 路径。样例/社区组件的
@@ -298,9 +378,6 @@ impl WasmTool {
             .map_err(|e| WasmError::Call(format!("wasi linker: {e}")))?;
         let world = ZhuyeTool::instantiate(&mut store, &component, &linker)
             .map_err(WasmError::Component)?;
-        // epoch_interruption 开启时未设 deadline 即刻 trap:describe 也
-        // 必须设(默认 deadline)。
-        store.set_epoch_deadline(DEFAULT_CALL_DEADLINE.as_millis() as u64 / EPOCH_TICK_MS);
         let desc = world
             .call_describe(&mut store)
             .map_err(|e| WasmError::Call(format!("describe: {e}")))?;
@@ -319,7 +396,17 @@ impl WasmTool {
             .and_then(|d| d.as_str())
             .unwrap_or_default()
             .to_string();
-        let parameters = v.get("parameters").cloned().unwrap_or_default();
+        // parameters 缺省给空 object 而非 JSON null —— OpenAI / Anthropic
+        // 的工具 schema 字段要求 object,null 会被 provider 拒单。
+        let parameters = match v.get("parameters") {
+            Some(p) if p.is_object() => p.clone(),
+            Some(p) => {
+                return Err(WasmError::Json(format!(
+                    "describe.parameters 必须是 JSON object:{p}"
+                )));
+            }
+            None => serde_json::json!({"type": "object", "properties": {}}),
+        };
         Ok(Self {
             component,
             name,
@@ -352,6 +439,43 @@ impl std::fmt::Debug for WasmTool {
     }
 }
 
+/// guest 输出 JSON → [`ToolOutput`]。
+///
+/// wit 契约(`plugin.wit`)只要求 `content` / `is_error`;`metadata` /
+/// `elapsed_ms` 可省 —— 宿主补缺省(metadata `{}`;elapsed_ms 由宿主
+/// 计时,guest 填的 0 本来就没有意义)。此前直接
+/// `from_str::<ToolOutput>` 要求四字段齐全,严格超出契约。
+fn guest_output_to_tool_output(
+    out_json: &str,
+    started: std::time::Instant,
+) -> Result<ToolOutput, zhuye_protocol::ToolError> {
+    let v: serde_json::Value = serde_json::from_str(out_json).map_err(|e| {
+        zhuye_protocol::ToolError::Execution(format!("wasm tool: 输出非法 JSON: {e}"))
+    })?;
+    if !v.is_object() {
+        return Err(zhuye_protocol::ToolError::Execution(format!(
+            "wasm tool: 输出必须是 JSON 对象:{out_json}"
+        )));
+    }
+    let content: Vec<zhuye_protocol::ContentBlock> = match v.get("content") {
+        Some(c) => serde_json::from_value(c.clone()).map_err(|e| {
+            zhuye_protocol::ToolError::Execution(format!("wasm tool: content 块非法: {e}"))
+        })?,
+        None => Vec::new(),
+    };
+    let is_error = v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false);
+    let metadata = v
+        .get("metadata")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(ToolOutput {
+        content,
+        is_error,
+        metadata,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
 #[async_trait]
 impl zhuye_tools::Tool for WasmTool {
     fn name(&self) -> &str {
@@ -379,6 +503,7 @@ impl zhuye_tools::Tool for WasmTool {
             .map_err(|e| zhuye_protocol::ToolError::Execution(e.to_string()))?;
         let component = self.component.clone();
         let deadline_ticks = self.deadline.as_millis() as u64 / EPOCH_TICK_MS;
+        let started = std::time::Instant::now();
         let call_result = tokio::task::spawn_blocking(move || {
             let engine = shared_engine();
             let mut store = Store::new(engine, HostState::new());
@@ -394,9 +519,7 @@ impl zhuye_tools::Tool for WasmTool {
             zhuye_protocol::ToolError::Execution(format!("wasm tool: blocking join: {e}"))
         })?;
         match call_result {
-            Ok(Ok(out_json)) => serde_json::from_str::<ToolOutput>(&out_json).map_err(|e| {
-                zhuye_protocol::ToolError::Execution(format!("输出非法 ToolOutput: {e}"))
-            }),
+            Ok(Ok(out_json)) => guest_output_to_tool_output(&out_json, started),
             Ok(Err(user_err)) => Err(zhuye_protocol::ToolError::Execution(format!(
                 "wasm tool: 组件返回 Err: {user_err}"
             ))),
@@ -414,6 +537,93 @@ impl zhuye_tools::Tool for WasmTool {
                 }
             }
         }
+    }
+}
+
+// ── 决策 / 输出解析单元测试(纯函数,不依赖 wasm 产物)────────────────
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+
+    /// wit 注释与 docs 承诺「与 shell hook 的 stdout 协议逐字段一致」:
+    /// shell 协议的 `decision` / `block` / `message` / `reason` 键组合
+    /// 必须全部可用,否则社区按 shell 协议写的组件会被 fail-closed 拒掉。
+    #[test]
+    fn 决策解析_兼容shell协议键() {
+        // decision: deny + reason。
+        assert!(matches!(
+            decision_from_json(r#"{"decision":"deny","reason":"nope"}"#, "h"),
+            HookDecision::Deny { reason } if reason == "nope"
+        ));
+        // decision: block(shell 别名)。
+        assert!(matches!(
+            decision_from_json(r#"{"decision":"block","reason":"b"}"#, "h"),
+            HookDecision::Deny { .. }
+        ));
+        // decision 缺省 → Allow(shell:hook 未表达拒绝)。
+        assert!(matches!(
+            decision_from_json(r#"{"reason":"info only"}"#, "h"),
+            HookDecision::Allow
+        ));
+        // 空输出 → Allow(shell 的信息性输出)。
+        assert!(matches!(decision_from_json("  ", "h"), HookDecision::Allow));
+        // inject:message 别名 + reason 内容(shell 协议)。
+        match decision_from_json(r#"{"decision":"message","reason":"note"}"#, "h") {
+            HookDecision::InjectMessage(m) => assert_eq!(m.content, "note"),
+            other => panic!("message 应 InjectMessage:{other:?}"),
+        }
+        // inject:action(wasm)用 content 键。
+        match decision_from_json(r#"{"action":"inject","content":"c1"}"#, "h") {
+            HookDecision::InjectMessage(m) => assert_eq!(m.content, "c1"),
+            other => panic!("{other:?}"),
+        }
+        // action: deny(未知 action 值记 warn 后 allow,与 shell 同保守口径)。
+        assert!(matches!(
+            decision_from_json(r#"{"action":"weird"}"#, "h"),
+            HookDecision::Allow
+        ));
+        // modify_args:wasm 扩展。
+        assert!(matches!(
+            decision_from_json(r#"{"action":"modify_args","args":{"a":1}}"#, "h"),
+            HookDecision::ModifyArgs(_)
+        ));
+        // 非法 JSON → Deny(fail-closed)。
+        assert!(matches!(
+            decision_from_json("not json", "h"),
+            HookDecision::Deny { .. }
+        ));
+        // 非对象 JSON → Deny。
+        assert!(matches!(
+            decision_from_json(r#""str""#, "h"),
+            HookDecision::Deny { .. }
+        ));
+    }
+
+    /// guest 输出只要求 wit 契约的 content / is_error;metadata / elapsed_ms
+    /// 可省略(宿主补缺省并按真实耗时填 elapsed_ms)。
+    #[test]
+    fn 工具输出解析_缺省字段() {
+        let started = std::time::Instant::now();
+        let out = guest_output_to_tool_output(
+            r#"{"content":[{"type":"text","text":"hi"}],"is_error":false}"#,
+            started,
+        )
+        .expect("两字段输出应可解析");
+        assert!(!out.is_error);
+        assert_eq!(out.metadata, serde_json::json!({}));
+        assert_eq!(out.content.len(), 1);
+        // 完整字段照常透传。
+        let out2 = guest_output_to_tool_output(
+            r#"{"content":[],"is_error":true,"metadata":{"k":1},"elapsed_ms":999}"#,
+            started,
+        )
+        .expect("完整输出应可解析");
+        assert!(out2.is_error);
+        assert_eq!(out2.metadata["k"], 1);
+        // 非对象 → 报错。
+        assert!(guest_output_to_tool_output(r#""text""#, started).is_err());
+        assert!(guest_output_to_tool_output("bad", started).is_err());
     }
 }
 
@@ -440,14 +650,27 @@ mod contract_tests {
             .expect("测试 runtime")
     }
 
-    /// 加载 Rust 样例 hook 组件:组件校验 + Allow 决策闭环。
+    /// 加载 Rust 样例 hook 组件:组件校验 + Allow/inject 决策闭环 +
+    /// 事件订阅与 matcher 语义。
     #[test]
     fn wasm_hook_demo_allow_roundtrip() {
         let Some(path) = demo_wasm("zhuye-demo-hook") else {
             eprintln!("skip:样例组件缺失(先跑 scripts/build_plugin_demo_wasm.sh)");
             return;
         };
-        let hook = WasmHook::from_file(&path, "test:demo-hook").expect("加载失败");
+        let hook = WasmHook::from_file(
+            &path,
+            "test:demo-hook",
+            zhuye_hooks::HookEventKind::PostToolUse,
+            Some("bash".into()),
+        )
+        .expect("加载失败");
+        // events() 必须如实上报 kind —— 引擎 dispatch 按 events() 过滤,
+        // 空切片曾让 wasm hook 永远不被派发。
+        assert!(
+            hook.events()
+                .contains(&zhuye_hooks::HookEventKind::PostToolUse)
+        );
         let ev: HookEvent = serde_json::from_value(serde_json::json!({
             "kind": "post_tool_use",
             "tool": "bash",
@@ -459,9 +682,26 @@ mod contract_tests {
         let decision = rt.block_on(hook.handle(&ev)).expect("handle 不应 Err");
         // 样例策略:post_tool_use + bash → inject(决策协议注入分支);
         // 决策 JSON 由组件构造,经宿主解析回 HookDecision —— 闭环验证。
+        match &decision {
+            HookDecision::InjectMessage(m) => {
+                assert!(m.content.contains("[demo-wasm]"), "注入内容:{m:?}");
+            }
+            other => panic!("样例 hook 应 InjectMessage: got {other:?}"),
+        }
+        // matcher 不命中(非 bash)→ 不调用组件,直接 Allow。
+        let ev_other: HookEvent = serde_json::from_value(serde_json::json!({
+            "kind": "post_tool_use",
+            "tool": "grep",
+            "result": { "content": [{"type": "text", "text": "out"}], "is_error": false, "metadata": null, "elapsed_ms": 1 },
+            "elapsed_ms": 1
+        }))
+        .expect("构造 HookEvent 失败");
+        let decision = rt
+            .block_on(hook.handle(&ev_other))
+            .expect("handle 不应 Err");
         assert!(
-            matches!(decision, HookDecision::InjectMessage(_)),
-            "样例 hook 应 InjectMessage: got {decision:?}"
+            matches!(decision, HookDecision::Allow),
+            "matcher 不命中应 Allow"
         );
     }
 
@@ -472,9 +712,14 @@ mod contract_tests {
             eprintln!("skip:样例组件缺失");
             return;
         };
-        let hook = WasmHook::from_file(&path, "test:timeout-hook")
-            .expect("加载失败")
-            .with_deadline(Duration::from_millis(0));
+        let hook = WasmHook::from_file(
+            &path,
+            "test:timeout-hook",
+            zhuye_hooks::HookEventKind::PostToolUse,
+            None,
+        )
+        .expect("加载失败")
+        .with_deadline(Duration::from_millis(0));
         let ev: HookEvent = serde_json::from_value(serde_json::json!({
             "kind": "post_tool_use",
             "tool": "bash",

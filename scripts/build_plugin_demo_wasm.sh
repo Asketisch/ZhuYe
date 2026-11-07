@@ -2,7 +2,7 @@
 # 构建 plugin-demo 的 Rust WASM 组件样例(C4)。
 # 前置:rustup target add wasm32-wasip2
 # 产物:plugins/plugin-demo/bin/zhuye-demo-hook.wasm / zhuye-demo-tool.wasm
-#       (bin/ 不入库,与原生插件二进制同模式)
+#       (样例产物随插件入库;本脚本用于改源码后重建)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO="$ROOT/plugins/plugin-demo/wasm/rust"

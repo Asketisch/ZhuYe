@@ -583,11 +583,14 @@ cargo 依赖(对使用者)。
 
 - 权威定义:`wit/plugin.wit`(`package zhuye:plugin@0.1.0`),两个世界:
   - `zhuye-hook`:`handle(event: string) -> result<string, string>` —
-    事件 JSON 进 / 决策 JSON 出,与 shell hook 的 stdin/stdout 协议
-    **逐字段一致**;
+    事件 JSON 进 / 决策 JSON 出,兼容 shell hook 的 stdout 协议
+    (决策键 `action` 或 `decision` 均可,`block` / `message` 别名同
+    shell;`modify_args` 为 wasm 扩展;缺省 / 未知值 → Allow,非法
+    JSON → Deny fail-closed);
   - `zhuye-tool`:`describe()` 返回工具声明 JSON(name/description/
-    parameters),`invoke(args)` 返回协议层 `ToolOutput` 完整 wire 形态
-    (`content` / `is_error` / `metadata` / `elapsed_ms` 字段必须齐全)。
+    parameters;parameters 缺省为空 object),`invoke(args)` 返回工具
+    输出 JSON(wit 契约只要求 `content` / `is_error`;`metadata` 可省,
+    `elapsed_ms` 由宿主计时填充)。
 - ABI 刻意选 **JSON 字符串**:动态语言作者无需生成强类型绑定。
 - 版本策略与语言矩阵见 `wit/README.md`。**工具链矩阵锁定**:宿主
   wasmtime 30.0.1 ↔ guest wit-bindgen 0.40(组件 wasi 小版本要求精确
@@ -612,7 +615,10 @@ scripts/build_plugin_demo_wasm.sh   # 产 plugins/plugin-demo/bin/*.wasm
 样例:`plugins/plugin-demo/wasm/rust/`(hook:PostToolUse 注入提醒;
 tool:echo)。声明方式:`plugin.toml` 的 `[[wasm_tools]]` 段 +
 `hooks.json` 条目的 `"wasm": "${PLUGIN_ROOT}/bin/x.wasm"` 字段。
-产物缺失时该能力注册仅 warn,不影响其余挂载。
+产物缺失时该能力注册仅 warn,不影响其余挂载。**同名保护**:组件
+`describe().name` 与既有工具(内置 / 其他来源)重名时拒绝注册 ——
+WASM 工具名不得覆盖既有工具。样例产物 `bin/*.wasm` 随插件入库,
+可直接安装体验;改源码后用构建脚本重产。
 
 ### 路线图
 
