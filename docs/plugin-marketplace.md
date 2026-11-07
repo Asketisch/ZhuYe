@@ -2,7 +2,8 @@
 
 > marketplace 是一个**插件集合**:一个 JSON manifest 列出多个插件条目,
 > 每个条目告诉用户去哪儿拉。发布侧格式与使用侧流程都在本文。
-> 插件本身怎么写见 [`plugins.md`](plugins.md)。
+> 插件本身怎么写见 [`plugin-dev-guide.md`](plugin-dev-guide.md)（上手教程）与
+> [`plugins.md`](plugins.md)（字段级参考）。
 
 ## 1. manifest 格式(发布者向)
 
