@@ -194,8 +194,8 @@ fn list_installed_returns_in_id_order() {
         git_commit_sha: None,
         checksum_sha256: None,
     };
-    mgr.state.plugins.insert(b.clone(), vec![entry_b.clone()]);
-    mgr.state.plugins.insert(a.clone(), vec![entry_a.clone()]);
+    mgr.state.plugins.insert(b.clone(), vec![entry_b]);
+    mgr.state.plugins.insert(a.clone(), vec![entry_a]);
     let out = mgr.list_installed();
     assert_eq!(out[0].0, a);
     assert_eq!(out[1].0, b);
@@ -385,13 +385,13 @@ fn list_with_enabled_marks_correctly() {
     };
     mgr.state
         .plugins
-        .insert(id_a.clone(), vec![mk(PluginScope::User, "/a")]);
+        .insert(id_a, vec![mk(PluginScope::User, "/a")]);
     mgr.state
         .plugins
-        .insert(id_b.clone(), vec![mk(PluginScope::User, "/b")]);
+        .insert(id_b, vec![mk(PluginScope::User, "/b")]);
     mgr.state
         .plugins
-        .insert(id_c.clone(), vec![mk(PluginScope::User, "/c")]);
+        .insert(id_c, vec![mk(PluginScope::User, "/c")]);
 
     // aaa + ccc 在 enabled 集合。
     let enabled: HashSet<String> = ["aaa@inline", "ccc@inline"]

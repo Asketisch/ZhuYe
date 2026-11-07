@@ -80,7 +80,7 @@ mod tests {
                 break;
             }
             if !expected.pop() {
-                expected = start.clone();
+                expected = start;
                 break;
             }
         }

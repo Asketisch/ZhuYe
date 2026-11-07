@@ -41,6 +41,14 @@ pub struct M4Deps {
     /// 重扫按此序装配)。默认空 —— 仅内嵌默认;bootstrap / Builder
     /// 装配时记录,`Op::PromptCommand` 的 Switch 动作用它重扫。
     pub prompt_dirs: Vec<std::path::PathBuf>,
+    /// v1.x:skills 扫描目录序(workspace → 用户级)。运行时
+    /// `Op::RescanExtensions` 的 skills 重扫按此序装配,与 bootstrap
+    /// 同源 —— core 不反推目录(分层约束)。默认空(rescan 无文件目录)。
+    pub skill_dirs: Vec<std::path::PathBuf>,
+    /// v1.x:`[active].bundled_skills` 的 bootstrap 表态。rescan 替换
+    /// 文件型 skills 后按此标志补挂内置包(与 bootstrap 同口径);core
+    /// 不读 config(分层约束),状态由装配方注入。
+    pub bundled_skills: bool,
 }
 
 impl std::fmt::Debug for M4Deps {
@@ -58,7 +66,7 @@ impl std::fmt::Debug for M4Deps {
             .field("note_store", &"<dyn NoteStore>")
             .field("file_recovery", &self.file_recovery)
             .field("subagent_registry", &self.subagent_registry)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -121,5 +129,7 @@ pub fn default_m4_deps(agent_name: &str) -> M4Deps {
         file_recovery,
         subagent_registry,
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
+        bundled_skills: false,
     }
 }

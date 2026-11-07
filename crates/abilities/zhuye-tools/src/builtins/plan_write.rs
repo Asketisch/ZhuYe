@@ -127,7 +127,7 @@ impl Tool for PlanWriteTool {
 
         // 拼接最终路径。`rel` 已剔除 `..` 与绝对路径,这里用逐 component
         // 拼接(而非 `plan_dir.join(path_str)` 字符串拼接)以保留规范化语义。
-        let mut final_path = plan_dir.clone();
+        let mut final_path = plan_dir;
         for component in rel.components() {
             final_path.push(component);
         }

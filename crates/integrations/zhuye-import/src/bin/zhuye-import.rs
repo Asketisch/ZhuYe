@@ -21,8 +21,8 @@ use zhuye_import::{discover, import_all};
 #[derive(Parser)]
 #[command(
     name = "zhuye-import",
-    about = "把外部 Harness(Claude Code / Codex / ZCode)历史会话导入为烛夜会话",
-    after_help = "续跑导入的会话:zhuye exec --resume <thread_id>"
+    about = "把外部 Harness(Claude Code / Codex / ZCode)历史会话导入为烛夜会话;`config` 子命令一键导入其他 agent 的模型 / MCP 配置",
+    after_help = "续跑导入的会话:zhuye exec --resume <thread_id>\n一键导入其他 agent 配置:zhuye-import config"
 )]
 struct Cli {
     /// 待导入的会话文件或目录(目录时递归收集 .jsonl)。
@@ -68,23 +68,174 @@ struct Cli {
 enum Command {
     /// 以 stdio MCP server 常驻(插件 harness-import 的入口)。
     Mcp,
+    /// v1.10 功能1:一键导入其他主流本地 agent(Claude Code / Codex /
+    /// Gemini / opencode / crush)的模型 / MCP server 配置到烛夜
+    /// config.toml。缺省扫描全部已知来源。
+    Config {
+        /// 限定来源(claude-code / codex / gemini / opencode / crush;
+        /// 缺省 = 全部,即「一键」)。
+        #[arg(long, default_value = "auto")]
+        from: String,
+
+        /// 来源 HOME 根目录(默认 $HOME;脚本 / 测试用)。
+        #[arg(long)]
+        home: Option<PathBuf>,
+
+        /// 目标 config.toml 路径(默认 ~/.zhuye/config.toml)。
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// 只报告将导入的内容,不写目标文件。
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 机器可读输出(单行 JSON 报告)。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if matches!(cli.command, Some(Command::Mcp)) {
-        // MCP 模式:stdout 是传输通道,不初始化任何会写 stdout 的设施。
-        zhuye_import::mcp_server::run();
-        return ExitCode::SUCCESS;
+    match cli.command {
+        Some(Command::Mcp) => {
+            // MCP 模式:stdout 是传输通道,不初始化任何会写 stdout 的设施。
+            zhuye_import::mcp_server::run();
+            ExitCode::SUCCESS
+        }
+        Some(Command::Config {
+            from,
+            home,
+            output,
+            dry_run,
+            json,
+        }) => match run_config_import(&from, home, output, dry_run, json) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("zhuye-import config: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        None => match run_import(cli) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("zhuye-import: {e}");
+                ExitCode::FAILURE
+            }
+        },
     }
+}
 
-    match run_import(cli) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("zhuye-import: {e}");
-            ExitCode::FAILURE
+/// v1.10 功能1:`config` 子命令实现 —— 扫描 → 解析 → 合并 → (写回)。
+fn run_config_import(
+    from: &str,
+    home: Option<PathBuf>,
+    output: Option<PathBuf>,
+    dry_run: bool,
+    json: bool,
+) -> Result<(), String> {
+    use zhuye_import::config_import::{self, merge};
+
+    // 来源 HOME:--home > $HOME。
+    let home = home
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .ok_or_else(|| "无法确定来源 HOME(设置 $HOME 或传 --home)".to_string())?;
+
+    // 来源集合:auto = 全部;否则按 --from 限定。
+    let kinds: Vec<config_import::ConfigSourceKind> = if from == "auto" {
+        config_import::ConfigSourceKind::all().to_vec()
+    } else {
+        let k = config_import::ConfigSourceKind::parse(from).ok_or_else(|| {
+            format!(
+                "未知 --from '{from}'(可选:claude-code / codex / gemini / opencode / crush / auto)"
+            )
+        })?;
+        vec![k]
+    };
+
+    // 解析(单来源失败不阻断 —— 一键语义是尽力而为)。
+    let mut imported_list = Vec::new();
+    let mut warnings = Vec::new();
+    for kind in kinds {
+        match config_import::sources::parse_source(kind, &home) {
+            Ok(cfg) => imported_list.push(cfg),
+            Err(e) => warnings.push(format!("{}: {e}", kind.as_str())),
         }
     }
+
+    // 目标配置:--output > 默认(~/.zhuye/config.toml 口径,经 ZHUYE_HOME)。
+    // 目标文件存在但坏 / 不可读 → 硬失败(不覆盖丢数据)。
+    let target = output
+        .or_else(zhuye_config::default_config_path)
+        .ok_or_else(|| "无法确定目标 config.toml 路径(设置 $HOME 或传 --output)".to_string())?;
+    let mut cfg = merge::load_target(&target)?;
+
+    // 合并(dry-run 也先合并内存态,报告与真实执行完全一致)。
+    let mut report = merge::MergeReport::default();
+    for imported in &imported_list {
+        let r = merge::merge_into_config(&mut cfg, imported);
+        report.providers_added.extend(r.providers_added);
+        report.providers_skipped.extend(r.providers_skipped);
+        report.mcp_added.extend(r.mcp_added);
+        report.mcp_skipped.extend(r.mcp_skipped);
+        report.warnings.extend(r.warnings);
+    }
+    report.warnings.extend(warnings);
+
+    // 输出。
+    let will_write = !dry_run && !report.is_empty();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "target": target.display().to_string(),
+                "dry_run": dry_run,
+                // 实际是否写回(无新增时不写,见下)。
+                "written": will_write,
+                "providers_added": report.providers_added,
+                "providers_skipped": report.providers_skipped,
+                "mcp_added": report.mcp_added,
+                "mcp_skipped": report.mcp_skipped,
+                "warnings": report.warnings,
+            })
+        );
+    } else {
+        println!("目标配置:{}", target.display());
+        if dry_run {
+            println!("(dry-run:以下内容未写入)");
+        }
+        for label in &report.providers_added {
+            println!("  + provider 凭证:{label}");
+        }
+        for label in &report.providers_skipped {
+            println!("  = provider 凭证(已存在,跳过):{label}");
+        }
+        for name in &report.mcp_added {
+            println!("  + mcp server:{name}");
+        }
+        for name in &report.mcp_skipped {
+            println!("  = mcp server(已存在,跳过):{name}");
+        }
+        for w in &report.warnings {
+            eprintln!("  ! {w}");
+        }
+    }
+
+    // 写回。没有任何新增时不写 —— 整文件重序列化会丢注释 / 重排段落,
+    // 「什么也没导入」的一次运行不该碰用户文件。
+    if !dry_run {
+        if report.is_empty() {
+            if !json {
+                println!("无新增内容,未改动:{}", target.display());
+            }
+        } else {
+            merge::write_target(&target, &cfg)?;
+            if !json {
+                println!("已写入:{}", target.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_import(cli: Cli) -> Result<(), String> {

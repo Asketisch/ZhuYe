@@ -690,7 +690,7 @@ mod tests {
             .run_sequential(
                 move |agent, _round, snapshot| {
                     let snapshots = snapshots_c.clone();
-                    let agent_c = agent.clone();
+                    let agent_c = agent;
                     async move {
                         snapshots.lock().push((agent_c, snapshot));
                         Ok(())

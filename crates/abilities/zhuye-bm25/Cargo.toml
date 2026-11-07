@@ -7,3 +7,6 @@ description = "ZhuYe: BM25 relevance ranking (leaf crate, shared by tools grep a
 
 [dependencies]
 rankfns = { workspace = true }
+
+[lints]
+workspace = true

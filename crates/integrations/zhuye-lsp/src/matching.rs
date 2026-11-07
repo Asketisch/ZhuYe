@@ -81,8 +81,7 @@ pub fn pick_server_for(
 pub fn relative_path(file_path: &Path, workspace: &Path) -> PathBuf {
     file_path
         .strip_prefix(workspace)
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|_| file_path.to_path_buf())
+        .map_or_else(|_| file_path.to_path_buf(), |p| p.to_path_buf())
 }
 
 #[cfg(test)]

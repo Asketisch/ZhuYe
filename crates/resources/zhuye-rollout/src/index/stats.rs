@@ -105,8 +105,7 @@ fn find_all_session_files(base: &Path, session_id: ThreadId) -> Vec<PathBuf> {
                 let by_name = path
                     .file_stem()
                     .and_then(|s| s.to_str())
-                    .map(|stem| stem == target.to_string())
-                    .unwrap_or(false);
+                    .is_some_and(|stem| stem == target.to_string());
                 if by_internal || by_name {
                     out.push(path);
                 }

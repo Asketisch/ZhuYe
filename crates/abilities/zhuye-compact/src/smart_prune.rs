@@ -115,7 +115,8 @@ pub fn smart_prune(
         .iter()
         .position(|m| matches!(m, ChatMessage::User(_)))
         .unwrap_or(usize::MAX);
-    let mut pinned: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // BTreeSet:删除消息后按区间位移固定下标,免去整集重建。
+    let mut pinned: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for (i, m) in after_phase1.iter().enumerate() {
         if matches!(m, ChatMessage::System(_)) || i == first_user {
             pinned.insert(i);
@@ -141,10 +142,16 @@ pub fn smart_prune(
     }
 
     // 遍历旧下标(不在固定集合、不在 keep_recent),丢弃最旧者。
+    //
+    // `keep` 直接复用消息 Vec:所有操作(查找配对、删除、token 估算)
+    // 都是位置性的,且均可借用完成 —— 此前这里用 `Vec<(usize, ChatMessage)>`
+    // 并在每轮迭代深克隆整个剩余会话,长会话压缩代价是平方级。
     let mut removed_count = 0;
-    let mut keep: Vec<(usize, ChatMessage)> = after_phase1.into_iter().enumerate().collect();
-    let mut current_tokens =
-        crate::tokens::estimate_messages(&keep.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>());
+    let mut keep = after_phase1;
+    let mut current_tokens = crate::tokens::estimate_messages(&keep);
+    // 配对索引仅在删除发生后重建;跳过受保护条目的迭代直接复用。
+    let mut use_idx = crate::tool_pair::find_tool_use_indices(&keep);
+    let mut result_idx = crate::tool_pair::find_tool_result_indices(&keep);
     let mut drop_idx = 0;
     while current_tokens >= cfg.target_tokens && drop_idx < keep.len() {
         if pinned.contains(&drop_idx) || drop_idx >= keep_start {
@@ -156,10 +163,7 @@ pub fn smart_prune(
         // 退出会留下半截配对,OpenAI / Anthropic 直接 400。现在:
         // 目标的配对对端若受保护(pinned / keep 窗口)则跳过目标;
         // 否则整对原子删除。
-        let cur: Vec<ChatMessage> = keep.iter().map(|(_, m)| m.clone()).collect();
-        let use_idx = crate::tool_pair::find_tool_use_indices(&cur);
-        let result_idx = crate::tool_pair::find_tool_result_indices(&cur);
-        let partner_positions: Vec<usize> = match &cur[drop_idx] {
+        let partner_positions: Vec<usize> = match &keep[drop_idx] {
             ChatMessage::Tool(t) => use_idx.get(&t.call_id).copied().into_iter().collect(),
             ChatMessage::Assistant(a) => a
                 .tool_calls
@@ -177,33 +181,33 @@ pub fn smart_prune(
             drop_idx += 1;
             continue;
         }
-        // 原子删除目标 + 配对对端(去重升序后从高位往低位删,并按既有
-        // 逻辑位移 pinned)。
+        // 原子删除目标 + 配对对端(去重升序后从高位往低位删;
+        // pinned 按区间位移:大于 v 的下标整体前移一位)。
         let mut victims = partner_positions;
         victims.push(drop_idx);
         victims.sort_unstable();
         victims.dedup();
         for &v in victims.iter().rev() {
             keep.remove(v);
+            // 先摘除 v 的旧 pin 再做 >v 区间下移:若顺序颠倒,v+1 位移
+            // 下来的新 pin(值恰为 v)会被随后的 remove 误删,keep 窗口
+            // 保护随之失效(见 phase2_never_eats_into_keep_window_after_pair_removal)。
             pinned.remove(&v);
-            let mut new_pinned: std::collections::HashSet<usize> = std::collections::HashSet::new();
-            for p in &pinned {
-                if *p > v {
-                    new_pinned.insert(*p - 1);
-                } else {
-                    new_pinned.insert(*p);
-                }
+            let shifted: Vec<usize> = pinned.range(v + 1..).copied().collect();
+            for p in shifted {
+                pinned.remove(&p);
+                pinned.insert(p - 1);
             }
-            pinned = new_pinned;
             removed_count += 1;
         }
-        current_tokens = crate::tokens::estimate_messages(
-            &keep.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(),
-        );
+        // 删除后位置全部失效:重建配对索引并重估 token(纯借用,无克隆)。
+        use_idx = crate::tool_pair::find_tool_use_indices(&keep);
+        result_idx = crate::tool_pair::find_tool_result_indices(&keep);
+        current_tokens = crate::tokens::estimate_messages(&keep);
         // 不前进 drop_idx;下一个元素已移入此槽位。
     }
 
-    let final_msgs: Vec<ChatMessage> = keep.into_iter().map(|(_, m)| m).collect();
+    let final_msgs: Vec<ChatMessage> = keep;
     let after = crate::tokens::estimate_messages(&final_msgs);
     (
         final_msgs,
@@ -647,5 +651,97 @@ mod tests {
         assert!(matches!(out[0], ChatMessage::System(_)));
         // keep_recent=5 的尾部完好。
         assert!(out.len() <= 51);
+    }
+
+    /// 回归:keep 窗口保护不得被区间位移误蚀。
+    ///
+    /// 布局:System + User(固定)+ 一组可丢弃的 tool 配对 + 3 条长
+    /// filler(keep_recent 窗口)。删掉配对后 token 仍高于 target,
+    /// 但剩余消息全部处于固定集合 —— 正确行为是到此为止(5 条、删 2)。
+    /// pinned 区间位移若先插入后 `remove(&v)`,会把刚从 v+1 位移下来的
+    /// 窗口头 pin 误删,导致窗口消息被继续丢弃(退化成 3 条)。
+    #[test]
+    fn phase2_never_eats_into_keep_window_after_pair_removal() {
+        let mut msgs = vec![
+            ChatMessage::System("sys".into()),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("first user")],
+            }),
+        ];
+        // 下标 2/3:无保护的 assistant(tool_use)+ Tool 结果对。
+        msgs.extend(tool_pair("victim", &["c1"]));
+        // 下标 4/5/6:keep_recent 窗口内的长 filler。
+        for i in 0..3 {
+            msgs.push(ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text(format!("{}{}", "z".repeat(400), i))],
+            }));
+        }
+        let cfg = SmartPruneConfig {
+            trigger_tokens: 400,
+            target_tokens: 200,
+            keep_recent: 3,
+            ..Default::default()
+        };
+        let (out, r) = smart_prune(msgs, &cfg);
+        // 只应删除那一对(2 条);窗口 filler 一条都不能少。
+        assert_eq!(r.removed_count, 2, "只删配对,窗口不得被蚀:got {r:?}");
+        assert_eq!(out.len(), 5, "keep_recent=3 的窗口必须完整保留:got {out:?}");
+        assert!(matches!(out[0], ChatMessage::System(_)));
+    }
+
+    /// 大会话(约 2000 条、400 组 tool 配对)下的 phase 2 一致性:
+    /// 多轮删除会反复触发配对索引重建与 pinned 区间位移,这里断言
+    /// 报告计数自洽、硬不变式(配对完整)不被破坏、目标 token 可达。
+    /// 同时防止后续优化再次引入「循环内克隆整个剩余会话」的平方级行为。
+    #[test]
+    fn large_session_phase2_keeps_invariants_across_many_rounds() {
+        let mut msgs = vec![
+            ChatMessage::System("sys".into()),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("first user")],
+            }),
+        ];
+        // 400 组 assistant(tool_use)+ Tool 结果 + 2 条长 filler = 1600 条,
+        // 加头部 2 条共 1602 条消息;每组约 3*86 token,远超 trigger。
+        for i in 0..400 {
+            msgs.push(ChatMessage::Assistant(AssistantContent {
+                text: Some(format!("p{i} calling")),
+                tool_calls: vec![zhuye_llm::ToolCallRequest {
+                    id: format!("c{i}"),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                }],
+                thinking: None,
+            }));
+            msgs.push(make_tool_result(&format!("c{i}"), &"y".repeat(300)));
+            msgs.push(filler(&(i * 2).to_string()));
+            msgs.push(filler(&(i * 2 + 1).to_string()));
+        }
+        let total = msgs.len();
+        assert_eq!(total, 1602, "布局应符合预期");
+
+        let cfg = SmartPruneConfig {
+            trigger_tokens: 5_000,
+            target_tokens: 1_000,
+            keep_recent: 6,
+            ..Default::default()
+        };
+        let (out, r) = smart_prune(msgs, &cfg);
+
+        // 报告计数自洽:removed_count 与实际缩减量一致。
+        assert_eq!(r.removed_count, total - out.len());
+        assert!(r.was_compacted);
+        // 硬不变式:任何轮次后都不得出现半截配对。
+        crate::tool_pair::assert_pairs_intact(&out);
+        // System 与首条 User 固定保留。
+        assert!(matches!(out[0], ChatMessage::System(_)));
+        assert!(matches!(out[1], ChatMessage::User(_)));
+        // 未固定内容充足,phase 2 应能压到目标以下。
+        assert!(
+            r.after_tokens < cfg.target_tokens,
+            "after_tokens={} 应低于 target={}",
+            r.after_tokens,
+            cfg.target_tokens
+        );
     }
 }

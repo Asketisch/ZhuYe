@@ -174,8 +174,7 @@ async fn dispatch_tool(
                 let cwd = args
                     .get("cwd")
                     .and_then(Value::as_str)
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| default_cwd.to_path_buf());
+                    .map_or_else(|| default_cwd.to_path_buf(), PathBuf::from);
                 let session = pool
                     .run(vec!["sh".into(), "-c".into(), command], &cwd, true)
                     .map_err(|e| format!("spawn failed: {e}"))?;

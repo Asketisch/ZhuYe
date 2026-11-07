@@ -173,6 +173,8 @@ pub(crate) fn bootstrap_m4(
     let skill_dirs: Vec<&std::path::Path> = vec![&ws_skills, &home_skills];
     let skills_catalog = SkillsCatalog::new();
     skills_catalog.scan(&skill_dirs);
+    // owned 目录序进 M4Deps:运行时 RescanExtensions 与 bootstrap 同源
+    // (scan 结束后 move,免 clone)。
     // 内置 skill 包(15 项编码技能,编译期嵌入)**默认关闭**:框架层不向
     // 会话注入应用层偏好的目录死文本,`[active] bundled_skills = true` 显式
     // 开启。同名 skill 以文件目录扫描结果优先(`merge_bundled` 内部
@@ -181,6 +183,9 @@ pub(crate) fn bootstrap_m4(
         zhuye_skills::merge_bundled(&skills_catalog);
     }
     let skills_catalog = Arc::new(skills_catalog);
+    // owned 目录序进 M4Deps:运行时 RescanExtensions 与 bootstrap 同源
+    // (scan 结束后 move,免 clone)。
+    let skill_dirs_owned = vec![ws_skills, home_skills];
 
     // 注册 `load_skill` 工具。
     // v1.3:走 `register_runtime_tool`,触发 Runtime 源的 `Prompt` 安全
@@ -258,7 +263,7 @@ pub(crate) fn bootstrap_m4(
         if registry.next_for(&spec, &[]).is_some() {
             Arc::new(
                 LlmSummarizer::new(registry.clone(), Arc::new(policy), spec)
-                    .with_telemetry(telemetry.clone()),
+                    .with_telemetry(telemetry),
             )
         } else {
             Arc::new(NoopSummarizer)
@@ -267,7 +272,13 @@ pub(crate) fn bootstrap_m4(
     // M8 P0b:触发阈值取自环境变量 `ZHUYE_AUTO_COMPACT_INPUT_TOKENS`
     // > TOML `[compact].trigger_tokens` > 默认值 (10_000)。M7 仅记录了
     // 环境变量;M8 把两者都接入 `CompactorConfig`。
-    let compactor_cfg = zhuye_core::config::compactor_config_from_env_and_toml(toml_trigger_tokens);
+    // v1.10 功能3:两级显式值都缺席时,若用户在 config.toml 显式配置了
+    // 该模型的上下文窗口(`[context_windows]` / `[model].context_window`),
+    // 触发阈值联动为窗口 × 80%(静态表命中而未配置的模型保持 10k)。
+    let compactor_cfg = zhuye_core::config::compactor_config_with_window(
+        toml_trigger_tokens,
+        cfg.configured_context_window_for(model),
+    );
     // v1.4 D2:记忆固化门控 —— `ZHUYE_MEMORY_CONSOLIDATION`:
     //   未设 / `0` / `false` = 关闭(默认,行为不变);
     //   `1` / `session` = 写 Session scope(进程内,重启即丢,最安全);
@@ -333,6 +344,8 @@ pub(crate) fn bootstrap_m4(
         // v1.6.1:`/prompt` Switch 重扫用的目录序(home 在前、workspace 在后,
         // 与启动时 init_library 同序)。
         prompt_dirs: vec![home_prompts, ws_prompts],
+        skill_dirs: skill_dirs_owned,
+        bundled_skills: cfg.active.bundled_skills,
     })
 }
 
@@ -618,7 +631,7 @@ pub(crate) async fn bootstrap_lsp(
     let manager = Arc::new(LspConnectionManager::new(internal_tx));
 
     // 后台 task:internal event → protocol Event → event_tx。
-    let event_tx_clone = event_tx.clone();
+    let event_tx_clone = event_tx;
     tokio::spawn(async move {
         while let Some(evt) = internal_rx.recv().await {
             let msg = match evt {
@@ -741,7 +754,7 @@ mod tests {
         // 全空 → 原样返回(向后兼容)。
         let cfg = zhuye_config::ReflectConfig::default();
         let def = AgentDefinition::default();
-        let out = apply_active_tool_filter(def.clone(), &cfg);
+        let out = apply_active_tool_filter(def, &cfg);
         assert!(out.tools.is_empty() && out.disallowed_tools.is_empty());
 
         // 白名单:定义层为空 → 直接采用。

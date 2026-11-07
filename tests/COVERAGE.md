@@ -67,6 +67,7 @@
 | 缺陷修复回归(预算耗尽显性化 / 配置隔离 / 工具裁切 / 提示词关闭 / mock 显性化) | ✔(12 条,见 `test_bugfixes.py`) | config(show 的 ZHUYE_HOME 断言) | — | ✅(provider 层非 SSE 校验 / 版本段拼接 / 采样参数默认值有 wiremock 回归) | — |
 | 模型自动输出预算与配置优先级 | ✔(本地 HTTP 网关断言模型、输出字段、中文输入余量,见 `test_bugfixes.py`) | — | — | ✅(模型上限、余量、未知型号及请求体) | — |
 | 提示注入检测库(凭据外传规则) | —(尚无运行时入口) | — | — | ✅(zhuye-sanitize 检测及误报边界) | — |
+| v1.10 功能:配置一键导入 / goal+队列插件 / 上下文窗口 / 思考强度分级 / 空 key | V1–V10 | —(独立二进制 `zhuye-import config`,非 zhuye 参数面) | ✅(effort 阶梯字面量双侧断言) | ✅(llm 能力表钳制 / override 表 / builder 免 key / queue 调度 / config_import 合并) | — |
 
 ## 2. 能力覆盖层明细(`tests/functional/`)
 
@@ -240,6 +241,49 @@ Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路�
 O6 验证任务更新后的字段与元数据;O7 验证跨进程并发创建的 ID 和文件;
 O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存后端);O9 验证损坏、落后或丢失的高水位不会覆盖旧任务;O10 验证超大任务输出的读取上限和截断字段。
 
+### V 组 v1.10 功能面(`test_v110.py`)
+
+<!-- WASM 插件能力行:V12 -->
+- **V1 思考强度配置**:`config set model.reasoning_effort ultra/Max` 落盘
+  字段级断言、非法档位拒绝(文案含合法值清单)、`config ls` 可见、
+  `unset` 清空;
+- **V2 set_effort 新档位**:`set_effort max` / `ultra` Op 提交无 error
+  事件、后续 turn 正常收尾(SDK / serve 面);
+- **V3 上下文窗口**:`config set model.context_window 307200` → exec 的
+  `session_configured.context_window_size == 307200`(字段级);
+- **V4 覆盖表归一化**:`[context_windows] "Mock" = 204800` 对模型
+  `mock/mock-1` 前缀命中,且 per-model 条目优先于 `[model].context_window`;
+- **V5 空 key**:`[anthropic] api_key=""` 无 base_url → 未配置(对照);
+  加显式 `base_url` → doctor 识别 active provider 为 anthropic;
+- **V6 插件门控对照**:未启用 goal-queue → `queue` 工具 tool not found;
+- **V7 队列全链路**:plugin install + enable → mock 调 `queue add/start`
+  成功 → 任务落 `~/.zhuye/queue/<thread_id>.json`(id / prompt / name
+  字段级)→ 出队注入的 turn 以 TurnComplete 收尾后状态 `done`
+  (started_at / finished_at 记录)。结清信号是 per-turn 事件监视
+  (`QueueScheduler::with_turn_submitter` + `TurnHandle::into_receiver`,
+  按任务 id 归因,TurnComplete / TurnAborted / 通道关闭三类终态都结清)
+  —— 曾用 Stop hook 作唯一信号,绕过 check_stop 的结束路径(凭证耗尽 /
+  预算耗尽 / Interrupt)会让 active 永久卡 Running;该路径的单测在
+  `zhuye-stream::queue::tests`(submitter_tick_settles_on_turn_terminal_events
+  / settle_task_is_id_attributed / submitter_closed_channel_marks_failed);
+- **V8 goal 工具**:`goal status` 报未激活;`goal enter` 提交 Op(输出
+  回显目标)、无 `GOAL_NO_CLIENT` 错误;
+- **V9 一键导入**:`zhuye-import config --home <fixture> --output` dry-run
+  不写文件 + 报告集合断言(claude-code / opencode×2 / codex 凭证与
+  fetch / http-one / local-arr / linter MCP;`written=false`);真实导入
+  逐字段断言(凭证 label / api_key / base_url / model;MCP command /
+  args / env / url;opencode 真实形状 `options.baseURL/apiKey` +
+  数组 `command` + `environment`;codex env_key → 进程 env 解析;空 key
+  本地端点照常导入;`written=true`);重复导入幂等(providers_skipped /
+  mcp_skipped 集合、`written=false`、文件逐字节不变);**坏目标文件硬
+  失败**(退出码非 0、stderr 含「解析失败」且不泄露密钥所在源码行、原
+  文件原样保留 —— 此前降级为 Default 后无条件写回,等于清空用户全部
+  既有配置)。各来源解析形状(opencode V1/V2、crush.json、Claude Code
+  AUTH_TOKEN 回落、codex 一律 OpenAI wire、Gemini httpUrl/url 语义、
+  legacy 单值 api_key 先 wrap 再追加)由 `zhuye-import` 单测覆盖;
+- **V10 导入产物可运行**:导入后的 config.toml 下 serve 以 mock 正常
+  起会话并收尾 turn。
+
 ### 缺陷修复回归(`test_bugfixes.py`)
 - **预算耗尽显性化(P-13)**:迭代预算 / token 预算耗尽且**零文本**时,
   turn 在 `turn_complete` 之前显式发 `error` 事件,字段级断言
@@ -267,6 +311,22 @@ O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存�
   拼接)/ **P-12**(temperature / max_tokens 段配置)落在
   `zhuye-llm` 的 wiremock 回归(openai_non_sse_* / join_endpoint_* /
   openai_config_temperature_*),不在离线 serve 套件(无真实网关)。
+
+### V 组补:v1.x WASM 插件(多语言生态,`test_v110.py`)
+
+- V12:Rust 组件(demo_echo 工具 + wasm hook)经 demo 插件端到端 ——
+  安装/启用 → 进程内实例化 → mock 调 `demo_echo` 的 `tool_call_end`
+  回显输入文本且 `is_error=false`(覆盖注册 → 模型可见 → invoke →
+  输出全链路);serve stderr 出现 `wasm hook registered` /
+  `wasm tool registered`(hooks.json 的 `wasm` 字段曾在解析层被丢弃、
+  `WasmHook::events()` 曾返回空切片,wasm hook 从未注册 / 派发过 ——
+  两处断言即防回归)。样例产物随插件入库(重建用
+  `scripts/build_plugin_demo_wasm.sh`)。宿主-组件契约闭环(allow /
+  inject / matcher 不命中 Allow / 超时 Deny / describe / invoke)与
+  决策协议双键兼容(`action` / `decision`、`block` / `message` 别名)、
+  工具输出缺省字段(`metadata` / `elapsed_ms` 可省)由 `zhuye-wasm`
+  单测覆盖;hooks.json `wasm` 字段存活与 `${PLUGIN_ROOT}` 展开由
+  `zhuye-plugin::capabilities::hooks` 单测覆盖。
 
 ### C 组 CLI 能力面(`test_cli.py`)
 `serve` 三个恢复入口 / `exec` 输出每行是合法 JSON 且含 turn 事件 /
@@ -318,6 +378,12 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 
 ### SDK 绑定层(K 组,`tests/sdk-python/test_sdk_real_bin.py` + `tests/sdk-ts/real-bin.test.mjs`)
 
+- K14:rescan_extensions additive Op(真二进制,双 SDK 字段级)——
+  `Op::RescanExtensions` → `extensions_rescanned`(skills 计数非负、
+  commands=false、submission_closed 收尾);逻辑层同型用例
+  (python `test_protocol.py` / TS `protocol.test.ts`)+ V11(serve 直发)
+  三层互补。
+
 真二进制 + mock provider,断言 **SDK 客户端自身的行为**(服务端语义归
 能力覆盖层;历史证明只有这一层能发现协议漂移 —— mock 是自己写的假
 服务端,不随真协议演进):
@@ -363,6 +429,12 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
   `session_meta.session_id`、会话**文件名**里的 thread id 是三个不同的
   uuid(exec/serve 路径未注入 `with_session_id`)。`--resume` 支持**文件名**
   thread id 与 SessionMeta 内部 id;`zhuye session ls` 显示后者(P5 覆盖双 ID)。
+- **双 SDK `ThreadSettings` 字段与 Rust 侧错配**(2026-11 文档补齐时发现):
+  Python / TS SDK 的 `ThreadSettings` 声明了 `effort` / `permission_mode` /
+  `model`,而 Rust `ThreadSettingsOverrides` 实际字段为 `model` /
+  `approval_policy` / `sandbox_policy` / `max_tool_concurrency` —— SDK 传入的
+  `effort` / `permission_mode` 会被**静默丢弃**,后三个字段 SDK 侧无法传入。
+  修复需同步双 SDK 类型与 Rust 侧,属 wire 兼容的 additive 变更,待专项处理。
 
 ## 6. 已知缺陷与修复状态
 
@@ -455,7 +527,8 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_orchestration.py` | 10 条(O 组) |
 | `functional/test_cli.py` | 10 条(C1–C9) |
 | `functional/test_bugfixes.py` | 19 条(缺陷修复回归) |
-| **能力覆盖层合计** | **171 条** |
+| `functional/test_v110.py` | 10 条(V 组,v1.10 五项功能) |
+| **能力覆盖层合计** | **181 条** |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |

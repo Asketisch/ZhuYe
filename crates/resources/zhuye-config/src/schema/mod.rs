@@ -149,6 +149,80 @@ fn default_config_version() -> u32 {
     1
 }
 
+impl ReflectConfig {
+    /// v1.10 功能3:`[context_windows]` 表的原始条目(未合并
+    /// `[model].context_window`)。供 `apply_to_registry` 同步进
+    /// `zhuye_llm` 进程级全局覆盖表。
+    pub fn context_window_override_entries(&self) -> HashMap<String, u32> {
+        self.context_windows
+            .as_ref()
+            .map(|c| c.entries.clone())
+            .unwrap_or_default()
+    }
+
+    /// v1.10 功能3:合并后的上下文窗口覆盖表 —— `[context_windows]`
+    /// per-model 条目 + `[model].context_window`(全局值作用于**当前
+    /// 活跃模型**,per-model 条目优先),**所有键统一归一化**(去 provider
+    /// 前缀 / ollama tag、小写),消费方(`AgentConfig` 侧查询 /
+    /// `zhuye_llm` 全局表)用同一口径即可命中。exec bootstrap / serve 用
+    /// 它装配 `AgentConfig::context_window_overrides`,让 `[model]` 段的
+    /// 窗口真正进引擎(此前该字段解析后无消费方)。
+    pub fn effective_context_window_overrides(&self, active_model: &str) -> HashMap<String, u32> {
+        // 先把原始表条目按键归一化重排(同键冲突时保留后者,与 lookup
+        // 的「首个命中」语义可能略有出入 —— 配置里给同一模型写两行本身
+        // 就是错误状态)。
+        let mut map: HashMap<String, u32> = self
+            .context_window_override_entries()
+            .into_iter()
+            .map(|(k, v)| (normalize_model_key(&k), v))
+            .filter(|(k, _)| !k.is_empty())
+            .collect();
+        if let Some(w) = self.model.as_ref().and_then(|m| m.context_window) {
+            let key = normalize_model_key(active_model);
+            if !key.is_empty() {
+                // per-model 条目已「覆盖」该模型就不插入 —— 覆盖判定必须
+                // 与消费方的查找规则同口径(精确 → **单向前缀**,见
+                // `ContextWindowsSection::lookup`):查询名以配置键为
+                // 前缀才算命中;表里写 "Mock" 而活跃模型是 "mock/mock-1"
+                // 这种命中会让 per-model 条目(更具体)保持优先。
+                let covered = map.keys().any(|k| *k == key || key.starts_with(k.as_str()));
+                if !covered {
+                    map.insert(key, w);
+                }
+            }
+        }
+        map
+    }
+
+    /// v1.10 功能3:查某模型**被用户显式配置**的上下文窗口(不含
+    /// `context_window_for` 静态回退表):`[context_windows]` 表 lookup
+    /// 优先;`[model].context_window` 只作用于调用方传入的(活跃)模型。
+    /// `None` = 未配置。消费方:`zhuye-exec::bootstrap_m4` 的窗口感知
+    /// 压缩阈值(`compactor_config_with_window`)。
+    pub fn configured_context_window_for(&self, model_spec: &str) -> Option<u32> {
+        if let Some(v) = self
+            .context_windows
+            .as_ref()
+            .and_then(|cw| cw.lookup(model_spec))
+        {
+            return Some(v);
+        }
+        // `[model].context_window` 是「活跃模型」的字段;调用方传的就是
+        // 当前模型 spec,直接生效。
+        self.model.as_ref().and_then(|m| m.context_window)
+    }
+
+    /// v1.10 功能4:`[model].reasoning_effort` 的解析结果(大小写不敏感;
+    /// `None` = 未配置或值非法)。返回协议层镜像枚举,由 exec bootstrap
+    /// 写入 `AgentConfig::effort` 作为会话初始档位;运行时仍可用
+    /// `Op::SetEffort` 覆盖。非法值在这里吞掉 —— 配置加载是宽松口径,
+    /// 坏档位不该让整份 config 失效(调用方负责 warn)。
+    pub fn resolve_reasoning_effort(&self) -> Option<zhuye_protocol::ReasoningEffortMirror> {
+        let raw = self.model.as_ref()?.reasoning_effort.as_deref()?;
+        raw.parse().ok()
+    }
+}
+
 impl Default for ReflectConfig {
     fn default() -> Self {
         Self {
@@ -350,8 +424,19 @@ pub struct ResolvedAskUserQuestion {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ModelSection {
+    /// 活跃模型的上下文窗口(token)。作用等同于在 `[context_windows]`
+    /// 表里给当前模型写一行 —— v1.10 功能3起由 exec bootstrap 合并进
+    /// 引擎覆盖表(此前解析后无消费方,是死配置)。
     #[serde(default)]
     pub context_window: Option<u32>,
+    /// v1.10 功能4:思考强度默认档(`low` / `medium` / `high` / `max` /
+    /// `ultra`)。存原始字符串、加载期不校验(坏值仅 warn 后忽略,不让
+    /// 整份配置反序列化失败);消费方(exec bootstrap → `AgentConfig
+    /// .set_effort`)用 `ReasoningEffortMirror::from_str` 大小写不敏感解析。
+    /// 实际发 wire 前由 `zhuye_llm::reasoning_effort` 按模型族钳制
+    /// (qwen→high / deepseek→max / OpenAI→ultra / 未知→high)。
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub input_price_micro_usd_per_mtok: Option<u64>,
     #[serde(default)]
@@ -414,7 +499,13 @@ impl<'de> Deserialize<'de> for ContextWindowsSection {
 
 impl ContextWindowsSection {
     /// 取归一化(去 provider/ollama-tag,小写化)后的窗口大小。
-    /// key 完全匹配(归一化后优先)→ prefix 匹配 → 首个非空命中。
+    /// key 完全匹配(归一化后优先)→ **单向前缀**匹配(查询名以配置键
+    /// 为前缀;多候选取最长配置键,不随 HashMap 迭代序漂移)→ 首个命中。
+    ///
+    /// 反方向(配置键比查询名更具体)不匹配:否则查询 `gpt-4` 会命中
+    /// 配置 `gpt-4o` 的窗口,把长型号的窗口配给短名模型,自适应输出
+    /// 预算按错误窗口放大即超窗。与 `zhuye_llm::context_window_override_for`
+    /// 同口径。
     pub fn lookup(&self, model_spec: &str) -> Option<u32> {
         let key = normalize_model_key(model_spec);
         if key.is_empty() {
@@ -424,10 +515,11 @@ impl ContextWindowsSection {
         if let Some(v) = self.entries.get(&key) {
             return Some(*v);
         }
-        // 前缀匹配(同 `context_window_for` 静态表的策略)。
+        // 单向前缀匹配,多候选取最长键(确定性)。
         self.entries
             .iter()
-            .find(|(k, _)| k.starts_with(&key) || key.starts_with(k.as_str()))
+            .filter(|(k, _)| key.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len())
             .map(|(_, v)| *v)
     }
 }
@@ -436,10 +528,7 @@ impl ContextWindowsSection {
 /// 去 provider 前缀(`anthropic/claude-...` → `claude-...`)、去 ollama tag(`:7b`),
 /// 小写化 trim。
 fn normalize_model_key(model_spec: &str) -> String {
-    let no_provider = model_spec
-        .rsplit_once('/')
-        .map(|(_, m)| m)
-        .unwrap_or(model_spec);
+    let no_provider = model_spec.rsplit_once('/').map_or(model_spec, |(_, m)| m);
     let no_tag = no_provider.split(':').next().unwrap_or(no_provider);
     no_tag.trim().to_ascii_lowercase()
 }

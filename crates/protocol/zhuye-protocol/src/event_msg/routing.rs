@@ -6,11 +6,16 @@ use serde::{Deserialize, Serialize};
 /// 收到后画一行 status(`↻ main switched work → personal (rate_limited)`)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutingEvent {
+    /// 路由状态变化类别。
     pub kind: RoutingEventKind,
     /// `"main"` / `"compact"` / `"subagent:researcher"`。
     pub role: String,
+    /// 切换前(或进入 cooldown)的 credential label;`SpecFallback` 时为原
+    /// model spec(`"provider/model"`)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_credential: Option<String>,
+    /// 切换目标的 credential label(目标尚未选定时为 `None`);`SpecFallback`
+    /// 时为新 model spec(`"provider/model"`)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_credential: Option<String>,
     /// 同 `TriedCredential.outcome`,描述切换原因。
@@ -20,6 +25,7 @@ pub struct RoutingEvent {
     pub cooldown_until_ms: Option<u64>,
 }
 
+/// 路由事件类别(`RoutingEvent.kind`)。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutingEventKind {

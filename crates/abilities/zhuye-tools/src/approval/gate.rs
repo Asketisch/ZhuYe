@@ -930,6 +930,9 @@ mod lease_tests {
             held.push(WaiterLease::register(&map, i.to_string(), tx).unwrap());
         }
         let barrier = Arc::new(Barrier::new(9));
+        // 先 collect 再统一 wait:8 个线程在两次 barrier.wait 之间注册,
+        // 链式惰性求值会破坏「并发注册被容量上限约束」的被测行为。
+        #[expect(clippy::needless_collect)]
         let threads: Vec<_> = (0..8)
             .map(|i| {
                 let map = Arc::clone(&map);

@@ -297,9 +297,9 @@ fn tool_save_page(args: &Value, manager: &KnowledgeManager) -> Result<String, St
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let saved = if create_only {
-        manager.create_page(wiki, page, content, title.clone(), tags.clone())
+        manager.create_page(wiki, page, content, title, tags)
     } else {
-        manager.save_page(wiki, page, content, title.clone(), tags.clone())
+        manager.save_page(wiki, page, content, title, tags)
     }
     .map_err(e2s)?;
     Ok(format!(

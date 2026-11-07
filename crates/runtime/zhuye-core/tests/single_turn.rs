@@ -483,7 +483,7 @@ async fn cancellation_mid_stream_emits_turn_aborted() {
                 yield Ok(ChatEvent::MessageStop);
             };
             // 让流与 cancel token 竞争:cancel 先触发时上报 Cancelled。
-            let cancel = cancel.clone();
+            let cancel = cancel;
             let s = async_stream::stream! {
                 let mut s = std::pin::pin!(s);
                 loop {
@@ -1226,7 +1226,7 @@ impl zhuye_tools::Tool for ArgsProbeTool {
         _ctx: zhuye_tools::ToolContext,
         args: serde_json::Value,
     ) -> Result<zhuye_tools::ToolOutput, zhuye_tools::ToolError> {
-        self.seen.lock().push(args.clone());
+        self.seen.lock().push(args);
         Ok(zhuye_tools::ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::text("ok")],
             is_error: false,

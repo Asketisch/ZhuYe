@@ -482,8 +482,7 @@ mod tests {
             .map(|p| make_assistant_msg("write", serde_json::json!({"path": p})))
             .collect();
         let rec = ActiveFileRecovery::default().with_limits(3, 50_000, 5_000);
-        let result_paths: Vec<String> = rec.recover(&msgs).into_iter().map(|(p, _)| p).collect();
-        assert_eq!(result_paths.len(), 3);
+        assert_eq!(rec.recover(&msgs).len(), 3);
     }
 
     #[test]

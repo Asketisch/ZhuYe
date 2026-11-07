@@ -80,8 +80,7 @@ impl ConfigWatcher {
 
         let parent: PathBuf = path
             .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         // 监听父目录(非递归) —— 这样 vim 等"rename+create"保存风格也能捕获。
         watcher
             .watch(&parent, RecursiveMode::NonRecursive)

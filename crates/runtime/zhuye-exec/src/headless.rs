@@ -73,6 +73,70 @@ pub fn resolve_enabled_plugins(
     }
 }
 
+/// v1.10 功能2:goal + 队列模式的交付插件名。
+/// `zhuye plugin install plugins/goal-queue && zhuye plugin enable goal-queue`
+/// 后,headless 装配 `goal` / `queue` 工具并启动队列 driver。
+pub const GOAL_QUEUE_PLUGIN: &str = "goal-queue";
+
+/// enabled 列表里的条目形如 `goal-queue@inline` / `goal-queue@user`,
+/// 取 `@` 前的名字比对。
+pub fn goal_queue_plugin_enabled(enabled: &[String]) -> bool {
+    enabled
+        .iter()
+        .any(|id| id.split('@').next() == Some(GOAL_QUEUE_PLUGIN))
+}
+
+/// v1.10 功能2:`goal-queue` 插件启用时注册 `queue` / `goal` 工具并启动
+/// 队列 driver(事件驱动串行消费,持久化到 `~/.zhuye/queue/<session>.json`)。
+/// 未启用时 no-op —— goal 模式的 Op 路径(`Op::EnterGoalMode`)不受影响,
+/// 插件只是给 headless / SDK 侧的模型补上工具入口。
+#[allow(clippy::too_many_arguments)]
+fn wire_goal_queue_plugin(
+    enabled: &[String],
+    tools: &Arc<ToolRegistry>,
+    thread: &Arc<AgentThread>,
+    goal_slot: Arc<parking_lot::RwLock<Option<Arc<zhuye_goal::GoalController>>>>,
+    thread_id: zhuye_protocol::ThreadId,
+) {
+    if !goal_queue_plugin_enabled(enabled) {
+        return;
+    }
+    // 队列:完成信号走 per-turn 事件监视(出队时经 `AgentThread::submit`
+    // 拿到该 submission 的事件通道,在 TurnComplete / TurnAborted / 通道
+    // 关闭时按任务 id 结清)—— Stop hook 覆盖不到绕过 check_stop 的结束
+    // 路径(凭证耗尽 / 预算耗尽 / Interrupt),曾致 active 任务永久卡
+    // Running。driver 周期 tick 只作兜底。
+    let scheduler = {
+        let thread_for_queue = Arc::clone(thread);
+        let submitter: zhuye_stream::TurnSubmitter = Arc::new(move |sub| {
+            let t = Arc::clone(&thread_for_queue);
+            Box::pin(async move { Some(t.submit(sub).await.into_receiver()) })
+        });
+        let mut s = zhuye_stream::QueueScheduler::new(Some(thread.submission_sender()), thread_id)
+            .with_turn_submitter(submitter);
+        if let Some(base) = zhuye_stream::default_queue_base() {
+            s = s.with_store(zhuye_stream::queue_store_path_for(&base, &thread_id));
+        }
+        Arc::new(s)
+    };
+    tools.register_with_source(
+        ToolSource::Builtin,
+        Arc::new(crate::QueueTool::new(scheduler.clone())),
+    );
+    let queue_driver = (*scheduler).clone().start(2);
+    tokio::spawn(async move {
+        let _handle = queue_driver;
+        std::future::pending::<()>().await;
+    });
+    // goal:共享 `AgentConfig.goal` 槽读状态;enter/exit 经 submission
+    // 通道提交 Op(引擎构造 controller,复用校验/3-strike/预算语义)。
+    tools.register_with_source(
+        ToolSource::Builtin,
+        Arc::new(crate::GoalTool::new(thread.submission_sender(), goal_slot)),
+    );
+    tracing::info!(session_id = %thread_id, "goal-queue plugin wired (queue + goal tools)");
+}
+
 /// [`bootstrap_common`] 的产物:两个分支后续装配都要用的共享句柄。
 pub struct HeadlessCommon {
     pub initial_cfg: zhuye_config::ReflectConfig,
@@ -192,6 +256,13 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
                 config_path.display()
             )
         })?;
+
+    // v1.10 功能3:`apply_to_registry` 用静态 spec 灌窗口覆盖表;动态模型
+    // (`model = "free"`)解析出的真实 id 可能不同 → 在此按最终 spec 重灌,
+    // 让 `[model].context_window` 精确键到最终模型。
+    zhuye_llm::set_context_window_overrides(
+        &initial_cfg.effective_context_window_overrides(&model),
+    );
 
     // v1.5 实战修复:新用户首次运行(HOME 下无 `~/.zhuye/`)时,notify
     // watcher 要求被监听路径存在,否则 bootstrap 直接失败。先确保父目录
@@ -380,17 +451,23 @@ fn build_side_channel_factory(
                 telemetry.clone(),
             )
             .ok_or_else(|| {
-                anyhow::anyhow!("side-channel: agent `{agent_name}` bootstrap failed")
+                zhuye_core::SideChannelStartError::Factory(format!(
+                    "side-channel: agent `{agent_name}` bootstrap failed"
+                ))
             })?;
             // 不写主历史:摘掉 recorder。
             m4.recorder = None;
-            let mut thread_cfg = AgentConfig::new(model.clone(), workspace.clone())
+            let mut thread_cfg = AgentConfig::new(model.clone(), workspace)
                 .with_m4(m4)
                 .with_policy(Arc::new(cfg.routing_policy_with(&model)))
                 .with_sandbox_default(security.sandbox_default)
                 .with_sandbox_writable(security.sandbox_writable.clone())
                 .with_sandbox_network(security.sandbox_network)
                 .with_approvals(security.approvals)
+                // v1.10 功能3/4:side-channel 代理与主会话同口径 ——
+                // 合并窗口覆盖表 + 初始思考强度。
+                .with_context_window_overrides(cfg.effective_context_window_overrides(&model))
+                .with_initial_effort(cfg.resolve_reasoning_effort())
                 .with_cancel(cancel);
             thread_cfg.inherited_approval_mode = Some(security.parent_mode.clone());
             thread_cfg.yolo_classifier = security.yolo_classifier.clone();
@@ -587,13 +664,13 @@ pub async fn bootstrap_normal(
         .with_cancel(cancel.clone())
         .with_session_id(thread_id)
         .with_subagent_runtime(subagent_runtime.clone())
-        .with_context_window_overrides(
-            initial_cfg
-                .context_windows
-                .as_ref()
-                .map(|c| c.entries.clone())
-                .unwrap_or_default(),
-        )
+        // v1.10 功能3:`[context_windows]` per-model 表 + `[model].context_window`
+        // (作用于当前活跃模型)合并后的覆盖表 —— 此前 `[model]` 段的窗口
+        // 解析后无消费方,是死配置。
+        .with_context_window_overrides(initial_cfg.effective_context_window_overrides(&model))
+        // v1.10 功能4:`[model].reasoning_effort` 作为会话初始思考强度
+        // (运行时仍可经 `Op::SetEffort` 覆盖;发 wire 前按模型族钳制)。
+        .with_initial_effort(initial_cfg.resolve_reasoning_effort())
         .with_initial_permission_mode(if args.plan_mode {
             zhuye_protocol::PermissionMode::Plan
         } else {
@@ -624,6 +701,9 @@ pub async fn bootstrap_normal(
     );
     cfg = cfg.with_side_channel_driver(side_channel_driver);
     let cfg_for_reload = cfg.clone(); // 共享 model Arc<RwLock>
+    // v1.10 功能2:goal 槽的共享 Arc 先取出(构造 GoalTool 用,避免
+    // 工具持有 AgentThread 造成引用环)。
+    let goal_slot = cfg.goal.clone();
     let thread = Arc::new(AgentThread::new(
         cfg,
         registry.clone(),
@@ -637,8 +717,7 @@ pub async fn bootstrap_normal(
     if initial_cfg
         .telemetry
         .as_ref()
-        .map(|t| t.activity_enabled())
-        .unwrap_or(true)
+        .is_none_or(|t| t.activity_enabled())
     {
         let logger = zhuye_telemetry::ActivityLogger::with_default_home();
         let rx = thread.subscribe_session();
@@ -708,16 +787,49 @@ pub async fn bootstrap_normal(
         mcp_for_plugins.clone(),
     )));
 
+    let enabled_plugins = resolve_enabled_plugins(args, &initial_cfg);
     let plugin_runtime = bootstrap_plugins(
         tools.clone(),
         thread.hook_engine(),
         mcp_for_plugins,
         skills_for_plugins,
         factory.clone(),
-        &resolve_enabled_plugins(args, &initial_cfg),
+        &enabled_plugins,
         Some(reload_tx.clone()),
     )
     .await;
+    // B4:用户级 slash 命令目录(workspace + 用户级),与 plugin 命令
+    // 同表共存(裸名 vs `<plugin>:` 前缀名)。
+    let user_cmd_dirs = vec![
+        thread
+            .config()
+            .current_workspace()
+            .join(".zhuye")
+            .join("commands"),
+        zhuye_config::data_path(&[])
+            .map(|d| d.join("commands"))
+            .unwrap_or_default(),
+    ];
+    // SharedPluginRuntime 是锁包装:快照内部句柄尽快释放(展开范式同款)。
+    let user_cmds = {
+        let guard = plugin_runtime.lock().await;
+        match guard.as_ref() {
+            Some(rt) => rt.register_user_commands(&user_cmd_dirs),
+            None => 0,
+        }
+    };
+    if user_cmds > 0 {
+        tracing::info!(count = user_cmds, "user slash commands mounted");
+    }
+
+    // v1.10 功能2:goal + 队列模式(goal-queue 插件门控;未启用 no-op)。
+    wire_goal_queue_plugin(
+        &enabled_plugins,
+        &tools.clone(),
+        &thread,
+        goal_slot,
+        thread_id,
+    );
 
     // reload task + `ConfigReloaded` drainer(转发到 stdout JSONL)。
     spawn_reload_task(
@@ -732,9 +844,14 @@ pub async fn bootstrap_normal(
         mcp_manager,
         tools.clone(),
         Some(plugin_runtime.clone()),
+        Some(hook_engine.clone()),
     );
     let (sync_tx, sync_rx) = std::sync::mpsc::channel::<Event>();
     std::thread::spawn(move || {
+        // writer 必须逐事件构造:`stdout().lock()` 的锁随 writer 存活,
+        // 若在此线程持久持有,serve 主 writer task 对 stdout 锁的竞争
+        // 会永久阻塞 —— serve stdout 从此零输出(实测回归)。本线程
+        // 低频(config-reload 事件),逐条拿锁开销可接受。
         for event in sync_rx {
             let mut w = JsonlWriter::new(std::io::stdout().lock());
             if let Err(e) = w.write_event(&event) {
@@ -843,6 +960,10 @@ pub async fn bootstrap_resumed(
         // 历史进不了模型上下文(跨轮失忆)。三处 id(文件名 /
         // session_meta.session_id / 此处)对齐后,历史稳定进入每轮 base。
         .with_session_id(thread_id)
+        // v1.10 功能3/4:与 normal 分支同口径 —— 合并后的窗口覆盖表 +
+        // 初始思考强度。
+        .with_context_window_overrides(initial_cfg.effective_context_window_overrides(&model))
+        .with_initial_effort(initial_cfg.resolve_reasoning_effort())
         .with_preload_messages(bundle.initial_messages.clone());
     // 与 normal 分支同权:权限三层装配(config > project > user)+ YOLO
     // 分类器。此前 resume 分支漏装,resume 会话会绕过权限规则。
@@ -880,6 +1001,8 @@ pub async fn bootstrap_resumed(
         cfg
     };
     let cfg_for_reload = cfg.clone();
+    // v1.10 功能2:goal 槽共享 Arc(同 normal 分支)。
+    let goal_slot = cfg.goal.clone();
     let thread = Arc::new(AgentThread::new(
         cfg,
         registry.clone(),
@@ -891,8 +1014,7 @@ pub async fn bootstrap_resumed(
     if initial_cfg
         .telemetry
         .as_ref()
-        .map(|t| t.activity_enabled())
-        .unwrap_or(true)
+        .is_none_or(|t| t.activity_enabled())
     {
         let logger = zhuye_telemetry::ActivityLogger::with_default_home();
         let rx = thread.subscribe_session();
@@ -951,6 +1073,36 @@ pub async fn bootstrap_resumed(
         None,
     )
     .await;
+    // B4:resume 路径同样挂用户级命令目录(见 bootstrap_normal 注释)。
+    let user_cmd_dirs = vec![
+        thread
+            .config()
+            .current_workspace()
+            .join(".zhuye")
+            .join("commands"),
+        zhuye_config::data_path(&[])
+            .map(|d| d.join("commands"))
+            .unwrap_or_default(),
+    ];
+    let user_cmds = {
+        let guard = plugin_runtime.lock().await;
+        match guard.as_ref() {
+            Some(rt) => rt.register_user_commands(&user_cmd_dirs),
+            None => 0,
+        }
+    };
+    if user_cmds > 0 {
+        tracing::info!(count = user_cmds, "user slash commands mounted (resume)");
+    }
+
+    // v1.10 功能2:resume 分支与 normal 同权(goal-queue 插件门控)。
+    wire_goal_queue_plugin(
+        &resolve_enabled_plugins(args, &initial_cfg),
+        &tools.clone(),
+        &thread,
+        goal_slot,
+        thread_id,
+    );
     spawn_reload_task(
         registry.clone(),
         watcher,
@@ -963,6 +1115,7 @@ pub async fn bootstrap_resumed(
         mcp_manager,
         tools.clone(),
         Some(plugin_runtime.clone()),
+        Some(thread.hook_engine()),
     );
     // resume 分支历史上没有 reload drainer(事件静默丢弃),保持原行为:
     // 这里同样不桥接 reload_rx,drop 即让 reload task 的发送端自然退出。
@@ -1304,5 +1457,29 @@ mod prompt_slash_tests {
         for input in ["/prompts", "/promptx", "plain text", "/plan only"] {
             assert!(expand_prompt_slash(input).is_none(), "{input} 不应命中");
         }
+    }
+}
+
+// ── v1.10 功能2:goal-queue 插件门控单测 ────────────────────────────
+#[cfg(test)]
+mod goal_queue_tests {
+    use super::{GOAL_QUEUE_PLUGIN, goal_queue_plugin_enabled};
+
+    #[test]
+    fn 门控按插件名匹配任意scope后缀() {
+        assert!(goal_queue_plugin_enabled(
+            &["goal-queue@inline".to_string()]
+        ));
+        assert!(goal_queue_plugin_enabled(&[
+            "demo@inline".to_string(),
+            "goal-queue@user".to_string(),
+        ]));
+        assert!(!goal_queue_plugin_enabled(&["demo@inline".to_string()]));
+        assert!(!goal_queue_plugin_enabled(&[]));
+        // 前缀相似但不相等,不命中。
+        assert!(!goal_queue_plugin_enabled(&[
+            "goal-queue2@inline".to_string()
+        ]));
+        assert_eq!(GOAL_QUEUE_PLUGIN, "goal-queue");
     }
 }

@@ -265,7 +265,7 @@ fn replace_jwt(caps: &Captures, marker: &str) -> String {
 
 /// 数据库连接串。保留 scheme 前缀,替换后续整段(含 user:pass@host)。
 fn replace_db_url(caps: &Captures, marker: &str) -> String {
-    let scheme = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+    let scheme = caps.get(1).map_or("", |m| m.as_str());
     format!("{scheme}{marker}")
 }
 
@@ -357,9 +357,9 @@ pub fn default_patterns() -> Vec<CompiledPattern> {
             )
             .expect("KEY_ASSIGN regex must compile"),
             replace: |caps, marker| {
-                let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                let key = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                let sep = caps.get(3).map(|m| m.as_str()).unwrap_or("=");
+                let prefix = caps.get(1).map_or("", |m| m.as_str());
+                let key = caps.get(2).map_or("", |m| m.as_str());
+                let sep = caps.get(3).map_or("=", |m| m.as_str());
                 format!("{prefix}{key}{sep}{marker}")
             },
         },
@@ -409,12 +409,15 @@ fn short_circuit_ok(text: &str, has_extras: bool) -> bool {
 
 // ── 公共入口 ─────────────────────────────────────────────────────
 
-/// 对单段文本做脱敏。`Sanitizer` 不可变借用,无 clone 开销。
+/// 对单段文本做脱敏。`Sanitizer` 不可变借用。
 ///
-/// 若 [`Sanitizer::is_enabled`] 为 `false` 或短路径命中,返回原 `&str`(无 `String` 分配)。
-pub fn sanitize_text(text: &str, sanitizer: &Sanitizer) -> String {
+/// 返回 `Cow`:禁用或短路径命中时为 `Borrowed`(零分配,原文未变);
+/// 命中替换规则时为 `Owned`。高频调用方(每工具结果每块)用
+/// [`std::borrow::Cow::is_borrowed`] 判断,`Borrowed` 时可完全跳过
+/// 回写字段。
+pub fn sanitize_text<'a>(text: &'a str, sanitizer: &Sanitizer) -> std::borrow::Cow<'a, str> {
     if !sanitizer.is_enabled() || short_circuit_ok(text, sanitizer.inner.has_extras) {
-        return text.to_string();
+        return std::borrow::Cow::Borrowed(text);
     }
     let mut out = text.to_string();
     for pat in &sanitizer.inner.patterns {
@@ -425,18 +428,22 @@ pub fn sanitize_text(text: &str, sanitizer: &Sanitizer) -> String {
             })
             .into_owned();
     }
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 /// 对单个 [`ContentBlock`] 做脱敏。`ToolUse` 与 `Image` 不动,`Text` / `Diff` /
-/// `ToolResult` 递归处理。
+/// `ToolResult` 递归处理。短路路径(Borrowed)原地保留字段,零分配。
 pub fn sanitize_block(block: &mut ContentBlock, sanitizer: &Sanitizer) {
     match block {
         ContentBlock::Text { text } => {
-            *text = sanitize_text(text, sanitizer);
+            if let std::borrow::Cow::Owned(s) = sanitize_text(text, sanitizer) {
+                *text = s;
+            }
         }
         ContentBlock::Diff { unified_diff } => {
-            *unified_diff = sanitize_text(unified_diff, sanitizer);
+            if let std::borrow::Cow::Owned(s) = sanitize_text(unified_diff, sanitizer) {
+                *unified_diff = s;
+            }
         }
         ContentBlock::ToolResult { output, .. } => {
             // 递归对内层 ToolOutput 脱敏 —— 即使子代理 / 上层包装器

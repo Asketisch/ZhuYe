@@ -246,7 +246,7 @@ mod tests {
     fn serde_round_trip_installed_file() {
         let mut f = InstalledPluginsFile::new();
         let id = PluginId::parse("foo@bar").unwrap();
-        f.upsert(id.clone(), entry(PluginScope::User, "/a"));
+        f.upsert(id, entry(PluginScope::User, "/a"));
         let json = serde_json::to_string_pretty(&f).unwrap();
         let back: InstalledPluginsFile = serde_json::from_str(&json).unwrap();
         assert_eq!(back, f);
@@ -257,7 +257,7 @@ mod tests {
         let mut f = KnownMarketplacesFile::new();
         let name = MarketplaceName::parse("official").unwrap();
         f.upsert(
-            name.clone(),
+            name,
             KnownMarketplace {
                 source: crate::manifest::MarketplaceSource::Github {
                     repo: "anthropics/claude-plugins-official".into(),

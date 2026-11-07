@@ -1,14 +1,3 @@
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::or_fun_call)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::manual_div_ceil)]
 //! zhuye-protocol —— Submission / Op / EventMsg / Item 等数据结构定义。
 //!
 //! 协议是 `zhuye-core` 与其客户端(TUI / exec / lib)之间的公共契约。
@@ -16,6 +5,9 @@
 //! (v0 已冻结,新增变体均以非破坏方式追加)的特性。
 //!
 //! 完整规范参见 `sdks/PROTOCOL.md`。
+
+// 协议层是公共契约:pub item 缺文档在 CI 即告警,防止新增项裸奔。
+#![warn(missing_docs)]
 
 pub mod actor;
 pub mod ask_user_input;
@@ -40,16 +32,17 @@ pub use event_msg::{
     AbortReason, AgentMessage, AgentMessageDelta, ApprovalKind, ApprovalRequestEvent,
     AskUserInputEvent, CollabFinishedEvent, CollabMessageEvent, CollabStartedEvent,
     ConfigReloadedEvent, ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, EventMsg,
-    LspServerFailedEvent, LspServerStartedEvent, McpServerFailedEvent, McpServerStartedEvent,
-    McpToolInvokedEvent, McpTransportMirror, PermissionBubbleEvent, PermissionModeChangedEvent,
-    PlanApprovedEvent, PlanDraftUpdatedEvent, PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent,
-    PlanStepEvent, PlanStepStatus, PluginLoadedEvent, PromptListEvent, PromptSwitchedEvent,
-    QuotaExhaustedEvent, RoutingEvent, RoutingEventKind, SideChannelEvent, SideChannelInfo,
-    SideChannelStatusMirror, SideChannelStatusSnapshot, StreamErrorEvent, SubagentProgressEvent,
-    SubagentProgressKind, SubagentRunStateMirror, SubagentStatusEvent, SubagentStatusSnapshot,
-    ThinkingDelta, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent,
-    ToolCallEndEvent, ToolCallOutputDeltaEvent, ToolExecutionRequestEvent, TriedCredential,
-    TurnAbortedEvent, TurnCompleteEvent, TurnRewoundEvent, TurnStartedEvent, TurnStatus,
+    ExtensionsRescannedEvent, LspServerFailedEvent, LspServerStartedEvent, McpServerFailedEvent,
+    McpServerStartedEvent, McpToolInvokedEvent, McpTransportMirror, PermissionBubbleEvent,
+    PermissionModeChangedEvent, PlanApprovedEvent, PlanDraftUpdatedEvent, PlanReadyEvent,
+    PlanRejectedEvent, PlanRequestEvent, PlanStepEvent, PlanStepStatus, PluginLoadedEvent,
+    PromptListEvent, PromptSwitchedEvent, QuotaExhaustedEvent, RoutingEvent, RoutingEventKind,
+    SideChannelEvent, SideChannelInfo, SideChannelStatusMirror, SideChannelStatusSnapshot,
+    StreamErrorEvent, SubagentProgressEvent, SubagentProgressKind, SubagentRunStateMirror,
+    SubagentStatusEvent, SubagentStatusSnapshot, ThinkingDelta, ThinkingDeltaKind, TokenCountEvent,
+    TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent, ToolCallEndEvent,
+    ToolCallOutputDeltaEvent, ToolExecutionRequestEvent, TriedCredential, TurnAbortedEvent,
+    TurnCompleteEvent, TurnRewoundEvent, TurnStartedEvent, TurnStatus,
 };
 pub use item::{
     ApprovalPolicy, ContentBlock, PermissionMode, PlanApprovalChoice, PlanId,
@@ -64,7 +57,8 @@ pub use question::{
     MIN_OPTIONS, Question, QuestionError, QuestionOption,
 };
 pub use recorder::{
-    MemoryOp, MessageRole, NullRecorder, RolloutRecord, RolloutRecorder, SessionInfo, derive_title,
+    MemoryOp, MessageRole, NullRecorder, RolloutError, RolloutRecord, RolloutRecorder, SessionInfo,
+    derive_title,
 };
 pub use stats::{ModelUsage, SessionStats};
 pub use submission::{Submission, W3cTraceContext};

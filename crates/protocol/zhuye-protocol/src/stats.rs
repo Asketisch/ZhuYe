@@ -22,6 +22,7 @@ use crate::item::ThreadId;
 /// 无 `model` 字段时,聚合方回退到会话级 `SessionMeta.model`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelUsage {
+    /// 完整模型 spec(如 `"openai/gpt-4o"`),即按模型聚合的分组键。
     pub model: String,
     /// 该模型命中的 provider 名(如 `"anthropic"`)。同一模型可能经多个
     /// provider 路由,取首次出现的值;`None` = 旧记录无该字段。
@@ -29,7 +30,9 @@ pub struct ModelUsage {
     pub provider: Option<String>,
     /// 该模型的 LLM 调用次数(= 归属该模型的 `TokenCount` 记录数)。
     pub calls: u64,
+    /// 该模型累计 input tokens(含 cached / cache_write 两个分段)。
     pub input_tokens: u64,
+    /// 该模型累计 output tokens。
     pub output_tokens: u64,
     /// `cache_read` 分段,是 `input_tokens` 的子集,不重复计入 total。
     pub cached_tokens: u64,
@@ -49,9 +52,11 @@ pub struct ModelUsage {
 /// `SessionMeta.model` 一个条目,保证历史会话也有模型级视图。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionStats {
+    /// 会话 ID(取首份 `SessionMeta.session_id`)。
     pub session_id: ThreadId,
     /// 会话级默认模型(`SessionMeta.model`)。
     pub model: String,
+    /// 会话开始时间(UTC,取自 `SessionMeta.started_at`)。
     pub started_at: DateTime<Utc>,
     /// 非空行数 - 1(减去首行 SessionMeta),与 `SessionInfo` 同口径。
     pub message_count: usize,
@@ -69,12 +74,16 @@ pub struct SessionStats {
     pub memory_reads: u64,
     /// v1.x:记忆固化写入次数(`MemoryAccess` Write 记录数)。
     pub memory_writes: u64,
+    /// 会话累计 input tokens(含 cached / cache_write 两个分段)。
     pub input_tokens: u64,
+    /// 会话累计 output tokens。
     pub output_tokens: u64,
     /// 会话累计 `cache_read` 分段(input 子集)。
     pub cached_tokens: u64,
     /// 会话累计 `cache_creation` 分段(input 子集)。
     pub cache_write_tokens: u64,
+    /// 会话累计 total tokens(`input + output`;cached / cache_write 是 input
+    /// 子集,不重复计入)。
     pub total_tokens: u64,
     /// 会话累计 USD cost。`None` = 无任何带价调用。
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -15,7 +15,7 @@ pub fn run_clone(
     println!("======================");
     let opts = WorkspaceSyncOptions {
         url,
-        dest: dest.clone(),
+        dest,
         branch,
         depth,
     };

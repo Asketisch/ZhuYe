@@ -21,10 +21,10 @@ fn write_agents_md(dir: &Path, force: bool) -> anyhow::Result<PathBuf> {
     if target.exists() && !force {
         return Ok(target);
     }
-    let project_name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "this project".into());
+    let project_name = dir.file_name().map_or_else(
+        || "this project".into(),
+        |n| n.to_string_lossy().to_string(),
+    );
     let body = render_template(&project_name, detect_stack(dir));
     std::fs::write(&target, body).with_context(|| format!("write {}", target.display()))?;
     Ok(target)

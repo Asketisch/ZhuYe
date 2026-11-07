@@ -80,6 +80,15 @@ impl PluginRuntime {
         Arc::clone(&self.registries.commands)
     }
 
+    /// 挂载用户级 slash 命令目录(B4):`<ws>/.zhuye/commands` 与
+    /// `~/.zhuye/commands`。与 plugin 命令同表共存(裸名 vs 前缀名),
+    /// 返回挂载的命令总数。
+    pub fn register_user_commands(&self, dirs: &[std::path::PathBuf]) -> usize {
+        dirs.iter()
+            .map(|d| self.registries.commands.register_user_dir(d))
+            .sum()
+    }
+
     async fn enable_one(&self, id_str: &str) -> Result<(), String> {
         let id = PluginId::parse_user_input(id_str).map_err(|e| e.to_string())?;
         let entry = self

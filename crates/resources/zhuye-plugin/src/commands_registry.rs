@@ -7,13 +7,18 @@
 //! exec / serve / 门面调用方在 submit 前触发。
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use parking_lot::RwLock;
 
-use crate::capabilities::commands::LoadedCommand;
+use crate::capabilities::commands::{LoadedCommand, extract_description};
 
 /// 全量参数占位符 —— 展开时替换为命令名后的全部参数文本。
 const ARGUMENTS_PLACEHOLDER: &str = "$ARGUMENTS";
+
+/// 用户级命令在注册表里的键(非 plugin_id;`add_plugin` / `remove_plugin`
+/// 不触碰它)。
+const USER_COMMANDS_KEY: &str = "__user__";
 
 /// 插件 slash 命令注册表 —— 以 `plugin_id` 为键整体挂/卸,按命令全名查询。
 ///
@@ -51,11 +56,50 @@ impl CommandRegistry {
             .cloned()
     }
 
+    /// 用户级 slash 命令目录发现(B4):`<dir>/**.md` 递归扫描(与
+    /// plugin commands 同款),命令名为**文件 stem** —— 输入 `/review`
+    /// 直达;plugin 命令名恒带 `<plugin>:` 前缀,与裸名天然不冲突。
+    /// 键 [`USER_COMMANDS_KEY`] 整体替换(重复调用幂等);返回挂载数。
+    /// 目录不存在 → 0(用户没有自定义命令是常态,不算错)。
+    pub fn register_user_dir(&self, dir: &Path) -> usize {
+        let mut cmds = Vec::new();
+        scan_user_dir(dir, &mut cmds);
+        let n = cmds.len();
+        self.entries
+            .write()
+            .insert(USER_COMMANDS_KEY.to_string(), cmds);
+        n
+    }
+
     /// 当前已挂载的全部命令快照(跨插件,按命令名排序便于展示)。
     pub fn list(&self) -> Vec<LoadedCommand> {
         let mut all: Vec<LoadedCommand> = self.entries.read().values().flatten().cloned().collect();
         all.sort_by(|a, b| a.name.cmp(&b.name));
         all
+    }
+}
+
+/// 递归扫描用户命令目录:`*.md` → 命令(stem 裸名 + frontmatter 描述)。
+fn scan_user_dir(current: &Path, out: &mut Vec<LoadedCommand>) {
+    let entries = match std::fs::read_dir(current) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_user_dir(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let description = extract_description(&path).ok().flatten();
+            out.push(LoadedCommand {
+                name: stem.to_string(),
+                file_path: path,
+                description,
+            });
+        }
     }
 }
 
@@ -122,10 +166,7 @@ fn strip_frontmatter(text: &str) -> &str {
     };
     // 跳过收尾 `---` 所在行,正文从下一行开始。
     let after_marker = &rest[end + 1..];
-    after_marker
-        .split_once('\n')
-        .map(|(_, body)| body)
-        .unwrap_or("")
+    after_marker.split_once('\n').map_or("", |(_, body)| body)
 }
 
 /// 单遍扫描替换 `$ARGUMENTS`(全量参数)与 `$1`..`$9`(位置参数)。
@@ -216,12 +257,12 @@ mod tests {
         let (_t1, c1) = cmd("demo:hello", "# hi");
         let (_t2, c2) = cmd("demo:utils:lint", "# lint");
 
-        registry.add_plugin("demo", vec![c1.clone(), c2.clone()]);
+        registry.add_plugin("demo", vec![c1.clone(), c2]);
         assert_eq!(registry.list().len(), 2);
         assert_eq!(registry.lookup("demo:hello").unwrap().name, "demo:hello");
         assert!(registry.lookup("demo:nope").is_none());
         // 同 id 重挂 = 整体替换(幂等)。
-        registry.add_plugin("demo", vec![c1.clone()]);
+        registry.add_plugin("demo", vec![c1]);
         assert_eq!(registry.list().len(), 1);
         assert_eq!(registry.remove_plugin("demo"), 1);
         assert_eq!(registry.remove_plugin("demo"), 0);
@@ -300,5 +341,46 @@ mod tests {
         );
         assert_eq!(strip_frontmatter("# no fm\n"), "# no fm\n");
         assert_eq!(strip_frontmatter("---\nno closing\n"), "---\nno closing\n");
+    }
+
+    /// B4:用户级命令目录发现 —— 裸名命中(`/review` 直达)、嵌套目录
+    /// 递归、非 md 跳过、目录不存在返 0、重复调用幂等(整体替换)。
+    #[test]
+    fn register_user_dir_scans_and_replaces_idempotently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("review.md"), "# review body\n").unwrap();
+        std::fs::create_dir(dir.path().join("ns")).unwrap();
+        std::fs::write(dir.path().join("ns").join("lint.md"), "body\n").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "非 md 不收\n").unwrap();
+
+        let r = CommandRegistry::default();
+        let n = r.register_user_dir(dir.path());
+        assert_eq!(n, 2, "review + ns/lint(裸名):got {n}");
+
+        // 裸名直达:lookup("review") 命中(无需 user: 前缀)。
+        assert!(r.lookup("review").is_some(), "裸名应命中");
+        assert!(r.lookup("lint").is_some(), "嵌套目录按 stem 裸名");
+        assert!(r.lookup("notes").is_none(), "非 md 不注册");
+
+        // 幂等:重复调用整体替换,不翻倍。
+        let n2 = r.register_user_dir(dir.path());
+        assert_eq!(n2, 2);
+        assert_eq!(r.list().len(), 2);
+
+        // 与 plugin 命令同表共存:plugin 名带前缀,互不影响。
+        r.add_plugin(
+            "demo",
+            vec![LoadedCommand {
+                name: "demo:hello".into(),
+                file_path: dir.path().join("hello.md"),
+                description: None,
+            }],
+        );
+        assert!(r.lookup("demo:hello").is_some());
+        assert!(r.lookup("review").is_some(), "plugin 挂载不清用户命令");
+
+        // 目录不存在 → 0(常态,不算错)。
+        let r2 = CommandRegistry::default();
+        assert_eq!(r2.register_user_dir(&dir.path().join("missing")), 0);
     }
 }

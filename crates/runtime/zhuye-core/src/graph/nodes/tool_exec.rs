@@ -98,7 +98,8 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         return Some(GraphNode::PreLoop);
     }
     // v1.2 P1:记录 call_id → tool_name + args 映射,供 telemetry 在结果
-    // 返回后恢复工具名 / 参数(retain 会移除 ToolUse blocks)。
+    // 返回后恢复工具名 / 参数(retain 会移除 ToolUse blocks)。必须持有
+    // 克隆:`calls` 随后按值 move 进执行队列,结果阶段无法反查借用。
     let call_meta: std::collections::HashMap<String, (String, serde_json::Value)> = calls
         .iter()
         .map(|c| (c.id.clone(), (c.name.clone(), c.args.clone())))
@@ -416,6 +417,19 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                     *state.web_domain_counts.entry(domain).or_insert(0) += 1;
                 }
             }
+        }
+        // `memory` 工具的 write / remove 在 turn 内改写了 MEMORY.md:失效
+        // pre_loop 的 turn 级检索缓存,让下一次 ToolExec → PreLoop 回环
+        // 重新检索 —— 否则新写入的条目直到 turn 结束都进不了 system
+        // prompt(缓存引入前的行为是每次迭代重新读盘,写后立即可见)。
+        if tool_name_for_history == "memory"
+            && matches!(
+                tool_output.metadata.get("action").and_then(|v| v.as_str()),
+                Some("write") | Some("remove")
+            )
+        {
+            state.memory_retrieval_cache = None;
+            state.memory_read_recorded = false;
         }
         // 清单回灌:`TodoWrite` 把清单写进 `metadata.todos`(输出通道)。
         // 渲染成紧凑文本存进**会话级**槽 —— `pre_loop` 会把它注入进

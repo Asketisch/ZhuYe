@@ -88,8 +88,7 @@ impl Tool for ToolSearchTool {
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(DEFAULT_LIMIT)
+            .map_or(DEFAULT_LIMIT, |n| n as usize)
             .clamp(1, MAX_LIMIT);
 
         let hits = self.search(query, limit);
@@ -109,7 +108,7 @@ impl Tool for ToolSearchTool {
             let src = match source {
                 ToolSource::Builtin => "builtin",
                 ToolSource::Runtime => "runtime",
-                ToolSource::Plugin => "plugin",
+                ToolSource::Plugin(_) => "plugin",
                 // v1.3:`ToolSource::Mcp` 新增;搜索结果中标注 MCP 工具
                 // 的来源,便于区分。
                 ToolSource::Mcp => "mcp",

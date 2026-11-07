@@ -317,25 +317,36 @@ pub enum ThinkingConfig {
     OpenAIReasoning { effort: ReasoningEffort },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+/// 思考强度档位。v1.10 功能4:在既有 Low/Medium/High 之上新增 `Max` /
+/// `Ultra`,构成完整阶梯 `Low < Medium < High < Max < Ultra`
+/// (`PartialOrd` 按变体声明序比较,供能力表钳制取 `min`)。
+///
+/// 不同模型族支持的最高档不同(qwen 系到 High、deepseek 到 Max、OpenAI
+/// 到 Ultra),由 [`crate::reasoning_effort::clamp_effort_for_model`] 在
+/// 发 wire 前按目标模型钳制 —— 本枚举只表达「调用方想要的强度」。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    Max,
+    Ultra,
 }
 
 /// v1.x S4:把协议层 `ReasoningEffortMirror` 桥接到 LLM 层 `ReasoningEffort`。
 ///
 /// 协议层独立枚举是为了避免 `protocol → llm` 反向依赖;`submission_loop`
 /// / `model_call` 是**唯一**需要该转换的地方,集中在 `From` impl 便于
-/// 协议字段扩展(加 `XHigh` 等)时单点同步。
+/// 协议字段扩展(加 `Max` / `Ultra` 等)时单点同步。
 impl From<zhuye_protocol::ReasoningEffortMirror> for ReasoningEffort {
     fn from(m: zhuye_protocol::ReasoningEffortMirror) -> Self {
         match m {
             zhuye_protocol::ReasoningEffortMirror::Low => ReasoningEffort::Low,
             zhuye_protocol::ReasoningEffortMirror::Medium => ReasoningEffort::Medium,
             zhuye_protocol::ReasoningEffortMirror::High => ReasoningEffort::High,
+            zhuye_protocol::ReasoningEffortMirror::Max => ReasoningEffort::Max,
+            zhuye_protocol::ReasoningEffortMirror::Ultra => ReasoningEffort::Ultra,
         }
     }
 }

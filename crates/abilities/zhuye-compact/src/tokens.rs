@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use zhuye_llm::{ChatMessage, ContentBlock, ToolResult};
+use zhuye_llm::{ChatMessage, ContentBlock};
 
 /// 单图块的固定 token 预算。
 const IMAGE_TOKENS: u32 = 1000;
@@ -48,7 +48,36 @@ pub trait TokenEstimator: Send + Sync {
                 }
                 t
             }
-            ChatMessage::Tool(r) => self.estimate_text(&tool_result_text(r)),
+            // Tool 结果逐块累加,免整段展平分配:旧实现经
+            // `content_as_text` 把全部块连接成新 String 再估算,长会话
+            // 每次重估都复制整段工具输出。单 Text 块(最常见)与旧实现
+            // 数值完全一致;多块时**偏大**:每块独立 ceil 与块间 `\n`
+            // 分隔符都贡献增量,误差随块数线性累积(2 个 1 字符块旧 1 /
+            // 新 3;10 个 1 字符块旧 6 / 新 19)。方向保守 —— `before_tokens`
+            // 偏大只会让压缩略早触发,不会破坏预算判断;估算值也仅用于
+            // 压缩触发判定。Image 块按 `content_as_text` 的占位符渲染
+            // 估算,口径不变(空 Text 块会触发分隔符,与旧实现的差异
+            // 同属上述保守方向)。
+            ChatMessage::Tool(r) => {
+                let mut t = 0u32;
+                let mut first = true;
+                for b in &r.content {
+                    if !first {
+                        t += self.estimate_text("\n");
+                    }
+                    first = false;
+                    match b {
+                        ContentBlock::Text { text } => t += self.estimate_text(text),
+                        ContentBlock::Image { data, mime_type } => {
+                            t += self.estimate_text(&format!(
+                                "[image: {mime_type}, {} bytes]",
+                                data.len()
+                            ));
+                        }
+                    }
+                }
+                t
+            }
         }
     }
 
@@ -101,13 +130,6 @@ pub fn estimate_messages(messages: &[ChatMessage]) -> u32 {
 /// 注入预算等非消息场景使用。
 pub fn estimate_text(text: &str) -> u32 {
     global_estimator().estimate_text(text)
-}
-
-fn tool_result_text(r: &ToolResult) -> String {
-    // content 现为 Vec<ContentBlock>(多模态);为 token 估算展平为
-    // 文本。Image 块按占位符计算,而非原始字节长度(后者会严重
-    // 高估 token 数)。
-    r.content_as_text()
 }
 
 // ── tiktoken 实现(feature = "tokenizer") ──────────────────────────
@@ -274,6 +296,57 @@ mod tests {
         let t = estimate_messages(&msgs);
         // "ok result" = ceil(9/3.5) = 3
         assert_eq!(t, 3);
+    }
+
+    /// 对拍:单 Text 块的 Tool 结果,逐块累加与旧「整段展平再估算」
+    /// 数值完全一致(非分配改造不得改变估算口径)。
+    #[test]
+    fn tool_single_block_matches_flat_estimate() {
+        let text = "x".repeat(1000);
+        let flat = estimate_text(&text); // 旧口径:estimate_text(整段串)
+        let r = ToolResult {
+            call_id: "c1".into(),
+            content: vec![ContentBlock::text(text)],
+            is_error: false,
+        };
+        let msgs = vec![ChatMessage::Tool(r)];
+        assert_eq!(estimate_messages(&msgs), flat);
+    }
+
+    /// 多 Text 块:逐块累加与整段展平仅差块间分隔符的 ceil 边界,
+    /// 误差受 ≤ 块数 - 1 约束(每分隔符最多差 1)。
+    #[test]
+    fn tool_multi_block_within_flat_tolerance() {
+        let a = "a".repeat(100);
+        let b = "b".repeat(100);
+        let flat = estimate_text(&format!("{a}\n{b}"));
+        let r = ToolResult {
+            call_id: "c1".into(),
+            content: vec![ContentBlock::text(a), ContentBlock::text(b)],
+            is_error: false,
+        };
+        let msgs = vec![ChatMessage::Tool(r)];
+        let t = estimate_messages(&msgs);
+        // 逐块累加 ≥ 展平口径(每块独立 ceil + 块间分隔符,方向保守:
+        // 只会让压缩略早触发);误差随块数线性累积,不存在固定 ±N 容差。
+        assert!(
+            t >= flat && (t - flat) <= 4,
+            "两块场景逐块累加 {t} 应略大于等于展平 {flat}(保守方向)"
+        );
+    }
+
+    /// 多小块场景:误差随块数线性累积(方向偏大、保守),验证不超限。
+    #[test]
+    fn tool_many_tiny_blocks_estimate_is_conservative() {
+        let blocks: Vec<ContentBlock> = (0..10).map(|_| ContentBlock::text("x")).collect();
+        let flat = estimate_text(&("x\n".repeat(9) + "x"));
+        let r = ToolResult {
+            call_id: "c2".into(),
+            content: blocks,
+            is_error: false,
+        };
+        let t = estimate_messages(&[ChatMessage::Tool(r)]);
+        assert!(t >= flat, "逐块 {t} ≥ 展平 {flat}(保守偏大方向)");
     }
 
     #[test]

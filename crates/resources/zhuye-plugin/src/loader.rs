@@ -88,21 +88,43 @@ pub async fn register(
 ) -> Result<(), Vec<RegisterError>> {
     let mut errors = Vec::new();
 
-    // 1. Skills —— 最简单,纯内存操作。
+    // 1. Skills —— 完整解析(B5):经 `parse_skill_file` 读 frontmatter
+    // 全字段(triggers/tools/when_paths/body),不再一律手工降级 ——
+    // plugin skill 此前是文件型 skill 的降级拷贝(LoadSkillTool 拿不到
+    // tools 标注与附属资源路径)。SKILL.md 不合规(缺 frontmatter /
+    // 必填字段)时降级回旧手工构造并 warn —— 宽容既有 fixture 与作者,
+    // 不阻断其余能力挂载。
     let skill_metas: Vec<SkillMeta> = loaded
         .skills
         .iter()
-        .map(|s| SkillMeta {
-            name: s.name.clone(),
-            description: s.description.clone().unwrap_or_default(),
-            triggers: vec![],
-            tools: vec![],
-            mcp_collections: vec![],
-            path: s.skill_md.clone(),
-            body: String::new(),
-            plugin_id: Some(loaded.plugin_id.to_string()),
-            when_paths: vec![],
-            version: None,
+        .map(|s| {
+            match zhuye_skills::parse_skill_file(&s.skill_md) {
+                Ok(mut meta) => {
+                    // plugin 归属标记:卸载按 id 精确反注册。
+                    meta.plugin_id = Some(loaded.plugin_id.to_string());
+                    meta
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %loaded.plugin_id,
+                        skill = %s.name,
+                        error = %e,
+                        "SKILL.md 解析失败;降级为 manifest 元数据(无 tools/triggers)"
+                    );
+                    SkillMeta {
+                        name: s.name.clone(),
+                        description: s.description.clone().unwrap_or_default(),
+                        triggers: vec![],
+                        tools: vec![],
+                        mcp_collections: vec![],
+                        path: s.skill_md.clone(),
+                        body: String::new(),
+                        plugin_id: Some(loaded.plugin_id.to_string()),
+                        when_paths: vec![],
+                        version: None,
+                    }
+                }
+            }
         })
         .collect();
     if !skill_metas.is_empty() {
@@ -130,7 +152,9 @@ pub async fn register(
                     Arc::clone(&registries.subagent_factory),
                     spec.clone(),
                 ));
-                registries.tools.register_plugin_tool(tool);
+                registries
+                    .tools
+                    .register_plugin_tool(loaded.plugin_id.as_str(), tool);
             }
             Err(e) => errors.push(RegisterError {
                 capability: "agents",
@@ -200,6 +224,65 @@ pub async fn register(
     // 的声明跳过并 warn,不阻断其余能力挂载。
     let mut registered_hooks = 0usize;
     for (i, hook) in loaded.hooks.iter().enumerate() {
+        // v1.x C3:WASM 组件 hook(command 对象带 `"wasm": "<path>"`)
+        // —— 进程内实例化,决策 JSON 协议与 shell hook 一致,超时 /
+        // Err / 非法 JSON fail-closed Deny。
+        if let Some(wasm_rel) = hook.command.get("wasm").and_then(|v| v.as_str()) {
+            let resolved =
+                wasm_rel.replace("${PLUGIN_ROOT}", &loaded.install_path.to_string_lossy());
+            let name = format!("plugin:{}:{}#{}", loaded.plugin_id, hook.event, i);
+            let Some(kind) = zhuye_hooks::shell::ShellHook::parse_kind(&hook.event) else {
+                tracing::warn!(plugin = %loaded.plugin_id, event = %hook.event, "plugin wasm hook: unknown event name, skipping");
+                continue;
+            };
+            // 产物缺失(如 wasm 构建产物不入库 / 按需构建的插件)→ warn 后
+            // 跳过该条,不阻断整个插件启用 —— 与 shell hook 缺 command 的
+            // 处置对称;组件损坏 / 契约不符才算真错误。
+            if !std::path::Path::new(&resolved).is_file() {
+                tracing::warn!(
+                    plugin = %loaded.plugin_id,
+                    event = %hook.event,
+                    path = %resolved,
+                    "plugin wasm hook: artifact missing, skipping (run scripts/build_plugin_demo_wasm.sh or build the component)"
+                );
+                continue;
+            }
+            #[cfg(feature = "wasm")]
+            match zhuye_wasm::WasmHook::from_file(
+                std::path::Path::new(&resolved),
+                name.clone(),
+                kind,
+                hook.matcher.clone(),
+            ) {
+                Ok(mut wh) => {
+                    if let Some(t) = hook.command.get("timeout").and_then(|v| v.as_u64()) {
+                        wh = wh.with_deadline(std::time::Duration::from_secs(t));
+                    }
+                    registries.hooks.register_dyn(std::sync::Arc::new(wh));
+                    registered_hooks += 1;
+                    tracing::info!(plugin = %loaded.plugin_id, hook = %name, "wasm hook registered");
+                    continue;
+                }
+                Err(e) => {
+                    errors.push(RegisterError {
+                        capability: "hooks",
+                        name: hook.event.clone(),
+                        message: format!("WASM 组件加载失败: {e}"),
+                    });
+                    continue;
+                }
+            }
+            #[cfg(not(feature = "wasm"))]
+            {
+                let _ = (name, resolved, kind);
+                tracing::warn!(
+                    plugin = %loaded.plugin_id,
+                    event = %hook.event,
+                    "zhuye-plugin 编译未启用 wasm feature;wasm hook 跳过"
+                );
+                continue;
+            }
+        }
         let Some(kind) = zhuye_hooks::shell::ShellHook::parse_kind(&hook.event) else {
             tracing::warn!(
                 plugin = %loaded.plugin_id,
@@ -221,12 +304,10 @@ pub async fn register(
             );
             continue;
         };
-        let timeout = hook
-            .command
-            .get("timeout")
-            .and_then(|v| v.as_u64())
-            .map(std::time::Duration::from_secs)
-            .unwrap_or(zhuye_hooks::DEFAULT_SHELL_HOOK_TIMEOUT);
+        let timeout = hook.command.get("timeout").and_then(|v| v.as_u64()).map_or(
+            zhuye_hooks::DEFAULT_SHELL_HOOK_TIMEOUT,
+            std::time::Duration::from_secs,
+        );
         // 0.12:hooks.json 可用 `env: ["NAME", ...]` 显式放行本应被剔除的
         // 敏感环境变量(白名单优先于 secret 剔除)。未声明时 hook 拿不到
         // ANTHROPIC_API_KEY 等 —— 装插件已等同授权任意代码执行,但没必要
@@ -260,11 +341,98 @@ pub async fn register(
         );
     }
 
+    // 5. WASM 组件工具(v1.x C3):进程内实例化(zhuye-wasm)。组件
+    // 按 wit/plugin.wit 的 zhuye-tool 世界实现;加载失败显式报错
+    // (RegisterError),不注册半成品。工具经 ToolSource::Plugin(id)
+    // 注册 —— 卸载走精确反注册(B1 粒度化)。
+    for wt in &loaded.wasm_tools {
+        #[cfg(feature = "wasm")]
+        match register_wasm_tool(registries, loaded.plugin_id.as_str(), wt).await {
+            Ok(()) => {}
+            Err(e) => errors.push(RegisterError {
+                capability: "wasm_tools",
+                name: wt.name.clone(),
+                message: e,
+            }),
+        }
+        #[cfg(not(feature = "wasm"))]
+        {
+            let _ = wt;
+            tracing::warn!(
+                plugin = %loaded.plugin_id,
+                tool = %wt.name,
+                "zhuye-plugin 编译未启用 wasm feature;wasm 工具跳过"
+            );
+        }
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
     }
+}
+
+/// 注册单个 WASM 工具(feature `wasm`):组件加载 + describe 校验 +
+/// 注册(外部工具 floor=Prompt 由 registry 侧统一包装)。
+///
+/// 工具注册名完全由组件 `describe()` 的 `name` 决定 —— 这是全仓唯一
+/// 一条「名字由第三方内容决定」的注册路径(MCP 固定 `mcp__` 前缀、
+/// agents 固定 `call_` 前缀)。同名工具已存在且 source 不是本插件时
+/// **拒绝注册**:静默覆盖会让组件替换内置工具(如 `bash`),卸载时再
+/// 经 `unregister_source` 把内置工具一起删掉且不恢复。
+#[cfg(feature = "wasm")]
+async fn register_wasm_tool(
+    registries: &LoaderRegistries,
+    plugin_id: &str,
+    wt: &crate::capabilities::WasmToolLoaded,
+) -> Result<(), String> {
+    // 产物缺失 → 仅 warn 后跳过,不影响其余能力(plugin.toml 声明的
+    // 容错语义,与 wasm hook 同款);组件损坏 / 契约不符才报错。
+    if !wt.path.is_file() {
+        tracing::warn!(
+            plugin = %plugin_id,
+            tool = %wt.name,
+            path = %wt.path.display(),
+            "plugin wasm tool: artifact missing, skipping (build the component first)"
+        );
+        return Ok(());
+    }
+    let mut tool = zhuye_wasm::WasmTool::from_file(&wt.path)
+        .await
+        .map_err(|e| e.to_string())?;
+    // 同名占用检查(防覆盖内置 / 其他来源工具;同插件重复启用由
+    // enable 幂等挡住)。
+    let declared = zhuye_tools::Tool::name(&tool).to_string();
+    if let Some((_, existing)) = registries
+        .tools
+        .list_with_source()
+        .into_iter()
+        .find(|(n, _)| *n == declared)
+    {
+        return Err(format!(
+            "工具名 `{declared}` 已被 {existing:?} 占用;wasm 组件 describe.name 不得覆盖既有工具(改用带命名空间的名字,如 `<plugin>-{declared}`)"
+        ));
+    }
+    if declared != wt.name {
+        tracing::warn!(
+            plugin = %plugin_id,
+            manifest = %wt.name,
+            describe = %declared,
+            "wasm tool: manifest 名与组件 describe.name 不一致(以 describe 为准)"
+        );
+    }
+    // manifest 显式覆盖描述(可选;describe() 优先 —— 覆盖仅当描述为空)。
+    if tool.description.is_empty()
+        && let Some(d) = &wt.description
+    {
+        tool = tool.with_description_override(d.clone());
+    }
+    registries
+        .tools
+        .register_plugin_tool(plugin_id, Arc::new(tool));
+    tracing::info!(plugin = %plugin_id, tool = %declared, "wasm tool registered");
+    Ok(())
 }
 
 /// 反注册 plugin 的所有能力。
@@ -296,7 +464,7 @@ pub async fn unregister(registries: &LoaderRegistries, plugin_id: &PluginId) -> 
     // 2. 来自 Plugin 的工具(本插件的 agents 与未来 commands)
     let removed_tools = registries
         .tools
-        .unregister_source(zhuye_tools::ToolSource::Plugin);
+        .unregister_source(&zhuye_tools::ToolSource::Plugin(plugin_id.as_str().into()));
     tracing::debug!(
         plugin = %plugin_id,
         count = removed_tools,
@@ -645,6 +813,6 @@ mod tests {
     fn derive_role_replaces_colons_and_truncates() {
         assert_eq!(derive_role("foo:bar"), "foo_bar");
         assert_eq!(derive_role("a:b:c:d"), "a_b_c_d");
-        assert_eq!(derive_role(&"x".repeat(50).to_string()).len(), 32);
+        assert_eq!(derive_role(&"x".repeat(50)).len(), 32);
     }
 }

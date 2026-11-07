@@ -2,8 +2,7 @@
 
 #[test]
 fn with_defaults_preserves_existing_builder_chain() {
-    let builder = zhuye::Zhuye::builder("mock")
-        .with_defaults()
-        .expect("默认配置入口应继续可用");
+    // with_defaults 不再是 Result(旧实现恒 Ok),直接返回 builder。
+    let builder = zhuye::Zhuye::builder("mock").with_defaults();
     assert_eq!(builder.model_spec(), "mock");
 }

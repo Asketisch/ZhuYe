@@ -629,6 +629,106 @@ fn model_section_context_window_only() {
     assert!(m.input_price_usd_per_mtok().is_none());
 }
 
+/// v1.10 功能4:`[model].reasoning_effort` 解析(字符串档位,宽松加载)。
+#[test]
+fn model_section_parses_reasoning_effort() {
+    let cfg: ReflectConfig = toml::from_str("[model]\nreasoning_effort = \"ultra\"\n").unwrap();
+    let m = cfg.model.as_ref().expect("[model] section parsed");
+    assert_eq!(m.reasoning_effort.as_deref(), Some("ultra"));
+    // 大小写不敏感解析为协议镜像枚举。
+    assert_eq!(
+        cfg.resolve_reasoning_effort(),
+        Some(zhuye_protocol::ReasoningEffortMirror::Ultra)
+    );
+    // max 档同样可解析(deepseek 系模型可用)。
+    let cfg2: ReflectConfig = toml::from_str("[model]\nreasoning_effort = \"Max\"\n").unwrap();
+    assert_eq!(
+        cfg2.resolve_reasoning_effort(),
+        Some(zhuye_protocol::ReasoningEffortMirror::Max)
+    );
+}
+
+/// 非法档位字符串不阻断配置加载 —— `resolve_reasoning_effort` 返回 None。
+#[test]
+fn model_section_invalid_reasoning_effort_is_ignored() {
+    let cfg: ReflectConfig =
+        toml::from_str("[model]\nreasoning_effort = \"extreme\"\ncontext_window = 128000\n")
+            .unwrap();
+    // 配置整体仍解析成功(宽松口径),窗口字段不受影响。
+    assert_eq!(cfg.model.as_ref().unwrap().context_window, Some(128_000));
+    assert_eq!(cfg.resolve_reasoning_effort(), None, "非法档位静默忽略");
+}
+
+/// 未配置时 `resolve_reasoning_effort` → None。
+#[test]
+fn model_section_reasoning_effort_default_none() {
+    let cfg: ReflectConfig = toml::from_str("[model]\ncontext_window = 1000\n").unwrap();
+    assert_eq!(cfg.resolve_reasoning_effort(), None);
+    let empty = ReflectConfig::default();
+    assert_eq!(empty.resolve_reasoning_effort(), None);
+}
+
+/// v1.10 功能3:`effective_context_window_overrides` 合并语义 ——
+/// `[context_windows]` per-model 条目 + `[model].context_window`
+/// (作用于活跃模型,per-model 条目优先),键归一化。
+#[test]
+fn effective_context_window_overrides_merges_model_section() {
+    let cfg: ReflectConfig = toml::from_str(
+        r#"
+        [model]
+        context_window = 200000
+        [context_windows]
+        "MiniMax-M3" = 1000000
+        "#,
+    )
+    .unwrap();
+    // 活跃模型未在 per-model 表中 → `[model].context_window` 以归一化键
+    // ("my-model")注入;原表条目键也被归一化。
+    let map = cfg.effective_context_window_overrides("vendor/My-Model:8b");
+    assert_eq!(map.get("my-model"), Some(&200_000));
+    assert_eq!(map.get("minimax-m3"), Some(&1_000_000));
+    // 活跃模型已在 per-model 表中 → per-model 条目赢,不被 `[model]` 覆盖。
+    let map2 = cfg.effective_context_window_overrides("MiniMax-M3");
+    assert_eq!(map2.get("minimax-m3"), Some(&1_000_000));
+}
+
+/// `[model].context_window` 未配置时合并结果就是原表(归一化键)。
+#[test]
+fn effective_context_window_overrides_without_model_section() {
+    let cfg: ReflectConfig =
+        toml::from_str("[context_windows]\n\"Qwen36-1M\" = 1000000\n").unwrap();
+    let map = cfg.effective_context_window_overrides("whatever");
+    assert_eq!(map.len(), 1);
+    assert_eq!(map.get("qwen36-1m"), Some(&1_000_000));
+}
+
+/// v1.10 功能3:`configured_context_window_for` 只认用户显式配置的窗口。
+#[test]
+fn configured_context_window_for_respects_explicit_only() {
+    let cfg: ReflectConfig = toml::from_str(
+        r#"
+        [model]
+        context_window = 300000
+        [context_windows]
+        "zz-priv-model" = 512000
+        "#,
+    )
+    .unwrap();
+    // per-model 表命中。
+    assert_eq!(
+        cfg.configured_context_window_for("zz-priv-model"),
+        Some(512_000)
+    );
+    // 未在表中的模型落到 `[model].context_window`。
+    assert_eq!(
+        cfg.configured_context_window_for("some/other-model"),
+        Some(300_000)
+    );
+    // 什么都不配 → None(静态表命中与否与此无关)。
+    let bare = ReflectConfig::default();
+    assert_eq!(bare.configured_context_window_for("claude-sonnet-4"), None);
+}
+
 /// `[permissions]` 段应正确反序列化为 PermissionsSection(含 shell_pattern)。
 #[test]
 fn permissions_section_parses_rules() {

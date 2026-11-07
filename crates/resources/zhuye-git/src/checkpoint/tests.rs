@@ -14,8 +14,7 @@ fn temp_repo(tag: &str) -> Option<PathBuf> {
             .args(args)
             .current_dir(&dir)
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     };
     if !ok(&["init", "-q"]) {
         return None;

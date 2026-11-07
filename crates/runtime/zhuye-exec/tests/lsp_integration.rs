@@ -28,8 +28,7 @@ fn mock_binary_path() -> PathBuf {
         .and_then(|p| p.parent())
         .expect("workspace root");
     let target = std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| workspace_root.join("target"));
+        .map_or_else(|_| workspace_root.join("target"), PathBuf::from);
     let profile = if cfg!(debug_assertions) {
         "debug"
     } else {

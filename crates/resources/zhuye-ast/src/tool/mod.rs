@@ -263,8 +263,7 @@ impl AstTool {
                 let max_results = args
                     .get("max_results")
                     .and_then(|v| v.as_u64())
-                    .map(|n| n as usize)
-                    .unwrap_or(TEXT_DEFAULT_MAX_RESULTS);
+                    .map_or(TEXT_DEFAULT_MAX_RESULTS, |n| n as usize);
                 let hits = matcher::search_text(&root, needle, include, max_results)
                     .map_err(ast_error_to_tool_error)?;
                 Ok(self.hits_to_tool_output(hits, "text"))

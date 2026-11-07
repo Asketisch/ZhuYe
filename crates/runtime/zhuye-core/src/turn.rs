@@ -31,6 +31,13 @@ impl TurnHandle {
         Self::new(rx)
     }
 
+    /// 拆出底层 per-turn 事件接收端(`zhuye-stream` 队列 driver 的 turn
+    /// 终态监视接线用:driver 消费该通道直到终态事件或通道关闭)。
+    /// 拆出后本 handle 不再可用。
+    pub fn into_receiver(self) -> mpsc::Receiver<Event> {
+        self.rx
+    }
+
     /// 等待下一个事件。turn 结束后返回 `None`。
     pub async fn next(&mut self) -> Option<Event> {
         self.rx.recv().await

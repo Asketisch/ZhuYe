@@ -2,8 +2,8 @@
 
 use anyhow::{Context, anyhow};
 use zhuye_config::{
-    AnthropicSection, CompactSection, HooksSection, OllamaSection, OpenAISection, ReflectConfig,
-    default_config_path, load_default,
+    AnthropicSection, CompactSection, HooksSection, ModelSection, OllamaSection, OpenAISection,
+    ReflectConfig, default_config_path, load_default,
 };
 
 use crate::login;
@@ -17,8 +17,7 @@ pub fn show(reveal: bool) -> anyhow::Result<()> {
     println!(
         "# ReflectConfig @ {}",
         path.as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<no HOME>".into())
+            .map_or_else(|| "<no HOME>".into(), |p| p.display().to_string())
     );
     println!();
 
@@ -112,6 +111,9 @@ fn allowed_keys() -> Vec<&'static str> {
         "ollama.timeout_secs",
         "compact.trigger_tokens",
         "hooks.enabled",
+        // v1.10 功能3/功能4:模型级上下文窗口 + 思考强度默认档。
+        "model.context_window",
+        "model.reasoning_effort",
     ];
     keys.sort();
     keys
@@ -144,6 +146,27 @@ fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), Stri
             cfg.compact = CompactSection {
                 trigger_tokens: Some(parse_u32(value, key)?),
             }
+        }
+        // v1.10 功能3:活跃模型上下文窗口(token)。写入 `[model]` 段,
+        // bootstrap 时合并进引擎覆盖表(等价于 `[context_windows]` 里
+        // 给当前模型写一行)。
+        "model.context_window" => {
+            model_mut(cfg).context_window = Some(parse_u32(value, key)?);
+        }
+        // v1.10 功能4:思考强度默认档。写前先校验(大小写不敏感的
+        // low/medium/high/max/ultra),坏值直接报错 —— config set 是
+        // 交互命令,即时反馈比落盘后再被静默忽略好。
+        "model.reasoning_effort" => {
+            let lowered = value.trim().to_ascii_lowercase();
+            if !matches!(
+                lowered.as_str(),
+                "low" | "medium" | "high" | "max" | "ultra"
+            ) {
+                return Err(format!(
+                    "invalid value '{value}' for {key} (expected low|medium|high|max|ultra)"
+                ));
+            }
+            model_mut(cfg).reasoning_effort = Some(lowered);
         }
         "hooks.enabled" => {
             let list: Vec<String> = value
@@ -182,6 +205,16 @@ fn apply_unset(cfg: &mut ReflectConfig, key: &str) -> Result<(), String> {
         "ollama.timeout_secs" => ollama_mut(cfg).timeout_secs = None,
         "compact.trigger_tokens" => cfg.compact = CompactSection::default(),
         "hooks.enabled" => cfg.hooks.enabled = None,
+        "model.context_window" => {
+            if let Some(m) = cfg.model.as_mut() {
+                m.context_window = None;
+            }
+        }
+        "model.reasoning_effort" => {
+            if let Some(m) = cfg.model.as_mut() {
+                m.reasoning_effort = None;
+            }
+        }
         _ => return Err(format!("unknown key '{key}'")),
     }
     Ok(())
@@ -197,6 +230,9 @@ fn openai_mut(cfg: &mut ReflectConfig) -> &mut OpenAISection {
 fn ollama_mut(cfg: &mut ReflectConfig) -> &mut OllamaSection {
     cfg.ollama.get_or_insert_with(OllamaSection::default)
 }
+fn model_mut(cfg: &mut ReflectConfig) -> &mut ModelSection {
+    cfg.model.get_or_insert_with(ModelSection::default)
+}
 
 /// `current_value_of` 返回该 key 当前值(redact api_key)。
 fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
@@ -207,8 +243,8 @@ fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
             .as_deref()
             .map(redact_key)
             .unwrap_or_default(),
-        "anthropic.base_url" => anthropic(cfg).base_url.clone().unwrap_or_default(),
-        "anthropic.model" => anthropic(cfg).model.clone().unwrap_or_default(),
+        "anthropic.base_url" => anthropic(cfg).base_url.unwrap_or_default(),
+        "anthropic.model" => anthropic(cfg).model.unwrap_or_default(),
         "anthropic.timeout_secs" => anthropic(cfg)
             .timeout_secs
             .map(|v| v.to_string())
@@ -218,19 +254,18 @@ fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
             .as_deref()
             .map(redact_key)
             .unwrap_or_default(),
-        "openai.base_url" => openai(cfg).base_url.clone().unwrap_or_default(),
-        "openai.model" => openai(cfg).model.clone().unwrap_or_default(),
+        "openai.base_url" => openai(cfg).base_url.unwrap_or_default(),
+        "openai.model" => openai(cfg).model.unwrap_or_default(),
         "openai.timeout_secs" => openai(cfg)
             .timeout_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
-        "ollama.base_url" => ollama(cfg).base_url.clone().unwrap_or_default(),
+        "ollama.base_url" => ollama(cfg).base_url.unwrap_or_default(),
         "ollama.api_key" => ollama(cfg)
             .api_key
-            .clone()
             .map(|k| redact_key(&k))
             .unwrap_or_default(),
-        "ollama.model" => ollama(cfg).model.clone().unwrap_or_default(),
+        "ollama.model" => ollama(cfg).model.unwrap_or_default(),
         "ollama.keep_alive_secs" => ollama(cfg)
             .keep_alive_secs
             .map(|v| v.to_string())
@@ -251,6 +286,17 @@ fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
             .compact
             .trigger_tokens
             .map(|v| v.to_string())
+            .unwrap_or_default(),
+        "model.context_window" => cfg
+            .model
+            .as_ref()
+            .and_then(|m| m.context_window)
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        "model.reasoning_effort" => cfg
+            .model
+            .as_ref()
+            .and_then(|m| m.reasoning_effort.clone())
             .unwrap_or_default(),
         "hooks.enabled" => cfg
             .hooks

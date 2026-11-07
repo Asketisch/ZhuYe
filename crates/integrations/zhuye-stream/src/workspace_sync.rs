@@ -16,12 +16,26 @@ pub struct WorkspaceSyncOptions {
     pub depth: u32,
 }
 
+/// workspace 同步错误。
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceSyncError {
+    /// 远程 URL 为空。
+    #[error("workspace-sync: url 不能为空")]
+    EmptyUrl,
+    /// 文件系统 I/O 失败(含 git 子进程启动失败)。
+    #[error("workspace-sync io: {0}")]
+    Io(#[from] std::io::Error),
+    /// `git clone` 进程退出非零(stderr 摘要见消息)。
+    #[error("git clone 失败: {0}")]
+    GitFailed(String),
+}
+
 /// 克隆 Git 仓库到 `dest`。
 ///
 /// 使用 `git clone`;失败返回 stderr 摘要。
-pub fn clone_repo(opts: &WorkspaceSyncOptions) -> anyhow::Result<PathBuf> {
+pub fn clone_repo(opts: &WorkspaceSyncOptions) -> Result<PathBuf, WorkspaceSyncError> {
     if opts.url.trim().is_empty() {
-        anyhow::bail!("workspace-sync: url 不能为空");
+        return Err(WorkspaceSyncError::EmptyUrl);
     }
     if let Some(parent) = opts.dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -38,7 +52,7 @@ pub fn clone_repo(opts: &WorkspaceSyncOptions) -> anyhow::Result<PathBuf> {
     let out = cmd.output()?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("git clone 失败: {err}");
+        return Err(WorkspaceSyncError::GitFailed(err.into_owned()));
     }
     Ok(opts.dest.clone())
 }

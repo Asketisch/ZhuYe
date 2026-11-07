@@ -32,10 +32,10 @@ pub fn ls(limit: usize) -> anyhow::Result<()> {
         // 读该 session 全部记录,取调用数 + 最近一条的 model / 时间。
         let recs = read_model_io_file(path);
         let calls = recs.len();
-        let last = recs
-            .last()
-            .map(|r| r.completed_at.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| "?".into());
+        let last = recs.last().map_or_else(
+            || "?".into(),
+            |r| r.completed_at.format("%Y-%m-%d %H:%M").to_string(),
+        );
         let model = recs
             .last()
             .map(|r| r.model.model_id.clone())
@@ -102,8 +102,7 @@ pub fn show(id: &str) -> anyhow::Result<()> {
             r.usage.total_tokens,
             r.usage
                 .cost_usd
-                .map(|c| format!("${c:.4}"))
-                .unwrap_or_else(|| "-".into()),
+                .map_or_else(|| "-".into(), |c| format!("${c:.4}")),
         );
         // request/response 摘要:截断长文本。
         let req_preview = preview_value(&r.request);

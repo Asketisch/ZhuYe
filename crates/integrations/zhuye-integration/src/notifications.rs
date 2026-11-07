@@ -2,6 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 通知投递错误。
+#[derive(Debug, thiserror::Error)]
+pub enum NotifyError {
+    /// webhook HTTP 请求失败(网络层;仅 `webhook` feature)。
+    #[cfg(feature = "webhook")]
+    #[error("webhook request failed: {0}")]
+    Request(#[from] reqwest::Error),
+    /// webhook 返回非 2xx 状态码。
+    #[error("webhook HTTP {0}")]
+    Status(u16),
+}
+
 /// 支持的通知渠道(Phase stub 仅记录,不真正投递除非启用 `webhook` feature)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,7 +51,7 @@ impl WebhookNotifier {
     }
 
     /// 发送通知(best-effort,失败不 panic)。
-    pub async fn send(&self, payload: NotificationPayload) -> anyhow::Result<()> {
+    pub async fn send(&self, payload: NotificationPayload) -> Result<(), NotifyError> {
         let url = payload
             .webhook_url
             .clone()
@@ -60,7 +72,7 @@ impl WebhookNotifier {
             let client = reqwest::Client::new();
             let resp = client.post(&u).json(&body).send().await?;
             if !resp.status().is_success() {
-                anyhow::bail!("webhook HTTP {}", resp.status());
+                return Err(NotifyError::Status(resp.status().as_u16()));
             }
             return Ok(());
         }

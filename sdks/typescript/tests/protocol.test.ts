@@ -20,6 +20,7 @@ import {
   EVENT_ID_NONE,
   Event,
   EventMsg,
+  ReasoningEffort,
   ZhuyeAgent,
 } from '../src/index.js';
 
@@ -31,6 +32,8 @@ it('公开类型与 Rust wire 值一致', () => {
   expectTypeOf<PlanApprovalChoice>().toEqualTypeOf<'auto_mode' | 'manual_approve' | 'revise'>();
   expectTypeOf<ReviewDecision>().toEqualTypeOf<'approve' | 'approve_for_session' | { deny: { reason: string } }>();
   expectTypeOf<ToolCallOutputDelta>().toEqualTypeOf<{ type: 'tool_call_output_delta'; call_id: string; delta: string; is_stderr: boolean }>();
+  // v1.10 功能4:思考强度阶梯扩到 max / ultra(变体级 additive,旧值不变)。
+  expectTypeOf<ReasoningEffort>().toEqualTypeOf<'low' | 'medium' | 'high' | 'max' | 'ultra'>();
 });
 
 /**
@@ -79,6 +82,14 @@ function spawnMockServe(): ChildProcessWithoutNullStreams {
         return;
       }
       // v1.x:side-channel 查询 Op(非 turn)—— 回 status 快照后收尾。
+      if (opType === 'rescan_extensions') {
+        const skills = sub.op.skills ? 12 : 0;
+        stdout.write(JSON.stringify({ id: sub.id, msg: {
+          type: 'extensions_rescanned', skills, commands: false,
+        } }) + '\\n');
+        stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'submission_closed' } }) + '\\n');
+        return;
+      }
       if (opType === 'query_side_channels') {
         process.stdout.write(JSON.stringify({
           id: sub.id, msg: {
@@ -253,6 +264,29 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
       delta: '{"text":"pi',
     });
   }, 10_000);
+
+  it('rescan_extensions Op → extensions_rescanned 透传(additive)', async () => {
+    const stream = await agent.submit(
+      { type: 'rescan_extensions', skills: true, commands: false } as never,
+      { submissionId: 'rescan-probe' },
+    );
+    (child.stdout as Readable).push(
+      JSON.stringify({ id: 'rescan-probe', msg: {
+        type: 'extensions_rescanned', skills: 12, commands: false,
+      } }) + '\n',
+    );
+    (child.stdout as Readable).push(
+      JSON.stringify({ id: 'rescan-probe', msg: { type: 'submission_closed' } }) + '\n',
+    );
+    const events: Event[] = [];
+    for await (const event of stream) events.push(event);
+    expect(events[0].msg.type).toBe('extensions_rescanned');
+    const evt = events[0].msg as Record<string, unknown>;
+    expect(evt['skills']).toBe(12);
+    expect(evt['commands']).toBe(false);
+    expect(events[events.length - 1].msg.type).toBe('submission_closed');
+  });
+
 
   it('工具输出增量字段透传', async () => {
     const events: EventMsg[] = [];

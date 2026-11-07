@@ -17,7 +17,7 @@ async fn context_is_snapshotted_before_background_factory_runs() {
         if let Some(sender) = sender.lock().take() {
             let _ = sender.send(context);
         }
-        Err(anyhow::anyhow!("测试工厂"))
+        Err(SideChannelStartError::Factory("测试工厂".into()))
     });
     let driver = SideChannelDriver::new_with_context(
         SideChannelRegistry::new(),
@@ -99,7 +99,7 @@ async fn model_failure_marks_error_terminal() {
 async fn factory_failure_marks_error_terminal() {
     let reg = SideChannelRegistry::new();
     let factory: SideThreadFactory =
-        Arc::new(|_agent, _cancel| Err(anyhow::anyhow!("agent def missing")));
+        Arc::new(|_agent, _cancel| Err(SideChannelStartError::Factory("agent def missing".into())));
     let driver = SideChannelDriver::new(reg.clone(), factory);
 
     let (id, _cancel) = driver.start("missing", "p").expect("注册成功");
@@ -207,7 +207,7 @@ async fn concurrent_start_respects_limit() {
 async fn cancel_is_independent_of_other_channels() {
     let reg = SideChannelRegistry::new();
     let (factory, _rx) = counting_factory(Arc::default());
-    let driver = SideChannelDriver::new(reg.clone(), factory);
+    let driver = SideChannelDriver::new(reg, factory);
     let (id1, _c1) = driver.start("a", "p1").unwrap();
     let (id2, _c2) = driver.start("a", "p2").unwrap();
     assert!(driver.cancel(&id1));

@@ -97,6 +97,46 @@ impl SkillsCatalog {
         n
     }
 
+    /// 运行时重扫(`Op::RescanExtensions` 入口):替换文件型 skills,
+    /// 同时保留全部插件注入的 skills(`SkillMeta.plugin_id` 标记)——
+    /// 插件 skills 由 `add_plugin_skills` 单独管理,运行时重扫不得丢失。
+    /// 返回重扫后的 skills 总数(文件型 + 插件型 + 运行时补挂的
+    /// bundled,若调用方在返回前 merge)。
+    pub fn rescan(&self, dirs: &[&Path]) -> usize {
+        let mut skills = self.skills.write();
+        // 摘出插件注入的部分,重扫后原样挂回。
+        let plugin_part: Vec<SkillMeta> = skills
+            .iter()
+            .filter(|s| s.plugin_id.is_some())
+            .cloned()
+            .collect();
+        let mut fresh = scan_skills_dirs(dirs);
+        fresh.sort_by(|a, b| a.name.cmp(&b.name));
+        fresh.extend(plugin_part);
+        fresh.sort_by(|a, b| a.name.cmp(&b.name));
+        let n = fresh.len();
+        *skills = fresh;
+        n
+    }
+
+    /// 追加式目录扫描(B6 嵌入注入):把 `dirs` 下的 skills 追加进
+    /// 当前列表,同名以既有条目为准(嵌入方无法覆盖 bootstrap / 插件
+    /// 已挂的同名 skill)。返回新挂载数量。
+    pub fn load_dirs(&self, dirs: &[&Path]) -> usize {
+        let mut fresh = scan_skills_dirs(dirs);
+        let mut skills = self.skills.write();
+        let mut added = 0;
+        for s in fresh.drain(..) {
+            if skills.iter().any(|e| e.name == s.name) {
+                continue;
+            }
+            skills.push(s);
+            added += 1;
+        }
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        added
+    }
+
     /// 插入单个 skill(测试 / 编程 API)。
     pub fn insert(&self, skill: SkillMeta) {
         self.skills.write().push(skill);

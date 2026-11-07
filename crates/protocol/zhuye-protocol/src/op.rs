@@ -19,7 +19,10 @@ use crate::question::AskUserAnswer;
 pub enum Op {
     /// 用户文本/图像输入,驱动新一轮对话。
     UserInput {
+        /// 本轮用户输入项(文本 / 图像 / 技能激活 / 文件引用等)。
         items: Vec<UserInputItem>,
+        /// 本轮线程设置覆盖(模型 / 审批策略 / 沙箱策略 / 工具并发上限);
+        /// 缺省为全空,即沿用会话配置。
         #[serde(default)]
         thread_settings: ThreadSettingsOverrides,
     },
@@ -32,6 +35,8 @@ pub enum Op {
     /// B3:`child_id = Some(...)` 请求中断特定子 agent(引擎端需
     /// SubagentRuntimeRegistry 支持);`None`(默认) = 中断整个会话(既有行为)。
     Interrupt {
+        /// 定向中断的子代理会话号(同 `SubagentStatusSnapshot.child_id`);
+        /// `None` = 中断本会话全部在飞 turn。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         child_id: Option<String>,
     },
@@ -41,6 +46,8 @@ pub enum Op {
     /// 收到后:**截断 rollout 记录器**(删除该 turn 之后的所有记录,持久化),
     /// 并 emit `TurnRewound` 事件让 TUI 同步裁剪显示。
     Rewind {
+        /// 回退目标 turn 的 `TurnId` 字符串,该 turn(含)之后的记录被截断;
+        /// `None`(或无法解析为 `TurnId`)= 回退最近一个 turn。
         #[serde(default)]
         to_turn_id: Option<String>,
     },
@@ -50,13 +57,17 @@ pub enum Op {
 
     /// 响应之前发出的 ToolApprovalRequest。
     ToolApproval {
+        /// 被回复的审批请求 id(即 `ApprovalRequestEvent.request_id`)。
         id: String,
+        /// 用户裁决(批准 / 本会话内批准 / 拒绝并附原因)。
         decision: ReviewDecision,
     },
 
     /// 响应之前发出的 HookApprovalRequest。
     HookApproval {
+        /// 被回复的审批请求 id(即 `ApprovalRequestEvent.request_id`)。
         id: String,
+        /// 用户裁决(批准 / 本会话内批准 / 拒绝并附原因)。
         decision: ReviewDecision,
     },
 
@@ -65,7 +76,11 @@ pub enum Op {
     /// 注意这是**请求**而非立即切换——submission loop 收到后
     /// 会 emit `EventMsg::PlanRequest { task }`,等用户在 TUI 弹窗确认
     /// 后才真正把 `PermissionMode` 切到 `Plan`。
-    EnterPlanMode { task: String },
+    EnterPlanMode {
+        /// 规划目标描述(如 `"refactor auth module"`),透传为
+        /// `PlanRequestEvent.task` 供用户确认。
+        task: String,
+    },
 
     /// v1.x Plan mode:请求退出规划阶段。
     ///
@@ -81,7 +96,11 @@ pub enum Op {
     /// `PlanReadyEvent.plan_id` 一致),由 TUI 从 emit 的 event 中取出后
     /// 回填。
     PlanApproval {
+        /// 待审批 plan 的 `PlanId` 字符串(取自 `PlanRequestEvent.plan_id` /
+        /// `PlanReadyEvent.plan_id`);无法解析时该回执被丢弃。
         id: String,
+        /// 用户审批选择,决定批准后切换到的 `PermissionMode`
+        /// (见 [`PlanApprovalChoice`])。
         choice: PlanApprovalChoice,
     },
 
@@ -93,24 +112,41 @@ pub enum Op {
     /// `/effort low` slash 不需要等下一条 user prompt 就能切(用户跑了
     /// 5 轮后想调高推理深度,不必再输一句 prompt)。独立 Op 让
     /// `submission_loop` 单点处理 + 立即写入 slot。
-    SetEffort { effort: ReasoningEffortMirror },
+    SetEffort {
+        /// 目标推理深度档位;下一次 `model_call` 起生效,超出目标模型支持
+        /// 上限时由 `zhuye_llm` 能力表在发送前钳制。
+        effort: ReasoningEffortMirror,
+    },
 
     /// v1.1.0 P1 #14:用户对 LLM 主动询问(`EventMsg::AskUserQuestion`)的
     /// 结构化回答。`id` 与 `AskUserQuestionEvent.request_id` 配对;
     /// `answers.answers.len() == event.questions.len()`,每题一个 `Answer`
     /// 槽。用户按 Esc 取消时 `answers.answers` 用空 `Answer` 填充,让
     /// LLM 知道"用户没回答"。
-    AskUserQuestionResponse { id: String, answers: AskUserAnswer },
+    AskUserQuestionResponse {
+        /// 与 `AskUserQuestionEvent.request_id` 配对的请求 id。
+        id: String,
+        /// 结构化答案,每题一个 `Answer` 槽;取消时以空 `Answer` 填充。
+        answers: AskUserAnswer,
+    },
 
     /// v1.1.0 P1 #15:用户对 `ask_user` 自由文本询问的回执。`id` 与
     /// `AskUserInputEvent.request_id` 配对;`text` 为用户输入(空字符串
     /// 表示 Esc 取消或未填)。
-    AskUserInputResponse { id: String, text: String },
+    AskUserInputResponse {
+        /// 与 `AskUserInputEvent.request_id` 配对的请求 id。
+        id: String,
+        /// 用户输入的明文文本;空串表示 Esc 取消或未填。
+        text: String,
+    },
 
     /// v1.1.0 P1:切换会话级 `PermissionMode`(TUI `/mode` / Shift+Tab)。
     /// `submission_loop` 写入 `AgentConfig.permission_mode` 并 emit
     /// `EventMsg::PermissionModeChanged`。
-    SetPermissionMode { mode: crate::item::PermissionMode },
+    SetPermissionMode {
+        /// 目标权限模式;旧版 `Bypass` 按 v1.3 安全基线降级为 `Prompt`。
+        mode: crate::item::PermissionMode,
+    },
 
     /// v1.1.0 P1:循环切换 `PermissionMode`(TUI 快捷操作)。等价于
     /// `SetPermissionMode { mode: current.next_in_ui_cycle() }`。
@@ -122,9 +158,14 @@ pub enum Op {
     /// 未完成则把续作文本推进 steering 队列,等下一条 `UserInput` 合并,
     /// 不自行提交新回合。完成则退出。
     EnterGoalMode {
+        /// 目标描述(自然语言);每轮结束后交 LLM 自校验是否达成。
         goal: String,
+        /// 可选校验命令(经 `sh -c` 执行):LLM 判定达成后还须该命令退出码
+        /// 为 0 才算完成。`None` = 仅凭 LLM 自校验。
         #[serde(default)]
         verify_command: Option<String>,
+        /// 目标模式累计 token 预算,用尽即以 BudgetLimited 终止;`None` 时取
+        /// 默认预算(`zhuye_goal::DEFAULT_TOKEN_BUDGET`)。
         #[serde(default)]
         token_budget: Option<u64>,
     },
@@ -140,7 +181,24 @@ pub enum Op {
     /// (用户改了 `.zhuye/prompts/*.md` 后让改动即时生效),应答为
     /// `EventMsg::PromptSwitched`。两者都只动进程级提示词库,不改
     /// model spec —— 提示词按模型自动匹配,刷新的是「层文件集」。
-    PromptCommand { action: PromptAction },
+    PromptCommand {
+        /// 子命令动作(`List` 查询 / `Switch` 重扫)。
+        action: PromptAction,
+    },
+
+    /// v1.x:运行时重扫扩展目录。skills / 用户级 commands 此前只能重启
+    /// 加载;本 Op 让 `.zhuye/skills/` 的新增 / 修改不重启即生效。
+    /// 不开 turn —— 应答 `EventMsg::ExtensionsRescanned` 经
+    /// per-submission 通道 + 会话扇出双路送达,与 `PromptCommand` 同款。
+    RescanExtensions {
+        /// 是否重扫 skills 目录(`.zhuye/skills`,workspace + 用户级;
+        /// 插件注入的 skills 不受影响)。
+        skills: bool,
+        /// 是否重扫用户级 commands 目录。当前 commands 索引的运行时
+        /// 重扫尚未接线(命令正文实时读盘,增删文件走插件重挂路径),
+        /// 请求位照常应答,回执 `commands = false`。
+        commands: bool,
+    },
 
     /// v1.3 SDK:客户端(serve 模式)注册跨语言自定义工具。
     ///
@@ -149,11 +207,20 @@ pub enum Op {
     /// `EventMsg::ToolExecutionRequest`,客户端本地执行后以
     /// `Op::ToolExecutionResponse` 回执。serve 进程在 stdin 循环里就地
     /// 处理本 Op(不进 submission_loop)。
-    RegisterTools { tools: Vec<RemoteToolSpec> },
+    RegisterTools {
+        /// 待注册的工具声明;空名或与已有工具撞名的条目被跳过,并以全局
+        /// `error` 事件(`tool_name_invalid` / `tool_name_conflict`)回报。
+        tools: Vec<RemoteToolSpec>,
+    },
 
     /// v1.3 SDK:客户端对 `EventMsg::ToolExecutionRequest` 的回执,
     /// `call_id` 与请求配对,`output` 为本地执行结果。
-    ToolExecutionResponse { call_id: String, output: ToolOutput },
+    ToolExecutionResponse {
+        /// 与 `ToolExecutionRequestEvent.call_id` 配对的调用 id。
+        call_id: String,
+        /// 客户端本地执行结果;handler 失败时应置 `is_error = true` 回执。
+        output: ToolOutput,
+    },
 
     /// v1.4 A2:回合中途转向 —— 对正在跑的回合投喂补充指示或参考资料,
     /// 引擎把它 push 进会话转向队列,由下一次 `pre_loop`(通常是
@@ -166,8 +233,10 @@ pub enum Op {
     /// 无在飞 turn 时消息留在队列,下一个 `UserInput` turn 边界合并
     /// (既有行为)。
     Steer {
+        /// 转向优先级;缺省为 `Attachment`(按参考资料注入)。
         #[serde(default)]
         priority: crate::item::SteeringPriorityMirror,
+        /// 要投喂的输入项(文本 / 图像等),在下一个安全点注入为用户消息。
         items: Vec<UserInputItem>,
     },
 
@@ -176,6 +245,7 @@ pub enum Op {
     /// 空列表)。应答为 `EventMsg::SubagentStatus`(per-turn 通道 + 会话
     /// 扇出双路送达)。
     QuerySubagents {
+        /// 目标子代理会话号;`None` = 查询全部。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         child_id: Option<String>,
     },
@@ -196,12 +266,16 @@ pub enum Op {
 
     /// v1.x:取消 side-channel(只触发该 id 的独立令牌,不影响主 agent
     /// 与其它 side-channel)。未知 / 已终态 id → noop(不回错误)。
-    CancelSideChannel { id: String },
+    CancelSideChannel {
+        /// 要取消的 side-channel id(取自 `SideChannelEvent::Started.id`)。
+        id: String,
+    },
 
     /// v1.x:查询 side-channel 快照。`id = None` 列出全部;
     /// `Some(id)` 只查指定(未知 id 返回空列表)。应答为
     /// `EventMsg::SideChannelStatus`。
     QuerySideChannels {
+        /// 目标 side-channel id;`None` = 列出全部。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
@@ -249,6 +323,7 @@ impl Op {
             Op::EnterGoalMode { .. } => "enter_goal_mode",
             Op::ExitGoalMode => "exit_goal_mode",
             Op::PromptCommand { .. } => "prompt_command",
+            Op::RescanExtensions { .. } => "rescan_extensions",
             Op::RegisterTools { .. } => "register_tools",
             Op::ToolExecutionResponse { .. } => "tool_execution_response",
             Op::Steer { .. } => "steer",
@@ -597,5 +672,29 @@ mod tests {
             Op::QuerySubagents { child_id } => assert_eq!(child_id.as_deref(), Some("c-9")),
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod rescan_serde_tests {
+    use super::*;
+
+    /// wire 形状锁定:tag=type + 两个 bool 字段,additive 变体不得漂移。
+    #[test]
+    fn rescan_extensions_serde_roundtrip() {
+        let j = r#"{"type":"rescan_extensions","skills":true,"commands":false}"#;
+        let op: Op = serde_json::from_str(j).expect("反序列化失败");
+        assert!(matches!(
+            op,
+            Op::RescanExtensions {
+                skills: true,
+                commands: false
+            }
+        ));
+        let back = serde_json::to_string(&op).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&back).unwrap();
+        assert_eq!(v["type"], "rescan_extensions");
+        assert_eq!(v["skills"], true);
+        assert_eq!(v["commands"], false);
     }
 }

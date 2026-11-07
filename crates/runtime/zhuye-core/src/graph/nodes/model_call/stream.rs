@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use zhuye_llm::{ChatEvent, LlmError};
 use zhuye_protocol::{
     AbortReason, AgentMessageDelta, ErrorEvent, Event, EventMsg, StreamErrorEvent, ThinkingDelta,
-    TokenUsage, ToolCallBeginEvent, TriedCredential, TurnAbortedEvent,
+    ThinkingDeltaKind, TokenUsage, ToolCallBeginEvent, TriedCredential, TurnAbortedEvent,
 };
 
 use super::super::retry::{RetryAction, classify_action, error_code, outcome_code};
@@ -162,7 +162,7 @@ pub async fn process_stream_events(
                             ctx.sub_id.clone(),
                             EventMsg::ThinkingDelta(ThinkingDelta {
                                 delta: d,
-                                kind: "raw".to_string(),
+                                kind: ThinkingDeltaKind::Raw,
                             }),
                         )).await;
                     }

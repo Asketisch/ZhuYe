@@ -22,3 +22,6 @@ extension-module = ["pyo3/extension-module"]
 
 [dev-dependencies]
 pyo3 = { workspace = true, features = ["auto-initialize"] }
+
+[lints]
+workspace = true

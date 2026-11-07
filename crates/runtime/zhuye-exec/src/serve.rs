@@ -166,8 +166,7 @@ where
     let activity = zhuye_config::load_default()
         .telemetry
         .as_ref()
-        .map(|config| config.activity_enabled())
-        .unwrap_or(true)
+        .is_none_or(|config| config.activity_enabled())
         .then(zhuye_telemetry::ActivityLogger::with_default_home);
     // 远程工具桥:请求事件经独立通道产出,由专职 task 转发到 sink。
     let (bridge, mut bridge_rx) = RemoteBridge::new(64);
@@ -266,11 +265,14 @@ where
                 let sub_id = sub.id.clone();
                 let mut handle = thread.submit(sub).await;
                 while let Some(ev) = handle.next().await {
-                    if let (Some(logger), Some(a)) = (&activity, zhuye_telemetry::map_event(&ev)) {
-                        let _ = logger.record(a);
-                    }
+                    // 审计事件在 send 移走 ev 前先算好;record 在转发之后
+                    // 执行,不阻塞事件到客户端的通路。
+                    let act = zhuye_telemetry::map_event(&ev);
                     if sink.send(ev).await.is_err() {
                         break;
+                    }
+                    if let (Some(logger), Some(a)) = (&activity, act) {
+                        let _ = logger.record(a);
                     }
                 }
                 // 收尾标记:客户端迭代器已被 shutdown_complete 终结,
@@ -302,16 +304,17 @@ where
                         let activity5 = activity.clone();
                         tokio::spawn(async move {
                             while let Some(ev) = handle.next().await {
-                                if let (Some(logger), Some(a)) =
-                                    (&activity5, zhuye_telemetry::map_event(&ev))
-                                {
-                                    let _ = logger.record(a);
-                                }
+                                // SessionConfigured 同时走 session 扇出通道,此处
+                                // 跳过避免重复;审计先算后记,不阻塞客户端通路。
                                 if matches!(ev.msg, EventMsg::SessionConfigured(_)) {
                                     continue;
                                 }
+                                let act = zhuye_telemetry::map_event(&ev);
                                 if sink5.send(ev).await.is_err() {
                                     break;
+                                }
+                                if let (Some(logger), Some(a)) = (&activity5, act) {
+                                    let _ = logger.record(a);
                                 }
                             }
                             let _ = sink5
@@ -331,19 +334,18 @@ where
                 let activity4 = activity.clone();
                 tokio::spawn(async move {
                     while let Some(ev) = handle.next().await {
-                        if let (Some(logger), Some(a)) =
-                            (&activity4, zhuye_telemetry::map_event(&ev))
-                        {
-                            let _ = logger.record(a);
-                        }
                         // SessionConfigured 同时走 session 扇出通道(见
                         // submission_loop),由 session 转发 task 统一写出;
-                        // 此处跳过避免重复。
+                        // 此处跳过避免重复。审计先算后记,不阻塞客户端通路。
                         if matches!(ev.msg, EventMsg::SessionConfigured(_)) {
                             continue;
                         }
+                        let act = zhuye_telemetry::map_event(&ev);
                         if sink4.send(ev).await.is_err() {
                             break;
+                        }
+                        if let (Some(logger), Some(a)) = (&activity4, act) {
+                            let _ = logger.record(a);
                         }
                     }
                     // v1.3 SDK:per-turn 通道排空 = 该 submission 在 core
@@ -460,14 +462,15 @@ fn proactive_session_configured(thread: &Arc<AgentThread>) -> Event {
     let model = cfg.current_model();
     let provider = model
         .split_once('/')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map_or_else(|| "unknown".to_string(), |(p, _)| p.to_string());
     let mut sc = zhuye_protocol::SessionConfiguredEvent::new(model.clone(), provider);
     // v1.x:外部预分配了 session_id 时覆盖随机 id,与 recorder 文件名 /
     // SessionMeta 保持一致(见 submission_loop 同款修复)。
     sc.session_id = cfg.session_id.unwrap_or(sc.session_id);
     // RwLock guard 不是 Send:先把值拷出来再构造事件(与 core 同款注释)。
-    let override_hit = cfg.context_window_overrides.read().get(&model).copied();
+    // v1.10 功能3:归一化查覆盖表(与 submission_loop 同口径),覆盖表已
+    // 合并 `[model].context_window`。
+    let override_hit = cfg.context_window_override_for(&model);
     sc.context_window_size = override_hit.or_else(|| zhuye_llm::context_window_for(&model));
     *cfg.context_window_size.write() = sc.context_window_size;
     Event::new(EVENT_ID_NONE, EventMsg::SessionConfigured(sc))

@@ -47,7 +47,7 @@ pub fn build_default_m4(
     model: &str,
     registry: &zhuye_llm::SharedModelRegistry,
     thread_id: ThreadId,
-) -> anyhow::Result<M4Deps> {
+) -> M4Deps {
     build_default_m4_with_prompts(workspace, agent_name, model, registry, thread_id, &[], None)
 }
 
@@ -65,7 +65,7 @@ pub fn build_default_m4_with_prompts(
     thread_id: ThreadId,
     extra_prompt_dirs: &[std::path::PathBuf],
     rollout_base: Option<&std::path::Path>,
-) -> anyhow::Result<M4Deps> {
+) -> M4Deps {
     let _ = model; // model spec 由 model_call 每请求解析,此处不再消费
     let user_data_dir = zhuye_config::data_path_or_relative(&[]);
 
@@ -160,7 +160,7 @@ pub fn build_default_m4_with_prompts(
     if coord_cfg.enabled {
         prompt_builder
             .lock()
-            .upsert_section("Coordinator", coord_cfg.system_prompt.clone());
+            .upsert_section("Coordinator", coord_cfg.system_prompt);
     }
 
     // ── Recorder:默认挂 JsonlRolloutWriter ──────────────────
@@ -168,16 +168,16 @@ pub fn build_default_m4_with_prompts(
     // Some(dir) 用自定义目录(SDK 消费者经 ZhuyeBuilder::with_rollout_dir
     // 传入)。完全关闭 rollout 由调用方在拿到 M4Deps 后置
     // `recorder = None`(ZhuyeBuilder::without_rollout)。
-    let base = rollout_base
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(default_base);
+    let base = rollout_base.map_or_else(default_base, |p| p.to_path_buf());
     let recorder: Arc<dyn RolloutRecorder> = Arc::new(JsonlRolloutWriter::new(base, thread_id));
 
     // ── file recovery + subagent registry ────────────────────
     let file_recovery = Arc::new(ActiveFileRecovery::new(Arc::from(workspace.to_path_buf())));
     let subagent_registry = SubagentRegistry::shared();
 
-    Ok(M4Deps {
+    // 注:函数体内所有可选依赖失败均优雅降级(None / noop),
+    // 因此这里没有失败路径,直接返回 M4Deps。
+    M4Deps {
         compactor,
         memory,
         skills: skills_catalog,
@@ -188,7 +188,9 @@ pub fn build_default_m4_with_prompts(
         file_recovery,
         subagent_registry,
         prompt_dirs,
-    })
+        skill_dirs: vec![ws_skills, home_skills],
+        bundled_skills: zhuye_config::load_default().active.bundled_skills,
+    }
 }
 
 /// 在无法走完整 bootstrap(没有 LLM provider、纯单测场景)时,
@@ -248,8 +250,7 @@ mod tests {
             "openai/gpt-4o",
             &registry,
             ThreadId::new(),
-        )
-        .expect("build_default_m4 should succeed");
+        );
         // 断言每个字段都已填(关键——防止回归回退到占位实现)
         assert!(Arc::strong_count(&m4.compactor) >= 1);
         assert_eq!(m4.active_agent_def.name, "test-agent");
@@ -279,8 +280,7 @@ mod tests {
             thread_id,
             &[],
             Some(&rollout_dir),
-        )
-        .expect("build_default_m4_with_prompts should succeed");
+        );
         let rec = m4.recorder.expect("默认应挂 recorder");
         // 写一条 SessionMeta,验证文件落在自定义目录下。
         rec.record(zhuye_protocol::RolloutRecord::session_meta(

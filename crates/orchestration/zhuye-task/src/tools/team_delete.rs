@@ -83,7 +83,7 @@ impl Tool for TeamDeleteTool {
         // 先 read 再 delete —— 把 "was N members" 写进响应,便于 LLM / 日志
         // 调试。若 team 不存在,`get_team` 返 `TeamNotFound`,直接透传。
         let existed = self.manager.get_team(&name).await.ok();
-        let prior_count = existed.as_ref().map(|t| t.members.len()).unwrap_or(0);
+        let prior_count = existed.as_ref().map_or(0, |t| t.members.len());
 
         self.manager.delete_team(&name).await?;
 

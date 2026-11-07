@@ -180,7 +180,7 @@ impl PoisonDetector {
         match &e.output_hash {
             Some(h) => {
                 // 与上一轮相同才延续;不同则窗口只留本轮。
-                if self.output_hashes.back().map(|p| p == h).unwrap_or(false) {
+                if self.output_hashes.back().is_some_and(|p| p == h) {
                     self.output_hashes.push_back(h.clone());
                 } else {
                     self.output_hashes.clear();

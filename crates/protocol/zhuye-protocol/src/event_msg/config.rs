@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 /// 时提示。`at` 用 `SystemTime` 而非 `Instant`,因为事件可能跨进程持久化。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigReloadedEvent {
+    /// 触发重载的配置文件路径。
     pub path: PathBuf,
+    /// 受影响的配置段名列表(如 `["anthropic", "compact"]`)。
     pub sections_changed: Vec<String>,
+    /// 重载发生时间(序列化为 UNIX 秒数)。
     #[serde(with = "systemtime_serde")]
     pub at: SystemTime,
 }
@@ -36,6 +39,17 @@ pub struct PromptSwitchedEvent {
     pub action: String,
     /// 重扫后当前 spec 的生效用户层(让 UI 立即看到新命中)。
     pub active_layers: Vec<String>,
+}
+
+/// v1.x:`Op::RescanExtensions` 的应答 —— 运行时扩展目录重扫完成。
+/// UI 据此提示「skills 已刷新」并展示新条目数。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtensionsRescannedEvent {
+    /// skills 目录重扫后的条目总数(文件型 + 插件型;未请求重扫时为 0)。
+    pub skills: usize,
+    /// commands 重扫请求是否被处理。当前 commands 索引的运行时重扫尚未
+    /// 接线(命令正文实时读盘,增删文件走插件重挂路径),恒为 `false`。
+    pub commands: bool,
 }
 
 /// `SystemTime` 的 serde 适配 —— 序列化为 UNIX 秒数,跨进程持久化稳定。

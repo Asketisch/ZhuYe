@@ -149,9 +149,7 @@ fn make_m4() -> M4Deps {
     let prompt_builder = Arc::new(Mutex::new(PromptBuilder::new()));
     let note_store: Arc<dyn zhuye_notes::NoteStore> =
         Arc::new(zhuye_notes::InMemoryNoteStore::new());
-    let file_recovery = Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(
-        tmp.clone(),
-    )));
+    let file_recovery = Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(tmp)));
     let subagent_registry = zhuye_recovery::SubagentRegistry::shared();
     let mut def = AgentDefinition::default();
     #[allow(clippy::field_reassign_with_default)]
@@ -172,6 +170,8 @@ fn make_m4() -> M4Deps {
         file_recovery,
         subagent_registry,
         prompt_dirs: Vec::new(),
+        skill_dirs: Vec::new(),
+        bundled_skills: false,
     }
 }
 
@@ -212,7 +212,7 @@ async fn run_turn_with_steering(
     tools.register(Arc::new(EchoTool));
     // 插件源注册:外部工具不受 skills catalog 的 always_on 白名单限制,
     // pre_loop 会把它们并入 LLM 可见集(effective.extend(external))。
-    tools.register_with_source(ToolSource::Plugin, Arc::new(SlowTool));
+    tools.register_with_source(ToolSource::Plugin("test@local".into()), Arc::new(SlowTool));
     let thread = AgentThread::new(cfg, registry, tools, None, None);
 
     let mut handle = thread

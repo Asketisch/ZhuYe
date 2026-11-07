@@ -654,6 +654,9 @@ mod tests {
     fn concurrent_records_have_unique_seq() {
         let sink = std::sync::Arc::new(VecSink::default());
         let log = std::sync::Arc::new(AuditLog::new(sink.clone() as std::sync::Arc<dyn AuditSink>));
+        // 先 collect 再统一 join:迫使 16 个线程全部 spawn 后才开始
+        // join,保住并发语义(直接链式 map+join 会退化成逐个串行)。
+        #[expect(clippy::needless_collect)]
         let handles: Vec<_> = (0..16)
             .map(|i| {
                 let log = log.clone();

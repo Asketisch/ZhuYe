@@ -95,8 +95,7 @@ fn extract_shell_state(out: &[u8]) -> (Option<(i32, String)>, Vec<u8>) {
     let line_end = out[start..]
         .iter()
         .position(|&b| b == b'\n')
-        .map(|p| start + p)
-        .unwrap_or(out.len());
+        .map_or(out.len(), |p| start + p);
     let line = String::from_utf8_lossy(&out[start..line_end]);
     let rest = &line[SENTINEL_PREFIX.len()..];
     let parsed = parse_state_fields(rest);
@@ -656,11 +655,10 @@ impl Tool for BashTool {
             // 文件,供模型用 read 工具取回;写失败维持纯截断(尽力而为)。
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
+                .map_or(0, |d| d.as_nanos());
             let spill_path =
                 std::env::temp_dir().join(format!("zhuye-bash-{}-{nanos}.log", std::process::id()));
-            let mut spill = cleaned_out.clone();
+            let mut spill = cleaned_out;
             if !cleaned_err.is_empty() {
                 spill.extend_from_slice(b"\n\n--- stderr ---\n");
                 spill.extend_from_slice(&cleaned_err);
@@ -686,7 +684,7 @@ impl Tool for BashTool {
                 "stdout_bytes": out_bytes.len(),
                 "stderr_bytes": err_bytes.len(),
                 "exit_code": exit_code,
-                "cwd": final_cwd.clone().or_else(|| effective_prev.map(|p| p.to_string_lossy().into_owned())),
+                "cwd": final_cwd.or_else(|| effective_prev.map(|p| p.to_string_lossy().into_owned())),
             }),
             elapsed_ms: 0,
         })

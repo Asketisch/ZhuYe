@@ -183,8 +183,7 @@ pub fn find_file_by_session_id(
                         .file_name()
                         .and_then(|n| n.to_str())
                         .and_then(|n| n.strip_suffix(".jsonl"))
-                        .map(|stem| !stem.contains('.'))
-                        .unwrap_or(false);
+                        .is_some_and(|stem| !stem.contains('.'));
                     if active || found.is_none() {
                         *found = Some(path);
                     }
@@ -599,7 +598,7 @@ pub fn truncate_session_after_turn(
     base: &Path,
     session_id: ThreadId,
     to_turn_id: Option<&TurnId>,
-) -> anyhow::Result<usize> {
+) -> Result<usize, zhuye_protocol::RolloutError> {
     match find_session_path(base, session_id) {
         Some(path) => crate::writer::truncate_file_after_turn(&path, to_turn_id),
         None => Ok(0),
@@ -649,8 +648,7 @@ fn find_session_path_inner(dir: &Path, id: ThreadId) -> Option<std::path::PathBu
                 .file_name()
                 .and_then(|n| n.to_str())
                 .and_then(|n| n.strip_suffix(".jsonl"))
-                .map(|stem| !stem.contains('.'))
-                .unwrap_or(false);
+                .is_some_and(|stem| !stem.contains('.'));
             match best {
                 // 已拿到活跃文件 → 不需要再找。
                 Some((_, true)) => {}

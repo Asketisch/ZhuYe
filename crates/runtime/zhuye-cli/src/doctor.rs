@@ -308,8 +308,7 @@ fn check_plugins(cfg: &zhuye_config::ReflectConfig) {
     let installed = root
         .as_ref()
         .and_then(|p| zhuye_plugin::PluginManager::load(p).ok())
-        .map(|m| m.list_installed().len())
-        .unwrap_or(0);
+        .map_or(0, |m| m.list_installed().len());
     if installed == 0 && enabled == 0 {
         println!("[skip]   plugins   none installed");
         return;

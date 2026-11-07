@@ -1,14 +1,3 @@
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::or_fun_call)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::manual_div_ceil)]
 //! zhuye-llm — ModelClient trait, Capabilities, provider 实现,以及 v1.0
 //! 多 Provider 路由(`ModelRegistry` credential pool / `Credential` /
 //! `RoutingPolicy` / `CooldownEntry`)。
@@ -34,6 +23,7 @@ pub mod output_budget;
 pub mod policy;
 pub mod providers;
 pub mod quota;
+pub mod reasoning_effort;
 pub mod registry;
 pub mod request;
 
@@ -50,10 +40,15 @@ pub use providers::{
     KimiQuotaProvider, MinimaxQuotaProvider, MockClient, MockReply, ModelPricing, OllamaClient,
     OllamaConfig, OpenAIClient, OpenAIConfig, OpenAIResponsesClient, OpenAIResponsesConfig,
     QuotaError, QuotaProvider, QuotaSnapshot, RateCard, ZenmuxQuotaProvider, ZhipuQuotaProvider,
-    context_window_for, cumulative_cost_usd, is_priced, price, pricing_for, pricing_table,
-    rate_card, rate_cards,
+    context_window_for, context_window_override_for, cumulative_cost_usd, is_priced,
+    normalize_model_spec, price, pricing_for, pricing_table, rate_card, rate_cards,
+    set_context_window_overrides,
 };
 pub use quota::{CredentialKey, QuotaConfig, QuotaSource, QuotaTracker, SharedQuotaTracker};
+pub use reasoning_effort::{
+    DEFAULT_MAX_EFFORT, clamp_effort_for_model, effort_wire_str, max_effort_for_model,
+    supported_efforts_for_model,
+};
 pub use registry::{CredentialPool, ModelRegistry, NextClient, PoolEntry, SharedModelRegistry};
 pub use request::{
     AssistantContent, CacheBreak, CacheControl, CacheControlKind, CacheTtl, ChatMessage,

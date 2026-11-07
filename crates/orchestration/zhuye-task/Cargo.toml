@@ -28,3 +28,6 @@ zhuye-tools     = { workspace = true }
 parking_lot       = { workspace = true }
 tempfile = "3"
 tokio     = { workspace = true, features = ["macros", "rt-multi-thread", "time", "fs"] }
+
+[lints]
+workspace = true

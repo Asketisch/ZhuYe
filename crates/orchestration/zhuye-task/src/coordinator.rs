@@ -101,9 +101,7 @@ fn current_pid() -> u32 {
 /// 检查 coordinator 模式是否启用 —— 仅看 env var。`CoordinatorConfig::from_env_or_config`
 /// 综合 env + config 后才是最终决策。
 pub fn is_coordinator_enabled() -> bool {
-    std::env::var("ZHUYE_COORDINATOR_MODE")
-        .map(|v| is_truthy_env_value(&v))
-        .unwrap_or(false)
+    std::env::var("ZHUYE_COORDINATOR_MODE").is_ok_and(|v| is_truthy_env_value(&v))
 }
 
 /// 严格 truthy 解析 —— 暴露 `pub(crate)` 以便 `is_coordinator_enabled` 与单测
@@ -351,7 +349,7 @@ mod tests {
     /// helper:不污染全局 env,与生产 `is_coordinator_enabled` 内部
     /// 逻辑 1:1 等价。返回 `Some(bool)` 模拟 env var presence。
     fn _is_enabled_match(env_value: Option<&str>) -> bool {
-        env_value.map(is_truthy_env_value).unwrap_or(false)
+        env_value.is_some_and(is_truthy_env_value)
     }
 
     // helper:纯函数,严格 truthy 解析。

@@ -56,6 +56,16 @@ rl.on('line', (line) => {
     console.log(JSON.stringify({ id: sub.id, msg: sub.op.event }));
     return;
   }
+  // v1.x:additive Op(RescanExtensions)—— 回新事件 + 收尾,
+  // 验证 SDK 对新增 Op/事件的双向透传。
+  if (opType === 'rescan_extensions') {
+    const skills = sub.op.skills ? 12 : 0;
+    console.log(JSON.stringify({
+      id: sub.id, msg: { type: 'extensions_rescanned', skills, commands: false },
+    }));
+    console.log(JSON.stringify({ id: sub.id, msg: { type: 'submission_closed' } }));
+    return;
+  }
   // v1.x:side-channel 查询 Op(非 turn)—— 回 status 快照后收尾。
   if (opType === 'query_side_channels') {
     console.log(JSON.stringify({
@@ -290,6 +300,34 @@ def test_side_channel查询Op_状态快照透传(agent: ZhuyeAgent) -> None:
     assert types[-1] == "submission_closed", f"非 turn Op 应以收尾标记结束:{types}"
 
 
+def test_rescan_extensions_新增Op_事件透传字段级(agent: ZhuyeAgent) -> None:
+    """v1.x additive:`Op::RescanExtensions`(skills 重扫)→
+    `extensions_rescanned`(skills 计数 + commands=false)。SDK 对新增
+    Op / 新事件原样透传,迭代器不挂起。
+
+    真二进制层的同型用例见 tests/functional/test_v110.py::V11(直接
+    发 serve);此处验证 SDK 侧 wire 透传与类型声明一致性。
+    """
+    evs = list(agent.submit_op({"type": "rescan_extensions", "skills": True, "commands": False}))
+    types = [ev["msg"]["type"] for ev in evs]
+    assert "extensions_rescanned" in types, f"缺 extensions_rescanned:{types}"
+    evt = next(ev["msg"] for ev in evs if ev["msg"]["type"] == "extensions_rescanned")
+    assert isinstance(evt["skills"], int) and evt["skills"] >= 0, f"skills 字段:{evt}"
+    assert evt["commands"] is False, f"commands 位当前恒 false:{evt}"
+    assert types[-1] == "submission_closed", f"非 turn Op 应以收尾标记结束:{types}"
+
+    # 未请求重扫:照常应答(skills=0)。
+    evs = list(agent.submit_op({"type": "rescan_extensions", "skills": False, "commands": False}))
+    evt = next(ev["msg"] for ev in evs if ev["msg"]["type"] == "extensions_rescanned")
+    assert evt["skills"] == 0, f"未请求重扫应回 0:{evt}"
+
+    # 类型声明与 wire 一致。
+    from zhuye import protocol
+
+    assert protocol.ExtensionsRescanned.__required_keys__ == {"type"}
+    assert protocol.ExtensionsRescanned.__optional_keys__ == {"skills", "commands"}
+
+
 def test_wire_field_names_stable() -> None:
     """核心 wire 字段名 / 判别符保持 snake_case,与 Rust serde 一致。"""
     sub = {"id": "x", "op": {"type": "user_input", "items": [{"type": "text", "text": "hi"}]}}
@@ -355,6 +393,24 @@ def test_wire_type_annotations() -> None:
     from zhuye import protocol
 
     assert set(get_args(get_type_hints(protocol.TurnComplete)["status"])) == {"success", "max_iterations", "stopped", "token_budget_exceeded"}
+    # v1.10 功能4:思考强度阶梯扩到 max / ultra(变体级 additive,旧值不变)。
+    # 注解形态是 `Literal[...] | None`,get_args 外层是 (Literal, NoneType),
+    # 需要再解一层 Literal 才拿到字符串集合。
+    effort_union = get_args(get_type_hints(protocol.ThreadSettings)["effort"])
+    effort_vals = {
+        v
+        for a in effort_union
+        if a is not type(None)
+        for v in get_args(a)
+        if isinstance(v, str)
+    }
+    assert effort_vals == {"low", "medium", "high", "max", "ultra"}
+    set_effort_vals = {
+        a
+        for a in get_args(get_type_hints(protocol.SetEffortOp)["effort"])
+        if isinstance(a, str)
+    }
+    assert set_effort_vals == {"low", "medium", "high", "max", "ultra"}
     assert set(get_args(get_type_hints(protocol.PlanApprovalOp)["choice"])) == {"auto_mode", "manual_approve", "revise"}
     assert get_type_hints(protocol.TurnAborted)["reason"] == protocol.AbortReason
     assert protocol.ReviewDecisionDeny.__required_keys__ == {"deny"}

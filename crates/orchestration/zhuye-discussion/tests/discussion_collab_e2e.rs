@@ -223,13 +223,10 @@ async fn discussion_e2e_emits_collab_events_to_sink() {
 
     // 收集 sink 收到的 Collab* 事件
     let events = captured.lock().clone();
-    let started: Vec<&CollabStartedPayload> = events
+    let started_count = events
         .iter()
-        .filter_map(|e| match e {
-            EventMsg::CollabStarted(s) => Some(s),
-            _ => None,
-        })
-        .collect();
+        .filter(|e| matches!(e, EventMsg::CollabStarted(_)))
+        .count();
     let messages: Vec<&CollabMessagePayload> = events
         .iter()
         .filter_map(|e| match e {
@@ -237,16 +234,13 @@ async fn discussion_e2e_emits_collab_events_to_sink() {
             _ => None,
         })
         .collect();
-    let finished: Vec<&CollabFinishedPayload> = events
+    let finished_count = events
         .iter()
-        .filter_map(|e| match e {
-            EventMsg::CollabFinished(f) => Some(f),
-            _ => None,
-        })
-        .collect();
+        .filter(|e| matches!(e, EventMsg::CollabFinished(_)))
+        .count();
 
-    assert_eq!(started.len(), 1, "exactly one CollabStarted");
-    assert_eq!(finished.len(), 1, "exactly one CollabFinished");
+    assert_eq!(started_count, 1, "exactly one CollabStarted");
+    assert_eq!(finished_count, 1, "exactly one CollabFinished");
     // max_rounds=1 顺序模式,3 个 participant 都 spawn 一次,每轮由 prompt_for
     // 触发 → orchestrator 在每条消息路由后 emit CollabMessage。
     // 我们没有预注入消息,所以 messages 可能为 0(LLM stub 不发 send_message),
@@ -269,9 +263,7 @@ async fn discussion_e2e_emits_collab_events_to_sink() {
 }
 
 /// 类型别名避免上面 `match e` 写到复杂的 `if let` 嵌套
-type CollabStartedPayload = zhuye_protocol::CollabStartedEvent;
 type CollabMessagePayload = zhuye_protocol::CollabMessageEvent;
-type CollabFinishedPayload = zhuye_protocol::CollabFinishedEvent;
 
 /// Stub LLM 路径下,`collect_result_with_usage` 应该抓到 TokenCount
 /// 事件的 usage 写到 toolset_usage 槽,槽在下一个 spawn 之前的 stub 路径

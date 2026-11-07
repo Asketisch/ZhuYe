@@ -384,8 +384,8 @@ impl ToolExecutionQueue {
         if let Some(fwd) = forwarder.as_ref() {
             ctx.event_forwarder = Some(fwd.clone());
             ctx.os_sandbox = fwd.os_sandbox;
-            let tail = fwd.parent_tail_json.read().clone();
-            *ctx.parent_tail_json.write() = tail;
+            // 快照每批冻结一次,Arc 共享给本批全部调用 —— 不逐调用深拷贝。
+            ctx.parent_tail_json = Arc::clone(&fwd.parent_tail_json);
         }
         // v1.4 A3:注入进度转发闭包(见 `execute_all_with_progress` 文档):
         // 工具逐段上报的输出 → `ToolCallOutputDelta` 事件。try_send 满则
@@ -470,7 +470,7 @@ impl ToolExecutionQueue {
             let combined = resolved
                 .injected
                 .iter()
-                .map(|m| m.content.clone())
+                .map(|m| m.content.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
             let prev = std::mem::replace(
@@ -618,14 +618,13 @@ impl ToolExecutionQueue {
                 let mut g = guard_arc.lock().expect("loop guard poisoned");
                 let preview = {
                     // 先脱敏再截断,避免截断导致密钥无法被完整识别。
-                    let raw = sanitize_text(
-                        &serde_json::to_string(&effective_args).unwrap_or_default(),
-                        &self.sanitizer,
-                    );
+                    // 临时 String 先落变量:Cow<'_> 的生命周期绑定它。
+                    let args_json = serde_json::to_string(&effective_args).unwrap_or_default();
+                    let raw = sanitize_text(&args_json, &self.sanitizer);
                     let cfg_max = g.config.preview_chars;
                     // 复用模块内截断(按字符截断,不切多字节)。
                     if raw.chars().count() <= cfg_max {
-                        raw
+                        raw.into_owned()
                     } else {
                         format!("{}…", raw.chars().take(cfg_max).collect::<String>())
                     }

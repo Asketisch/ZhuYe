@@ -99,7 +99,10 @@ pub(crate) fn apply_request_param_defaults(
 }
 
 pub use self::anthropic::{AnthropicClient, AnthropicConfig};
-pub use self::context_window::context_window_for;
+pub use self::context_window::{
+    context_window_for, context_window_override_for, normalize_model_spec,
+    set_context_window_overrides,
+};
 pub use self::mock::{
     DEFAULT_MOCK_MODEL, DEFAULT_MOCK_REPLY, ENV_MOCK_SCRIPT, MockClient, MockReply,
 };

@@ -204,8 +204,7 @@ impl DiGraph {
                 .iter()
                 .map(|p| level.get(p).copied().unwrap_or(0))
                 .max()
-                .map(|m| m + 1)
-                .unwrap_or(0);
+                .map_or(0, |m| m + 1);
             level.insert(label.clone(), l);
         }
         let max_level = level.values().copied().max().unwrap_or(0);
