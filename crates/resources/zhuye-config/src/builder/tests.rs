@@ -84,6 +84,52 @@ fn apply_to_registry_is_additive() {
     assert_eq!(r.list().len(), 2);
 }
 
+/// 回归(v1.10 功能3):`apply_to_registry` 灌入 zhuye-llm 全局窗口覆盖表的
+/// 必须是**合并表**(`effective_context_window_overrides`)——
+/// `[model].context_window`(作用于活跃模型)也要进。此前只灌
+/// `[context_windows]` 段,单模型用户最常见的 `[model] context_window = N`
+/// 写法进不了 llm 侧,`output_budget` 读到的口径与引擎 `SessionConfigured`
+/// 不一致。
+///
+/// 直接断言纯函数(`apply_to_registry` 传给 `set_context_window_overrides`
+/// 的就是它的返回值),不读进程级全局表 —— 并行用例的
+/// `apply_to_registry` 会随时清空全局表,读全局的断言在压测下必闪。
+#[test]
+fn apply_to_registry_feeds_merged_context_window_overrides() {
+    let cfg = ReflectConfig {
+        anthropic: Some(AnthropicSection {
+            api_key: Some("sk-a".into()),
+            base_url: Some("https://example.test".into()),
+            model: Some("zz-merge-model".into()),
+            credentials: vec![],
+            ..Default::default()
+        }),
+        active: crate::schema::ActiveSection {
+            provider: Some("anthropic".into()),
+            ..Default::default()
+        },
+        model: Some(crate::schema::ModelSection {
+            context_window: Some(262_144),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    // [model].context_window 以(归一化后的)活跃模型为键进合并表;
+    // 活跃模型带 provider 前缀 / 大小写差异时同样归一到同一键。
+    let merged = cfg.effective_context_window_overrides("anthropic/ZZ-Merge-Model");
+    assert_eq!(merged.get("zz-merge-model"), Some(&262_144));
+    // [context_windows] per-model 条目照常并入。
+    let cfg2 = ReflectConfig {
+        context_windows: Some(crate::schema::ContextWindowsSection {
+            entries: [("zz-merge-other".to_string(), 32_768)].into(),
+        }),
+        ..cfg
+    };
+    let merged2 = cfg2.effective_context_window_overrides("anthropic/zz-merge-model");
+    assert_eq!(merged2.get("zz-merge-other"), Some(&32_768));
+    assert_eq!(merged2.get("zz-merge-model"), Some(&262_144));
+}
+
 // ── Ollama (v0.3.1) ──────────────────────────────────────────────
 
 #[test]

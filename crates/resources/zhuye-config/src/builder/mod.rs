@@ -107,11 +107,21 @@ impl ReflectConfig {
         if let (Some(provider), Some(label)) = (self.active_provider(), self.active_credential()) {
             registry.set_preferred(provider, &label);
         }
-        // v1.10 功能3:`[context_windows]` 覆盖表同步到 zhuye-llm 进程级
-        // 全局表 —— bootstrap 与热重载共用本 choke point,让
-        // `output_budget`(自适应输出预算)等 provider 侧消费方读到与
-        // 引擎 `SessionConfigured` 一致的窗口口径。键在 llm 侧归一化。
-        zhuye_llm::set_context_window_overrides(&self.context_window_override_entries());
+        // v1.10 功能3:窗口覆盖表同步到 zhuye-llm 进程级全局表 ——
+        // bootstrap 与热重载共用本 choke point,让 `output_budget`(自适应
+        // 输出预算)等 provider 侧消费方读到与引擎 `SessionConfigured`
+        // 一致的窗口口径。键在 llm 侧归一化。
+        //
+        // 用**合并表**(`[context_windows]` + `[model].context_window`):
+        // 此前只灌 `[context_windows]` 段,单模型用户最常见的
+        // `[model] context_window = N` 写法进不了 llm 侧全局表,引擎事件
+        // 报 N 而 output_budget 查不到,自适应输出预算对这类配置不生效。
+        // 模型 spec 用静态解析;`model = "free"` 这类运行时动态值由
+        // headless 在 `resolve_model_spec` 后再同步一次(见 bootstrap_common)。
+        let static_spec = self.resolved_model_spec().unwrap_or_default();
+        zhuye_llm::set_context_window_overrides(
+            &self.effective_context_window_overrides(&static_spec),
+        );
         Ok(())
     }
 
