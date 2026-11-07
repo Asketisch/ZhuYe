@@ -55,6 +55,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 # 外部 mtime 漂移(无需 `std::thread::sleep` 不可靠等待)。
 filetime = { workspace = true }
 tempfile = "3"
+proptest = { workspace = true }
 
 [lints]
 workspace = true

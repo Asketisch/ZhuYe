@@ -15,7 +15,8 @@ async-trait = { workspace = true }
 chrono      = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio    = { workspace = true, features = ["macros", "rt"] }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
