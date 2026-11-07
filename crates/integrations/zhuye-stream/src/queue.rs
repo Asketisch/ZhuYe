@@ -12,12 +12,15 @@
 //!   不真正触发(测试 / 未接 loop 时);
 //! - `session_id` 决定持久化文件(`~/.zhuye/queue/<session>.json`),
 //!   原子落盘(经 `zhuye-fs`),重启后未完成任务回到 Queued;
-//! - 完成信号走引擎 **Stop hook**(注册方 `zhuye-exec::QueueTurnEndHook`
-//!   在 check_stop 节点触发时调 `settle_active` + 立即 `tick`)——
-//!   `TurnComplete` 事件只发 per-submission 通道,session 订阅者看不到;
-//!   `QueueScheduler::start(tick_secs)` 的周期 driver 只作兜底。注意:
-//!   active 任务执行期间用户手动插入的输入若先结束,也会先结清 active
-//!   任务(best-effort 语义,v1 不做 turn 归因)。
+//! - 完成信号走 **turn 终态监视**:出队时经 [`TurnSubmitter`] 拿到该
+//!   submission 的 per-submission 事件通道,spawn 监视任务在
+//!   `TurnComplete` / `TurnAborted` / 通道关闭(异常静默丢弃)时**按任务
+//!   id** 结清并出队下一条。此前唯一结清信号是 Stop hook,但引擎存在
+//!   绕过 check_stop 的结束路径(凭证耗尽 / 重试上限 / 预算耗尽 /
+//!   `Op::Interrupt` / 流取消),会让 active 任务永久卡 `Running`、整条
+//!   队列死锁到重启;且 Stop hook 无法归因 turn,手动输入先结束会误结清
+//!   active 任务。id 归因 + 终态事件监视两者都修复;
+//!   `QueueScheduler::start(tick_secs)` 的周期 driver 只作兜底。
 
 use std::sync::Arc;
 
@@ -25,7 +28,20 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use zhuye_protocol::{Submission, ThreadId};
+use zhuye_protocol::{Event, EventMsg, Submission, ThreadId};
+
+/// turn 注入器:提交 submission 并返回该 submission 的 per-turn 事件
+/// 接收端(由 `zhuye-exec` 用 `AgentThread::submit` +
+/// `TurnHandle::into_receiver` 接线)。返回 `None` = 提交失败
+/// (agent loop 已关闭)。driver 用它观察 turn 终态,按任务 id 结清。
+pub type TurnSubmitter = Arc<
+    dyn Fn(
+            Submission,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<mpsc::Receiver<Event>>> + Send>,
+        > + Send
+        + Sync,
+>;
 
 // ── 任务模型 ─────────────────────────────────────────────────────────
 
@@ -125,6 +141,13 @@ pub struct QueueCounts {
 pub struct QueueScheduler {
     pub(crate) state: Arc<RwLock<QueueState>>,
     pub(crate) sub_tx: Option<mpsc::Sender<Submission>>,
+    /// turn 注入器(出队 → 观察 per-turn 事件终态)。`None` = 回退纯
+    /// `sub_tx` 注入(测试 / 未接线场景,结清走 best-effort 语义)。
+    submitter: Option<TurnSubmitter>,
+    /// driver 唤醒信号:结清 / 入队 / start 时 `notify_one`,driver 不必
+    /// 等周期 tick。监视任务用它代替直接递归调 `tick`(递归 async 会让
+    /// rustc 在 Send 证明上陷入循环义务)。
+    wake: Arc<tokio::sync::Notify>,
     session_id: ThreadId,
     /// 持久化文件(`~/.zhuye/queue/<session>.json`)。`None` = 纯内存。
     store_path: Option<std::path::PathBuf>,
@@ -152,11 +175,26 @@ impl QueueScheduler {
         Self {
             state: Arc::new(RwLock::new(QueueState::default())),
             sub_tx,
+            submitter: None,
+            wake: Arc::new(tokio::sync::Notify::new()),
             session_id,
             store_path: None,
             store_lock: Arc::new(parking_lot::Mutex::new(())),
             store_error: None,
         }
+    }
+
+    /// 接线 turn 注入器(出队时提交 submission 并观察其 per-turn 事件
+    /// 终态,按任务 id 结清)。接线后 `tick` 不再走 `sub_tx` 直发。
+    pub fn with_turn_submitter(mut self, submitter: TurnSubmitter) -> Self {
+        self.submitter = Some(submitter);
+        self
+    }
+
+    /// 唤醒 driver 立即尝试一次出队(不等周期 tick)。未启动 driver 时
+    /// 唤醒信号保留到下次 `notified()`(`Notify` 存单个 permit),无副作用。
+    pub fn wake(&self) {
+        self.wake.notify_one();
     }
 
     /// 启用持久化 —— 从 `path` 加载既有队列(文件缺失 = 空),之后每次
@@ -241,7 +279,17 @@ impl QueueScheduler {
             note: None,
         };
         self.state.write().tasks.push(task.clone());
+        // 存储不可用时任务只存内存(重启即丢),显式 warn 而非静默 ——
+        // 与 remove 的硬失败不对称会让人误以为已持久化。
+        if self.store_error.is_some() {
+            tracing::warn!(
+                id = %task.id,
+                "queue: store unavailable; task is memory-only and will be lost on restart"
+            );
+        }
         self.persist();
+        // 队列已在跑且无 active 时让 driver 立即出队,不等周期 tick。
+        self.wake();
         task
     }
 
@@ -249,17 +297,23 @@ impl QueueScheduler {
     /// (turn 已在跑,等它自己结清)。
     pub fn remove(&self, id: &str) -> Result<bool, String> {
         self.ensure_store_available().map_err(|e| e.to_string())?;
-        let mut st = self.state.write();
-        let Some(idx) = st.tasks.iter().position(|t| t.id == id) else {
-            return Ok(false);
+        // 注意:先改内存、drop 写锁,再落盘 —— 全局锁序是
+        // state → store_lock(单向)。若在此持 state 写锁调 persist
+        // (store_lock → state.read()),与 persist()(store_lock →
+        // state.read())构成 ABBA 反序,两条 tokio worker 互等即死锁。
+        let removed = {
+            let mut st = self.state.write();
+            let Some(idx) = st.tasks.iter().position(|t| t.id == id) else {
+                return Ok(false);
+            };
+            if st.tasks[idx].status == QueueTaskStatus::Running {
+                return Err("running 任务不能删除,等当前 turn 结束或先 pause".into());
+            }
+            st.tasks.remove(idx);
+            true
         };
-        if st.tasks[idx].status == QueueTaskStatus::Running {
-            return Err("running 任务不能删除,等当前 turn 结束或先 pause".into());
-        }
-        st.tasks.remove(idx);
-        self.persist_locked(&st);
-        drop(st);
-        Ok(true)
+        self.persist();
+        Ok(removed)
     }
 
     /// 清空所有**未在执行**的任务(Queued / Done / Failed),保留 Running。
@@ -299,12 +353,19 @@ impl QueueScheduler {
             self.state.write().running = running;
         }
         self.persist();
+        if running {
+            self.wake();
+        }
         tracing::info!(running, "queue: mode toggled");
     }
 
     /// 结清当前 active 任务(收到 `TurnComplete` 时由 driver 调)。
     /// `success` = turn 以 `TurnStatus::Success` 收尾。没有 active 任务
     /// 时是 no-op(普通用户输入的 turn 结束不碰队列)。返回是否结清。
+    ///
+    /// 注意:**无法归因 turn** —— 任何 turn 结束都会结清 active 任务
+    /// (包括用户手动输入先结束的场景)。生产路径请用按 id 结清的
+    /// [`QueueScheduler::settle_task`]。
     pub fn settle_active(&self, success: bool, note: Option<String>) -> bool {
         let mut st = self.state.write();
         let Some(t) = st
@@ -328,12 +389,40 @@ impl QueueScheduler {
         true
     }
 
+    /// 按任务 id 结清(仅当该任务仍为 `Running`;已结清 / 已删除时
+    /// no-op)。turn 终态监视器用它归因,避免误结清别的任务。
+    pub fn settle_task(&self, id: &str, success: bool, note: Option<String>) -> bool {
+        let mut st = self.state.write();
+        let Some(t) = st
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == id && t.status == QueueTaskStatus::Running)
+        else {
+            return false;
+        };
+        t.status = if success {
+            QueueTaskStatus::Done
+        } else {
+            QueueTaskStatus::Failed
+        };
+        t.finished_at = Some(Utc::now());
+        if t.note.is_none() {
+            t.note = note;
+        }
+        drop(st);
+        self.persist();
+        true
+    }
+
     /// 单次出队尝试:running && 无 active && 有 Queued → 首条出队,
     /// 标 Running 并注入 `Submission::user_input`。返回是否出队。
     /// 抽成独立 fn 便于单测(不必真起 driver)。
+    ///
+    /// 接线了 [`TurnSubmitter`] 时:注入后 spawn 监视任务观察该 turn 的
+    /// per-submission 事件,在终态(`TurnComplete` / `TurnAborted`)或
+    /// 通道关闭(异常静默丢弃)时按任务 id 结清并立即尝试出队下一条。
     pub async fn tick(&self) -> bool {
-        // 先判断可出队(不持锁),等通道容量,再持锁复核 —— 镜像
-        // `CronScheduler::tick` 的锁纪律,避免 await 持锁。
+        // 先判断可出队(不持锁),再持锁改状态 —— 避免 await 持锁。
         let next_id = {
             let st = self.state.read();
             if !st.running || st.active().is_some() {
@@ -344,6 +433,10 @@ impl QueueScheduler {
         let Some(id) = next_id else {
             return false;
         };
+        if let Some(submitter) = self.submitter.clone() {
+            return self.tick_with_submitter(submitter, id).await;
+        }
+        // 回退路径(未接线 submitter):直发 sub_tx,不观察终态。
         let permit = match &self.sub_tx {
             Some(tx) => match tx.reserve().await {
                 Ok(p) => Some(p),
@@ -384,23 +477,76 @@ impl QueueScheduler {
         true
     }
 
+    /// `tick` 的 submitter 接线版:标 Running → 提交并观察 turn 终态。
+    async fn tick_with_submitter(&self, submitter: TurnSubmitter, id: String) -> bool {
+        // 先占位(标 Running),提交失败再结清为 Failed —— 占位期间
+        // active().is_some() 阻止并发出队。
+        let started_at = Utc::now();
+        // 占位结果(块内拿写锁;guard 不跨 await)。
+        let dequeued = {
+            let mut st = self.state.write();
+            if !st.running || st.active().is_some() {
+                None
+            } else {
+                match st
+                    .tasks
+                    .iter_mut()
+                    .find(|t| t.id == id && t.status == QueueTaskStatus::Queued)
+                {
+                    Some(t) => {
+                        t.status = QueueTaskStatus::Running;
+                        t.started_at = Some(started_at);
+                        Some((t.id.clone(), t.prompt.clone()))
+                    }
+                    None => None,
+                }
+            }
+        };
+        let Some((t_id, prompt)) = dequeued else {
+            return false;
+        };
+        self.persist();
+        let submission = Submission::user_input(prompt);
+        match submitter(submission).await {
+            None => {
+                // agent loop 已关闭(Shutdown 后):结清为 Failed,不让
+                // 任务卡 Running(重启恢复语义只兜底崩溃场景)。
+                self.settle_task(&t_id, false, Some("submission channel closed".into()));
+                tracing::warn!(task_id = %t_id, "queue: submit failed; task marked failed");
+                false
+            }
+            Some(rx) => {
+                tracing::info!(task_id = %t_id, "queue: task dequeued and injected");
+                let sched = self.clone();
+                // 监视 turn 终态:终态事件或通道关闭(异常路径不总有终态
+                // 事件,但 spawned turn task 结束时通道必然关闭)都结清。
+                // 结清后唤醒 driver 出队下一条(不直接递归调 `tick`)。
+                tokio::spawn(async move {
+                    let (ok, note) = watch_turn_terminal(rx).await;
+                    sched.settle_task(&t_id, ok, note);
+                    sched.wake();
+                });
+                true
+            }
+        }
+    }
+
     /// 启动后台 driver:每 `tick_secs` 秒尝试一次出队(周期兜底)。
     ///
-    /// **完成信号走 Stop hook**(注册方在 `zhuye-exec`:`QueueTurnEndHook`
-    /// 在引擎 check_stop 节点收到 `Stop { reason }` 时结清 active 任务并
-    /// 立即触发下一条出队)—— `TurnComplete` 事件只发往 per-submission
-    /// 通道,session 订阅者看不到,不能作为 driver 的驱动源。本 driver
-    /// 的 interval 只兜底(hook 丢失 / pause 后重新 start 的场景)。
+    /// **完成信号走 turn 终态监视**(见 [`TurnSubmitter`]):出队时拿到
+    /// 该 submission 的 per-submission 事件通道,终态事件 / 通道关闭时
+    /// 按任务 id 结清并立即触发下一条出队。本 driver 的 interval 只兜底
+    /// (监视器丢失 / pause 后重新 start 的场景)。
     /// 返回的 `QueueDriverHandle` drop 时停止 driver。
     pub fn start(self, tick_secs: u64) -> QueueDriverHandle {
         let scheduler = self;
         let join = tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(tick_secs.max(1)));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            interval.tick().await; // 首个 tick 立即返回,跳过
+            let period = std::time::Duration::from_secs(tick_secs.max(1));
             loop {
-                interval.tick().await;
+                // 周期兜底 **或** 被 `wake()` 唤醒(结清 / 入队 / start),
+                // 二者任一到达即尝试出队。timeout 包住 notified 避免引入
+                // select! 宏;Notify 存单个 permit,唤醒不会丢失。
+                let _ = tokio::time::timeout(period, scheduler.wake.notified()).await;
                 let _ = scheduler.tick().await;
             }
         });
@@ -421,18 +567,40 @@ pub struct QueueStatusSummary {
 
 // ── 持久化 ───────────────────────────────────────────────────────────
 
-/// `remove` 持锁落盘(写锁内调用)。
-impl QueueScheduler {
-    fn persist_locked(&self, st: &QueueState) {
-        if self.store_error.is_some() {
-            return;
-        }
-        if let Some(path) = self.store_path.as_deref() {
-            let _guard = self.store_lock.lock();
-            if let Err(e) = save_state(path, st) {
-                tracing::warn!(path = %path.display(), error = %e, "queue: persist failed");
+/// 消费一条已注入 turn 的 per-submission 事件流,直到终态:
+/// - `TurnComplete` → `(status == Success, None)`,非 Success 带 note;
+/// - `TurnAborted` → `(false, Some("turn aborted…"))`;
+/// - 通道关闭但未见终态(错误静默丢弃路径)→ `(false, Some(…))`。
+async fn watch_turn_terminal(mut rx: mpsc::Receiver<Event>) -> (bool, Option<String>) {
+    use zhuye_protocol::TurnStatus;
+    while let Some(ev) = rx.recv().await {
+        match ev.msg {
+            EventMsg::TurnComplete(tc) => {
+                return match tc.status {
+                    TurnStatus::Success => (true, None),
+                    status => (
+                        false,
+                        Some(format!("turn status: {}", turn_status_str(status))),
+                    ),
+                };
             }
+            EventMsg::TurnAborted(_) => {
+                return (false, Some("turn aborted (interrupt / shutdown)".into()));
+            }
+            _ => {}
         }
+    }
+    (false, Some("turn ended without terminal event".into()))
+}
+
+/// `TurnStatus` 的稳定字符串(note 用;不依赖 Debug 输出)。
+fn turn_status_str(s: zhuye_protocol::TurnStatus) -> &'static str {
+    use zhuye_protocol::TurnStatus;
+    match s {
+        TurnStatus::Success => "success",
+        TurnStatus::MaxIterations => "max_iterations",
+        TurnStatus::Stopped => "stopped",
+        TurnStatus::TokenBudgetExceeded => "token_budget_exceeded",
     }
 }
 
@@ -622,5 +790,158 @@ mod tests {
                 "base 应落在 <data>/queue,实际 {base:?}"
             );
         }
+    }
+
+    /// submitter 接线版 tick:注入后监视 turn 终态,TurnComplete(Success)
+    /// → Done;TurnAborted / 通道关闭 → Failed(带 note)。
+    #[tokio::test]
+    async fn submitter_tick_settles_on_turn_terminal_events() {
+        // 每次提交给一条独立事件通道(把事件发送端交给测试,接收端回传给
+        // 监视器);本测试手动喂终态事件,并手动推进 tick(未起 driver)。
+        let (task_tx, mut task_rx) = mpsc::channel::<mpsc::Sender<Event>>(4);
+        let submitter: TurnSubmitter = Arc::new(move |sub| {
+            let tx = task_tx.clone();
+            Box::pin(async move {
+                let (etx, erx) = mpsc::channel(8);
+                let _ = tx.send(etx).await;
+                let _ = sub; // 不真正投递 loop,只回传观察通道
+                Some(erx)
+            })
+        });
+        let q = QueueScheduler::new(None, ThreadId::new()).with_turn_submitter(submitter);
+        q.set_running(true);
+        let t1 = q.enqueue("ok-task", None);
+        assert!(q.tick().await);
+        // 提交成功 → Running;喂 Success 终态 → Done。
+        let etx1 = task_rx.recv().await.expect("submitter called");
+        etx1.send(turn_complete_event(true)).await.unwrap();
+        drop(etx1);
+        wait_for(|| q.list()[0].status == QueueTaskStatus::Done).await;
+        let _ = t1;
+        // Aborted → Failed(带 note)。
+        let t2 = q.enqueue("aborted-task", None);
+        assert!(q.tick().await);
+        let etx2 = task_rx.recv().await.expect("second submitter call");
+        etx2.send(turn_abort_event()).await.unwrap();
+        drop(etx2);
+        wait_for(|| {
+            q.list()
+                .iter()
+                .any(|t| t.id == t2.id && t.status == QueueTaskStatus::Failed)
+        })
+        .await;
+        let t2_final = {
+            let list = q.list();
+            list.iter().find(|t| t.id == t2.id).cloned().unwrap()
+        };
+        assert!(
+            t2_final
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("aborted")),
+            "Aborted 结清应带 note:{:?}",
+            t2_final.note
+        );
+        // 通道关闭但无终态(异常静默丢弃)→ Failed + note。
+        let t3 = q.enqueue("dropped-task", None);
+        assert!(q.tick().await);
+        let etx3 = task_rx.recv().await.expect("third submitter call");
+        etx3.send(make_event("irrelevant")).await.unwrap();
+        drop(etx3);
+        wait_for(|| {
+            q.list()
+                .iter()
+                .any(|t| t.id == t3.id && t.status == QueueTaskStatus::Failed)
+        })
+        .await;
+        let t3_final = {
+            let list = q.list();
+            list.iter().find(|t| t.id == t3.id).cloned().unwrap()
+        };
+        assert!(
+            t3_final
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("without terminal")),
+            "静默丢弃结清应带 note:{:?}",
+            t3_final.note
+        );
+    }
+
+    /// 归因回归:别的 turn 的终态(监视器之外的 settle_active 语义)
+    /// 不得误结清 Running 任务 —— settle_task 只按 id 生效。
+    #[tokio::test]
+    async fn settle_task_is_id_attributed() {
+        let q = QueueScheduler::new(None, ThreadId::new());
+        q.set_running(true);
+        let a = q.enqueue("a", None);
+        q.state.write().tasks[0].status = QueueTaskStatus::Running;
+        // 未知 id / 已结清 id → no-op,不碰 Running。
+        assert!(!q.settle_task("nope", true, None));
+        assert!(q.settle_task(&a.id, false, Some("boom".into())));
+        assert_eq!(q.status().counts.failed, 1);
+        // 再结清同 id(已 Failed)→ no-op,note 不被覆盖。
+        assert!(!q.settle_task(&a.id, true, None));
+        assert_eq!(q.list()[0].note.as_deref(), Some("boom"));
+    }
+
+    /// submitter 返回 None(通道关闭)→ 任务结清 Failed,不卡 Running。
+    #[tokio::test]
+    async fn submitter_closed_channel_marks_failed() {
+        let submitter: TurnSubmitter = Arc::new(|_| Box::pin(async move { None }));
+        let q = QueueScheduler::new(None, ThreadId::new()).with_turn_submitter(submitter);
+        q.set_running(true);
+        let t = q.enqueue("lost", None);
+        assert!(!q.tick().await, "提交失败不算成功出队");
+        let final_t = q.list().into_iter().find(|x| x.id == t.id).unwrap();
+        assert_eq!(final_t.status, QueueTaskStatus::Failed);
+        assert_eq!(q.status().counts.running, 0, "不得残留 Running");
+    }
+
+    // ── 测试辅助 ─────────────────────────────────────────────────────
+
+    fn make_event(kind_text: &str) -> Event {
+        Event::new(
+            zhuye_protocol::EVENT_ID_NONE,
+            EventMsg::AgentMessageDelta(zhuye_protocol::AgentMessageDelta {
+                delta: kind_text.into(),
+            }),
+        )
+    }
+
+    fn turn_complete_event(success: bool) -> Event {
+        Event::new(
+            zhuye_protocol::EVENT_ID_NONE,
+            EventMsg::TurnComplete(zhuye_protocol::TurnCompleteEvent {
+                turn_id: zhuye_protocol::TurnId::new(),
+                usage: Default::default(),
+                status: if success {
+                    zhuye_protocol::TurnStatus::Success
+                } else {
+                    zhuye_protocol::TurnStatus::MaxIterations
+                },
+            }),
+        )
+    }
+
+    fn turn_abort_event() -> Event {
+        Event::new(
+            zhuye_protocol::EVENT_ID_NONE,
+            EventMsg::TurnAborted(zhuye_protocol::TurnAbortedEvent {
+                turn_id: zhuye_protocol::TurnId::new(),
+                reason: zhuye_protocol::AbortReason::UserInterrupt,
+            }),
+        )
+    }
+
+    /// 轮询断言(watcher 是 spawn 的异步任务,给一点调度时间)。
+    async fn wait_for(f: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(f(), "条件在 1s 内未满足");
     }
 }
