@@ -10,6 +10,7 @@ shell hook 与 MCP server 表达,权限模型与内置工具一致。
 > `.claude-plugin/plugin.json`(Claude Code 兼容格式),capability 声明
 > 语义对齐 Claude Code 插件,便于现成插件迁移。
 >
+> 上手教程见 [`plugin-dev-guide.md`](plugin-dev-guide.md)（社区向：从零到发布);
 > 本文覆盖**作者向**(manifest 字段、capability 声明、安全模型)与
 > **使用者向**(CLI 命令、状态源、热重载、排障)。marketplace 的发布侧
 > 见 [`plugin-marketplace.md`](plugin-marketplace.md)。
