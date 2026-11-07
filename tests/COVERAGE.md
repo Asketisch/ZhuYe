@@ -258,15 +258,29 @@ O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存�
 - **V6 插件门控对照**:未启用 goal-queue → `queue` 工具 tool not found;
 - **V7 队列全链路**:plugin install + enable → mock 调 `queue add/start`
   成功 → 任务落 `~/.zhuye/queue/<thread_id>.json`(id / prompt / name
-  字段级)→ Stop hook 结清后状态 `done`(started_at / finished_at 记录);
+  字段级)→ 出队注入的 turn 以 TurnComplete 收尾后状态 `done`
+  (started_at / finished_at 记录)。结清信号是 per-turn 事件监视
+  (`QueueScheduler::with_turn_submitter` + `TurnHandle::into_receiver`,
+  按任务 id 归因,TurnComplete / TurnAborted / 通道关闭三类终态都结清)
+  —— 曾用 Stop hook 作唯一信号,绕过 check_stop 的结束路径(凭证耗尽 /
+  预算耗尽 / Interrupt)会让 active 永久卡 Running;该路径的单测在
+  `zhuye-stream::queue::tests`(submitter_tick_settles_on_turn_terminal_events
+  / settle_task_is_id_attributed / submitter_closed_channel_marks_failed);
 - **V8 goal 工具**:`goal status` 报未激活;`goal enter` 提交 Op(输出
   回显目标)、无 `GOAL_NO_CLIENT` 错误;
 - **V9 一键导入**:`zhuye-import config --home <fixture> --output` dry-run
   不写文件 + 报告集合断言(claude-code / opencode×2 / codex 凭证与
-  fetch / http-one / linter MCP);真实导入逐字段断言(凭证 label /
-  api_key / base_url / model;MCP command / args / env / url;codex
-  env_key → 进程 env 解析;空 key 本地端点照常导入);重复导入幂等
-  (providers_skipped / mcp_skipped 集合);
+  fetch / http-one / local-arr / linter MCP;`written=false`);真实导入
+  逐字段断言(凭证 label / api_key / base_url / model;MCP command /
+  args / env / url;opencode 真实形状 `options.baseURL/apiKey` +
+  数组 `command` + `environment`;codex env_key → 进程 env 解析;空 key
+  本地端点照常导入;`written=true`);重复导入幂等(providers_skipped /
+  mcp_skipped 集合、`written=false`、文件逐字节不变);**坏目标文件硬
+  失败**(退出码非 0、stderr 含「解析失败」且不泄露密钥所在源码行、原
+  文件原样保留 —— 此前降级为 Default 后无条件写回,等于清空用户全部
+  既有配置)。各来源解析形状(opencode V1/V2、crush.json、Claude Code
+  AUTH_TOKEN 回落、codex 一律 OpenAI wire、Gemini httpUrl/url 语义、
+  legacy 单值 api_key 先 wrap 再追加)由 `zhuye-import` 单测覆盖;
 - **V10 导入产物可运行**:导入后的 config.toml 下 serve 以 mock 正常
   起会话并收尾 turn。
 
@@ -301,10 +315,18 @@ O8 拒绝绝对路径及多级列表 ID(任务管理器单测同时覆盖内存�
 ### V 组补:v1.x WASM 插件(多语言生态,`test_v110.py`)
 
 - V12:Rust 组件(demo_echo 工具 + wasm hook)经 demo 插件端到端 ——
-  安装/启用 → 进程内实例化 → 回合完成无 error(wasm tool 注册 +
-  hook 决策路径 fail-closed 未误触发)。产物缺失即 skip
-  (`scripts/build_plugin_demo_wasm.sh` 构建)。宿主-组件契约闭环
-  (allow/inject/超时 Deny/describe/invoke)由 `zhuye-wasm` 单测覆盖。
+  安装/启用 → 进程内实例化 → mock 调 `demo_echo` 的 `tool_call_end`
+  回显输入文本且 `is_error=false`(覆盖注册 → 模型可见 → invoke →
+  输出全链路);serve stderr 出现 `wasm hook registered` /
+  `wasm tool registered`(hooks.json 的 `wasm` 字段曾在解析层被丢弃、
+  `WasmHook::events()` 曾返回空切片,wasm hook 从未注册 / 派发过 ——
+  两处断言即防回归)。样例产物随插件入库(重建用
+  `scripts/build_plugin_demo_wasm.sh`)。宿主-组件契约闭环(allow /
+  inject / matcher 不命中 Allow / 超时 Deny / describe / invoke)与
+  决策协议双键兼容(`action` / `decision`、`block` / `message` 别名)、
+  工具输出缺省字段(`metadata` / `elapsed_ms` 可省)由 `zhuye-wasm`
+  单测覆盖;hooks.json `wasm` 字段存活与 `${PLUGIN_ROOT}` 展开由
+  `zhuye-plugin::capabilities::hooks` 单测覆盖。
 
 ### C 组 CLI 能力面(`test_cli.py`)
 `serve` 三个恢复入口 / `exec` 输出每行是合法 JSON 且含 turn 事件 /
