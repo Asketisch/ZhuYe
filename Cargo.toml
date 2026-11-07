@@ -255,6 +255,9 @@ tracing-opentelemetry = "0.28"
 # 测试(M1)
 wiremock = "0.6"
 insta    = { version = "1", features = ["yaml"] }
+# v1.x:property-based 测试(rust-testing skill 落地):纯函数不变式
+# (UTF-8 边界、脱敏幂等、压缩配对)用随机输入探索,补手写用例盲区。
+proptest = "1"
 
 [profile.release]
 lto = "thin"
