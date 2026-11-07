@@ -41,11 +41,12 @@ jobs:
       matrix:
         include:
           - os: macos-arm64
-            runner: macos-14
-          # macos-13(Intel)runner 已淘汰、无限排队 —— x64 改在 arm64
+            runner: macos-15
+          # macos-13(Intel)已淘汰、macos-14 镜像 2026-11-02 淘汰(改用
+          # macos-15)—— x64 交叉编译
           # runner 上交叉编译(build.sh --target,DMG 命名同步)。
           - os: macos-x86_64
-            runner: macos-14
+            runner: macos-15
             cross-target: x86_64-apple-darwin
           - os: linux
             runner: ubuntu-22.04
