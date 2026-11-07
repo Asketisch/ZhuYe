@@ -325,8 +325,7 @@ fn exec_capable() -> bool {
                 ])
                 .env("LANDLOCK_PROBE_CHILD", "1")
                 .status()
-                .map(|s| s.success())
-                .unwrap_or(false),
+                .is_ok_and(|s| s.success()),
             Err(_) => true,
         }
     }
