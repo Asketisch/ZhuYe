@@ -1,21 +1,21 @@
 //! `loader` —— 把 `PluginManager` 的 install + `capabilities::scan_all` 串联起来,
 //! 并提供 `LoaderRegistries` orchestrator 把扫描结果真接到主程序各 registry。
 //!
-//! ## Phase A vs Phase B 范围
-//! - Phase A: `scan()` —— 纯函数,只扫,不挂。
-//! - Phase B: `LoaderRegistries` + `register`/`unregister` —— 把 5 类
-//!   能力真接到 `ToolRegistry` / `HookEngine` / `McpConnectionManager` /
-//!   `SkillsCatalog` / `SubAgentFactory`。
+//! ## 两步流程
+//! - `scan()` —— 纯函数,只扫,不挂(`capabilities::scan_all`)。
+//! - `register` / `unregister` —— 把能力真接到 `ToolRegistry` /
+//!   `HookEngine` / `McpConnectionManager` / `SkillsCatalog` /
+//!   `SubAgentFactory`,以及插件 slash 命令的 `CommandRegistry`。
 //!
-//! ## 当前实现范围
+//! ## 当前实现范围(全部能力接通)
 //! - **Skills**: 完整接入(`LoadedSkill` → `SkillMeta` → `add_plugin_skills`)
 //! - **MCP servers**: 完整接入(`start_server_with_namespace` + scoped name)
 //! - **Agents**: 完整接入(parse frontmatter → `SubAgentSpec` →
 //!   `register_plugin_spec` + `CallSubAgentTool` → `register_plugin_tool`)
 //! - **Commands**: 完整接入(`LoadedCommand` → [`CommandRegistry`];展开在
 //!   exec / serve / 门面的用户输入层,`expand_user_input`)
-//! - **Hooks**: deferred 到 Phase B-internal 收尾(需要 `ShellHook` 实现,
-//!   涉及 child-process spawning,工作量独立)
+//! - **Hooks**: 完整接入(`LoadedHook` → `ShellHook` 真挂载;WASM hook 走
+//!   `WasmHook` 进程内实例,见 `register` 第 4 步)
 
 use std::path::Path;
 use std::sync::Arc;
@@ -31,8 +31,8 @@ use crate::commands_registry::CommandRegistry;
 use crate::identifier::PluginId;
 use crate::manifest::PluginManifest;
 
-/// 一组共享 registry 引用 —— 给 `PluginManager` 持有,`register` / `unregister`
-/// 通过它真接挂 / 反挂 plugin 能力。
+/// 一组共享 registry 引用 —— 由 `crate::runtime::PluginRuntime` 持有,
+/// `register` / `unregister` 通过它真接挂 / 反挂 plugin 能力。
 ///
 /// 用 `Arc` 持有所有 registry,与 `PluginManager` 共享同一份,避免
 /// `clone()` 引起的多实例不一致。
@@ -65,7 +65,7 @@ impl LoaderRegistries {
     }
 }
 
-/// 从 manifest + install_path 扫描所有能力(Phase A 入口,保留)。
+/// 从 manifest + install_path 扫描所有能力(只扫不挂的入口)。
 ///
 /// 这一步不触发任何全局状态变更 —— 它是纯函数(除磁盘 IO 与日志外)。
 pub fn scan(
@@ -80,8 +80,8 @@ pub fn scan(
 ///
 /// 成功路径:每类能力都注册成功,返回 `Ok(())`。
 /// 失败路径:已注册的项保留(部分成功),错误累积到 `errors` 返回。
-/// 调用方决定是否回滚 —— Phase B 选择保留 partial 状态,UI 在 `errors`
-/// 里看到失败的能力。
+/// 调用方决定是否回滚 —— 当前实现选择保留 partial 状态,调用方在
+/// `errors` 里看到失败的能力。
 pub async fn register(
     registries: &LoaderRegistries,
     loaded: &LoadedPlugin,

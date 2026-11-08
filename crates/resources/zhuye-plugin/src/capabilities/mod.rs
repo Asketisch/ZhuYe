@@ -4,11 +4,11 @@
 //! - 接收 `&PluginManifest` + `install_path` + 各 spec 字段对应的来源
 //! - 扫描/解析 plugin 文件,返回 `LoadedCapability` 子结构
 //! - **不**直接调用 `ToolRegistry` / `HookEngine` 等 —— 实际注册由
-//!   Phase B 的 `PluginManager::load(plugin)` 在挂载阶段统一做。
+//!   `crate::loader::register` 在挂载阶段统一做。
 //!
 //! 这样做的好处:loader 是纯函数,易于测试,且不引入对其他 crate 的依赖。
-//! 后续 Phase B 接管"已注册项 → 实际 registry"映射时,只需替换
-//! `loader.rs::load(plugin)` 的实现,loader 函数保持稳定。
+//! "已扫描项 → 实际 registry"的映射集中在 `loader.rs::register`,
+//! loader 函数保持稳定。
 
 pub mod agents;
 pub mod commands;
@@ -23,8 +23,8 @@ use crate::manifest::PluginManifest;
 
 /// 一次 plugin load 的综合报告 —— 5 类能力的扫描结果。
 ///
-/// 各字段都是 `Vec` 而非 `HashMap` 以保留顺序。Phase B 真正挂载时,
-/// loader 会遍历这个结构,逐项注册。
+/// 各字段都是 `Vec` 而非 `HashMap` 以保留顺序。`loader::register` 挂载时
+/// 遍历这个结构,逐项注册。
 #[derive(Debug, Clone)]
 pub struct LoadedPlugin {
     pub plugin_id: PluginId,

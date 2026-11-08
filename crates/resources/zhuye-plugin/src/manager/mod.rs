@@ -1,19 +1,19 @@
-//! `PluginManager` —— 本地 install / uninstall / list 的核心骨架。
+//! `PluginManager` —— 本地 install / uninstall / list 的核心。
 //!
-//! v0(Phase A)范围:
+//! 范围:
 //! - `install_local(path)` —— 读 manifest、校验、复制到 cache 目录、
 //!   写 `installed_plugins.json` 条目
+//! - `install_from_marketplace(...)` —— 经 marketplace fetcher 拉取
+//!   (Git / File / Directory / Url / Github 五种 source)+ `DepResolver`
+//!   后序安装依赖
 //! - `uninstall(id, scope)` —— 移除 JSON 条目 + 删除 cache 子树
-//! - `list_installed()` / `iter_installed()` —— UI / 测试用视图
+//! - `list_installed()` / `entries_for()` 等视图 —— UI / 测试用
 //! - `save()` / `load()` —— 持久化 round-trip
 //!
-//! Phase A 不做:
-//! - 5 类 capability 实际挂载(load/unload 留 Phase B,因为这要修改
-//!   `zhuye-tools` / `zhuye-hooks` / `zhuye-mcp` / `zhuye-skills`
-//!   / `zhuye-subagent` 五个 crate,工作量与风险都更大)
-//! - marketplace 拉取(Phase D)
-//! - HTTP / Git / sha 校验(Phase E)
-//! - 依赖解析(Phase F)
+//! 职责边界:本类型只管「装到磁盘 + 记账」;能力的实际挂载
+//! (`scan` → `register`)由 [`crate::loader`] 完成,运行时装配在
+//! [`crate::runtime::PluginRuntime`](它同时持有 manager 与
+//! `LoaderRegistries`)。
 //!
 //! 设计要点:
 //! - `plugins_root` 默认 `~/.zhuye/plugins`,但所有 API 接受
@@ -50,9 +50,11 @@ const CACHE_DIR: &str = "cache";
 
 /// 线程安全的插件管理器。
 ///
-/// v0 仅持有 `installed_plugins.json` 的内存视图与 `plugins_root`。
-/// 后续 Phase B 会再持有 ToolRegistry / HookEngine / McpConnectionManager
-/// 等引用,用于 load/unload。
+/// 持有 `installed_plugins.json` 的内存视图与 `plugins_root`,负责
+/// 安装 / 卸载 / 查询;各 registry(`ToolRegistry` / `HookEngine` /
+/// `McpConnectionManager` 等)的挂载引用由
+/// [`crate::runtime::PluginRuntime`] 经 [`crate::loader::LoaderRegistries`]
+/// 持有,与本类型解耦。
 pub struct PluginManager {
     plugins_root: PathBuf,
     state: InstalledPluginsFile,

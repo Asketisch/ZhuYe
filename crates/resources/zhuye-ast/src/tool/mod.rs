@@ -2,9 +2,9 @@
 //!
 //! 整个 tree-sitter 集成对 LLM 呈现为一个 tool:`ast`。`action` 字段
 //! 决定走哪条路径(`list_languages` / `search` / `replace` /
-//! `rename_symbol`),`path` / `pattern` / `replacement` 等按 action 在
-//! P1+ 增量补全。P0 仅 `list_languages` 真正实现,其他 action 返回
-//! "not implemented" 错误,方便上层尽早发现 wiring 问题而不影响行为。
+//! `rename_symbol`),`path` / `pattern` / `replacement` 等参数按 action
+//! 取用。4 个 action 均已实装:`list_languages` / `search` 只读;
+//! `replace` / `rename_symbol` 写盘前经 approval gate 确认。
 //!
 //! ## 参数 schema
 //!
@@ -14,13 +14,13 @@
 //!   "properties": {
 //!     "action": { "type": "string", "enum": ["list_languages", "search",
 //!                                              "replace", "rename_symbol"] },
-//!     "path":   { "type": "string" },                 // P1+ 起用于:search / replace
-//!     "pattern":{ "type": "string" },                 // P1+ 起用于:search / replace
-//!     "replacement": { "type": "string" },            // P3:replace 的替换文本
-//!     "from":   { "type": "string" },                 // P3:rename_symbol 的原符号名
-//!     "to":     { "type": "string" },                 // P3:rename_symbol 的新符号名
-//!     "include":   { "type": "string" },              // P2:text 模式的 include glob
-//!     "max_results": { "type": "integer", "minimum": 0 } // P2:text 模式的截断上限
+//!     "path":   { "type": "string" },                 // search / replace / rename_symbol 用;text: 模式作搜索根(可省)
+//!     "pattern":{ "type": "string" },                 // search / replace 用
+//!     "replacement": { "type": "string" },            // replace 的替换文本
+//!     "from":   { "type": "string" },                 // rename_symbol 的原符号名
+//!     "to":     { "type": "string" },                 // rename_symbol 的新符号名
+//!     "include":   { "type": "string" },              // text 模式的 include glob
+//!     "max_results": { "type": "integer", "minimum": 0 } // text 模式的截断上限
 //!   },
 //!   "required": ["action"],                           // 仅 action 必填
 //!   "additionalProperties": false                     // 禁止多余字段
@@ -34,17 +34,18 @@
 //!   返回 `Prompt` 走 `ApprovalGate`;`list_languages` / `search` 返回 `Auto`。
 //! - `is_concurrency_safe = false` —— 保守值;只读工具后续可切 true。
 //!
-//! ## 搜索 action(P1/P2)
+//! ## 搜索 action
 //!
 //! - `kind:<node>` / `regex:<re>` —— 走 `LanguageGrid::parse` + tree-sitter 遍历。
 //!   `path` 必填(单文件),`pattern` 必填;`include` / `max_results` 仅对 `text:` 生效。
 //! - `text:<literal>` —— 走 `ignore::WalkBuilder`,`path` 是搜索根目录(可省,
 //!   默认 workspace 根)。返回 `path:line:text` 行格式(对齐 `grep` builtin)。
 //!
-//! ## 替换 / 重命名符号(P3)
+//! ## 替换 / 重命名符号
 //!
 //! - `replace` / `rename_symbol` 是变更操作,经 `Tool::action_permission` 切
-//!   `Prompt`(走 `ApprovalGate`)。当前 stub 返回 P3 占位。
+//!   `Prompt`(走 `ApprovalGate`);`execute` 内在写盘前再经 `ctx.approval`
+//!   ask(`RiskLevel::High`),Deny 返回 `is_error: true` 的输出而不抛 `Err`。
 //!
 //! ## 错误映射
 //!
@@ -52,7 +53,7 @@
 //! - `search` 路径上 `path` / `pattern` 缺失 → `ToolError::InvalidArgs`
 //! - 后缀无 grammar / 解析失败 → `ToolError::InvalidArgs`(转 `AstError`)
 //! - 读文件 IO 错 → `ToolError::Io`
-//! - 写文件 IO 错(P3) → `ToolError::Io`
+//! - 写文件 IO 错 → `ToolError::Io`
 
 use std::fs;
 use std::path::Path;
@@ -132,15 +133,15 @@ impl Tool for AstTool {
                 },
                 "replacement": {
                     "type": "string",
-                    "description": "Replacement text for replace action (P3)"
+                    "description": "Replacement text for replace action"
                 },
                 "from": {
                     "type": "string",
-                    "description": "Original symbol name for rename_symbol (P3)"
+                    "description": "Original symbol name for rename_symbol"
                 },
                 "to": {
                     "type": "string",
-                    "description": "New symbol name for rename_symbol (P3)"
+                    "description": "New symbol name for rename_symbol"
                 },
                 "include": {
                     "type": "string",
@@ -158,8 +159,9 @@ impl Tool for AstTool {
     }
 
     fn is_concurrency_safe(&self) -> bool {
-        // P0 保守:串行。P3 切 per-action 表(读 action → true,
-        // 变更 action → false)。
+        // 保守恒串行:本方法不接 args,无法按 action 细分;per-action 的
+        // 只读/写判定保留在 `AstAction::is_concurrency_safe` 与
+        // `is_read_only`,供需要时在 execute 层面利用。
         false
     }
 

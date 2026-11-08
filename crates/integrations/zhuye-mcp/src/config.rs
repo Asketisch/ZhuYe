@@ -1,10 +1,8 @@
 //! MCP server 强类型配置。
 //!
 //! 在 `zhuye_config::McpServerEntry` 之上加一层 "rmcp-ready" 表示,
-//! `McpConnectionManager::start_server` 直接消费本层类型。
-//!
-//! 完整实现见 `Step 2` / `Step 4`。本文件先放最小桩以让
-//! `cargo build -p zhuye-mcp` 通过。
+//! `McpConnectionManager::start_server` 直接消费本层类型;stdio / http
+//! 的实际建立见 `transport.rs`。
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -18,7 +16,9 @@ pub enum McpTransport {
     Stdio,
     /// Streamable HTTP,别名 `streamable-http`。
     Http,
-    /// Legacy MCP HTTP+SSE(GET events + POST endpoint)。
+    /// Legacy MCP HTTP+SSE(仅作兼容别名):当前实现直接委托
+    /// streamable-http 客户端,旧式 GET-endpoint 握手未实现,
+    /// 见 `transport.rs::build_sse`。
     Sse,
 }
 

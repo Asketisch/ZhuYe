@@ -1,9 +1,11 @@
 //! `zhuye-plugin` —— 插件 manifest、lifecycle 与 capability loader。
 //!
-//! v0 阶段仅暴露数据模型层(`PluginManifest` / `PluginId` /
-//! `PluginStatus` / `InstalledPluginsFile` 等)。Phase A 后续小步
-//! 加入 `PluginManager::install_local` 与五类 capability loader,
-//! 并接入 `zhuye-exec::handle_reload` 的 plugins 分支。
+//! 覆盖插件全生命周期:manifest 解析(`PluginManifest` / `PluginId` /
+//! `PluginStatus` / `InstalledPluginsFile`)、本地安装与 marketplace
+//! 拉取(`manager`)、五类 capability(commands / agents / hooks /
+//! skills / mcp,外加 wasm_tools)的扫描与挂载(`capabilities` +
+//! `loader::LoaderRegistries`),并接入 `zhuye-exec::handle_reload` 的
+//! plugins 分支。
 //!
 //! 关键 schema 字段保持一致,便于跨工具互读 manifest。
 //!

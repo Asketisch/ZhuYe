@@ -6,10 +6,10 @@
 //! - `Inline(json)` —— 内联 JSON
 //! - `Many([...])` —— 多源叠加
 //!
-//! v0 阶段我们只解析 JSON 结构,不真正构造 `zhuye_hooks::Hook` 对象
-//! (那一步依赖 `Hook` trait 的具体 impl,由 Phase B 接管)。每个 hook
-//! 声明给出事件名 + matcher + 实际命令 —— Phase B 把命令包装成
-//! `Hook` 实例。
+//! 本模块只解析 JSON 结构(`LoadedHook`);把命令包装成
+//! `ShellHook` / `WasmHook` 实例挂到 `HookEngine` 由
+//! `crate::loader::register` 完成。每个 hook 声明给出事件名 + matcher +
+//! 实际命令。
 
 use std::path::{Path, PathBuf};
 

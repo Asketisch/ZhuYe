@@ -12,8 +12,8 @@ use crate::manifest::SkillSpec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedSkill {
-    /// skill 名 —— `<name>` 段。Phase B 注入 `SkillsCatalog` 时与
-    /// plugin 命名空间组合。
+    /// skill 名 —— `<name>` 段。`loader::register` 注入 `SkillsCatalog`
+    /// 时与 plugin 命名空间组合。
     pub name: String,
     /// SKILL.md 文件绝对路径。
     pub skill_md: PathBuf,
