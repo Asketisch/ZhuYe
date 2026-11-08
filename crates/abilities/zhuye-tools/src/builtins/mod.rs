@@ -58,7 +58,7 @@ mod tests {
     use crate::Tool;
 
     #[test]
-    fn all_builtin_descriptions_are_loaded_from_prompt_resources() {
+    fn builtin_descriptions_are_loaded_from_prompt_resources() {
         let tool_search = ToolSearchTool::new(std::sync::Arc::new(crate::ToolRegistry::new()));
         let web_fetch = WebFetchTool::default();
         let web_search = WebSearchTool::new();

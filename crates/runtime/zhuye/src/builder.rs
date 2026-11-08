@@ -5,14 +5,17 @@
 //!
 //! 两种构造模式:
 //!
-//! 1. **Yolo / minimal** —— `Zhuye::builder("openai/gpt-4o").build()`
-//!    直接得到一个 thread,内置 7 个 builtin 工具已注册,
-//!    `approvals: true`,所以 Prompt 权限工具会弹 modal。
-//!    不挂 M4 —— 适合最小集成 / 单测。
+//! 1. **一键启动** —— `Zhuye::builder("openai/gpt-4o").build()`
+//!    直接得到一个 thread:内置 builtin 工具全量注册
+//!    (经 `zhuye_tools::register_builtin_tools`,与 exec / serve 共用
+//!    单一事实源),完整 M4 依赖已装配,`approvals` 默认 `true`,
+//!    Prompt 权限工具会弹 modal。适合最小集成 / 单测。
 //!
-//! 2. **完整 M4** —— `build()` / `build_async()` 始终构造完整 M4 依赖
-//!    (compactor + memory + skills + prompt builder + agent def),
-//!    并在 `~/.zhuye/sessions/` 下挂一个 JSONL rollout recorder。
+//! 2. **完整 M4 + 扩展注入** —— `build()` / `build_async()` 始终构造
+//!    完整 M4 依赖(compactor + memory + skills + prompt builder +
+//!    agent def),并在 `~/.zhuye/sessions/` 下挂一个 JSONL rollout
+//!    recorder;自定义工具 / hook / skills / 插件经 builder setter 注入
+//!    (`build_async` 额外接 MCP manager 与 SubAgentFactory)。
 //!    适合任何真正需要可恢复的 session。详见 `m4_bootstrap.rs`。
 
 use std::path::{Path, PathBuf};
@@ -320,7 +323,8 @@ impl ZhuyeBuilder {
 
     /// 消费 builder 构造一个 [`Zhuye`]。从当前 `OPENAI_API_KEY` /
     /// `ANTHROPIC_API_KEY` 环境变量新建一个 `ModelRegistry`,并在
-    /// `ToolRegistry` 上注册 7 个 builtin 工具。
+    /// `ToolRegistry` 上注册全部内置工具(经
+    /// `zhuye_tools::register_builtin_tools`,与 exec / serve 共用)。
     ///
     /// `build` 始终构造完整 m4(单 agent 场景必须挂 compactor / memory
     /// 等才能跑),与 `zhuye-exec` 路径对齐 —— 不需要单独的
@@ -1308,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn default_tool_registry_has_seven_builtins_plus_plan_tools_plus_ast_plus_web() {
+    fn default_tool_registry_has_all_builtins_plus_plan_tools_plus_ast_plus_web() {
         // 内置清单收编至 zhuye_tools::register_builtin_tools(单一事实源,
         // 与 exec / serve 共用)。全量 26 个(含 AskUser / ToolSearch /
         // Checkpoint / Rewind 等此前门面缺失的 9 个)。
@@ -1342,7 +1346,7 @@ mod tests {
     /// (直接测 `with_initial_permission_mode` API,不 spawn submission_loop 避免
     /// 泄漏后台 task 让 `builder_rejects_when_no_keys_present` 之类的并发测试 hang)。
     /// builder 这边的 wiring 是 1 行 `if self.plan_mode { cfg = cfg.with_initial_permission_mode(...) }`
-    /// —— 由 `default_tool_registry_has_seven_builtins_plus_plan_tools` 之类的
+    /// —— 由 `default_tool_registry_has_all_builtins_plus_plan_tools` 之类的
     /// build 路径间接覆盖。
     ///
     /// **0.5 补强**:permission mode 单独存在时**没有任何强制力** ——

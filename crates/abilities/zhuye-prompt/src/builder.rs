@@ -138,8 +138,10 @@ pub const CORE_PREFIX: &str = "## Core System Prompt";
 
 /// 三层 system prompt 组合。
 ///
-/// `core` 可缓存;`append` 保留待用;`ephemeral` 注入为 `User` 消息,
-/// 永远不进缓存。
+/// `core` 稳定可缓存;`append` 当前未使用(保留层);`ephemeral` 由
+/// `pre_loop` 以 `SystemBlock { ephemeral: true }` 注入 system 数组,
+/// 不可缓存(不再作为 trailing User 消息注入,见模块级 doc 的
+/// v1.x 修订说明)。
 #[derive(Debug, Clone, Default)]
 pub struct LayeredPrompt {
     /// 稳定、可缓存的基础(agent 的 system_prompt + 内存)。

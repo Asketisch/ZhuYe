@@ -67,9 +67,9 @@ pub struct LlmContext {
     pub specs: HashMap<AgentId, SubAgentSpec>,
     /// 讨论主题;注入每轮 prompt 头部。
     pub topic: String,
-    /// 共享 [`SubAgentFactory`] —— 所有 spawned agent 共享同一个 depth
-    /// 计数器,所以**整个 discussion 期间最多 3 次 spawn**(详见模块
-    /// 级 rustdoc 「已知限制」段)。
+    /// 共享 [`SubAgentFactory`] —— 所有 spawned agent 共享同一个并发
+    /// in-flight 计数器(上限 `MAX_DEPTH` = 16,participant 数含嵌套
+    /// 超过即返回 `MaxDepthExceeded`;详见模块级 rustdoc「并发深度」段)。
     pub factory: Arc<SubAgentFactory>,
     /// v0.2.4 起: 每个 participant 对应一个 `Arc<Mutex<Option<TokenUsage>>>` 槽,
     /// 与 `DiscussionToolSet` 共享(spawning thread 在 `collect_result_with_usage`

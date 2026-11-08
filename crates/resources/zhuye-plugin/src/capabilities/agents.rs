@@ -2,8 +2,9 @@
 //!
 //! 对齐 `loadPluginAgents.ts:37-63`。每个 markdown 文件含 YAML frontmatter,
 //! 字段:name / description / when-to-use / tools / disallowedTools / model /
-//! maxTurns 等。v0 阶段我们只解析 frontmatter 的 `name` / `description`,
-//! 其余字段原样保留为 JSON 字符串待 Phase B 注入 `SubAgentSpec` 时再细分。
+//! maxTurns 等。本模块只解析 frontmatter 的 `name` / `description`;
+//! 其余字段原样保留在 `frontmatter_raw`,由 `crate::loader::register`
+//! 解析成 `SubAgentSpec` 时细分。
 //!
 //! 命令命名:同 commands,`<plugin_name>:<namespace>:<basename>`。
 
@@ -17,7 +18,8 @@ pub struct LoadedAgent {
     pub name: String,
     pub file_path: PathBuf,
     pub description: Option<String>,
-    /// 整个 frontmatter 块原文 —— Phase B 注入时细分。
+    /// 整个 frontmatter 块原文 —— `loader::register` 构造 `SubAgentSpec`
+    /// 时解析细分。
     pub frontmatter_raw: Option<String>,
 }
 
