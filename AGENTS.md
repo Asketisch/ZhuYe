@@ -92,13 +92,21 @@ make gc                                   # 清 target/debug 中 cargo 不 GC �
    - 能力覆盖用例**只写在 `tests/functional/`** —— 不要在 SDK 测试里重复写
      协议/能力断言;`tests/rust/*.sh` 是 CLI **参数面**的老套件,新增能力
      不往里加(能力面统一用 Python 写)。
-2. **SDK 测试脚本同步** —— 改了协议 / SDK 公开行为 / 事件形状时,**两个 SDK
+2. **SDK 测试与发布文档同步** —— 改了协议 / SDK 公开行为 / 事件形状时,**两个 SDK
    都要看**:
    - Python SDK:`sdks/python/tests/`(纯逻辑,mock serve)与
      `tests/sdk-python/`(真二进制绑定层);
    - TS SDK:`sdks/typescript/tests/`(纯逻辑,mock serve)与
      `tests/sdk-ts/`(真二进制绑定层);
-   - 协议变更是 additive 也必须同步 —— SDK 遇到未知变体要能降级不崩。
+   - 协议变更是 additive 也必须同步 —— SDK 遇到未知变体要能降级不崩;
+   - **发布文档同步**:`sdks/python/README.md` 与 `sdks/typescript/README.md`
+     是 PyPI / npm 页面渲染的正式文档 —— Op / EventMsg 参考表、API 参考
+     必须随协议与公开行为一起更新(additive 新变体也要进表);wire 语义
+     变化同步改 `sdks/PROTOCOL.md`;
+   - **文档门禁**:`./scripts/release_sdk.sh check_docs` 从 `zhuye-protocol`
+     源码提取 Op 全集,自动校验双 README 与双类型层(`zhuye/protocol.py` /
+     `src/protocol.ts`)收录齐全 —— 文档落后协议会在 `check` / `tag`
+     发布前直接失败。
 3. **覆盖矩阵同步** —— `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表随改动
    更新:新增能力补一行;移除能力移到「未覆盖项」并写明原因;发现的 SDK 缺陷
    记入「已知缺陷」。
@@ -114,6 +122,7 @@ make gc                                   # 清 target/debug 中 cargo 不 GC �
 | Rust 核心 / crate | `cargo test --workspace` |
 | serve 协议 / 事件 / 持久化 / 工具 / 编排 / 重连 | `./tests/run_all.sh functional`(能力覆盖层 + Rust 参数面 + 双 SDK 绑定层) |
 | 仅 SDK 绑定逻辑 | `./tests/run_all.sh sdk-python` + `./tests/run_all.sh sdk-ts` |
+| SDK 发布文档(PyPI/npm README / 协议表) | `./scripts/release_sdk.sh check_docs`(文档落后协议直接失败) |
 | CLI 子命令参数面 | `./tests/run_all.sh rust` |
 | 文档 / 注释 | 无需跑测试,自查链接与命令是否仍有效 |
 | 覆盖率检查(可选) | `cargo llvm-cov --workspace --lib --summary-only`(基线 83% 行覆盖;纯函数不变式另有 proptest) |

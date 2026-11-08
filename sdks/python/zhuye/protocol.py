@@ -160,6 +160,62 @@ class ExitGoalModeOp(TypedDict):
     type: Literal["exit_goal_mode"]
 
 
+class PromptCommandOp(TypedDict):
+    """v1.6.1:提示词层管理(list 查询 / switch 重扫 `.zhuye/prompts`)。"""
+
+    type: Literal["prompt_command"]
+    action: dict[str, Any]  # {"type":"list"} | {"type":"switch","layer":str|None}
+
+
+class RescanExtensionsOp(TypedDict):
+    """v1.x:运行时重扫扩展目录(skills 已接线;commands 位回执恒 false)。"""
+
+    type: Literal["rescan_extensions"]
+    skills: bool
+    commands: bool
+
+
+class _SteerOpOptionalFields(TypedDict, total=False):
+    # 缺省 attachment:以 <system-reminder> 包裹注入,不冒充直接指令
+    priority: Literal["now", "attachment"]
+
+
+class SteerOp(_SteerOpOptionalFields):
+    """v1.4 A2:回合中途转向 —— 不打断在飞 turn,下一个安全点注入。"""
+
+    type: Literal["steer"]
+    items: list[dict[str, Any]]  # UserInputItem wire dict(text/image)
+
+
+class QuerySubagentsOp(TypedDict, total=False):
+    """v1.4 C1:查询子代理状态快照;应答 subagent_status 事件。"""
+
+    type: Literal["query_subagents"]
+    child_id: str  # 缺省 = 查询全部
+
+
+class StartSideChannelOp(TypedDict):
+    """v1.x:启动 side-channel agent(用户驱动的并发独立 agent)。"""
+
+    type: Literal["start_side_channel"]
+    agent: str
+    prompt: str
+
+
+class CancelSideChannelOp(TypedDict):
+    """v1.x:取消 side-channel(未知 / 已终态 id 为 noop,不回错误)。"""
+
+    type: Literal["cancel_side_channel"]
+    id: str
+
+
+class QuerySideChannelsOp(TypedDict, total=False):
+    """v1.x:查询 side-channel 快照;应答 side_channel_status 事件。"""
+
+    type: Literal["query_side_channels"]
+    id: str  # 缺省 = 列出全部
+
+
 class RemoteToolSpec(TypedDict):
     """v1.3 SDK:客户端自定义工具声明。"""
 
@@ -199,6 +255,13 @@ Op = Union[
     CyclePermissionModeOp,
     EnterGoalModeOp,
     ExitGoalModeOp,
+    PromptCommandOp,
+    RescanExtensionsOp,
+    SteerOp,
+    QuerySubagentsOp,
+    StartSideChannelOp,
+    CancelSideChannelOp,
+    QuerySideChannelsOp,
     RegisterToolsOp,
     ToolExecutionResponseOp,
 ]

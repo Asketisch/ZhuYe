@@ -185,7 +185,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 
 `submit(op)` 发任意协议 Op 并返回事件 `AsyncIterable`(非 turn Op 以
 `submission_closed` 收尾;可 `{ submissionId }` 显式指定 id)。Op 全集
-(20 种,`zhuye` 包内同名类型):
+(26 种,与 Rust 协议一一对应,类型见 `zhuye` 包内 `Op`):
 
 | 类别 | Op | 关键字段 |
 |---|---|---|
@@ -196,7 +196,10 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 | 计划 | `enter_plan_mode` / `exit_plan_mode` / `plan_approval` | `plan_approval.choice ∈ auto_mode/manual_approve/revise` |
 | 交互 | `ask_user_question_response` / `ask_user_input_response` | 回应全局事件 ask_user_question / ask_user_input |
 | 状态 | `set_effort` / `set_permission_mode` / `cycle_permission_mode` | mode ∈ auto/prompt/plan/deny/bubble |
-| side-channel | `start_side_channel` / `cancel_side_channel` / `query_side_channels` | WP9:用户发起的并发 agent;query 回 `side_channel_status` 快照 |
+| 提示词 | `prompt_command` | `action{type: 'list'\|'switch'}`;查询 / 重扫提示词层,应答 `prompt_list` / `prompt_switched` |
+| 转向 | `steer` | `items`(可选 `priority ∈ 'now'\|'attachment'`,缺省 attachment);回合中途投喂,不打断在飞 turn |
+| 子代理 | `query_subagents` | 可选 `child_id`;应答 `subagent_status` 状态快照 |
+| side-channel | `start_side_channel` / `cancel_side_channel` / `query_side_channels` | 用户驱动的并发 agent:start(`agent`+`prompt`)/ cancel(`id`)/ query(可选 `id`,回 `side_channel_status` 快照) |
 | 目标 | `enter_goal_mode` / `exit_goal_mode` | goal + 可选 verify_command / token_budget |
 | 工具 | `register_tools` / `tool_execution_response` | 通常用 `registerTool()` 封装,不必手写 |
 | 扩展 | `rescan_extensions` | **v1.x 新增**:运行时重扫 skills 目录(`.zhuye/skills`,workspace + 用户级;插件注入不受影响);回 `extensions_rescanned`(skills 计数,commands 恒 false) |
@@ -330,6 +333,19 @@ tests/sdk-ts/real-bin.test.mjs` 直接驱动)。
 - 协议 v0 已冻结:Rust 核心新增 Op / EventMsg 变体属 additive 扩展,SDK
   遇到未识别变体降级为 `UnknownEventMsg` 原样透传,不会崩。
 - SDK 版本与 Rust workspace 版本统一管理(release 流水线保证四处一致)。
+
+## 更多文档
+
+SDK 用法之外,仓库内还有完整的文档集(下列为 GitHub 绝对链接 ——
+npm 页面不解析仓库内相对路径):
+
+| 文档 | 内容 |
+|---|---|
+| [能力总览与边界](https://github.com/Asketisch/ZhuYe/blob/main/docs/features.md) | 引擎能做什么 / 不能做什么 |
+| [配置与环境变量](https://github.com/Asketisch/ZhuYe/blob/main/docs/configuration.md) | `config.toml` 全项、热重载、env 清单 |
+| [SDK 接入详解](https://github.com/Asketisch/ZhuYe/blob/main/docs/sdk.md) | 会话服务、远程工具协议、离线联调 |
+| [工具与 hooks](https://github.com/Asketisch/ZhuYe/blob/main/docs/tools-and-hooks.md) | 内置工具、hook 事件、权限模式、沙箱 |
+| [wire 协议](https://github.com/Asketisch/ZhuYe/blob/main/sdks/PROTOCOL.md) | serve 的 JSONL 协议定义(冻结 v0) |
 
 ## 许可证
 
