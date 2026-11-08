@@ -3,6 +3,8 @@
 #
 # 子命令:
 #   check              版本一致性校验 + 本地构建双包并检查(不发布,零 registry 操作)
+#   check_docs         SDK 发布文档一致性:协议 Op 全集必须收录于两份 README(PyPI/npm 页)
+#                      与两个类型层(protocol.py / protocol.ts),防文档过期
 #   bump <ver>         把 workspace / Python SDK / TS SDK 四处版本同步为 <ver>(幂等)
 #   tag [--yes] <ver>  校验通过后打 annotated tag v<ver> 并 push —— 正式发布动作!
 #
@@ -62,10 +64,71 @@ is_semver() {
   printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
 }
 
+# ── check_docs:SDK 发布文档与协议的一致性门禁 ─────────────────────────
+# sdks/python/README.md 与 sdks/typescript/README.md 是 PyPI / npm 页面
+# 渲染的正式文档:协议每新增一个 Op(additive 也算),两份 README 的 Op 表
+# 与两个 SDK 类型层必须同步收录,否则发布出去的文档就是错的。本检查从
+# zhuye-protocol 源码提取 Op 变体(CamelCase → snake_case wire 名),逐一
+# 校验四处收录情况 —— 文档过期会在发布前直接失败,而不是等用户发现。
+cmd_check_docs() {
+  python3 - "$ROOT/crates/protocol/zhuye-protocol/src/op.rs" \
+    "$ROOT/sdks/python/README.md" "$ROOT/sdks/typescript/README.md" \
+    "$ROOT/sdks/python/zhuye/protocol.py" "$ROOT/sdks/typescript/src/protocol.ts" <<'PYEOF'
+import pathlib, re, sys
+
+texts = [pathlib.Path(p).read_text(encoding="utf-8") for p in sys.argv[1:]]
+op_rs, py_readme, ts_readme, py_proto, ts_proto = texts
+
+# 提取 `pub enum Op { ... }` 枚举体(到列 0 的收尾 }),取行首大写标识符;
+# 同文件的 PlanApprovalChoice / UserInputItem 定义在枚举之外,不会被扫到。
+body = op_rs.split("pub enum Op", 1)[1]
+lines, closed = [], False
+for ln in body.splitlines():
+    if closed:
+        break
+    if ln == "}":
+        closed = True
+        break
+    lines.append(ln)
+if not closed:
+    sys.exit("FAIL: 未能解析 op.rs 中 `pub enum Op` 的边界")
+variants = re.findall(r"^    ([A-Z][A-Za-z0-9]+)\s*(?:\{|,|$)", "\n".join(lines), re.M)
+if not variants:
+    sys.exit("FAIL: 未从 op.rs 提取到任何 Op 变体")
+
+def snake(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+ops = sorted({snake(v) for v in variants})
+missing = {"py_readme": [], "ts_readme": [], "py_typed": [], "ts_typed": []}
+for op in ops:
+    if op not in py_readme:
+        missing["py_readme"].append(op)
+    if op not in ts_readme:
+        missing["ts_readme"].append(op)
+    if f'Literal["{op}"]' not in py_proto:
+        missing["py_typed"].append(op)
+    if f"type: '{op}'" not in ts_proto:
+        missing["ts_typed"].append(op)
+
+print(f"check_docs: 协议 Op 全集 {len(ops)} 种 —— README/类型层逐一比对")
+failed = False
+for label, items in missing.items():
+    if items:
+        failed = True
+        print(f"  缺漏[{label}]: {', '.join(items)}")
+if failed:
+    sys.exit("FAIL: SDK 发布文档/类型层落后于协议 —— 先补齐再发布")
+print("  四处收录齐全(双 README Op 表 + protocol.py + protocol.ts)")
+PYEOF
+}
+
 # ── check:一致性 + 本地构建双包 + 元数据检查 ───────────────────────────
 cmd_check() {
   local ver
   check_consistency
+  echo
+  cmd_check_docs
   ver="$(cargo_version)"
 
   # Python 侧:临时 venv 装 build/twine,不动用户全局环境
@@ -203,12 +266,13 @@ cmd_tag() {
 }
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
 case "${1:-}" in
   check) shift; cmd_check "$@" ;;
+  check_docs) shift; cmd_check_docs "$@" ;;
   bump)  shift; [ -n "${1:-}" ] || usage 1; cmd_bump "$1" ;;
   tag)   shift; cmd_tag "$@" ;;
   -h|--help|help|'') usage ;;

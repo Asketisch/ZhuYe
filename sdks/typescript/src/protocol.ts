@@ -42,7 +42,24 @@ export type Op =
   /** v1.3 SDK:注册客户端自定义工具(实现留在客户端进程)。 */
   | { type: 'register_tools'; tools: RemoteToolSpec[] }
   /** v1.3 SDK:对 `EventMsg::ToolExecutionRequest` 的回执。 */
-  | { type: 'tool_execution_response'; call_id: string; output: ToolOutput };
+  | { type: 'tool_execution_response'; call_id: string; output: ToolOutput }
+  /** v1.6.1:提示词层管理(list 查询 / switch 重扫 `.zhuye/prompts`)。 */
+  | {
+      type: 'prompt_command';
+      action: { type: 'list' } | { type: 'switch'; layer?: string | null };
+    }
+  /** v1.x:运行时重扫扩展目录(skills 已接线;commands 位回执恒 false)。 */
+  | { type: 'rescan_extensions'; skills: boolean; commands: boolean }
+  /** v1.4 A2:回合中途转向 —— 不打断在飞 turn,下一个安全点注入。 */
+  | { type: 'steer'; priority?: 'now' | 'attachment'; items: UserInputItem[] }
+  /** v1.4 C1:查询子代理状态快照(应答 subagent_status)。 */
+  | { type: 'query_subagents'; child_id?: string }
+  /** v1.x:启动 side-channel agent(用户驱动的并发独立 agent)。 */
+  | { type: 'start_side_channel'; agent: string; prompt: string }
+  /** v1.x:取消 side-channel(未知 / 已终态 id 为 noop,不回错误)。 */
+  | { type: 'cancel_side_channel'; id: string }
+  /** v1.x:查询 side-channel 快照(应答 side_channel_status)。 */
+  | { type: 'query_side_channels'; id?: string };
 
 export interface UserInputItem {
   type: 'text' | 'image';
