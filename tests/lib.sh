@@ -20,16 +20,25 @@ declare -i PASS_COUNT=0
 declare -i FAIL_COUNT=0
 declare -a FAIL_NAMES=()
 
+# 用例输出捕获文件:tcase 失败时打印尾部(BATS `run` 语义),不再静默丢弃。
+# 惰性创建;tfinish 汇总时清理,脚本提前退出时残留的空文件无害(/tmp 托管)。
+TCASE_LOG=""
+
 # tcase <名称> <命令...>:执行一条用例,记录通过/失败。
+# 修复前输出一律 `>/dev/null 2>&1`,失败用例零诊断线索;现捕获到
+# TCASE_LOG,失败时打印尾部 15 行辅助定位。
 tcase() {
     local name="$1"; shift
-    if "$@" >/dev/null 2>&1; then
+    TCASE_LOG="${TCASE_LOG:-$(mktemp "${TMPDIR:-/tmp}/zhuye-tcase-log.XXXXXX")}"
+    if "$@" >"$TCASE_LOG" 2>&1; then
         PASS_COUNT+=1
         echo "  [ok]   $name"
     else
         FAIL_COUNT+=1
         FAIL_NAMES+=("$name")
         echo "  [FAIL] $name"
+        echo "  ── 失败输出尾部(完整:$TCASE_LOG):"
+        tail -n 15 "$TCASE_LOG" | sed 's/^/  │ /'
     fi
 }
 
@@ -41,8 +50,10 @@ tfinish() {
     echo "  $script_name: $PASS_COUNT passed, $FAIL_COUNT failed"
     if [ "$FAIL_COUNT" -gt 0 ]; then
         printf '  失败用例: %s\n' "${FAIL_NAMES[*]}"
+        rm -f "$TCASE_LOG"
         return 1
     fi
+    rm -f "$TCASE_LOG"
     return 0
 }
 

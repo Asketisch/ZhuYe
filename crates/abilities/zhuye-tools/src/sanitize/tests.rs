@@ -547,8 +547,11 @@ mod proptests {
     }
 
     /// 任意文本策略:混入常见密钥前缀形态,提高命中替换路径的概率。
+    /// 字符类含 `\n`:KEY_ASSIGN 前缀 `[\s_\-]`、BEARER `\s+`、
+    /// PRIVATE_KEY_BLOCK `[\s\S]+?` 都会消费换行,策略必须能生成多行
+    /// 输入,否则这些分支永远不在随机探索范围内。
     fn arb_text() -> impl Strategy<Value = String> {
-        "(.*([A-Za-z_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Za-z_]*=[^\\s]{6,40}|[\\u{4e00}-\\u{9fff}a-zA-Z0-9:/.=_-]){0,60}){0,10}"
+        "(.*([A-Za-z_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Za-z_]*=[^\\s]{6,40}|[\\u{4e00}-\\u{9fff}a-zA-Z0-9:/.=_\\-\\n]){0,60}){0,10}"
     }
 
     proptest! {

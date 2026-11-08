@@ -169,6 +169,27 @@ serve_ops_core() {
     tcase "孤儿回执不产生 error 事件" \
         bash -c "! jq -e 'select(.msg.type==\"error\")' \"$out\" >/dev/null 2>&1"
 
+    # ── 错误条件(bats skill「Testing Error Conditions」模式)──────
+    # serve 对坏输入的容错:不终止会话,全局 error 回报后继续服务。
+    # (能力覆盖层 X 组有同型 wire 用例;此处补 Rust 参数面。)
+    printf 'not json at all\n' >&3
+    printf '{"broken json\n' >&3
+    printf '{"id":"badop","op":{"type":"no_such_op_xyz"}}\n' >&3
+    sleep 1
+    # 坏行 / 未知 op → 全局 error(id=""),会话必须存活
+    tcase "坏行与未知 op 产生全局 error(会话存活)" \
+        bash -c "jq -e 'select(.id==\"\" and .msg.type==\"error\")' \"$out\" >/dev/null 2>&1"
+    # 会话存活:后续合法 op 仍正常服务
+    wop '{"id":"alive1","op":{"type":"user_input","items":[{"type":"text","text":"still alive"}]}}'
+    waitfor "$out" '"turn_complete"' 25 || echo NO_ALIVE_TC
+    tcase "坏输入后 serve 继续服务(turn 完成)" \
+        jq -e 'select(.id=="alive1" and .msg.type=="turn_complete")' "$out"
+    # 结构不完整的 submission(缺 id)同样以 invalid_submission 拒绝
+    printf '{"op":{"type":"compact"}}\n' >&3
+    sleep 1
+    tcase "缺 id 的 submission 产生 invalid_submission" \
+        bash -c "jq -e 'select(.msg.code==\"invalid_submission\")' \"$out\" >/dev/null 2>&1"
+
     # ── compact:手动压缩(短上下文 → noop)──────────────────────
     wop '{"id":"cm1","op":{"type":"compact"}}'
     waitfor "$out" '"context_compacted"' 25 || echo NO_COMPACT
