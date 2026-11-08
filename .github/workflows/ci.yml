@@ -95,6 +95,16 @@ jobs:
         env:
           PYTHONPATH: .
 
+  sdk-docs:
+    name: sdk protocol documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: ./scripts/release_sdk.sh check_docs
+
   # 功能覆盖门禁:能力覆盖层(Python 打真二进制,原始 wire)+ Rust CLI 参数面
   # + 双 SDK 绑定层。cargo test / clippy / fmt / doc 由上面的 job 覆盖,
   # 这里用 `functional` 模式跳过(ZHUYE_SKIP_WORKSPACE=1)。
@@ -121,6 +131,10 @@ jobs:
         run: cargo build --release -p zhuye-cli
       - name: build zhuye-import (会话导入用例需要)
         run: cargo build --release -p zhuye-import
+      # 这些产物缺失时对应能力用例会跳过，必须在门禁中显式构建。
+      # computer-use 不启用 real feature，以覆盖无图形环境降级。
+      - name: build plugin servers (插件能力用例需要)
+        run: cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-shell -p zhuye-git-tools --bins
       - name: build mock MCP server (审批用例需要)
         run: cargo build -p zhuye-mcp
       - run: npm ci

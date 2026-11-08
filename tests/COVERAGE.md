@@ -18,6 +18,10 @@
 **新增能力断言只落能力覆盖层一处** —— 不要在 SDK 测试里重复写协议/能力断言。
 理由:SDK 自身的 bug 会把 Rust 的 bug 遮住(见 §6 已修复项 D1)。
 
+CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
+插件二进制,使已有插件链路用例在干净环境中可运行。SDK 协议文档一致性
+检查 `release_sdk.sh check_docs` 也在普通 CI 中执行。
+
 ⚠️ **实模型演练层不算能力覆盖** —— 它断言的是**协议形状与运行时行为**
 (事件序 / 终态 / usage 字段 / 工具成对),**不断言具体回答文本**。
 能力断言仍然只在 `tests/functional/`。两层不重叠、不互相替代:
