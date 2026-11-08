@@ -105,7 +105,7 @@ def test_C3_session_子命令(sandbox, serve_session, mock_script) -> None:
 
 
 def test_C4_doctor与version(sandbox) -> None:
-    """doctor / version 的输出契约。"""
+    """`version` 的输出契约(doctor 的退出码 / 输出见 test_C6b)。"""
     require_binary()
     ver = run_cli(sandbox, "version", timeout=30)
     assert ver.returncode == 0, f"version 退出码={ver.returncode}:{ver.stderr}"
@@ -151,48 +151,57 @@ def test_C5_session_search_跨会话全文搜索(sandbox, serve_session, mock_sc
         assert needle in obj["snippet"], f"snippet 未含关键词:{obj}"
 
 
-def test_C6_exec_退出码映射(sandbox, mock_script) -> None:
-    """`exec` 的退出码:成功 0;turn 失败 1;`--plan-mode` 未产出计划 122。
+# C6 场景矩阵:exec 退出码映射,每场景独立报告(一个断言失败不遮蔽其余)。
+# - 成功:exit_code_for(Success) → 0;
+# - turn 失败:脚本首次调用即发工具调用,`ZHUYE_MAX_ITERATIONS=1` 下引擎
+#   回到 model_call 时已超上限 → TurnComplete.status = MaxIterations → 1;
+# - plan mode:mock 不会调 ExitPlanMode → 未见 PlanReady → 122
+#   (`finish_plan_mode`)。
+_C6_EXIT_SCENARIOS = [
+    pytest.param(("exec", "hi"), {}, None, 0, id="成功退出0"),
+    pytest.param(
+        ("exec", "hi"),
+        {"ZHUYE_MAX_ITERATIONS": "1"},
+        ['{"type":"tool_call","name":"echo","args":{"text":"x"}}'],
+        1,
+        id="turn失败退出1",
+    ),
+    pytest.param(("exec", "--plan-mode", "hi"), {}, None, 122, id="plan未产出退出122"),
+]
+
+
+@pytest.mark.parametrize(
+    ("args", "extra_env", "mock_lines", "expected_code"), _C6_EXIT_SCENARIOS
+)
+def test_C6_exec_退出码映射(
+    sandbox, mock_script, args, extra_env, mock_lines, expected_code
+) -> None:
+    """`exec` 的退出码映射矩阵。
 
     依据:crates/runtime/zhuye-exec/src/lib.rs 的 `exit_code_for`
     (Error / 非 Success 的 TurnComplete / TurnAborted → 1)与
     `finish_plan_mode`(plan mode 未见 PlanReady → 122)。
     """
     require_binary()
-    # 成功 → 0
-    ok = run_cli(sandbox, "exec", "hi", env={"ZHUYE_MODEL": "mock"}, timeout=60)
-    assert ok.returncode == 0, f"成功应退出 0,实得 {ok.returncode}:{ok.stderr[:400]}"
-
-    # turn 失败(撞迭代上限 → TurnComplete.status != success)→ 1。
-    # 脚本第 1 次调用发工具调用,引擎回到 model_call 时已超上限 →
-    # status = MaxIterations。
-    script = mock_script(['{"type":"tool_call","name":"echo","args":{"text":"x"}}'])
-    failed = run_cli(
-        sandbox,
-        "exec",
-        "hi",
-        env={
-            "ZHUYE_MODEL": "mock",
-            "ZHUYE_MOCK_SCRIPT": str(script),
-            "ZHUYE_MAX_ITERATIONS": "1",
-        },
-        timeout=60,
-    )
-    assert failed.returncode == 1, (
-        f"turn 失败应退出 1,实得 {failed.returncode}:{failed.stdout[-400:]}"
+    env = {"ZHUYE_MODEL": "mock", **extra_env}
+    if mock_lines is not None:
+        env["ZHUYE_MOCK_SCRIPT"] = str(mock_script(mock_lines))
+    proc = run_cli(sandbox, *args, env=env, timeout=60)
+    assert proc.returncode == expected_code, (
+        f"{args} 应退出 {expected_code},实得 {proc.returncode}:"
+        f"{proc.stderr[:400] or proc.stdout[-400:]}"
     )
 
-    # plan mode:mock 不会调 ExitPlanMode → 未见 PlanReady → 122。
-    plan = run_cli(
-        sandbox, "exec", "--plan-mode", "hi", env={"ZHUYE_MODEL": "mock"}, timeout=60
-    )
-    assert plan.returncode == 122, (
-        f"plan mode 未产出计划应退出 122,实得 {plan.returncode}:{plan.stdout[-400:]}"
-    )
 
-    doc = run_cli(
-        sandbox, "doctor", env={"ZHUYE_MODEL": "mock"}, timeout=60
-    )
+def test_C6b_doctor_退出0且有输出(sandbox) -> None:
+    """`doctor` 冒烟:退出 0 且 stdout 非空。
+
+    单拆于此:C4 只覆盖 `version` 的输出契约;`doctor --check-network`
+    变体在 test_v110.py。默认 `doctor` 的退出码与输出断言原本挤在
+    C6 尾部,现按"一测一行为"独立。
+    """
+    require_binary()
+    doc = run_cli(sandbox, "doctor", env={"ZHUYE_MODEL": "mock"}, timeout=60)
     assert doc.returncode == 0, f"doctor 退出码={doc.returncode}:{doc.stderr[:500]}"
     assert doc.stdout.strip(), "doctor 无输出"
 
