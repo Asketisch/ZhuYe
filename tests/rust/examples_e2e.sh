@@ -16,6 +16,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 EX_BIN_DIR="$ROOT/target/release/examples"
 
 examples_e2e() {
+    # 隔离 HOME 前保存工具链目录,避免 rustup 在临时 HOME 重新下载工具链。
+    local build_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+    local build_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
     make_isolated_env
     trap cleanup_isolated_env RETURN
     # examples 走与 exec 相同的 env 兜底:mock provider 离线注册;
@@ -24,7 +27,7 @@ examples_e2e() {
     export ZHUYE_MODEL=mock
     export OPENAI_API_KEY="${OPENAI_API_KEY:-e2e-dummy-key}"
 
-    # examples 需先构建;逐一检查,避免部分缓存存在时漏掉 discussion_demo 等产物。
+    # 交给 Cargo 判断产物是否过期,避免源码变化后复用旧 examples。
     #
     # 必须在 **仓库根** 执行:rustup 选 toolchain 的顺序是
     # `+toolchain` 参数 → RUSTUP_TOOLCHAIN 环境变量 → 当前目录及祖先
@@ -33,16 +36,11 @@ examples_e2e() {
     # CI runner(GHA ubuntu)也没配默认 toolchain → cargo 直接报
     # "rustup could not choose a version of cargo to run"。
     # 回到仓库根构建,rust-toolchain.toml 生效。
-    local example
-    for example in headless_run custom_tool multi_turn custom_provider hook_listener discussion_demo; do
-        if [ ! -x "$EX_BIN_DIR/$example" ]; then
-            if ! (cd "$ROOT" && cargo build --release -p zhuye --examples --quiet); then
-                tcase "examples 构建成功" false
-                return 1
-            fi
-            break
-        fi
-    done
+    if ! (cd "$ROOT" && RUSTUP_HOME="$build_rustup_home" CARGO_HOME="$build_cargo_home" \
+          cargo build --release -p zhuye --examples --quiet); then
+        tcase "examples 构建成功" false
+        return 1
+    fi
 
     # headless_run 需要 prompt 参数
     "$EX_BIN_DIR/headless_run" "e2e prompt" > ex1.out 2>ex1.err

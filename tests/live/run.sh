@@ -32,8 +32,8 @@ if [ "${ZHUYE_LIVE:-}" = "" ]; then
 fi
 
 if ! require_cmd python3 || ! python3 -m pytest --version >/dev/null 2>&1; then
-    echo "  [SKIP] 未安装 python3/pytest,跳过"
-    exit 0
+    echo "  [FAIL] 已启用实模型测试,但未安装 python3/pytest" >&2
+    exit 1
 fi
 
 echo "  车道: ${ZHUYE_LIVE_BASE_URL:-https://api.kilo.ai/api/gateway}"

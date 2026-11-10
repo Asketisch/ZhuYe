@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 use zhuye_llm::{RoutingPolicy, SharedQuotaTracker};
 use zhuye_protocol::{AbortReason, PermissionMode, ReasoningEffortMirror, ThreadId};
-use zhuye_tools::SessionWorktreeState;
+use zhuye_tools::{ApprovalContext, SessionWorktreeState};
 
 use super::env::DEFAULT_MAX_ITERATIONS;
 use super::m4::M4Deps;
@@ -53,6 +53,8 @@ pub struct AgentConfig {
     /// 路径默认 `false`;TUI / lib facade 构造线程时打开。
     /// 高级用法还可通过 `ZHUYE_APPROVALS=1` 环境变量启用。
     pub approvals: bool,
+    /// 会话及子代理共享的审批 waiter / session allow 状态。
+    pub approval_context: ApprovalContext,
     /// v1.0 多 Provider 路由:角色 → spec slot 的路由策略。
     ///
     /// `model_call` 入口用 `policy.resolve(Role::Main)` 拿到 spec,失败
@@ -201,6 +203,12 @@ pub struct AgentConfig {
     /// v1.x:side-channel driver(用户驱动的并发 agent)。`None` =
     /// 未配置(库路径默认),`Op::StartSideChannel` 以 Error 事件应答。
     pub side_channel_driver: Option<crate::side_channel::SideChannelDriver>,
+    /// v1.x:输入侧提示注入检测(prompt injection guard)。`Some` 时
+    /// 工具输出在进入模型上下文前被扫描:`Block` 替换为 guard 错误,
+    /// `Review` 在 metadata 标注。默认 `None`(关闭,opt-in);
+    /// headless 按 `[prompt_guard] enabled = true` / `ZHUYE_PROMPT_GUARD=1`
+    /// 注入。
+    pub prompt_guard: Option<Arc<zhuye_sanitize::prompt_guard::PromptGuard>>,
     pub sandbox_default: Option<bool>,
     /// v1.x:`[sandbox].writable_dirs` 透传(workspace 之外额外可写目录)。
     pub sandbox_writable: Vec<PathBuf>,
@@ -225,6 +233,7 @@ impl AgentConfig {
             cancel: CancellationToken::new(),
             m4: None,
             approvals: false,
+            approval_context: ApprovalContext::default(),
             policy: Arc::new(RoutingPolicy::default()),
             effort: Arc::new(RwLock::new(ReasoningEffortMirror::Low)),
             permission_resolver: None,
@@ -247,6 +256,7 @@ impl AgentConfig {
             subagent_runtime: None,
             subagent_status: None,
             side_channel_driver: None,
+            prompt_guard: None,
             sandbox_default: None,
             sandbox_writable: Vec::new(),
             sandbox_network: None,
@@ -416,6 +426,12 @@ impl AgentConfig {
     /// headless exec driver 保持关闭。
     pub fn with_approvals(mut self, on: bool) -> Self {
         self.approvals = on;
+        self
+    }
+
+    /// 让父会话与子代理共享同一组审批路由状态。
+    pub fn with_approval_context(mut self, context: ApprovalContext) -> Self {
+        self.approval_context = context;
         self
     }
 

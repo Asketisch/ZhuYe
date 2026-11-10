@@ -129,6 +129,12 @@ pub struct SubAgentFactory {
     /// `AgentConfig.subagent_runtime` 路由到同一张表实现定向中断。
     /// exec bootstrap 创建一个 `Arc` 同时注入父配置与本工厂。
     runtime_registry: Mutex<Option<Arc<zhuye_core::SubagentRuntimeRegistry>>>,
+    /// 父会话的审批 waiter / session allow;子代理共享后才能把审批回执
+    /// 路由回真正等待的 gate。
+    approval_context: zhuye_tools::ApprovalContext,
+    /// 父会话权限/沙箱策略模板。仅继承安全相关字段,子代理仍保留自己的
+    /// 工作区、M4、recorder 和状态槽。
+    parent_config: Mutex<Option<AgentConfig>>,
 }
 
 impl std::fmt::Debug for SubAgentFactory {
@@ -172,6 +178,8 @@ impl SubAgentFactory {
             worktree_coordinator: Mutex::new(None),
             telemetry: Mutex::new(None),
             runtime_registry: Mutex::new(None),
+            approval_context: zhuye_tools::ApprovalContext::default(),
+            parent_config: Mutex::new(None),
         }
     }
 
@@ -280,6 +288,16 @@ impl SubAgentFactory {
     /// 读当前运行注册表(若有)。
     pub fn runtime_registry(&self) -> Option<Arc<zhuye_core::SubagentRuntimeRegistry>> {
         self.runtime_registry.lock().clone()
+    }
+
+    /// 返回与父会话共享的审批路由状态。
+    pub fn approval_context(&self) -> zhuye_tools::ApprovalContext {
+        self.approval_context.clone()
+    }
+
+    /// 设置子代理继承的父会话安全策略。
+    pub fn set_parent_config(&self, config: AgentConfig) {
+        *self.parent_config.lock() = Some(config);
     }
 
     /// v1.4 A1:替换父级 cancel 令牌。`SubAgentFactory::new` 的 cancel 参数
@@ -481,6 +499,8 @@ impl SubAgentFactory {
             // v1.4 A1:运行注册表在父子间共享同一 Arc —— 孙级 spawn 也登记
             // 进同一张表,`Op::Interrupt { child_id }` 可跨级定向路由。
             runtime_registry: Mutex::new(self.runtime_registry.lock().clone()),
+            approval_context: self.approval_context.clone(),
+            parent_config: Mutex::new(self.parent_config.lock().clone()),
         }
     }
 
@@ -505,6 +525,12 @@ impl SubAgentFactory {
                 max: crate::MAX_DEPTH,
             });
         }
+        // 从占位起就由 guard 管理,spawn 在任何 await 处被取消都释放槽位。
+        let mut reservation = CleanupGuard {
+            in_flight: Some(Arc::clone(&self.in_flight)),
+            status_slot: None,
+            cancel: None,
+        };
 
         // 构造子 session —— 新的 `ThreadId` 用于血缘追踪。
         //
@@ -588,7 +614,23 @@ impl SubAgentFactory {
         } else {
             std::path::PathBuf::from(".")
         };
-        let mut cfg = AgentConfig::new(child_model, workspace);
+        let history = zhuye_core::resume::repair_orphan_tool_calls(parent_tail);
+        let mut cfg = AgentConfig::new(child_model, workspace)
+            .with_preload_messages(history)
+            .with_approval_context(self.approval_context.clone());
+        if let Some(parent) = self.parent_config.lock().clone() {
+            cfg.approvals = parent.approvals;
+            cfg.approval_context = parent.approval_context.clone();
+            cfg.permission_mode = parent.permission_mode.clone();
+            cfg.inherited_approval_mode = parent.inherited_approval_mode.clone();
+            cfg.permission_resolver = parent.permission_resolver.clone();
+            cfg.yolo_classifier = parent.yolo_classifier.clone();
+            cfg.yolo_threshold = parent.yolo_threshold;
+            cfg.sandbox_default = parent.sandbox_default;
+            cfg.sandbox_writable = parent.sandbox_writable.clone();
+            cfg.sandbox_network = parent.sandbox_network;
+            cfg.tool_env = parent.tool_env.clone();
+        }
 
         // v1.x 功能 6:child M4 构造。即便没有 recorder,也构造一份 m4
         // (注入 skills catalog + subagent registry),让 subagent 拥有
@@ -638,6 +680,7 @@ impl SubAgentFactory {
         // 无效,detached 子任务成孤儿空转);`Op::Interrupt { child_id }`
         // 则只 cancel 本令牌,粒度细化到单个子代理。
         let child_cancel = self.cancel.lock().child_token();
+        reservation.cancel = Some(child_cancel.clone());
         cfg.cancel = child_cancel.clone();
         // v1.4 C1:登记状态中心(若注入)—— 槽位带角色名,子 cfg 持有
         // 自己的槽(submission_loop / tool_exec 自报告迭代 / 工具 /
@@ -646,15 +689,14 @@ impl SubAgentFactory {
         let status_slot = self
             .runtime_registry()
             .map(|reg| reg.register(child_thread_id.to_string(), spec.role.clone(), child_cancel));
+        reservation.status_slot = status_slot.clone();
         if let Some(slot) = &status_slot {
             cfg.subagent_status = Some(slot.clone());
         }
         let child_thread = AgentThread::new(cfg, target_registry, child_tools, None, None);
 
-        // 子 agent 以单条 User 消息的形式接收 system prompt + role 标签 + user prompt。
-        // 父级 context tail 当前未使用(M5 v0);它是预留接口,留给后续 M6 增强,
-        // 让父级把筛选过的历史传给子 agent。
-        let _ = parent_tail;
+        // 子 agent 以单条 User 消息接收 system prompt + role 标签 + user prompt;
+        // 筛选出的父级历史由 preload 前置。
         let combined_user_input = build_spawn_user_input(
             &spec,
             &user_prompt,
@@ -667,8 +709,9 @@ impl SubAgentFactory {
             session_id: child_thread_id,
             handle,
             data_transfer: spec.data_transfer,
-            in_flight: Some(Arc::clone(&self.in_flight)),
-            status_slot,
+            in_flight: reservation.in_flight.take(),
+            status_slot: reservation.status_slot.take(),
+            cancel: reservation.cancel.take(),
         })
     }
 }
@@ -720,6 +763,8 @@ pub struct SpawnedChild {
     /// `Drop` 提前放弃路径标记 Cancelled 并 cancel 子令牌(防 detached
     /// 子任务空转)。终态槽位保留在状态中心直至保留期过期被清扫。
     status_slot: Option<Arc<zhuye_core::subagent_registry::SubagentStatusSlot>>,
+    /// 即使没有注入状态中心,放弃子代理时也必须取消子任务。
+    cancel: Option<CancellationToken>,
 }
 
 impl std::fmt::Debug for SpawnedChild {
@@ -740,6 +785,7 @@ impl std::fmt::Debug for SpawnedChild {
 struct CleanupGuard {
     in_flight: Option<Arc<AtomicU8>>,
     status_slot: Option<Arc<zhuye_core::subagent_registry::SubagentStatusSlot>>,
+    cancel: Option<CancellationToken>,
 }
 
 impl Drop for CleanupGuard {
@@ -754,8 +800,10 @@ impl Drop for CleanupGuard {
         if let Some(slot) = self.status_slot.take() {
             if slot.is_running() {
                 slot.finish(zhuye_protocol::SubagentRunStateMirror::Cancelled);
-                slot.cancel_token().cancel();
             }
+        }
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
         }
     }
 }
@@ -786,7 +834,9 @@ impl Drop for SpawnedChild {
         // `None`,跳过(终态已由 collect 标记)。
         if let Some(slot) = self.status_slot.take() {
             slot.finish(zhuye_protocol::SubagentRunStateMirror::Cancelled);
-            slot.cancel_token().cancel();
+        }
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
         }
     }
 }
@@ -836,6 +886,7 @@ impl SpawnedChild {
         // 安全:Option::take 把 Some 替换为 None,后续字段单独 read。
         let in_flight_arc = me.in_flight.take(); // Option<Arc<AtomicU8>> → None
         let status_slot = me.status_slot.take();
+        let cancel = me.cancel.take();
         let mut handle = unsafe { std::ptr::read(&me.handle) };
         let data_transfer = unsafe { std::ptr::read(&me.data_transfer) };
         let _session_id = unsafe { std::ptr::read(&me.session_id) };
@@ -852,12 +903,15 @@ impl SpawnedChild {
         let _cleanup = CleanupGuard {
             in_flight: in_flight_arc,
             status_slot,
+            cancel,
         };
         let started_at = Instant::now();
         let mut events = Vec::new();
         // 跟踪当前见过最权威的 usage 来源。
         let mut usage_from_turn_complete: Option<TokenUsage> = None;
         let mut usage_from_token_count: Option<TokenUsage> = None;
+        // 只有收到正常回合终态才能把提取到的文本当作成功结果。
+        let mut completed = false;
         // 最后一个错误事件的摘要 —— 失败时**带上根因**。
         //
         // 此前失败只报「no result extractable」:调用方(流水线 / 讨论编排)
@@ -879,6 +933,7 @@ impl SpawnedChild {
                         | zhuye_protocol::EventMsg::ToolCallEnd(_)
                         | zhuye_protocol::EventMsg::TurnComplete(_)
                         | zhuye_protocol::EventMsg::TurnAborted(_)
+                        | zhuye_protocol::EventMsg::Error(_)
                         | zhuye_protocol::EventMsg::ShutdownComplete
                 );
                 if flush_text && !text_buf.is_empty() {
@@ -895,7 +950,11 @@ impl SpawnedChild {
                         text_buf.push_str(&d.delta);
                     }
                     zhuye_protocol::EventMsg::ToolCallBegin(_)
-                    | zhuye_protocol::EventMsg::ToolCallEnd(_) => {
+                    | zhuye_protocol::EventMsg::ToolCallEnd(_)
+                    | zhuye_protocol::EventMsg::ApprovalRequest(_)
+                    | zhuye_protocol::EventMsg::AskUserQuestion(_)
+                    | zhuye_protocol::EventMsg::AskUserInput(_)
+                    | zhuye_protocol::EventMsg::PermissionBubble(_) => {
                         cb(&ev);
                     }
                     _ => {}
@@ -904,6 +963,7 @@ impl SpawnedChild {
             match &ev.msg {
                 zhuye_protocol::EventMsg::TurnComplete(tc) => {
                     usage_from_turn_complete = Some(tc.usage.clone());
+                    completed = true;
                 }
                 zhuye_protocol::EventMsg::Error(e) => {
                     last_error = Some(format!("{}: {}", e.code, e.message));
@@ -920,6 +980,18 @@ impl SpawnedChild {
                         total_tokens: tc.total_tokens,
                     });
                 }
+                zhuye_protocol::EventMsg::TurnAborted(a) => {
+                    last_error = Some(match &a.reason {
+                        zhuye_protocol::AbortReason::Error { code, message } => {
+                            format!("{code}: {message}")
+                        }
+                        zhuye_protocol::AbortReason::UserInterrupt => "子代理被中断".into(),
+                        zhuye_protocol::AbortReason::Shutdown => "子代理已关闭".into(),
+                    });
+                }
+                zhuye_protocol::EventMsg::ShutdownComplete => {
+                    last_error = Some("子代理已关闭".into());
+                }
                 _ => {}
             }
             let is_terminal = matches!(
@@ -928,15 +1000,19 @@ impl SpawnedChild {
                     | zhuye_protocol::EventMsg::TurnAborted(_)
                     | zhuye_protocol::EventMsg::ShutdownComplete
             );
-            // v1.4 C1:按终态事件标记状态槽(TurnComplete = Completed;
-            // TurnAborted / ShutdownComplete = Cancelled)。
+            // 成功状态留到结果提取后再标记;中断原因中的错误属于失败。
             if let Some(slot) = cleanup_slot.as_ref() {
                 match &ev.msg {
-                    zhuye_protocol::EventMsg::TurnComplete(_) => {
-                        slot.finish(zhuye_protocol::SubagentRunStateMirror::Completed);
+                    zhuye_protocol::EventMsg::TurnAborted(a) => {
+                        let status =
+                            if matches!(a.reason, zhuye_protocol::AbortReason::Error { .. }) {
+                                zhuye_protocol::SubagentRunStateMirror::Failed
+                            } else {
+                                zhuye_protocol::SubagentRunStateMirror::Cancelled
+                            };
+                        slot.finish(status);
                     }
-                    zhuye_protocol::EventMsg::TurnAborted(_)
-                    | zhuye_protocol::EventMsg::ShutdownComplete => {
+                    zhuye_protocol::EventMsg::ShutdownComplete => {
                         slot.finish(zhuye_protocol::SubagentRunStateMirror::Cancelled);
                     }
                     _ => {}
@@ -947,16 +1023,30 @@ impl SpawnedChild {
                 break;
             }
         }
-        // 槽位释放由 `_cleanup` guard 统一负责(任何返回路径都 fetch_sub),
-        // 此处只补充根因信息 —— 提前 `?` 不再泄漏 in-flight 槽位。
+        // 流错误或断线后即使已有文本,也不能把部分结果当作成功返回。
+        if !completed {
+            if let Some(slot) = cleanup_slot.as_ref() {
+                slot.finish(zhuye_protocol::SubagentRunStateMirror::Failed);
+            }
+            return Err(SubAgentError::SpawnFailed(match last_error {
+                Some(error) => format!("子代理未正常完成: {error}"),
+                None => "子代理在终态前断开".into(),
+            }));
+        }
+        // 槽位释放由 `_cleanup` guard 统一负责(任何返回路径都 fetch_sub)。
         let text = crate::data_transfer::extract_result(&events, &data_transfer.result_extractor)
             .ok_or_else(|| {
-            // 带根因:没有错误事件时保留原措辞。
+            if let Some(slot) = cleanup_slot.as_ref() {
+                slot.finish(zhuye_protocol::SubagentRunStateMirror::Failed);
+            }
             SubAgentError::SpawnFailed(match last_error {
                 Some(e) => format!("no result extractable (last error: {e})"),
                 None => "no result extractable".into(),
             })
         })?;
+        if let Some(slot) = cleanup_slot.as_ref() {
+            slot.finish(zhuye_protocol::SubagentRunStateMirror::Completed);
+        }
         let token_usage = usage_from_turn_complete.or(usage_from_token_count);
         // v1.4 A1:终态释放已交给 `_cleanup` guard(见函数开头),它在本
         // 函数任何路径返回时 drop,统一执行 fetch_sub + 注销 + cancel。

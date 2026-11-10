@@ -244,6 +244,12 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         let client: Arc<dyn zhuye_llm::ModelClient> = next_client.client.clone();
         let label: String = next_client.label.clone();
         let provider_name: String = client.name().to_string();
+        // 路由池名由模型 spec 决定,可能与客户端名称不同(如
+        // openai 池中的 openai-responses 客户端)。
+        let pool_name = spec
+            .split_once('/')
+            .map_or(spec.as_str(), |(provider, _)| provider)
+            .to_string();
         let cred_ptr = Arc::as_ptr(&client) as *const () as usize;
 
         attempt += 1;
@@ -267,10 +273,15 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         let cred_attempt = per_cred_attempts.entry(cred_ptr).or_insert(0);
         *cred_attempt += 1;
 
-        let stream_result = client.stream(request.clone(), ctx.cancel.clone()).await;
+        // provider 可能在收到响应头之前一直等待网络;取消必须覆盖建流阶段。
+        let stream_result = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return None,
+            result = client.stream(request.clone(), ctx.cancel.clone()) => result,
+        };
         let mut s = match stream_result {
             Ok(s) => {
-                ctx.registry.clear_cooldown(&provider_name, &label);
+                ctx.registry.clear_cooldown(&pool_name, &label);
                 std::pin::pin!(s)
             }
             Err(e) => {
@@ -290,7 +301,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                             _ => CooldownReason::Auth,
                         };
                         ctx.registry
-                            .mark_cooldown(&provider_name, &label, cooldown, reason);
+                            .mark_cooldown(&pool_name, &label, cooldown, reason);
                         let cooldown_until_ms = Some(cooldown.as_millis() as u64);
                         let _ = ctx
                             .event_tx
@@ -316,7 +327,9 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                             // sleep —— 在持久瞬时错误(SseParse / Http)下会以
                             // 无延迟空转 `max_attempts` 轮,顺带刷爆事件流。
                             // 这里补上与「未到上限」分支同样的 `delay_ms` 退避。
-                            sleep(Duration::from_millis(delay_ms)).await;
+                            if retry_cancelled(&ctx.cancel, delay_ms).await {
+                                return None;
+                            }
                             let _ = ctx
                                 .event_tx
                                 .send(Event::new(
@@ -331,8 +344,8 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                                     }),
                                 ))
                                 .await;
-                        } else {
-                            sleep(Duration::from_millis(delay_ms)).await;
+                        } else if retry_cancelled(&ctx.cancel, delay_ms).await {
+                            return None;
                         }
                     }
                     RetryAction::GiveUp => {
@@ -422,8 +435,9 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         match process_stream_events(
             &mut *s,
             &mut tried,
-            &provider_name,
+            (&provider_name, &pool_name),
             &label,
+            state,
             ctx,
             default_cooldown_rate_limited,
         )
@@ -459,7 +473,9 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                         exclude.push(client.clone());
                         continue;
                     }
-                    sleep(Duration::from_millis(delay_ms)).await;
+                    if retry_cancelled(&ctx.cancel, delay_ms).await {
+                        return None;
+                    }
                     continue;
                 }
                 RetryAction::Failover => {
@@ -547,13 +563,12 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         su.total_tokens = su.total_tokens.saturating_add(usage.total_tokens);
     }
     if let Some(tracker) = &ctx.quota_tracker {
-        tracker.record_usage(&success_provider, &success_label, usage.total_tokens as u64);
-        let api_snapshot = tracker
-            .check_via_api(&success_provider, &success_label)
-            .await;
+        let pool_name = spec.split_once('/').map_or(spec.as_str(), |(p, _)| p);
+        tracker.record_usage(pool_name, &success_label, usage.total_tokens as u64);
+        let api_snapshot = tracker.check_via_api(pool_name, &success_label).await;
         let exhausted = match &api_snapshot {
             Some(s) => s.is_exhausted(),
-            None => tracker.is_exhausted(&success_provider, &success_label),
+            None => tracker.is_exhausted(pool_name, &success_label),
         };
         if exhausted {
             let remaining = match &api_snapshot {
@@ -562,20 +577,18 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                     let until = s.resets_at.unwrap();
                     std::time::Duration::from_secs((until - now).num_seconds().max(1) as u64)
                 }
-                _ => tracker.remaining_window(&success_provider, &success_label),
+                _ => tracker.remaining_window(pool_name, &success_label),
             };
             let window_ends_secs = remaining.as_secs();
             ctx.registry.mark_cooldown(
-                &success_provider,
+                pool_name,
                 &success_label,
                 remaining,
                 zhuye_llm::CooldownReason::QuotaExhausted { window_ends_secs },
             );
-            let used = tracker
-                .used_tokens(&success_provider, &success_label)
-                .unwrap_or(0);
+            let used = tracker.used_tokens(pool_name, &success_label).unwrap_or(0);
             tracing::info!(
-                provider = %success_provider,
+                provider = %pool_name,
                 label = %success_label,
                 used, window_ends_secs,
                 via_api = api_snapshot.is_some(),
@@ -586,7 +599,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                 .send(zhuye_protocol::Event::new(
                     zhuye_protocol::EVENT_ID_NONE,
                     zhuye_protocol::EventMsg::QuotaExhausted(zhuye_protocol::QuotaExhaustedEvent {
-                        provider: success_provider.clone(),
+                        provider: pool_name.to_string(),
                         label: success_label.clone(),
                         used_tokens: used,
                         max_tokens: 0,
@@ -776,6 +789,15 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     }
 }
 
+/// 重试退避期间仍响应回合取消。
+async fn retry_cancelled(cancel: &tokio_util::sync::CancellationToken, delay_ms: u64) -> bool {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => true,
+        _ = sleep(Duration::from_millis(delay_ms)) => false,
+    }
+}
+
 /// v1.0 多 Provider 路由:`model_call` 全部 candidate 失败时的收尾路径。
 ///
 /// v1.x:收尾时补一条 `model.request.failed` span —— 此前 4 个失败路径
@@ -840,4 +862,30 @@ fn record_failed_model_call(
         zhuye_telemetry::SpanStatus::Failed,
         "main_turn",
     );
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::retry_cancelled;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn 重试退避期间取消无需等完整延迟() {
+        let cancel = CancellationToken::new();
+        let child = cancel.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = started.send(());
+            retry_cancelled(&child, 30_000).await
+        });
+        ready.await.expect("重试任务启动");
+        cancel.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .expect("取消应及时完成")
+                .expect("任务不应 panic")
+        );
+    }
 }

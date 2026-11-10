@@ -45,6 +45,18 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         for m in &ctx.messages {
             state.messages.messages.push(m.clone());
         }
+        // 回放历史将最近一次持久化摘要作为 System 消息注入。每个回合
+        // 都新建 AgentState,需从回放内容恢复摘要,后续压缩才能增量更新。
+        if state.compaction_summary.is_none() {
+            state.compaction_summary = state.messages.messages.iter().rev().find_map(|m| match m {
+                ChatMessage::System(s)
+                    if s.trim_start().starts_with("<summary>") && s.contains("</summary>") =>
+                {
+                    Some(s.clone())
+                }
+                _ => None,
+            });
+        }
         state.history_seeded = true;
     }
 

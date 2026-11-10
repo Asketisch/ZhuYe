@@ -104,6 +104,8 @@ class ServeSession:
         self._cond = threading.Condition()
         self._write_lock = threading.Lock()
         self._closed = False
+        self._stdout_error: str | None = None
+        self._stdout_eof = False
         cmd = [str(ZHUYE_BIN), "serve", *self.args]
         self._proc = subprocess.Popen(
             cmd,
@@ -129,6 +131,16 @@ class ServeSession:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
+                with self._cond:
+                    if self._stdout_error is None:
+                        self._stdout_error = f"serve stdout 不是合法 JSONL:{line[:200]!r}"
+                    self._cond.notify_all()
+                continue
+            if not isinstance(obj, dict) or not isinstance(obj.get("msg"), dict):
+                with self._cond:
+                    if self._stdout_error is None:
+                        self._stdout_error = f"serve stdout 不是事件对象:{line[:200]!r}"
+                    self._cond.notify_all()
                 continue
             with self._cond:
                 self._events.append(obj)
@@ -139,7 +151,15 @@ class ServeSession:
                 self._cond.notify_all()
         # EOF:唤醒所有等待者(进程死了也要让用例失败,而不是挂死)。
         with self._cond:
+            self._stdout_eof = True
             self._cond.notify_all()
+
+    def _check_stdout(self) -> None:
+        """调用方持有条件锁;异常输出或提前断线必须让场景失败。"""
+        if self._stdout_error is not None:
+            raise AssertionError(self._stdout_error)
+        if self._stdout_eof:
+            raise AssertionError(f"serve stdout 提前关闭,退出码:{self._proc.poll()}")
 
     # ── 写侧 ───────────────────────────────────────────────────────────
 
@@ -172,11 +192,14 @@ class ServeSession:
         seen = 0
         while True:
             with self._cond:
+                if self._stdout_error is not None:
+                    raise AssertionError(self._stdout_error)
                 evs = list(self._by_sub.get(sub_id, ()))
                 if len(evs) > seen:
                     new = evs[seen:]
                     seen = len(evs)
                 else:
+                    self._check_stdout()
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         got = [e.get("msg", {}).get("type") for e in evs]
@@ -191,6 +214,8 @@ class ServeSession:
                     on_event(ev)
                 if ev.get("msg", {}).get("type") in TERMINAL_TYPES:
                     with self._cond:
+                        if self._stdout_error is not None:
+                            raise AssertionError(self._stdout_error)
                         return list(self._by_sub.get(sub_id, ()))
 
     def submit(
@@ -223,9 +248,12 @@ class ServeSession:
         deadline = time.monotonic() + (timeout if timeout is not None else self.timeout)
         while True:
             with self._cond:
+                if self._stdout_error is not None:
+                    raise AssertionError(self._stdout_error)
                 for ev in self._globals:
                     if predicate(ev):
                         return ev
+                self._check_stdout()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     seen = [e.get("msg", {}).get("type") for e in self._globals]
@@ -244,9 +272,12 @@ class ServeSession:
         deadline = time.monotonic() + (timeout if timeout is not None else self.timeout)
         while True:
             with self._cond:
+                if self._stdout_error is not None:
+                    raise AssertionError(self._stdout_error)
                 for ev in self._by_sub.get(sub_id, ()):
                     if ev.get("msg", {}).get("type") == msg_type:
                         return ev
+                self._check_stdout()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     got = [e.get("msg", {}).get("type") for e in self._by_sub.get(sub_id, ())]
@@ -312,6 +343,9 @@ class ServeSession:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+        self._reader.join(timeout=5)
+        if exc_type is None and self._stdout_error is not None:
+            raise AssertionError(self._stdout_error)
 
 
 # ── CLI 助手 ─────────────────────────────────────────────────────────────

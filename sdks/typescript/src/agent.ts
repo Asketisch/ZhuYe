@@ -123,6 +123,9 @@ export class ZhuyeAgent {
   private constructor(proc: ServeProcess, ready: Promise<void>) {
     this.proc = proc;
     this.ready = ready;
+    // 子进程意外退出时写入回调会收到错误,流本身也会发出 error。
+    // 调用方通过写入 Promise 接收错误;监听流错误以免宿主进程崩溃。
+    proc.stdin.on('error', () => {});
     // 后台消费 stdout:按 type 分发到等待中的本地 handler(若已注册)
     // 或作为 turn 事件交给 submit() 的消费者。
     this.consumeStdout().catch((err) => {
@@ -323,7 +326,6 @@ export class ZhuyeAgent {
     input: string | Op,
     opts: { submissionId?: string } = {},
   ): Promise<AsyncIterable<Event>> {
-    await this.ready;
     const id = opts.submissionId ?? randomUUID();
     const op: Op = typeof input === 'string'
       ? {
@@ -331,15 +333,61 @@ export class ZhuyeAgent {
           items: [{ type: 'text', text: input }],
         }
       : input;
-    const sub: Submission = { id, op };
-    await this.writeSubmission(sub);
-    return this.filterEventsById(id);
+    return this.submitOperation(id, op);
   }
 
-  /** 便捷:`prompt(text)` → 最终 assistant 文本(聚合所有 delta)。 */
+  private async submitOperation(
+    id: string,
+    op: Op,
+    cancelled?: () => boolean,
+  ): Promise<AsyncIterable<Event>> {
+    await this.ready;
+    // 超时发生在握手期间时,不能在握手完成后迟到提交。
+    if (cancelled?.()) throw new Error('zhuye prompt already timed out');
+    const sub: Submission = { id, op };
+    // 必须先注册监听者:对端可能在写入回调完成前就返回事件。
+    const events = this.filterEventsById(id);
+    try {
+      await this.writeSubmission(sub);
+      if (cancelled?.()) throw new Error('zhuye prompt already timed out');
+    } catch (err) {
+      await events[Symbol.asyncIterator]().return?.();
+      throw err;
+    }
+    return events;
+  }
+
+  /** 聚合文本;超时仅停止本地等待,不会中断服务端回合。 */
   async prompt(text: string, opts: { timeoutMs?: number } = {}): Promise<string> {
+    const timeoutMs = opts.timeoutMs;
+    if (timeoutMs !== undefined &&
+        (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647)) {
+      throw new RangeError('timeoutMs must be between 0 and 2147483647');
+    }
+    const id = randomUUID();
+    let timedOut = false;
+    const op: Op = { type: 'user_input', items: [{ type: 'text', text }] };
+    const completion = this.collectPrompt(id, op, () => timedOut);
+    if (timeoutMs === undefined) return completion;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        // 中断本地迭代器,并清理可能正在等待写入回调的监听器。
+        this.eventListeners.get(id)?.(null);
+        reject(new Error(`zhuye prompt timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([completion, timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async collectPrompt(id: string, op: Op, cancelled: () => boolean): Promise<string> {
     let result = '';
-    for await (const ev of await this.submit(text)) {
+    for await (const ev of await this.submitOperation(id, op, cancelled)) {
       const msg = ev.msg;
       if (msg.type === 'agent_message_delta') result += msg.delta;
       else if (msg.type === 'agent_message') {
@@ -349,7 +397,7 @@ export class ZhuyeAgent {
         const { text } = msg as { text?: unknown };
         if (typeof text === 'string') result = text;
       }
-      else if (msg.type === 'turn_complete') break;
+      else if (msg.type === 'turn_complete') return result;
       else if (msg.type === 'turn_aborted') {
         // 对齐 Python SDK:turn_aborted 不是正常完成,返回部分文本
         // 容易被调用方误认为完整答案 —— 抛错强制处理。
@@ -359,7 +407,7 @@ export class ZhuyeAgent {
         throw new Error(`zhuye error: ${msg.code}: ${msg.message}`);
       }
     }
-    return result;
+    throw new Error('zhuye stream ended before turn_complete');
   }
 
   /** 中断当前 turn。 */
@@ -496,7 +544,8 @@ export class ZhuyeAgent {
           tool: string;
           args: Record<string, unknown>;
         };
-        void this.handleToolRequest(req.call_id, req.tool, req.args);
+        // 回执可能与子进程退出并发,此时写入失败无需再向已断开的服务端回报。
+        void this.handleToolRequest(req.call_id, req.tool, req.args).catch(() => {});
         continue;
       }
       // 其他事件交给按 submission id 过滤的消费者。
@@ -571,13 +620,17 @@ export class ZhuyeAgent {
 
   /** 全局事件入队;`ev === null` 表示 EOF:标记收尾并唤醒等待者。 */
   private pushGlobalEvent(ev: Event | null): void {
-    if (ev === null) this.globalEof = true;
+    if (ev === null) {
+      this.globalEof = true;
+      for (const waiter of this.globalWaiters.splice(0)) waiter(null);
+      return;
+    }
     const waiter = this.globalWaiters.shift();
     if (waiter) {
       waiter(ev);
       return;
     }
-    if (ev !== null) this.globalQueue.push(ev);
+    this.globalQueue.push(ev);
   }
 
   private filterEventsById(submissionId: string): AsyncIterable<Event> {
@@ -635,11 +688,10 @@ export class ZhuyeAgent {
   }
 
   private async writeSubmission(sub: Submission): Promise<void> {
-    // close() 之后(end 掉 stdin)仍可能有异步路径想写 —— 典型是挂起的
-    // 工具 handler 回执。静默丢弃:连接已关,回执无处可去;抛"write
-    // after end"反而变成 uncaught exception 打爆宿主进程。
-    if (this.closed || this.proc.stdin.destroyed || this.proc.stdin.writableEnded) {
-      return;
+    // 公开调用需要明确失败,否则 submit 会返回永远收不到事件的迭代器。
+    // 异步工具回执在调用处捕获此错误,不会因连接关闭而中断宿主进程。
+    if (this.closed || this.globalEof || this.proc.stdin.destroyed || this.proc.stdin.writableEnded) {
+      throw new Error('agent is closed');
     }
     return this.writeSubmissionUnchecked(sub);
   }

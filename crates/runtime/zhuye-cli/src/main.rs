@@ -22,6 +22,7 @@ mod mcp;
 mod models;
 mod pipeline;
 mod plugin;
+mod secrets;
 mod security;
 mod session;
 mod task;
@@ -36,7 +37,7 @@ mod test_home;
 #[command(
     name = "zhuye",
     version,
-    about = "ZhuYe — Rust agent runtime CLI (subcommands: exec, serve, discussion, login, init, mcp, config, session, traces, doctor, models, plugin, lsp, task, pipeline, security, workspace, update, version). 交互式 TUI 见独立仓库 Reflect-TUI.",
+    about = "ZhuYe — Rust agent runtime CLI (subcommands: exec, serve, discussion, login, init, mcp, config, session, traces, secrets, doctor, models, plugin, lsp, task, pipeline, security, workspace, update, version). 交互式 TUI 见独立仓库 Reflect-TUI.",
     propagate_version = true
 )]
 struct Cli {
@@ -161,8 +162,34 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// 加密密钥存储(set / get / list / delete;AES-256-GCM + machine key)。
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsAction,
+    },
     /// 打印版本号并退出。
     Version,
+}
+
+/// `zhuye secrets` 子命令。
+#[derive(Debug, Subcommand)]
+enum SecretsAction {
+    /// 加密存储一条密钥(明文从 stdin 读入,argv 不落密钥)。
+    Set {
+        /// 条目名(如 provider 名 / 服务名)。
+        name: String,
+    },
+    /// 解密并输出一条密钥到 stdout。
+    Get { name: String },
+    /// 列出条目名(不输出任何值)。
+    List,
+    /// 删除一条密钥(默认确认,`--yes` 跳过)。
+    Delete {
+        name: String,
+        /// 跳过确认(CI / 脚本场景)。
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 /// `zhuye mcp` 子命令。
@@ -800,6 +827,12 @@ fn main() -> anyhow::Result<()> {
             SessionAction::Export { id, out } => rt.block_on(session::export(&id, out.as_deref())),
             SessionAction::Search { query, limit, json } => session::search(&query, limit, json),
             SessionAction::Stats { workspace } => session::stats(workspace.as_deref()),
+        },
+        Command::Secrets { action } => match action {
+            SecretsAction::Set { name } => secrets::set(&name),
+            SecretsAction::Get { name } => secrets::get(&name),
+            SecretsAction::List => secrets::list(),
+            SecretsAction::Delete { name, yes } => secrets::delete(&name, yes),
         },
         Command::Traces { action } => match action {
             TracesAction::Ls { limit } => traces::ls(limit),

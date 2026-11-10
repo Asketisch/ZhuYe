@@ -4,14 +4,14 @@
 //! - `process_midstream_error` — 流中错误的 cooldown/failover 决策
 
 use futures::{Stream, StreamExt};
-use tokio::time::sleep;
 use zhuye_llm::{ChatEvent, LlmError};
 use zhuye_protocol::{
-    AbortReason, AgentMessageDelta, ErrorEvent, Event, EventMsg, StreamErrorEvent, ThinkingDelta,
-    ThinkingDeltaKind, TokenUsage, ToolCallBeginEvent, TriedCredential, TurnAbortedEvent,
+    AgentMessage, AgentMessageDelta, ContentBlock, ErrorEvent, Event, EventMsg, StreamErrorEvent,
+    ThinkingDelta, ThinkingDeltaKind, TokenUsage, ToolCallBeginEvent, TriedCredential,
 };
 
 use super::super::retry::{RetryAction, classify_action, error_code, outcome_code};
+use crate::graph::state::AgentState;
 use crate::submission_loop::NodeContext;
 
 /// 结束原因之后等待尾部 usage chunk 的上限。
@@ -24,21 +24,29 @@ const USAGE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_milli
 
 /// 解析流式累积的工具参数 JSON。
 ///
-/// 模型(尤其弱模型)可能输出空 / 截断 / 非法 JSON,导致 `from_str` 失败。
-/// 此前用 `unwrap_or(Value::Null)` 静默退化,使得下游工具(如 bash)拿到
-/// `Value::Null` 后报 "missing 'cmd'" —— 难以定位根因。这里在解析失败时
-/// 记一条 `warn!`(工具名 + 累积长度 + 解析错误),保留同样的 `Null` 退化
-/// 行为(零行为变更),让该失效模式可观测。
-fn parse_tool_args(args_str: &str, tool_name: &str) -> serde_json::Value {
+/// 空参数按空对象处理;非空但无效时保留错误,后续合成工具失败结果,
+/// 不能将损坏的参数交给有副作用的工具或宿主 handler。
+fn parse_tool_args(
+    args_str: &str,
+    tool_name: &str,
+    call_id: &str,
+    state: &mut AgentState,
+) -> serde_json::Value {
+    if args_str.trim().is_empty() {
+        return serde_json::json!({});
+    }
     serde_json::from_str(args_str).unwrap_or_else(|e| {
         tracing::warn!(
             tool = tool_name,
             args_len = args_str.len(),
             error = %e,
-            "tool args JSON parse failed; falling back to Value::Null \
-             (likely empty/truncated/malformed streamed arguments from the model)"
+            "工具参数 JSON 无效;不会执行该调用"
         );
-        serde_json::Value::Null
+        state.invalid_tool_args.insert(
+            call_id.to_string(),
+            format!("工具 {tool_name} 的参数不是有效 JSON: {e}"),
+        );
+        serde_json::json!({})
     })
 }
 
@@ -64,11 +72,13 @@ pub type StreamResult = (
 pub async fn process_stream_events(
     s: &mut (dyn Stream<Item = std::result::Result<ChatEvent, LlmError>> + Send + Unpin),
     tried: &mut Vec<TriedCredential>,
-    provider_name: &str,
+    provider: (&str, &str),
     label: &str,
+    state: &mut AgentState,
     ctx: &NodeContext,
     default_cooldown_rate_limited: std::time::Duration,
 ) -> Result<StreamResult, RetryAction> {
+    let (provider_name, pool_name) = provider;
     let mut text_buf = String::new();
     let mut thinking_buf = String::new();
     let mut tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
@@ -110,7 +120,15 @@ pub async fn process_stream_events(
         // 它,usage 反而被漏掉。
         if draining {
             let deadline = drain_deadline.unwrap_or_else(tokio::time::Instant::now);
-            match tokio::time::timeout_at(deadline, s.next()).await {
+            let next = tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => {
+                    preserve_interrupted_text(state, &mut text_buf);
+                    return Err(RetryAction::GiveUp);
+                },
+                next = tokio::time::timeout_at(deadline, s.next()) => next,
+            };
+            match next {
                 Ok(Some(Ok(ChatEvent::Usage {
                     input_tokens,
                     output_tokens,
@@ -135,13 +153,8 @@ pub async fn process_stream_events(
         tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => {
-                let _ = ctx.event_tx.send(Event::new(
-                    ctx.sub_id.clone(),
-                    EventMsg::TurnAborted(TurnAbortedEvent {
-                        turn_id: ctx.turn_id,
-                        reason: AbortReason::UserInterrupt,
-                    }),
-                )).await;
+                // 终态由 submission loop 在落盘之后统一发送,避免重复。
+                preserve_interrupted_text(state, &mut text_buf);
                 return Err(RetryAction::GiveUp);
             }
             evt = s.next() => {
@@ -151,6 +164,16 @@ pub async fn process_stream_events(
                         let _ = ctx.event_tx.send(Event::new(
                             ctx.sub_id.clone(),
                             EventMsg::AgentMessageDelta(AgentMessageDelta { delta: d }),
+                        )).await;
+                    }
+                    Some(Ok(ChatEvent::AgentMessage { text })) => {
+                        // 非流式 provider 的整段消息:文本等价累积(历史 /
+                        // rollout / CheckStop 与 delta 路径一致),整段转发
+                        // 为协议 `agent_message`,不再拆 delta。
+                        text_buf.push_str(&text);
+                        let _ = ctx.event_tx.send(Event::new(
+                            ctx.sub_id.clone(),
+                            EventMsg::AgentMessage(AgentMessage { text }),
                         )).await;
                     }
                     Some(Ok(ChatEvent::ThinkingDelta(d))) => {
@@ -183,7 +206,8 @@ pub async fn process_stream_events(
                         // 工具被记录、其余工具的 tool_use id 在历史里孤立
                         // (无配对 tool_result → provider 400)。
                         if let Some((prev_id, prev_name)) = current_tool.take() {
-                            let prev_args = parse_tool_args(&current_args_str, &prev_name);
+                            let prev_args =
+                                parse_tool_args(&current_args_str, &prev_name, &prev_id, state);
                             tool_calls.push((prev_id, prev_name, prev_args));
                         }
                         current_tool = Some((id, name));
@@ -258,16 +282,39 @@ pub async fn process_stream_events(
     }
 
     if let Some(e) = error {
-        // 决定重试前,先把未终结的 tool call 冲进缓冲。
-        if let Some((id, name)) = current_tool.take() {
-            let args = parse_tool_args(&current_args_str, &name);
-            tool_calls.push((id, name, args));
+        if !text_buf.is_empty()
+            || !thinking_buf.is_empty()
+            || current_tool.is_some()
+            || !tool_calls.is_empty()
+        {
+            // 可见增量无法撤回。重新调用模型会把两次输出拼在一起,
+            // 因此保留已输出文本并结束本轮,由调用方决定是否续跑。
+            preserve_interrupted_text(state, &mut text_buf);
+            if let RetryAction::CooldownAndFailover { cooldown } =
+                classify_action(&e, default_cooldown_rate_limited)
+            {
+                ctx.registry
+                    .mark_cooldown(pool_name, label, cooldown, build_cooldown_reason(&e));
+            }
+            tried.push(TriedCredential {
+                label: label.to_string(),
+                outcome: outcome_code(&e).to_string(),
+            });
+            state.deferred_error = Some(ErrorEvent {
+                code: error_code(&e).into(),
+                message: e.to_string(),
+                details: Some(serde_json::json!({
+                    "provider": provider_name,
+                    "credential_label": label,
+                    "tried": tried,
+                })),
+            });
+            return Err(RetryAction::GiveUp);
         }
         return Err(process_midstream_error(
             &e,
-            provider_name,
+            (provider_name, pool_name),
             label,
-            !text_buf.is_empty() || !tool_calls.is_empty(),
             tried,
             ctx,
             default_cooldown_rate_limited,
@@ -277,7 +324,7 @@ pub async fn process_stream_events(
 
     // Flush pending tool call.
     if let Some((id, name)) = current_tool.take() {
-        let args = parse_tool_args(&current_args_str, &name);
+        let args = parse_tool_args(&current_args_str, &name, &id, state);
         tool_calls.push((id, name, args));
     }
 
@@ -292,16 +339,26 @@ pub async fn process_stream_events(
     ))
 }
 
+/// 保留已发送给客户端的文本,供中断后的持久化与恢复使用。
+fn preserve_interrupted_text(state: &mut AgentState, text: &mut String) {
+    if !text.is_empty() {
+        state.turn_content.append(&mut state.latest_content);
+        state.latest_content.push(ContentBlock::Text {
+            text: std::mem::take(text),
+        });
+    }
+}
+
 /// 流式消费中发生错误时的处理逻辑:分类 + cooldown + 事件 + 决策。
 async fn process_midstream_error(
     e: &LlmError,
-    provider_name: &str,
+    provider: (&str, &str),
     label: &str,
-    succeeded: bool,
     tried: &mut Vec<TriedCredential>,
     ctx: &NodeContext,
     default_cooldown_rate_limited: std::time::Duration,
 ) -> RetryAction {
+    let (provider_name, pool_name) = provider;
     let action = classify_action(e, default_cooldown_rate_limited);
     let outcome = outcome_code(e).to_string();
 
@@ -309,7 +366,7 @@ async fn process_midstream_error(
         RetryAction::CooldownAndFailover { cooldown } => {
             let reason = build_cooldown_reason(e);
             ctx.registry
-                .mark_cooldown(provider_name, label, cooldown, reason);
+                .mark_cooldown(pool_name, label, cooldown, reason);
             let _ = ctx
                 .event_tx
                 .send(Event::new(
@@ -332,11 +389,8 @@ async fn process_midstream_error(
                 ))
                 .await;
         }
-        RetryAction::RetrySame { delay_ms } => {
-            if !succeeded {
-                sleep(std::time::Duration::from_millis(delay_ms)).await;
-            }
-        }
+        // 退避由 model_call 统一处理,以便期间响应取消且不重复等待。
+        RetryAction::RetrySame { .. } => {}
         RetryAction::Failover => {}
         RetryAction::GiveUp => {
             tried.push(TriedCredential {
@@ -462,11 +516,13 @@ mod tests {
         ];
         let mut s = Box::pin(stream::iter(events));
         let mut tried = Vec::new();
+        let mut state = AgentState::default();
         let result = process_stream_events(
             &mut s,
             &mut tried,
-            "mock",
+            ("mock", "mock"),
             "label",
+            &mut state,
             &ctx,
             std::time::Duration::from_secs(1),
         )

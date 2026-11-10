@@ -14,6 +14,7 @@ zhuye-exec       = { workspace = true }
 zhuye-discussion = { workspace = true }
 zhuye-rollout    = { workspace = true }
 zhuye-config     = { workspace = true }
+zhuye-secrets    = { workspace = true }
 zhuye-hooks     = { workspace = true }
 zhuye-fs        = { workspace = true }
 zhuye-mcp        = { workspace = true }

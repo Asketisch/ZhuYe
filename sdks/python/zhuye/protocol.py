@@ -32,10 +32,13 @@ UserInputItem = Union[TextItem, ImageItem]
 
 
 class ThreadSettings(TypedDict, total=False):
-    # v1.10 功能4:max / ultra 为新增档位(不同模型族上限不同,由引擎按模型钳制)
+    # 旧字段为兼容保留;服务端不读取,请改用对应的独立 Op。
     effort: Literal["low", "medium", "high", "max", "ultra"] | None
     permission_mode: str | None
     model: str | None
+    approval_policy: Literal["auto", "prompt", "deny"] | None
+    sandbox_policy: Literal["workspace_only", "os_sandbox", "full_access"] | None
+    max_tool_concurrency: int | None
 
 
 class _UserInputOpOptionalFields(TypedDict, total=False):

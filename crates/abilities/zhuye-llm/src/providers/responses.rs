@@ -257,6 +257,7 @@ fn stream_sse(
 ) -> impl Stream<Item = Result<ChatEvent, LlmError>> + Send {
     let byte_stream = response.bytes_stream();
     let mut sse = EventStream::new(byte_stream).peekable();
+    let mut tools = ResponseTools::default();
 
     async_stream::stream! {
         loop {
@@ -267,7 +268,10 @@ fn stream_sse(
                     return;
                 }
                 next = sse.next() => {
-                    let Some(item) = next else { return };
+                    let Some(item) = next else {
+                        yield Err(LlmError::SseParse("Responses 流在终态前结束".into()));
+                        return;
+                    };
                     let evt = match item {
                         Ok(ev) => ev,
                         Err(e) => {
@@ -278,6 +282,7 @@ fn stream_sse(
                     // Responses SSE:`[DONE]` 不出现(用 response.completed 收尾),
                     // 但兼容个别网关仍发 [DONE]。
                     if evt.data == "[DONE]" {
+                        for event in tools.finish() { yield Ok(event); }
                         return;
                     }
                     let val: Value = match serde_json::from_str(&evt.data) {
@@ -287,8 +292,46 @@ fn stream_sse(
                             return;
                         }
                     };
-                    for ev in parse_responses_event(&evt.event, &val) {
-                        yield Ok(ev);
+                    if evt.event == "error" || evt.event == "response.failed" {
+                        yield Ok(ChatEvent::Error(response_stream_error(&val)));
+                        return;
+                    }
+                    if evt.event == "response.incomplete" {
+                        let reason = val.pointer("/response/incomplete_details/reason")
+                            .and_then(Value::as_str).unwrap_or("unknown");
+                        if reason == "max_output_tokens" && tools.calls.is_empty() {
+                            for event in parse_responses_event("response.completed", &val) {
+                                match event {
+                                    ChatEvent::MessageStop => yield Ok(ChatEvent::MessageStopTruncated {
+                                        stop_reason: reason.to_owned(),
+                                    }),
+                                    other => yield Ok(other),
+                                }
+                            }
+                        } else {
+                            yield Ok(ChatEvent::Error(LlmError::Provider {
+                                status: 200,
+                                message: format!("Responses 未完成: {reason}"),
+                            }));
+                        }
+                        return;
+                    }
+                    match tools.accept(&evt.event, &val) {
+                        Ok(Some(events)) => {
+                            for event in events { yield Ok(event); }
+                        }
+                        Ok(None) => {
+                            if evt.event == "response.completed" {
+                                for event in tools.finish() { yield Ok(event); }
+                            }
+                            for event in parse_responses_event(&evt.event, &val) {
+                                yield Ok(event);
+                            }
+                        }
+                        Err(error) => {
+                            yield Err(error);
+                            return;
+                        }
                     }
                     // response.completed 是终态事件,收到即结束流。
                     if evt.event == "response.completed" {
@@ -297,6 +340,208 @@ fn stream_sse(
                 }
             }
         }
+    }
+}
+
+/// 把 Responses 的流内失败还原为可路由的错误,保留上游信息。
+fn response_stream_error(value: &Value) -> LlmError {
+    let error = value.pointer("/response/error").unwrap_or(value);
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Responses 流发生错误");
+    match code {
+        "invalid_prompt" | "invalid_request_error" | "invalid_request" => {
+            LlmError::InvalidRequest {
+                message: format!("{code}: {message}"),
+            }
+        }
+        "context_length_exceeded" => LlmError::ContextLengthExceeded { used: 0, limit: 0 },
+        "authentication_error" | "invalid_api_key" => LlmError::Auth,
+        "rate_limit_exceeded" | "rate_limit_error" => LlmError::RateLimited {
+            retry_after_ms: 1000,
+        },
+        _ => LlmError::Provider {
+            status: 500,
+            message: format!("{code}: {message}"),
+        },
+    }
+}
+
+/// Responses 的参数分片通过 output_index / item_id 标识调用,而内部
+/// ChatEvent 增量只对应当前调用。首个调用实时转发,其余按出现顺序
+/// 缓存至结束,避免交错分片被归到错误工具。
+#[derive(Default)]
+struct ResponseTools {
+    calls: Vec<ResponseTool>,
+}
+
+struct ResponseTool {
+    index: Option<u64>,
+    item_id: Option<String>,
+    call_id: String,
+    name: String,
+    arguments: String,
+    buffered: Vec<String>,
+}
+
+impl ResponseTools {
+    fn accept(&mut self, event: &str, value: &Value) -> Result<Option<Vec<ChatEvent>>, LlmError> {
+        match event {
+            "response.output_item.added"
+                if value.pointer("/item/type").and_then(Value::as_str) == Some("function_call") =>
+            {
+                let index = value.get("output_index").and_then(Value::as_u64);
+                let item_id = value
+                    .pointer("/item/id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                if self.calls.iter().any(|call| {
+                    (index.is_some() && call.index == index)
+                        || (item_id.is_some() && call.item_id == item_id)
+                }) || (!self.calls.is_empty() && index.is_none() && item_id.is_none())
+                {
+                    return Err(LlmError::SseParse(
+                        "Responses 工具调用标识重复或缺失".into(),
+                    ));
+                }
+                let call_id = value
+                    .pointer("/item/call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let name = value
+                    .pointer("/item/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if call_id.is_empty() || name.is_empty() {
+                    return Err(LlmError::SseParse(
+                        "Responses 工具调用缺少 call_id 或 name".into(),
+                    ));
+                }
+                if self.calls.iter().any(|call| call.call_id == call_id) {
+                    return Err(LlmError::SseParse("Responses 工具调用 call_id 重复".into()));
+                }
+                let mut events = Vec::new();
+                if self.calls.is_empty() {
+                    events.push(ChatEvent::ToolUseStart {
+                        id: call_id.to_owned(),
+                        name: name.to_owned(),
+                        input_json: String::new(),
+                    });
+                }
+                self.calls.push(ResponseTool {
+                    index,
+                    item_id,
+                    call_id: call_id.to_owned(),
+                    name: name.to_owned(),
+                    arguments: String::new(),
+                    buffered: Vec::new(),
+                });
+                if let Some(args) = value
+                    .pointer("/item/arguments")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    self.append(self.calls.len() - 1, args, &mut events);
+                }
+                Ok(Some(events))
+            }
+            "response.function_call_arguments.delta" => {
+                let slot = self.find(value, value.get("item_id").and_then(Value::as_str))?;
+                let mut events = Vec::new();
+                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    self.append(slot, delta, &mut events);
+                }
+                Ok(Some(events))
+            }
+            "response.function_call_arguments.done" => {
+                let slot = self.find(value, value.get("item_id").and_then(Value::as_str))?;
+                self.finalize_arguments(slot, value.get("arguments").and_then(Value::as_str))
+                    .map(Some)
+            }
+            "response.output_item.done"
+                if value.pointer("/item/type").and_then(Value::as_str) == Some("function_call") =>
+            {
+                let slot = self.find(value, value.pointer("/item/id").and_then(Value::as_str))?;
+                self.finalize_arguments(
+                    slot,
+                    value.pointer("/item/arguments").and_then(Value::as_str),
+                )
+                .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn find(&self, value: &Value, item_id: Option<&str>) -> Result<usize, LlmError> {
+        let index = value.get("output_index").and_then(Value::as_u64);
+        let item_id = item_id.filter(|id| !id.is_empty());
+        let matching: Vec<usize> = self
+            .calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| {
+                let index_matches = index.is_none() || call.index.is_none() || call.index == index;
+                let id_matches = item_id.is_none()
+                    || call.item_id.is_none()
+                    || call.item_id.as_deref() == item_id;
+                index_matches && id_matches
+            })
+            .map(|(position, _)| position)
+            .collect();
+        match matching.as_slice() {
+            [position] => Ok(*position),
+            _ => Err(LlmError::SseParse(
+                "Responses 工具参数无法唯一关联到调用".into(),
+            )),
+        }
+    }
+
+    fn append(&mut self, slot: usize, delta: &str, events: &mut Vec<ChatEvent>) {
+        if delta.is_empty() {
+            return;
+        }
+        self.calls[slot].arguments.push_str(delta);
+        if slot == 0 {
+            events.push(ChatEvent::ToolUseDelta(delta.to_owned()));
+        } else {
+            self.calls[slot].buffered.push(delta.to_owned());
+        }
+    }
+
+    fn finalize_arguments(
+        &mut self,
+        slot: usize,
+        arguments: Option<&str>,
+    ) -> Result<Vec<ChatEvent>, LlmError> {
+        let mut events = Vec::new();
+        if let Some(arguments) = arguments {
+            let current = &self.calls[slot].arguments;
+            let remainder = arguments
+                .strip_prefix(current.as_str())
+                .ok_or_else(|| LlmError::SseParse("Responses 最终工具参数与增量不一致".into()))?;
+            self.append(slot, remainder, &mut events);
+        }
+        Ok(events)
+    }
+
+    fn finish(&mut self) -> Vec<ChatEvent> {
+        let mut events = Vec::new();
+        for call in self.calls.iter_mut().skip(1) {
+            events.push(ChatEvent::ToolUseStart {
+                id: call.call_id.clone(),
+                name: call.name.clone(),
+                input_json: String::new(),
+            });
+            events.extend(call.buffered.drain(..).map(ChatEvent::ToolUseDelta));
+        }
+        self.calls.clear();
+        events
     }
 }
 
@@ -323,29 +568,6 @@ fn parse_responses_event(event: &str, v: &Value) -> Vec<ChatEvent> {
             if let Some(delta) = v.get("delta").and_then(|x| x.as_str()) {
                 if !delta.is_empty() {
                     out.push(ChatEvent::ContentDelta(delta.to_string()));
-                }
-            }
-        }
-        "response.output_item.added" => {
-            // function_call 开始:item.function_call.{name,call_id}。
-            if let Some(item) = v.get("item") {
-                if item.get("type").and_then(|x| x.as_str()) == Some("function_call") {
-                    let id = item.get("call_id").and_then(|x| x.as_str()).unwrap_or("");
-                    let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    if !id.is_empty() || !name.is_empty() {
-                        out.push(ChatEvent::ToolUseStart {
-                            id: id.to_string(),
-                            name: name.to_string(),
-                            input_json: String::new(),
-                        });
-                    }
-                }
-            }
-        }
-        "response.function_call_arguments.delta" => {
-            if let Some(delta) = v.get("delta").and_then(|x| x.as_str()) {
-                if !delta.is_empty() {
-                    out.push(ChatEvent::ToolUseDelta(delta.to_string()));
                 }
             }
         }
@@ -513,32 +735,20 @@ fn push_input_message(m: crate::request::ChatMessage, out: &mut Vec<Value>) {
             out.push(serde_json::json!({"role": "user", "content": content}));
         }
         ChatMessage::Assistant(a) => {
-            // AssistantContent 有 text + tool_calls;Responses 助手消息
-            // 用 output_text + function_call 数组。
-            let mut parts: Vec<Value> = Vec::new();
+            // Responses 的函数调用是独立 input item,不能放入消息 content。
             if let Some(t) = a.text {
                 if !t.is_empty() {
-                    parts.push(serde_json::json!({"type": "output_text", "text": t}));
+                    out.push(serde_json::json!({"role": "assistant", "content": t}));
                 }
             }
             for tc in &a.tool_calls {
-                parts.push(serde_json::json!({
+                out.push(serde_json::json!({
                     "type": "function_call",
                     "call_id": tc.id,
                     "name": tc.name,
                     "arguments": tc.arguments.to_string(),
                 }));
             }
-            let content = if parts.is_empty() {
-                Value::String(String::new())
-            } else if parts.len() == 1
-                && parts[0].get("type").and_then(|x| x.as_str()) == Some("output_text")
-            {
-                parts[0]["text"].clone()
-            } else {
-                Value::Array(parts)
-            };
-            out.push(serde_json::json!({"role": "assistant", "content": content}));
         }
         ChatMessage::Tool(t) => {
             // Responses 支持在工具回执中直接传入图片内容块。
@@ -628,7 +838,10 @@ mod tests {
         let v = json!({
             "item": {"type": "function_call", "call_id": "call_1", "name": "search"}
         });
-        let evs = parse_responses_event("response.output_item.added", &v);
+        let evs = ResponseTools::default()
+            .accept("response.output_item.added", &v)
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             evs[0],
             ChatEvent::ToolUseStart { ref id, ref name, .. } if id == "call_1" && name == "search"
@@ -638,11 +851,129 @@ mod tests {
     #[test]
     fn parse_function_call_arguments_delta_emits_tool_use_delta() {
         let v = json!({"delta": "{\"q\":"});
-        let evs = parse_responses_event("response.function_call_arguments.delta", &v);
+        let mut tools = ResponseTools::default();
+        tools
+            .accept(
+                "response.output_item.added",
+                &json!({
+                    "item": {"type": "function_call", "call_id": "call_1", "name": "search"}
+                }),
+            )
+            .unwrap();
+        let evs = tools
+            .accept("response.function_call_arguments.delta", &v)
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             evs[0],
             ChatEvent::ToolUseDelta(ref s) if s == "{\"q\":"
         ));
+    }
+
+    #[test]
+    fn 不同工具交错参数和最终快照保持关联() {
+        let mut tools = ResponseTools::default();
+        for (index, item_id, call_id) in [(0, "fc-a", "call-a"), (1, "fc-b", "call-b")] {
+            tools
+                .accept(
+                    "response.output_item.added",
+                    &json!({
+                        "output_index": index, "item": {
+                            "type": "function_call", "id": item_id, "call_id": call_id,
+                            "name": "lookup", "arguments": ""
+                        }
+                    }),
+                )
+                .unwrap();
+        }
+        let a = tools
+            .accept(
+                "response.function_call_arguments.delta",
+                &json!({
+                    "output_index": 0, "item_id": "fc-a", "delta": "{\"key\":"
+                }),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&a[..], [ChatEvent::ToolUseDelta(s)] if s == "{\"key\":"));
+        assert!(
+            tools
+                .accept(
+                    "response.function_call_arguments.delta",
+                    &json!({
+                        "output_index": 1, "item_id": "fc-b", "delta": "{\"key\":"
+                    })
+                )
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        let a_tail = tools
+            .accept(
+                "response.function_call_arguments.done",
+                &json!({
+                    "output_index": 0, "item_id": "fc-a", "arguments": "{\"key\":\"alpha\"}"
+                }),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&a_tail[..], [ChatEvent::ToolUseDelta(s)] if s == "\"alpha\"}"));
+        tools
+            .accept(
+                "response.function_call_arguments.done",
+                &json!({
+                    "output_index": 1, "item_id": "fc-b", "arguments": "{\"key\":\"beta\"}"
+                }),
+            )
+            .unwrap();
+        let second = tools.finish();
+        assert!(matches!(&second[..], [
+            ChatEvent::ToolUseStart { id, name, .. }, ChatEvent::ToolUseDelta(first),
+            ChatEvent::ToolUseDelta(last)
+        ] if id == "call-b" && name == "lookup" && first == "{\"key\":" && last == "\"beta\"}"));
+    }
+
+    #[test]
+    fn 工具参数标识冲突或最终快照不匹配时失败() {
+        let mut tools = ResponseTools::default();
+        tools
+            .accept(
+                "response.output_item.added",
+                &json!({
+                    "output_index": 0, "item": {
+                        "type": "function_call", "id": "fc-a", "call_id": "call-a", "name": "lookup"
+                    }
+                }),
+            )
+            .unwrap();
+        assert!(
+            tools
+                .accept(
+                    "response.function_call_arguments.delta",
+                    &json!({
+                        "output_index": 0, "item_id": "other", "delta": "{}"
+                    })
+                )
+                .is_err()
+        );
+        tools
+            .accept(
+                "response.function_call_arguments.delta",
+                &json!({
+                    "output_index": 0, "item_id": "fc-a", "delta": "{\"key\":"
+                }),
+            )
+            .unwrap();
+        assert!(
+            tools
+                .accept(
+                    "response.function_call_arguments.done",
+                    &json!({
+                        "output_index": 0, "item_id": "fc-a", "arguments": "{\"other\":1}"
+                    })
+                )
+                .is_err()
+        );
     }
 
     #[test]

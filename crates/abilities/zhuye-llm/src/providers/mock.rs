@@ -9,6 +9,8 @@
 //!   调用**(一次 `stream()`),按顺序消耗:
 //!   - `{"type":"text","text":"..."}` —— 回复一段文本(拆成两个 delta,
 //!     锻炼下游的流式聚合路径);
+//!   - `{"type":"agent_message","text":"..."}` —— 整段消息回复(非流式
+//!     provider 形态,不发 delta,走协议 `agent_message` 变体);
 //!   - `{"type":"tool_call","name":"...","args":{...}}` —— 发起一次
 //!     工具调用(engine 执行工具后会再次调用模型,即再消耗一行));
 //!   - `{"type":"tool_call_delta","name":"...","chunks":["...","..."]}` ——
@@ -38,7 +40,7 @@ use crate::capabilities::Capabilities;
 use crate::client::ModelClient;
 use crate::error::LlmError;
 use crate::event::ChatEvent;
-use crate::request::ChatRequest;
+use crate::request::{ChatMessage, ChatRequest};
 
 /// env 变量:mock 脚本(JSONL 文件路径)。
 pub const ENV_MOCK_SCRIPT: &str = "ZHUYE_MOCK_SCRIPT";
@@ -78,11 +80,17 @@ pub enum MockReply {
         #[serde(default)]
         chunks: Vec<String>,
     },
-    /// 回显引擎请求的观测快照(tools 名单 + system 各块文本)——
-    /// 能力覆盖层用它对「引擎实际发给模型的 system prompt / 工具集」
+    /// 回显引擎请求的观测快照(tools 名单 + system 各块文本 + messages
+    /// 的 role / text)—— 能力覆盖层用它对「引擎实际发给模型的 system
+    /// prompt / 工具集 / 用户消息(含 turn 边界注入的后台任务结果)」
     /// 做字段级断言(离线、免探针)。回复文本 = 一段 JSON:
-    /// `{"tools":["read","bash",...],"system":["<block text>",...]}`。
+    /// `{"tools":["read","bash",...],"system":["<block text>",...],
+    /// "messages":[{"role":"user","text":"..."},...]}`。
     RequestEcho,
+
+    /// 整段消息回复(非流式 provider 形态):一次性发出完整文本,
+    /// 不经 delta —— 覆盖协议 `agent_message` 变体的引擎通路。
+    AgentMessage { text: String },
 }
 
 /// 内置 mock client。脚本队列在所有调用间共享(每次 `stream()` 消耗一行)。
@@ -246,6 +254,11 @@ impl ModelClient for MockClient {
 
         match reply {
             Some(MockReply::Text { text }) => push_text_deltas(&mut chunks, text),
+            Some(MockReply::AgentMessage { text }) => {
+                // 整段形态:单个 ChatEvent::AgentMessage,不产生任何 delta,
+                // 模拟非流式 provider 适配器的回复形状。
+                chunks.push(Ok(ChatEvent::AgentMessage { text }));
+            }
             Some(MockReply::ToolCall { name, args }) => {
                 // mock 一次性把 args 塞进单个 delta,模拟 provider 完整参数
                 // 到达的形态(Anthropic / OpenAI 都按「start → 一/多个 delta
@@ -288,8 +301,9 @@ impl ModelClient for MockClient {
                 }
             }
             Some(MockReply::RequestEcho) => {
-                // 观测快照:把引擎发给本 provider 的 tools 名单与 system
-                // 各块文本序列化成 JSON 作为回复文本,供上层断言。
+                // 观测快照:把引擎发给本 provider 的 tools 名单、system
+                // 各块文本与 messages(role + 文本)序列化成 JSON 作为
+                // 回复文本,供上层断言。
                 let snapshot = serde_json::json!({
                     "tools": request
                         .tools
@@ -301,6 +315,21 @@ impl ModelClient for MockClient {
                         .0
                         .iter()
                         .map(|b| b.text.clone())
+                        .collect::<Vec<_>>(),
+                    "messages": request
+                        .messages
+                        .iter()
+                        .map(|m| {
+                            let (role, text) = match m {
+                                ChatMessage::System(s) => ("system", s.clone()),
+                                ChatMessage::User(u) => ("user", text_of_blocks(&u.blocks)),
+                                ChatMessage::Assistant(a) => {
+                                    ("assistant", a.text.clone().unwrap_or_default())
+                                }
+                                ChatMessage::Tool(t) => ("tool", t.content_as_text()),
+                            };
+                            serde_json::json!({"role": role, "text": text})
+                        })
                         .collect::<Vec<_>>(),
                 });
                 push_text_deltas(&mut chunks, snapshot.to_string());
@@ -318,6 +347,29 @@ impl ModelClient for MockClient {
 
         Ok(Box::pin(stream::iter(chunks)))
     }
+}
+
+/// 把内容块的文本拼成一段(图片块用占位表示,绝不输出原始字节)。
+/// request_echo 快照用它展平 user / tool 消息。
+fn text_of_blocks(blocks: &[crate::request::ContentBlock]) -> String {
+    let mut out = String::new();
+    for b in blocks {
+        match b {
+            crate::request::ContentBlock::Text { text } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+            crate::request::ContentBlock::Image { mime_type, data } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("[image: {mime_type}, {} bytes]", data.len()));
+            }
+        }
+    }
+    out
 }
 
 /// 把一段文本拆成两个 ContentDelta 推入事件列表(单字符 / 空文本退化为

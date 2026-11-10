@@ -7968,6 +7968,7 @@ dependencies = [
  "zhuye-plugin",
  "zhuye-protocol",
  "zhuye-rollout",
+ "zhuye-secrets",
  "zhuye-stream",
  "zhuye-subagent",
  "zhuye-task",
@@ -8072,6 +8073,7 @@ dependencies = [
  "zhuye-protocol",
  "zhuye-recovery",
  "zhuye-sandbox",
+ "zhuye-sanitize",
  "zhuye-skills",
  "zhuye-subagent",
  "zhuye-telemetry",
@@ -8144,6 +8146,7 @@ dependencies = [
  "zhuye-recovery",
  "zhuye-rollout",
  "zhuye-sandbox",
+ "zhuye-sanitize",
  "zhuye-skills",
  "zhuye-stream",
  "zhuye-subagent",
@@ -8732,6 +8735,7 @@ dependencies = [
  "zhuye-protocol",
  "zhuye-rollout",
  "zhuye-sandbox",
+ "zhuye-sanitize",
 ]
 
 [[package]]

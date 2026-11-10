@@ -190,7 +190,7 @@ pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
 /// 只在对应助手调用后的连续工具消息中匹配回执;缺失回执在下一条
 /// 非工具消息前合成错误结果,重复、孤儿和错位回执被丢弃。
 /// 调用 ID 或工具名为空及同一批次的重复 ID 也会被过滤。
-fn repair_orphan_tool_calls(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+pub fn repair_orphan_tool_calls(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     use std::collections::HashSet;
 
     fn flush_pending(pending: &mut Vec<String>, repaired: &mut Vec<ChatMessage>) {

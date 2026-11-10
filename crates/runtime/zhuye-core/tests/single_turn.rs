@@ -526,17 +526,20 @@ async fn cancellation_mid_stream_emits_turn_aborted() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     cancel.cancel();
 
-    let mut saw_aborted = false;
+    let mut aborted = Vec::new();
     let mut saw_turn_complete = false;
     while let Some(ev) = handle.next().await {
         match ev.msg {
-            EventMsg::TurnAborted(_) => saw_aborted = true,
+            EventMsg::TurnAborted(a) => aborted.push(a.reason),
             EventMsg::TurnComplete(_) => saw_turn_complete = true,
             _ => {}
         }
     }
-    assert!(saw_aborted, "expected TurnAborted after cancel");
-    assert!(!saw_turn_complete, "cancel should not produce TurnComplete");
+    assert!(
+        matches!(aborted.as_slice(), [zhuye_protocol::AbortReason::Shutdown]),
+        "会话令牌取消应产生唯一的关闭终态: {aborted:?}"
+    );
+    assert!(!saw_turn_complete, "取消后不应产生成功终态");
 }
 
 /// GAIA-fix: 当 agent 达到 `max_iterations` 上限时,turn 状态必须精确报告
@@ -1059,13 +1062,13 @@ async fn max_attempts_cap_ends_turn_with_error_event() {
 #[tokio::test]
 async fn mid_stream_retry_same_is_capped_then_fails_over() {
     let registry = Arc::new(ModelRegistry::new());
-    // 两个凭证都在流出一段文本后 SSE 解析爆炸(持久性 mid-stream 错误)。
+    // 两个凭证在产生可见输出前都遇到持久性 SSE 错误,可以安全重试。
     let c1 = Arc::new(StubClient::with_mid_stream_error(
-        vec![ChatEvent::ContentDelta("partial-a".into())],
+        vec![],
         LlmError::SseParse("garbled-a".into()),
     ));
     let c2 = Arc::new(StubClient::with_mid_stream_error(
-        vec![ChatEvent::ContentDelta("partial-b".into())],
+        vec![],
         LlmError::SseParse("garbled-b".into()),
     ));
     registry.register_pool(

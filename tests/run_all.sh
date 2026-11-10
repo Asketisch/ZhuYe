@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# tests/run_all.sh —— 全量测试入口:能力覆盖层 + Rust 侧 + Python SDK + TS SDK。
+# tests/run_all.sh —— 全量测试入口:能力覆盖层 + Rust 侧 + SDK 和原生 Python 绑定。
 #
 # 用法:
 #   ./tests/run_all.sh            # 全部
-#   ./tests/run_all.sh functional # 功能覆盖(能力覆盖层 + Rust 参数面 + 双 SDK 绑定层)
+#   ./tests/run_all.sh functional # 功能覆盖(能力层 + Rust 参数面 + 双 SDK + 原生 Python)
 #   ./tests/run_all.sh functional-layer  # 只跑能力覆盖层(Python 打真二进制)
 #   ./tests/run_all.sh live       # 实模型演练层(真实模型;默认 SKIP,需 ZHUYE_LIVE=1)
 #   ./tests/run_all.sh rust       # 只跑 Rust 侧
 #   ./tests/run_all.sh sdk-python # 只跑 Python SDK 绑定层
 #   ./tests/run_all.sh sdk-ts     # 只跑 TS SDK 绑定层
+#   ./tests/run_all.sh native-python # 构建 wheel 并验证原生 Python 绑定
 #
 # `functional` 是 CI 的门禁入口:跳过 cargo test / clippy / fmt / doc
 # (那部分由既有 CI job 覆盖),跑真正的功能覆盖。
@@ -19,48 +20,71 @@
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CUSTOM_ZHUYE_BIN="${ZHUYE_BIN:-}"
 source "$HERE/lib.sh"
 
-SUITES=("functional" "rust" "sdk-python" "sdk-ts")
+SUITES=("functional-layer" "rust" "sdk-python" "sdk-ts" "native-python")
 if [ $# -gt 0 ]; then
     SUITES=("$@")
 fi
 
 cd "$ROOT"
 
-# release 二进制与 examples 不存在则构建(幂等)
-if [ ! -x "$ZHUYE_BIN" ]; then
-    echo "── 构建 release 二进制 ──"
-    cargo build --release -p zhuye-cli --quiet || exit 2
+# 先校验套件名,避免拼错参数时仍触发构建。
+for s in "${SUITES[@]}"; do
+    case "$s" in
+        functional|functional-layer|live|rust|sdk-python|sdk-ts|native-python) ;;
+        *) echo "未知套件:$s(可选:functional / functional-layer / live / rust / sdk-python / sdk-ts / native-python)" >&2; exit 2 ;;
+    esac
+done
+
+# 默认产物交给 Cargo 判断是否过期,不能仅凭文件存在就测试旧代码。
+# 显式指定 ZHUYE_BIN 时尊重调用者的二进制,不覆盖其产物。
+NEED_ZHUYE_BIN=0
+for s in "${SUITES[@]}"; do
+    if [ "$s" != "native-python" ]; then
+        NEED_ZHUYE_BIN=1
+        break
+    fi
+done
+if [ -z "$CUSTOM_ZHUYE_BIN" ] && [ "$NEED_ZHUYE_BIN" -eq 1 ]; then
+    echo "── 构建当前源码的 release 二进制 ──"
+    cargo build --release -p zhuye-cli -p zhuye-import --quiet || exit 2
+    for s in "${SUITES[@]}"; do
+        if [ "$s" = "functional" ] || [ "$s" = "functional-layer" ]; then
+            cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-shell -p zhuye-git-tools --bins --quiet || exit 2
+            cargo build -p zhuye-mcp --quiet || exit 2
+            break
+        fi
+    done
 fi
-# 会话导入二进制(I 组能力用例驱动它的直跑模式;幂等)。
-ZHUYE_IMPORT_BIN="$ROOT/target/release/zhuye-import"
-if [ ! -x "$ZHUYE_IMPORT_BIN" ]; then
-    echo "── 构建 zhuye-import ──"
-    cargo build --release -p zhuye-import --quiet || exit 2
-fi
+export ZHUYE_BIN
 
 OVERALL=0
 for s in "${SUITES[@]}"; do
     case "$s" in
-        functional)  RUNNERS=("$HERE/functional/run.sh" "$HERE/rust/run.sh" "$HERE/sdk-python/run.sh" "$HERE/sdk-ts/run.sh")
-                     export ZHUYE_SKIP_WORKSPACE=1 ;;
+        functional)  RUNNERS=("$HERE/functional/run.sh" "$HERE/rust/run.sh" "$HERE/sdk-python/run.sh" "$HERE/sdk-ts/run.sh" "$HERE/native-python/run.sh") ;;
         functional-layer) RUNNERS=("$HERE/functional/run.sh") ;;
         live)        RUNNERS=("$HERE/live/run.sh") ;;
         rust)        RUNNERS=("$HERE/rust/run.sh") ;;
         sdk-python)  RUNNERS=("$HERE/sdk-python/run.sh") ;;
         sdk-ts)      RUNNERS=("$HERE/sdk-ts/run.sh") ;;
-        *)
-            echo "未知套件:$s(可选:functional / functional-layer / live / rust / sdk-python / sdk-ts)" >&2
-            exit 2
-            ;;
+        native-python) RUNNERS=("$HERE/native-python/run.sh") ;;
     esac
     echo
     echo "╔══════════════════════════════════════════════════╗"
     echo "  套件:$s"
     echo "╚══════════════════════════════════════════════════╝"
     for runner in "${RUNNERS[@]}"; do
-        if bash "$runner"; then
+        # 仅 functional 中的 Rust 参数面跳过 workspace;不污染后续套件。
+        if [ "$s" = "functional" ] && [ "$runner" = "$HERE/rust/run.sh" ]; then
+            ZHUYE_SKIP_WORKSPACE=1 bash "$runner"
+            runner_rc=$?
+        else
+            bash "$runner"
+            runner_rc=$?
+        fi
+        if [ "$runner_rc" -eq 0 ]; then
             echo "  ✅ $(basename "$(dirname "$runner")") 通过"
         else
             echo "  ❌ $(basename "$(dirname "$runner")") 失败"

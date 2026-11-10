@@ -65,3 +65,28 @@ regex 编译失败启动即报错(fail-fast,不静默跳过)。
 密钥**来源**侧的防护是另一层:MCP 子进程 `env_clear()` 只传白名单
 env;credential 支持 env 引用而非明文落 config。两层叠加 —— 来源
 不泄漏 + 出口兜底。
+
+## 5. 提示注入检测(config.toml `[prompt_guard]`)
+
+与上面的**输出侧**密钥脱敏互补,`zhuye-sanitize::prompt_guard` 在**不可信
+文本进入模型上下文之前**做注入扫描。运行时接线点:工具输出
+(`ToolExecutionQueue::execute_single`,脱敏之后、PostToolUse 之前)。
+
+```toml
+[prompt_guard]
+enabled = true      # 默认 false(opt-in);env ZHUYE_PROMPT_GUARD=1 可压开
+```
+
+三档裁决(任一 block 命中 ⇒ Block;否则任一 review 命中 ⇒ Review):
+
+- **Block** —— 典型注入指令("忽略之前所有指令"、窃取 system prompt、
+  外传凭据):整条工具输出替换为 guard 错误(规则码 + SHA-256 指纹),
+  原文不进入模型上下文,`tool_call_end` 标记 `is_error=true`。
+- **Review** —— 可疑但不确凿(角色接管话术、不可见字符):正文原样
+  保留,`metadata.prompt_guard` 标注 `verdict="review"` + 规则码 + 指纹,
+  供审计与上层裁决。
+- **Allow** —— 未命中,输出不变。
+
+明确**不适用**于用户亲手敲的直接指令(那是权限层的事);`UserPromptSubmit`
+hook 与本层互不替代。指纹算法与 audit 日志 / rollout 一致
+(SHA-256 小写 hex),支持"哪条输入触发了哪次拦截"的跨层关联。

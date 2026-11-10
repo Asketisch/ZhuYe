@@ -173,16 +173,14 @@ pub async fn submission_loop(
     // M6:会话级审批状态。waiters map 被所有回合级 gate 共享,让
     // request_id(uuid)能直接路由,无需定位原始 gate。session_allow 集合
     // 让 ApproveForSession 决策跨回合持续生效。
-    let approval_waiters: ApprovalWaiters = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let approval_waiters: ApprovalWaiters = cfg.approval_context.waiters.clone();
     // v1.1.0 P1 #14:session-wide ask-user-question waiters。同 `approval_waiters`
     // 模式 —— per-turn gate 通过 `with_state(..., Some(qw.clone()))` 共享引用,
     // `Op::AskUserQuestionResponse` 进来时由 `complete_ask_user_question` 全局
     // 路由,不需要找原始 gate。
-    let question_waiters: AskUserQuestionWaiters =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let user_input_waiters: AskUserInputWaiters =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let session_allow = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let question_waiters: AskUserQuestionWaiters = cfg.approval_context.question_waiters.clone();
+    let user_input_waiters: AskUserInputWaiters = cfg.approval_context.user_input_waiters.clone();
+    let session_allow = cfg.approval_context.session_allow.clone();
     // v1.9 C3:会话级中毒检测器(submission_loop 即会话作用域)。
     // turn 结束时喂证据;判定中毒 → 向客户端发带 `session_poisoned`
     // code 的 Error 事件,宿主据此退役本会话(新开会话迁移 notes/memory)。
@@ -237,10 +235,23 @@ pub async fn submission_loop(
     // `set_workspace` 后续切换工作区也不影响已归属 session。
     let mut session_workspace: Option<String> = None;
     while let Some(sub) = sub_rx.recv().await {
-        let turn_tx = turn_subs
-            .lock()
-            .remove(&sub.id)
-            .unwrap_or_else(|| mpsc::channel(8).0);
+        // `AgentThread::submit` 会预注册 per-turn 订阅者;调度器等内部
+        // 发送方直接注入 submission sender 时没有外部 handle。此时建立
+        // 一个转发器,把回合事件送到 session 订阅者(serve 据此输出
+        // cron 触发的回合,activity 也能记录)。
+        let turn_tx = match turn_subs.lock().remove(&sub.id) {
+            Some(tx) => tx,
+            None => {
+                let (tx, mut rx) = mpsc::channel::<Event>(64);
+                let session_subs = Arc::clone(&session_subs);
+                tokio::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        fan_out_session(&session_subs, &event);
+                    }
+                });
+                tx
+            }
+        };
 
         // 首条 Submission(无论 op 类型)就锁定 workspace —— 之后即使
         // 切 workspace 也不影响该 session 的归属。
@@ -253,6 +264,45 @@ pub async fn submission_loop(
                 items,
                 thread_settings,
             } => {
+                // v1.1.0 P1 #14 inline QuestionAnswer:用户在 input bar 直接
+                // 回答挂起的 `AskUserQuestion`(与 dedicated `Op::Answer` 平行)。
+                // 先分流并走与 `Op::AskUserQuestionResponse` 完全相同的 gate
+                // 完成路径 —— 答案本身是"解除阻塞"信号,不进本 turn 上下文;
+                // 无 waiter 时与 dedicated Op 同语义(debug 后丢弃,不报错)。
+                let items = {
+                    let (mut qa, mut rest) = (Vec::new(), Vec::new());
+                    for item in items {
+                        if matches!(item, UserInputItem::QuestionAnswer { .. }) {
+                            qa.push(item);
+                        } else {
+                            rest.push(item);
+                        }
+                    }
+                    for item in qa {
+                        let UserInputItem::QuestionAnswer {
+                            request_id,
+                            answers,
+                        } = item
+                        else {
+                            unreachable!("上面 matches! 保证分支成立");
+                        };
+                        let mut resolved = complete_ask_user_question(
+                            &question_waiters,
+                            &request_id,
+                            answers.clone(),
+                        );
+                        if !resolved && let Some(driver) = cfg.side_channel_driver.as_ref() {
+                            resolved = driver.resolve_question(&request_id, answers).await;
+                        }
+                        if !resolved {
+                            tracing::debug!(
+                                request_id = %request_id,
+                                "inline question_answer arrived but no waiter; dropping"
+                            );
+                        }
+                    }
+                    rest
+                };
                 // v1.3 analytics:一个 turn 一个根 span,涵盖 pre_loop →
                 // model_call → tool_exec → check_stop 全程,OTLP 后端
                 // 看到的是嵌套 span 而非离散事件。
@@ -434,8 +484,9 @@ pub async fn submission_loop(
                 // 由用户输入构造初始 message 列表。
                 // v1.2 P0:Text + Image items 合并为同一个 UserContent blocks 数组,
                 // 让 provider 收到原子化的图文消息。Text-only 单 item 路径与旧行为
-                // 完全一致;LocalImage / Skill / QuestionAnswer 留待后续接通。
-                let messages = user_input_items_to_messages(merged_items);
+                // 完全一致;LocalImage / Skill 就地展开;QuestionAnswer 已在
+                // 上方分流给 question gate,不进本 turn 上下文。
+                let messages = user_input_items_to_messages(merged_items, &cfg.current_workspace());
 
                 // v1.x 每轮回填:有 recorder 时,每轮 UserInput 前从 rollout
                 // 重建会话历史。放在写本轮 user 记录**之前** replay,历史里
@@ -664,8 +715,7 @@ pub async fn submission_loop(
                 let cfg_telemetry_clone = cfg.telemetry.clone();
                 // v1.4 A1:取消判定三件套 —— 回合令牌(被 Interrupt cancel)、
                 // 会话令牌(被 Shutdown cancel,级联回合令牌)、在飞回合表
-                // (终态注销)。区分两者才能只对「用户中断」发 TurnAborted,
-                // Shutdown 已有自己的 ShutdownComplete 事件。
+                // (终态注销)。区分两者才能为回合终态选择中断或关闭原因。
                 // v1.4 C1:本线程自己的子代理状态槽(若本线程是子代理)。
                 // 回合结束后写迭代数与 token 用量,父会话查询即时可见。
                 let status_slot = cfg.subagent_status.clone();
@@ -946,37 +996,37 @@ pub async fn submission_loop(
                             }
                         }
                     } else if turn_cancel_clone.is_cancelled()
-                        && !session_cancel_clone.is_cancelled()
+                        || final_state.deferred_error.is_some()
                     {
-                        // v1.4 A1:回合被 `Op::Interrupt` 取消(非 Shutdown
-                        // 级联)—— 用**真实** turn_id 发中止事件。旧实现由
-                        // Interrupt 分支现编一个 `TurnId::new()`,客户端无法
-                        // 把事件对应到实际在飞的回合。
-                        let _ = turn_tx_clone
-                            .send(Event::new(
-                                sub_id_clone,
-                                EventMsg::TurnAborted(TurnAbortedEvent {
-                                    turn_id,
-                                    reason: AbortReason::UserInterrupt,
-                                }),
-                            ))
-                            .await;
-                        // 中断可能留下半截助手消息:把已产出的内容完整落盘
-                        //(`latest_content` 可含孤儿 tool_use —— resume 端
-                        // `records_to_preload` 会过滤无 result 的在飞工具对,
-                        // 保证恢复不因半对消息报错),复用正常路径的格式。
+                        // 取消或流错误可能留下部分回复及已完成的工具步骤。
+                        // 必须先落盘,再发错误或中止事件,让客户端立即续跑。
                         if let Some(rec) = recorder {
-                            if !final_state.latest_content.is_empty() {
+                            if !final_state.turn_content.is_empty()
+                                || !final_state.latest_content.is_empty()
+                            {
+                                let mut all_content = std::mem::take(&mut final_state.turn_content);
+                                all_content.extend(final_state.latest_content.iter().cloned());
                                 let _ = rec
                                     .record(RolloutRecord::message(
                                         turn_id,
                                         MessageRole::Assistant,
-                                        serde_json::to_value(&final_state.latest_content)
+                                        serde_json::to_value(&all_content)
                                             .unwrap_or(serde_json::Value::Null),
                                     ))
                                     .await;
                             }
                         }
+                        let event = if let Some(error) = final_state.deferred_error.take() {
+                            EventMsg::Error(error)
+                        } else {
+                            let reason = if session_cancel_clone.is_cancelled() {
+                                AbortReason::Shutdown
+                            } else {
+                                AbortReason::UserInterrupt
+                            };
+                            EventMsg::TurnAborted(TurnAbortedEvent { turn_id, reason })
+                        };
+                        let _ = turn_tx_clone.send(Event::new(sub_id_clone, event)).await;
                     }
                     // v1.4 A1:turn 已终态(完成 / 取消 / 异常),统一注销
                     // 在飞回合表条目。陈旧条目(极端时序下 Interrupt 先到)
@@ -2254,13 +2304,20 @@ fn persist_plan_markdown(
 ///
 /// 所有 Text / Image / File item 合并进同一个 `UserContent.blocks` 数组,
 /// 保证 provider 收到图文混排而非多个割裂的连续 user role。Text-only 单
-/// item 与旧实现完全一致。尚未接通的 LocalImage / Skill / QuestionAnswer
-/// 暂时跳过。
+/// item 与旧实现完全一致。
+/// `LocalImage` 按路径读图(相对 workspace 解析)转内联 `Image` 块,
+/// `Skill` 解析正文以 `<skill>` 文本块注入(与 `load_skill` 工具的上下文
+/// 效果一致,但不激活工具集),`QuestionAnswer` 在消息层仍为 `None` ——
+/// 它在 `Op::UserInput` 分支上游经 question gate 完成路径消费,语义是
+/// "回答挂起的问题",不是对话内容。
 ///
 /// v1.x 新增 `File` 分支 —— 把文件 mention 展开为带路径标注的文本块
 /// (`@<path>` 或 `@<path>:L<start>-L<end>`)。真实读取由 LLM `/read`
 /// 工具按需触发(避免无谓 IO 与抽象泄露)。
-fn user_input_items_to_messages(items: Vec<UserInputItem>) -> Vec<ChatMessage> {
+fn user_input_items_to_messages(
+    items: Vec<UserInputItem>,
+    workspace: &std::path::Path,
+) -> Vec<ChatMessage> {
     let blocks: Vec<zhuye_llm::ContentBlock> = items
         .into_iter()
         .filter_map(|item| match item {
@@ -2275,9 +2332,44 @@ fn user_input_items_to_messages(items: Vec<UserInputItem>) -> Vec<ChatMessage> {
                 };
                 Some(zhuye_llm::ContentBlock::Text { text: annotation })
             }
-            UserInputItem::LocalImage { .. }
-            | UserInputItem::Skill { .. }
-            | UserInputItem::QuestionAnswer { .. } => None,
+            UserInputItem::LocalImage { path } => {
+                let resolved = if path.is_absolute() {
+                    path
+                } else {
+                    workspace.join(&path)
+                };
+                let Some(mime) = image_mime_of(resolved.extension().and_then(|e| e.to_str()))
+                else {
+                    tracing::warn!(
+                        path = %resolved.display(),
+                        "local_image: 不认识的图片扩展名,跳过该 item"
+                    );
+                    return None;
+                };
+                match std::fs::read(&resolved) {
+                    Ok(data) => Some(zhuye_llm::ContentBlock::Image {
+                        data,
+                        mime_type: mime.to_string(),
+                    }),
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %resolved.display(),
+                            error = %e,
+                            "local_image: 图片读取失败,跳过该 item"
+                        );
+                        None
+                    }
+                }
+            }
+            UserInputItem::Skill { name, .. } => match load_skill_body(workspace, &name) {
+                Some(body) => Some(zhuye_llm::ContentBlock::Text {
+                    text: format!("<skill name=\"{name}\">\n{body}\n</skill>"),
+                }),
+                None => Some(zhuye_llm::ContentBlock::Text {
+                    text: format!("[skill not found: {name}]"),
+                }),
+            },
+            UserInputItem::QuestionAnswer { .. } => None,
         })
         .collect();
     if blocks.is_empty() {
@@ -2285,6 +2377,46 @@ fn user_input_items_to_messages(items: Vec<UserInputItem>) -> Vec<ChatMessage> {
     } else {
         vec![ChatMessage::User(zhuye_llm::UserContent { blocks })]
     }
+}
+
+/// 由扩展名推断图片 MIME;不认识的扩展名返回 `None`(调用方跳过)。
+fn image_mime_of(ext: Option<&str>) -> Option<&'static str> {
+    let lower = ext?.to_ascii_lowercase();
+    match lower.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// 就地 skill 激活的正文解析:依次找 workspace 与用户目录下的
+/// `<dir>/skills/<name>/SKILL.md`,返回 frontmatter 之后的正文。
+/// 两处都不存在 / 解析失败时返回 `None`。
+fn load_skill_body(workspace: &std::path::Path, name: &str) -> Option<String> {
+    let mut candidates = vec![
+        workspace
+            .join(".zhuye")
+            .join("skills")
+            .join(name)
+            .join("SKILL.md"),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(
+            std::path::PathBuf::from(home)
+                .join(".zhuye")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md"),
+        );
+    }
+    for path in candidates {
+        if let Ok(meta) = zhuye_skills::loader::parse_skill_file(&path) {
+            return Some(meta.body);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -2300,9 +2432,12 @@ mod tests {
 
     #[test]
     fn user_input_text_remains_single_user_text_block() {
-        let messages = user_input_items_to_messages(vec![UserInputItem::Text {
-            text: "hello".into(),
-        }]);
+        let messages = user_input_items_to_messages(
+            vec![UserInputItem::Text {
+                text: "hello".into(),
+            }],
+            std::path::Path::new("."),
+        );
         assert_eq!(messages.len(), 1);
         match &messages[0] {
             ChatMessage::User(content) => {
@@ -2319,15 +2454,18 @@ mod tests {
     #[test]
     fn user_input_text_and_image_become_ordered_blocks() {
         let png = vec![0x89, 0x50, 0x4e, 0x47];
-        let messages = user_input_items_to_messages(vec![
-            UserInputItem::Text {
-                text: "describe this".into(),
-            },
-            UserInputItem::Image {
-                data: png.clone(),
-                mime_type: "image/png".into(),
-            },
-        ]);
+        let messages = user_input_items_to_messages(
+            vec![
+                UserInputItem::Text {
+                    text: "describe this".into(),
+                },
+                UserInputItem::Image {
+                    data: png.clone(),
+                    mime_type: "image/png".into(),
+                },
+            ],
+            std::path::Path::new("."),
+        );
         assert_eq!(messages.len(), 1);
         match &messages[0] {
             ChatMessage::User(content) => {
@@ -2350,10 +2488,13 @@ mod tests {
 
     #[test]
     fn image_only_input_becomes_user_image_message() {
-        let messages = user_input_items_to_messages(vec![UserInputItem::Image {
-            data: vec![1, 2, 3],
-            mime_type: "image/jpeg".into(),
-        }]);
+        let messages = user_input_items_to_messages(
+            vec![UserInputItem::Image {
+                data: vec![1, 2, 3],
+                mime_type: "image/jpeg".into(),
+            }],
+            std::path::Path::new("."),
+        );
         assert_eq!(messages.len(), 1);
         match &messages[0] {
             ChatMessage::User(content) => assert!(matches!(
@@ -2366,10 +2507,84 @@ mod tests {
 
     #[test]
     fn unsupported_items_alone_produce_no_messages() {
-        let messages = user_input_items_to_messages(vec![UserInputItem::LocalImage {
-            path: std::path::PathBuf::from("x.png"),
-        }]);
+        // 不存在的图片路径:读取失败 → warn + 跳过(fail-soft),无消息。
+        let messages = user_input_items_to_messages(
+            vec![UserInputItem::LocalImage {
+                path: std::path::PathBuf::from("x.png"),
+            }],
+            std::path::Path::new("."),
+        );
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn local_image_file_becomes_inline_image_block() {
+        let dir = std::env::temp_dir().join(format!("zhuye-li-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("pic.PNG");
+        std::fs::write(&img, b"\x89PNG\r\n\x1a\n").unwrap();
+        let messages = user_input_items_to_messages(
+            vec![UserInputItem::LocalImage { path: img }],
+            std::path::Path::new("."),
+        );
+        std::fs::remove_dir_all(dir).ok();
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            ChatMessage::User(content) => match &content.blocks[0] {
+                zhuye_llm::ContentBlock::Image { data, mime_type } => {
+                    assert_eq!(data, &b"\x89PNG\r\n\x1a\n".to_vec());
+                    assert_eq!(mime_type, "image/png");
+                }
+                other => panic!("expected image block, got {other:?}"),
+            },
+            other => panic!("expected user message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_item_injects_body_and_notfound_note() {
+        let dir = std::env::temp_dir().join(format!("zhuye-skill-{}", std::process::id()));
+        let skill_dir = dir.join(".zhuye").join("skills").join("inline-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: inline-skill\ndescription: d\n---\nINLINE_SKILL_BODY",
+        )
+        .unwrap();
+        let messages = user_input_items_to_messages(
+            vec![
+                UserInputItem::Skill {
+                    name: "inline-skill".into(),
+                    args: None,
+                },
+                UserInputItem::Skill {
+                    name: "nope".into(),
+                    args: None,
+                },
+            ],
+            &dir,
+        );
+        std::fs::remove_dir_all(dir).ok();
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            ChatMessage::User(content) => {
+                assert_eq!(content.blocks.len(), 2);
+                match &content.blocks[0] {
+                    zhuye_llm::ContentBlock::Text { text } => {
+                        assert!(text.contains("<skill name=\"inline-skill\">"), "{text}");
+                        assert!(text.contains("INLINE_SKILL_BODY"), "{text}");
+                    }
+                    other => panic!("expected text block, got {other:?}"),
+                }
+                match &content.blocks[1] {
+                    zhuye_llm::ContentBlock::Text { text } => {
+                        assert_eq!(text, "[skill not found: nope]");
+                    }
+                    other => panic!("expected text block, got {other:?}"),
+                }
+            }
+            other => panic!("expected user message, got {other:?}"),
+        }
     }
 
     // ── v1.x Plan 模式:计划请求分发 ──

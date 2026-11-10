@@ -37,7 +37,7 @@
 
 mod gate;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -79,6 +79,18 @@ pub type AskUserQuestionWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<AskU
 /// 待处理 `ask_user` 的 `request_id` → oneshot waiter,负责把用户自由文本
 /// 回执送到 `AskUserTool::execute`。
 pub type AskUserInputWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
+
+/// 一次会话及其子代理共享的审批路由状态。
+///
+/// 父会话和子代理必须使用同一组 waiter / 会话许可,否则子代理发出的
+/// `approval_request` 虽能显示,父会话的审批回执也无法唤醒等待中的 gate。
+#[derive(Clone, Default)]
+pub struct ApprovalContext {
+    pub waiters: ApprovalWaiters,
+    pub question_waiters: AskUserQuestionWaiters,
+    pub user_input_waiters: AskUserInputWaiters,
+    pub session_allow: Arc<Mutex<HashSet<String>>>,
+}
 
 /// v1.2 review P2:bug-2:`ask_user` 工具 prompt 字节上限。LLM 误发
 /// 超过此长度的字符串在 `ApprovalGate::ask_user` 入口直接 `InvalidArgs`

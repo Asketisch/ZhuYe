@@ -750,3 +750,87 @@ async fn spawn_registers_child_and_parent_cancel_cascades() {
     );
     assert!(snaps[0].finished_at.is_some());
 }
+
+/// 父记录器挂起时取消 spawn,预留的并发槽位仍应归还。
+#[tokio::test]
+async fn 取消挂起的spawn会释放并发槽位() {
+    #[derive(Debug)]
+    struct WaitingRecorder {
+        entered: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl zhuye_protocol::RolloutRecorder for WaitingRecorder {
+        async fn record(&self, _r: RolloutRecord) -> Result<(), zhuye_protocol::RolloutError> {
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+
+        async fn replay(
+            &self,
+            _session_id: ThreadId,
+        ) -> Result<Vec<RolloutRecord>, zhuye_protocol::RolloutError> {
+            unreachable!()
+        }
+
+        async fn list_sessions(
+            &self,
+        ) -> Result<Vec<zhuye_protocol::SessionInfo>, zhuye_protocol::RolloutError> {
+            unreachable!()
+        }
+
+        async fn truncate_after(
+            &self,
+            _to_turn_id: Option<&TurnId>,
+        ) -> Result<usize, zhuye_protocol::RolloutError> {
+            unreachable!()
+        }
+    }
+
+    let recorder = Arc::new(WaitingRecorder {
+        entered: tokio::sync::Notify::new(),
+    });
+    let factory = Arc::new(SubAgentFactory::new(
+        ThreadId::new(),
+        "mock",
+        Arc::new(zhuye_llm::ModelRegistry::new()),
+        None,
+        Arc::new(ToolRegistry::default()),
+        CancellationToken::new(),
+        Some(recorder.clone()),
+    ));
+    let running = {
+        let factory = Arc::clone(&factory);
+        tokio::spawn(async move {
+            factory
+                .spawn(dummy_spec("explorer"), Vec::new(), "测试".into())
+                .await
+        })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        recorder.entered.notified(),
+    )
+    .await
+    .expect("spawn 应进入记录器");
+    assert_eq!(factory.depth(), 1);
+    running.abort();
+    assert!(running.await.expect_err("任务应被取消").is_cancelled());
+    assert_eq!(factory.depth(), 0);
+}
+
+/// 未配置状态中心时,放弃子代理也要取消它的独立令牌。
+#[tokio::test]
+async fn 无状态中心时丢弃子代理仍取消其令牌() {
+    let factory = dummy_factory();
+    let child = factory
+        .spawn(dummy_spec("explorer"), Vec::new(), "测试".into())
+        .await
+        .expect("spawn 应成功");
+    let cancel = child.cancel.as_ref().expect("子令牌").clone();
+    assert!(!cancel.is_cancelled());
+    assert_eq!(factory.depth(), 1);
+    drop(child);
+    assert!(cancel.is_cancelled());
+    assert_eq!(factory.depth(), 0);
+}

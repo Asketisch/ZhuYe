@@ -6,11 +6,8 @@
 #   2. cli_core.sh          核心 CLI 端到端(exec/serve/session/traces/login/config)
 #   3. cli_modules.sh       模块 CLI 端到端(mcp/lsp/plugin/task/pipeline/discussion/...)
 #   4. examples_e2e.sh      zhuye 库 examples 冒烟
-#   5. cli_deep.sh          全 17 子命令深度使用测试(参数矩阵/退出码/输出契约)
-#   6. serve_ops.sh         serve 协议 19 Op 全量 + 事件断言
-#   7. tools_drive.sh       内置工具全量驱动(mock LLM 逐工具调一遍)
-#   8. integrations.sh      MCP/skill/notes/bubble/热重载/plugin 集成链路
-#   9. env_lock_stress.sh   zhuye-config env 竞态回归压测(44ae3da 门禁)
+#   5. env_lock_stress.sh   zhuye-config env 竞态回归压测(44ae3da 门禁)
+#  (tools_drive.sh 已迁入 functional/test_tools.py T30–T38,见 §9 迁移路线)
 #
 # `ZHUYE_SKIP_WORKSPACE=1` 时跳过第 1 步(cargo test / clippy / fmt / doc)
 # —— CI 的 `functional` 门禁入口用此模式:那部分由既有 CI job 覆盖。
@@ -36,61 +33,37 @@ TOTAL_RC=0
 if [ "${ZHUYE_SKIP_WORKSPACE:-0}" = "1" ]; then
     echo
     echo "════════════════════════════════════════════════"
-    echo "  1/8 workspace 测试 —— 跳过(ZHUYE_SKIP_WORKSPACE=1)"
+    echo "  1/5 workspace 测试 —— 跳过(ZHUYE_SKIP_WORKSPACE=1)"
     echo "════════════════════════════════════════════════"
 else
     echo
     echo "════════════════════════════════════════════════"
-    echo "  1/8 workspace 测试(cargo test + lint + doc)"
+    echo "  1/5 workspace 测试(cargo test + lint + doc)"
     echo "════════════════════════════════════════════════"
     bash "$HERE/workspace_tests.sh" || TOTAL_RC=1
 fi
 
 echo
 echo "════════════════════════════════════════════════"
-echo "  2/8 核心 CLI 端到端"
+echo "  2/5 核心 CLI 端到端"
 echo "════════════════════════════════════════════════"
 bash "$HERE/cli_core.sh" || TOTAL_RC=1
 
 echo
 echo "════════════════════════════════════════════════"
-echo "  3/8 模块 CLI 端到端"
+echo "  3/5 模块 CLI 端到端"
 echo "════════════════════════════════════════════════"
 bash "$HERE/cli_modules.sh" || TOTAL_RC=1
 
 echo
 echo "════════════════════════════════════════════════"
-echo "  4/8 examples 冒烟"
+echo "  4/5 examples 冒烟"
 echo "════════════════════════════════════════════════"
 bash "$HERE/examples_e2e.sh" || TOTAL_RC=1
 
 echo
 echo "════════════════════════════════════════════════"
-echo "  5/8 CLI 全子命令深度使用测试"
-echo "════════════════════════════════════════════════"
-bash "$HERE/cli_deep.sh" || TOTAL_RC=1
-
-echo
-echo "════════════════════════════════════════════════"
-echo "  6/8 serve 协议 19 Op 全量"
-echo "════════════════════════════════════════════════"
-bash "$HERE/serve_ops.sh" || TOTAL_RC=1
-
-echo
-echo "════════════════════════════════════════════════"
-echo "  7/8 内置工具全量驱动"
-echo "════════════════════════════════════════════════"
-bash "$HERE/tools_drive.sh" || TOTAL_RC=1
-
-echo
-echo "════════════════════════════════════════════════"
-echo "  8/9 集成链路(MCP/skill/notes/bubble/热重载/plugin)"
-echo "════════════════════════════════════════════════"
-bash "$HERE/integrations.sh" || TOTAL_RC=1
-
-echo
-echo "════════════════════════════════════════════════"
-echo "  9/9 zhuye-config env 竞态回归压测"
+echo "  5/5 zhuye-config env 竞态回归压测"
 echo "════════════════════════════════════════════════"
 bash "$HERE/env_lock_stress.sh" || TOTAL_RC=1
 

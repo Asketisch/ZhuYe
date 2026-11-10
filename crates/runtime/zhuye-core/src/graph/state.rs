@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use zhuye_llm::{ChatMessage, SystemBlocks, ToolSpec};
-use zhuye_protocol::{ContentBlock, TokenUsage};
+use zhuye_protocol::{ContentBlock, ErrorEvent, TokenUsage};
 use zhuye_recovery::RecoveryEntry;
 
 /// 完整对话消息历史(system + user + assistant + tool)。
@@ -51,6 +51,10 @@ pub struct AgentState {
     /// 最后一次 model_call 的块,中间工具调用在 resume / `session search`
     /// 视角下完全丢失(实战测试实证)。
     pub turn_content: Vec<ContentBlock>,
+    /// 已向客户端输出部分内容后发生的错误,由回合收尾先落盘再发送。
+    pub deferred_error: Option<ErrorEvent>,
+    /// 本次模型输出中 JSON 无效的工具参数,按调用 ID 保存错误而不执行工具。
+    pub invalid_tool_args: HashMap<String, String>,
     /// v1.x M2-fix:本回合内 `pre_loop` 一旦已用 `ctx.messages`(初始用户
     /// 输入)填充过 `state.messages` 即为 `true`。同回合内后续的
     /// `pre_loop` 调用**不得**清空 `state.messages` —— 否则 `model_call` /

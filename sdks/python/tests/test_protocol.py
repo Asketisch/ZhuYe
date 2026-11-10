@@ -12,6 +12,7 @@ import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -163,6 +164,65 @@ def agent() -> ZhuyeAgent:
 
 def test_prompt_aggregates_deltas(agent: ZhuyeAgent) -> None:
     assert agent.prompt("hi") == "mock-reply"
+
+
+def test_prompt收到部分回复后断线抛错() -> None:
+    """服务进程提前退出时不能将不完整文本当作成功答案。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 不可用")
+    script = """
+console.log(JSON.stringify({id:'', msg:{type:'session_configured'}}));
+process.stdin.once('data', data => {
+  const sub = JSON.parse(data.toString());
+  console.log(JSON.stringify({id:sub.id, msg:{type:'agent_message_delta', delta:'部分回复'}}));
+  process.exit(0);
+});
+"""
+    proc = subprocess.Popen([node, "-e", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    agent = ZhuyeAgent.from_popen(proc, handshake_timeout_secs=5)
+    try:
+        with pytest.raises(RuntimeError, match="before turn_complete"):
+            agent.prompt("你好")
+    finally:
+        agent.close()
+
+
+def test_prompt收到部分回复和错误后仍可继续() -> None:
+    """客户端不把部分回复当作成功,同一连接还能处理下一轮。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 不可用")
+    script = r"""
+console.log(JSON.stringify({id:'', msg:{type:'session_configured'}}));
+const readline = require('node:readline');
+let count = 0;
+readline.createInterface({input:process.stdin}).on('line', line => {
+  const sub = JSON.parse(line);
+  if (sub.op.type === 'shutdown') {
+    console.log(JSON.stringify({id:sub.id, msg:{type:'shutdown_complete'}}));
+    process.exit(0);
+  } else if (sub.op.type === 'user_input') {
+    count++;
+    if (count === 1) {
+      console.log(JSON.stringify({id:sub.id, msg:{type:'agent_message_delta', delta:'部分回复'}}));
+      console.log(JSON.stringify({id:sub.id, msg:{type:'error', code:'SSE_PARSE_ERROR', message:'流中断'}}));
+      console.log(JSON.stringify({id:sub.id, msg:{type:'submission_closed'}}));
+    } else {
+      console.log(JSON.stringify({id:sub.id, msg:{type:'agent_message_delta', delta:'下一轮'}}));
+      console.log(JSON.stringify({id:sub.id, msg:{type:'turn_complete', turn_id:'t', status:'success'}}));
+    }
+  }
+});
+"""
+    proc = subprocess.Popen([node, "-e", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    agent = ZhuyeAgent.from_popen(proc, handshake_timeout_secs=5)
+    try:
+        with pytest.raises(RuntimeError, match="SSE_PARSE_ERROR"):
+            agent.prompt("第一轮")
+        assert agent.prompt("第二轮") == "下一轮"
+    finally:
+        agent.close()
 
 
 def test_register_tool_then_submit_iterates_turn_events(agent: ZhuyeAgent) -> None:
@@ -358,7 +418,10 @@ def test_optional_fields_preserve_required_keys() -> None:
     assert protocol.Submission.__required_keys__ == {"id", "op"}
     assert protocol.Submission.__optional_keys__ == {"client_user_message_id"}
     assert protocol.ThreadSettings.__required_keys__ == set()
-    assert protocol.ThreadSettings.__optional_keys__ == {"effort", "permission_mode", "model"}
+    assert protocol.ThreadSettings.__optional_keys__ == {
+        "effort", "permission_mode", "model", "approval_policy",
+        "sandbox_policy", "max_tool_concurrency",
+    }
     assert protocol.ErrorEvent.__required_keys__ == {"type", "code", "message"}
     assert protocol.ErrorEvent.__optional_keys__ == {"details"}
     # v1.3 收尾标记:类型层与 TS SDK 的 SubmissionClosed 对齐(此前仅在
@@ -378,6 +441,26 @@ def test_global_events_and_eof(agent: ZhuyeAgent) -> None:
     assert agent.next_global_event(timeout_secs=0.01) is None
 
 
+def test_submission迭代器在断线后重复读取仍结束(agent: ZhuyeAgent) -> None:
+    """连接断开后,迭代器后续每次读取都必须立即结束。"""
+    events = agent.submit_op({"type": "inject_event", "event": {"type": "progress"}})  # type: ignore[arg-type]
+    assert next(events)["msg"]["type"] == "progress"
+    agent._proc.kill()
+    agent._proc.wait(timeout=5)
+    with pytest.raises(StopIteration):
+        next(events)
+
+    finished = threading.Event()
+    def consume_again() -> None:
+        try:
+            next(events)
+        except StopIteration:
+            finished.set()
+
+    threading.Thread(target=consume_again, daemon=True).start()
+    assert finished.wait(timeout=1), "断线后的迭代器再次读取时挂起"
+
+
 def test_tool_output_delta_forwarded(agent: ZhuyeAgent) -> None:
     """输出增量经过 SDK 路由后保持字段与顺序。"""
     messages = [e["msg"] for e in agent.submit("hi")]
@@ -393,6 +476,12 @@ def test_wire_type_annotations() -> None:
     from zhuye import protocol
 
     assert set(get_args(get_type_hints(protocol.TurnComplete)["status"])) == {"success", "max_iterations", "stopped", "token_budget_exceeded"}
+    settings = get_type_hints(protocol.ThreadSettings)
+    approval = get_args(settings["approval_policy"])[0]
+    sandbox = get_args(settings["sandbox_policy"])[0]
+    assert set(get_args(approval)) == {"auto", "prompt", "deny"}
+    assert set(get_args(sandbox)) == {"workspace_only", "os_sandbox", "full_access"}
+    assert set(get_args(settings["max_tool_concurrency"])) == {int, type(None)}
     # v1.10 功能4:思考强度阶梯扩到 max / ultra(变体级 additive,旧值不变)。
     # 注解形态是 `Literal[...] | None`,get_args 外层是 (Literal, NoneType),
     # 需要再解一层 Literal 才拿到字符串集合。

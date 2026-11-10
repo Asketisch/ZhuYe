@@ -11,7 +11,7 @@
 # 服务端语义(19 Op / 事件流 / 重连 / 容错)由能力覆盖层承担:
 #   tests/functional/(原始 wire,不经 SDK)。
 #
-# 退出码 0 = 全部通过;缺 node / vitest 依赖时相应批次 SKIP。
+# 退出码 0 = 全部通过;缺少 node / vitest 依赖时失败。
 
 set -u
 
@@ -25,16 +25,11 @@ RC=0
 
 echo "── TS SDK 绑定层:真二进制端到端(node --test)──"
 if require_cmd node; then
-    # dist 产物缺失、或比任一 src 源文件旧(改过 protocol.ts/agent.ts)
-    # 则先构建 —— 测试 import 的是 dist,陈旧产物会让新协议变体/类型
-    # 丢失,用例挂死或类型不符。需 typescript devDependency(已随仓库装好)。
-    if [ ! -f "$ROOT/sdks/typescript/dist/index.js" ] || \
-       [ -n "$(find "$ROOT/sdks/typescript/src" -name '*.ts' -newer "$ROOT/sdks/typescript/dist/index.js" -print -quit 2>/dev/null)" ]; then
-        (cd "$ROOT/sdks/typescript" && npm run build --silent) || {
-            echo "  [FAIL] dist 构建失败"
-            exit 1
-        }
-    fi
+    # 测试导入 dist;每次构建以覆盖源码、编译配置与依赖变化。
+    (cd "$ROOT/sdks/typescript" && npm run build --silent) || {
+        echo "  [FAIL] dist 构建失败"
+        exit 1
+    }
     if HOME="$(mktemp -d)" ZHUYE_BIN="$ZHUYE_BIN" \
         node --test "$HERE/real-bin.test.mjs"; then
         echo "  [ok]   SDK 绑定层全绿"
@@ -43,12 +38,17 @@ if require_cmd node; then
         RC=1
     fi
 else
-    echo "  [SKIP] 未安装 node,跳过"
+    echo "  [FAIL] 未安装 node" >&2
+    RC=1
 fi
 
 echo
 echo "── TS SDK:协议单测(vitest,mock serve)──"
 if [ -d "$ROOT/sdks/typescript/node_modules/vitest" ]; then
+    if ! (cd "$ROOT/sdks/typescript" && npm run typecheck); then
+        echo "  [FAIL] SDK 类型契约检查失败"
+        RC=1
+    fi
     if (cd "$ROOT/sdks/typescript" && npx vitest run); then
         echo "  [ok]   协议单测全绿"
     else
@@ -56,7 +56,8 @@ if [ -d "$ROOT/sdks/typescript/node_modules/vitest" ]; then
         RC=1
     fi
 else
-    echo "  [SKIP] sdks/typescript 未安装 vitest 依赖,跳过"
+    echo "  [FAIL] sdks/typescript 未安装 vitest 依赖" >&2
+    RC=1
 fi
 
 exit "$RC"

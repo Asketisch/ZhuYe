@@ -69,6 +69,61 @@ def test_K2b_多轮_prompt_上下文保持(env_home: Path) -> None:
         agent.close()
 
 
+def test_K15_并发提交的事件分别路由(env_home: Path) -> None:
+    """两个在飞提交的事件各自归属,回复不会混入另一条迭代器。"""
+    agent = ZhuyeAgent.spawn(make_options([
+        '{"type":"text","text":"并发回复甲"}',
+        '{"type":"text","text":"并发回复乙"}',
+    ]))
+    try:
+        first = agent.submit("第一条")
+        second = agent.submit("第二条")
+        streams = [drain(first), drain(second)]
+        ids = [{event["id"] for event in stream} for stream in streams]
+        assert all(len(group) == 1 for group in ids)
+        assert ids[0].isdisjoint(ids[1])
+        assert all(msg_types(stream).count("turn_complete") == 1 for stream in streams)
+        replies = ["".join(event["msg"]["delta"] for event in stream
+                           if event["msg"]["type"] == "agent_message_delta") for stream in streams]
+        assert set(replies) == {"并发回复甲", "并发回复乙"}
+    finally:
+        agent.close()
+
+
+def test_K16_回合中进程崩溃不会返回成功答案(env_home: Path) -> None:
+    """远程工具挂起时杀死进程,高层 prompt 应向调用方报告断线。"""
+    import queue
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+    result: queue.Queue[object] = queue.Queue()
+
+    def handler(_args: dict[str, Any]) -> ToolOutput:
+        started.set()
+        release.wait(timeout=15)
+        return ToolOutput(content=[], is_error=False, metadata={}, elapsed_ms=0)
+
+    agent = ZhuyeAgent.spawn(make_options(['{"type":"tool_call","name":"slow_tool","args":{}}']))
+    try:
+        agent.register_tool("slow_tool", "等待", {"type": "object"}, handler)
+        def run_prompt() -> None:
+            try:
+                result.put(agent.prompt("调用工具"))
+            except Exception as exc:
+                result.put(exc)
+
+        threading.Thread(target=run_prompt, daemon=True).start()
+        assert started.wait(timeout=10), "工具没有启动"
+        agent._proc.kill()
+        outcome = result.get(timeout=10)
+        assert isinstance(outcome, RuntimeError), outcome
+        assert "before turn_complete" in str(outcome)
+    finally:
+        release.set()
+        agent.close()
+
+
 # ── K3 远程工具 ─────────────────────────────────────────────────────────
 
 
@@ -171,20 +226,20 @@ def test_K4b_set_effort新档位max_ultra_真二进制透传(env_home: Path) -> 
 
     协议 additive 变更的绑定层回归:引擎对新档位与 high 同型静默
     (submission_closed 收尾),SDK 与 serve 都不得因新增字面量崩溃;
-    `thread_settings.effort` 形态同样接受新档位并正常收尾 turn。
+    随后验证支持的回合设置可由 SDK 发送并正常收尾。
     """
     agent = ZhuyeAgent.spawn(make_options(['{"type":"text","text":"t1"}']))
     try:
         for effort in ("max", "ultra"):
             evs = drain(agent.submit_op({"type": "set_effort", "effort": effort}))
             assert msg_types(evs) == ["submission_closed"], f"{effort} 收尾异常:{msg_types(evs)}"
-        # thread_settings 形态:随 user_input 下发,turn 正常收尾。
+        # 回合设置随 user_input 下发,turn 正常收尾。
         evs = drain(
             agent.submit_op(
                 {
                     "type": "user_input",
                     "items": [{"type": "text", "text": "hi"}],
-                    "thread_settings": {"effort": "ultra"},
+                    "thread_settings": {"approval_policy": "deny"},
                 }
             )
         )

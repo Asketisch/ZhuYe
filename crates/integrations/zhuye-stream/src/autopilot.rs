@@ -163,6 +163,27 @@ impl AutopilotManager {
 
     /// 终态回填:把 `run_id` 的状态从 `InProgress` 改为 `status`。
     /// 找不到(已被截断 / 未知 id)→ `Ok(false)`。
+    /// 按状态匹配回填:把**最新一条**处于 `from` 状态的运行改为
+    /// `to` 状态(可选错误信息)。运行时 watcher 用它回填 autopilot
+    /// 注入的回合(单会话语义下最新 InProgress 即最近一次注入)。
+    /// 没有匹配项 → 返回 false(与 [`Self::finalize_run`] 同语义)。
+    pub fn finalize_run_by_status(
+        &self,
+        from: AutopilotRunStatus,
+        to: AutopilotRunStatus,
+        error: Option<String>,
+    ) -> io::Result<bool> {
+        let _guard = self.history_lock.lock();
+        let mut history: Vec<AutopilotRun> = read_json_or_default(&self.history_path)?;
+        if let Some(run) = history.iter_mut().find(|r| r.status == from) {
+            run.status = to;
+            run.error = error;
+            self.write_history(&history)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub fn finalize_run(
         &self,
         run_id: &str,
@@ -210,7 +231,13 @@ impl AutopilotManager {
             .is_some_and(|next| next <= Utc::now()))
     }
 
-    fn reserve_due_run(&self) -> io::Result<Option<(AutopilotConfig, AutopilotRun)>> {
+    /// 到期检查 + 占位(原子):到期则插入 `InProgress` / `Skipped`
+    /// 历史记录并返回 (config, run);未到期 / 未启用 → `None`。
+    ///
+    /// v1.x 运行时接线公开:serve/exec 的 autopilot driver 用它拿占位,
+    /// 然后自行经 `thread.submit()` 注入 turn 并在终态回填 finalize
+    /// (比 `fire_if_due` 的裸通道路径多出真实终态回填)。
+    pub fn reserve_due_run(&self) -> io::Result<Option<(AutopilotConfig, AutopilotRun)>> {
         let _guard = self.history_lock.lock();
         let config = self.load_config()?;
         if !config.enabled || config.schedule.is_empty() {

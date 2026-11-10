@@ -95,6 +95,9 @@ impl Tool for FloorEnforcingTool {
     fn is_concurrency_safe(&self) -> bool {
         self.inner.is_concurrency_safe()
     }
+    fn parent_context_limit(&self, args: &serde_json::Value) -> Option<usize> {
+        self.inner.parent_context_limit(args)
+    }
     fn required_permission(&self) -> PermissionMode {
         // 取 inner 声明值与 floor 的较严者:`Prompt` 比 `Auto` 严,
         // `Deny` 永远最严。这里用序数比较 —— 直接 enum 大小比较

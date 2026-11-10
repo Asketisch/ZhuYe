@@ -88,6 +88,59 @@ describe('TS SDK 绑定层 × 真二进制', () => {
     }
   });
 
+  it('K15: 并发提交的事件分别路由到各自迭代器', async () => {
+    const agent = await ZhuyeAgent.spawn(makeOptions([
+      '{"type":"text","text":"并发回复甲"}',
+      '{"type":"text","text":"并发回复乙"}',
+    ]));
+    try {
+      const first = await agent.submit('第一条');
+      const second = await agent.submit('第二条');
+      const collect = async (stream) => {
+        const events = [];
+        for await (const event of stream) events.push(event);
+        return events;
+      };
+      const streams = await withTimeout(Promise.all([collect(first), collect(second)]), 30000, '并发提交未收尾');
+      const ids = streams.map((events) => new Set(events.map((event) => event.id)));
+      assert.equal(ids[0].size, 1);
+      assert.equal(ids[1].size, 1);
+      assert.notEqual([...ids[0]][0], [...ids[1]][0]);
+      const replies = streams.map((events) => {
+        assert.equal(events.filter((event) => event.msg.type === 'turn_complete').length, 1);
+        return events.filter((event) => event.msg.type === 'agent_message_delta')
+          .map((event) => event.msg.delta).join('');
+      });
+      assert.deepEqual(new Set(replies), new Set(['并发回复甲', '并发回复乙']));
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('K16: 回合中进程崩溃不会返回成功答案', async () => {
+    let started;
+    let release;
+    const handlerStarted = new Promise((resolve) => { started = resolve; });
+    const handlerRelease = new Promise((resolve) => { release = resolve; });
+    const agent = await ZhuyeAgent.spawn(makeOptions([
+      '{"type":"tool_call","name":"slow_tool","args":{}}',
+    ]));
+    try {
+      await agent.registerTool('slow_tool', '等待', { type: 'object' }, async () => {
+        started();
+        await handlerRelease;
+        return { content: [], is_error: false, metadata: {}, elapsed_ms: 0 };
+      });
+      const result = agent.prompt('调用工具');
+      await withTimeout(handlerStarted, 10000, '工具没有启动');
+      agent.childProcess.kill();
+      await assert.rejects(withTimeout(result, 10000, '断线后 prompt 未结束'), /before turn_complete/);
+    } finally {
+      release();
+      await agent.close();
+    }
+  });
+
   it('K3: registerTool → LLM 调用 → 客户端执行 → 回执 → turn_complete', async () => {
     const calls = [];
     const agent = await ZhuyeAgent.spawn(
@@ -187,7 +240,7 @@ describe('TS SDK 绑定层 × 真二进制', () => {
   it('K4b: set_effort 新档位 max/ultra 经真二进制透传', async () => {
     // v1.10 功能4:additive 新档位;引擎与 high 同型静默收尾,SDK 与 serve
     // 都不得因新增字面量崩溃(协议 additive 变更的绑定层回归);
-    // thread_settings.effort 形态同样接受新档位并正常收尾 turn。
+    // 随后验证支持的回合设置可由 SDK 发送并正常收尾。
     const agent = await ZhuyeAgent.spawn(
       makeOptions(['{"type":"text","text":"t1"}'])
     );
@@ -203,7 +256,7 @@ describe('TS SDK 绑定层 × 真二进制', () => {
       for await (const ev of await agent.submit({
         type: 'user_input',
         items: [{ type: 'text', text: 'hi' }],
-        thread_settings: { effort: 'ultra' },
+        thread_settings: { approval_policy: 'deny' },
       })) {
         turnTypes.push(ev.msg.type);
       }

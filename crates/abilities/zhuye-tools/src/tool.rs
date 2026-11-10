@@ -40,6 +40,14 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// 本次调用可读取的父会话历史条数。`None` 表示需要完整历史,
+    /// 默认保持最近 10 条;队列会分别限制每个工具的上下文快照。
+    /// 此方法在 hook 改写参数前调用,若改写后可能需要更多历史,
+    /// 应提前声明足够的范围。
+    fn parent_context_limit(&self, _args: &serde_json::Value) -> Option<usize> {
+        Some(10)
+    }
+
     /// 调用该工具所需的权限。默认 `Auto` —— 不弹审批直接执行。有副作用
     /// 的工具(`bash`、`write`、`edit`)应当重写为 `Prompt`,使
     /// `ToolExecutionQueue` 走 M6 的 `ApprovalGate` 审批流程。
@@ -150,12 +158,8 @@ pub struct ToolContext {
     /// 维持旧行为(仅 TUI gate 等待);`Some` 时支持挂起文件 + 外部进程
     /// 应答文件(跨进程/跨重启闭环)。
     pub human_input: Option<Arc<crate::human_input::HumanInputStore>>,
-    /// v1.4 C1:父会话历史尾部快照(最近若干条,由 `tool_exec` 注入)。
-    /// 仅子代理编排工具(`CallSubAgentTool`)读取:按
-    /// `DataTransferConfig.pass_context_messages` / 调用参数截取后传给
-    /// `factory.spawn` 的 `parent_tail`。其余工具忽略。元素是协议层
-    /// `ChatMessage` 的 JSON 形态,避免 zhuye-tools 反向依赖 llm 层。
-    /// 构造后不可变:`Arc` 跨调用共享同一份快照,不逐调用深拷贝。
+    /// 父会话历史快照,由 `tool_exec` 注入并按工具声明分别限制。
+    /// 元素是 llm 层 `ChatMessage` 的 JSON 形态,避免反向依赖。
     pub parent_tail_json: Arc<Vec<serde_json::Value>>,
 }
 
@@ -169,11 +173,12 @@ pub struct ToolEventForwarder {
     pub sub_id: String,
     tx: tokio::sync::mpsc::Sender<zhuye_protocol::Event>,
     /// 父会话历史尾部快照(`state.messages` 最近若干条的 JSON 形态)。
-    /// 每批构造时冻结一次;`CallSubAgentTool` 经 `ctx.parent_tail_json`
-    /// 读取,批次内所有调用共享同一份(零拷贝)。
+    /// 每批构造时冻结一次,队列按工具声明裁剪后注入每次调用。
     pub parent_tail_json: Arc<Vec<serde_json::Value>>,
     /// v1.5 R1:本批执行生效的 OS 沙箱覆盖(每 turn 可变)。
     pub os_sandbox: Option<bool>,
+    /// 本批所属回合的取消令牌;为空时沿用队列的基础上下文。
+    pub turn_cancel: Option<CancellationToken>,
 }
 
 impl std::fmt::Debug for ToolEventForwarder {
@@ -195,6 +200,7 @@ impl ToolEventForwarder {
             tx,
             parent_tail_json: Arc::new(parent_tail_json),
             os_sandbox: None,
+            turn_cancel: None,
         }
     }
 

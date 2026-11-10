@@ -24,9 +24,232 @@ import {
   ZhuyeAgent,
 } from '../src/index.js';
 
-import type { TurnComplete, AbortReason, PlanApprovalChoice, ReviewDecision, ToolCallOutputDelta } from '../src/index.js';
+import type { TurnComplete, AbortReason, PlanApprovalChoice, ReviewDecision, ToolCallOutputDelta, ThreadSettings } from '../src/index.js';
+
+it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+  'prompt 拒绝无效超时值 %s',
+  async (timeoutMs) => {
+    const stdout = new PassThrough();
+    const writes: string[] = [];
+    const stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        writes.push(chunk.toString());
+        callback();
+      },
+    });
+    const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+    stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+    try {
+      await expect(agent.prompt('无效参数', { timeoutMs })).rejects.toThrow(RangeError);
+      expect(writes).toHaveLength(0);
+    } finally {
+      stdout.end();
+      await agent.close();
+    }
+  },
+);
+
+it('prompt 超时仅结束本地等待,迟到事件不影响并发回合', async () => {
+  const stdout = new PassThrough();
+  const writes: Array<{ id: string; op: { type: string } }> = [];
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      const sub = JSON.parse(chunk.toString());
+      writes.push(sub);
+      if (sub.op.type === 'user_input' && writes.filter((s) => s.op.type === 'user_input').length === 2) {
+        stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'agent_message_delta', delta: '并发完成' } }) + '\n');
+        stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'turn_complete', turn_id: 't', status: 'success' } }) + '\n');
+      }
+      callback();
+    },
+  });
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  try {
+    const timedOut = agent.prompt('等待', { timeoutMs: 40 });
+    const complete = agent.prompt('并发', { timeoutMs: 1000 });
+    expect(await complete).toBe('并发完成');
+    await expect(timedOut).rejects.toThrow('prompt timed out after 40ms');
+    const first = writes.find((sub) => sub.op.type === 'user_input')!;
+    stdout.write(JSON.stringify({ id: first.id, msg: { type: 'agent_message_delta', delta: '迟到' } }) + '\n');
+    stdout.write(JSON.stringify({ id: first.id, msg: { type: 'turn_complete', turn_id: 'old', status: 'success' } }) + '\n');
+    expect(writes.some((sub) => sub.op.type === 'interrupt')).toBe(false);
+    expect((agent as unknown as { eventListeners: Map<string, unknown> }).eventListeners.size).toBe(0);
+  } finally {
+    stdout.end();
+    await agent.close();
+  }
+});
+
+it('prompt 在握手超时后不会迟到提交', async () => {
+  const stdout = new PassThrough();
+  const writes: string[] = [];
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      writes.push(chunk.toString());
+      callback();
+    },
+  });
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  try {
+    await expect(agent.prompt('等待握手', { timeoutMs: 30 })).rejects.toThrow('prompt timed out');
+    stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+    await agent.nextGlobalEvent({ timeoutMs: 1000 });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(writes).toHaveLength(0);
+  } finally {
+    stdout.end();
+    await agent.close();
+  }
+});
+
+it('prompt 在写入回调挂起时超时并清理监听', async () => {
+  const stdout = new PassThrough();
+  let finishWrite: (() => void) | undefined;
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      const sub = JSON.parse(chunk.toString());
+      if (sub.op.type === 'user_input') finishWrite = callback;
+      else callback();
+    },
+  });
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  try {
+    await expect(agent.prompt('写入挂起', { timeoutMs: 40 })).rejects.toThrow('prompt timed out');
+    expect(finishWrite).toBeDefined();
+    expect((agent as unknown as { eventListeners: Map<string, unknown> }).eventListeners.size).toBe(0);
+    finishWrite?.();
+    finishWrite = undefined;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect((agent as unknown as { eventListeners: Map<string, unknown> }).eventListeners.size).toBe(0);
+  } finally {
+    finishWrite?.();
+    stdout.end();
+    await agent.close();
+  }
+});
+
+it('写入尚未完成时收到的响应仍属于对应 submission', async () => {
+  const stdout = new PassThrough();
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      const sub = JSON.parse(chunk.toString());
+      if (sub.op.type === 'user_input') {
+        stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'agent_message_delta', delta: '快速回复' } }) + '\n');
+        stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'turn_complete', turn_id: 't', status: 'success' } }) + '\n');
+        setTimeout(callback, 50);
+      } else callback();
+    },
+  });
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  try {
+    const result = await Promise.race([
+      agent.prompt('你好'),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('响应丢失')), 500)),
+    ]);
+    expect(result).toBe('快速回复');
+  } finally {
+    stdout.end();
+    await agent.close();
+  }
+});
+
+it('stdout 关闭时唤醒所有并发的全局事件读取者', async () => {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  try {
+    expect((await agent.nextGlobalEvent({ timeoutMs: 500 }))?.msg.type).toBe('session_configured');
+    const waiters = [agent.nextGlobalEvent({ timeoutMs: 500 }), agent.nextGlobalEvent({ timeoutMs: 500 })];
+    stdout.end();
+    expect(await Promise.all(waiters)).toEqual([null, null]);
+  } finally {
+    await agent.close();
+  }
+});
+
+it('prompt 在收到部分回复后断线时抛错', async () => {
+  const stdout = new PassThrough();
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      const sub = JSON.parse(chunk.toString());
+      if (sub.op.type === 'user_input') {
+        stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'agent_message_delta', delta: '部分回复' } }) + '\n');
+        stdout.end();
+      }
+      callback();
+    },
+  });
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  try {
+    await expect(agent.prompt('你好')).rejects.toThrow('before turn_complete');
+  } finally {
+    await agent.close();
+  }
+});
+
+it('prompt 收到部分回复和错误后仍可继续', async () => {
+  const stdout = new PassThrough();
+  let count = 0;
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      const sub = JSON.parse(chunk.toString());
+      if (sub.op.type === 'user_input') {
+        count++;
+        if (count === 1) {
+          stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'agent_message_delta', delta: '部分回复' } }) + '\n');
+          stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'error', code: 'SSE_PARSE_ERROR', message: '流中断' } }) + '\n');
+          stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'submission_closed' } }) + '\n');
+        } else {
+          stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'agent_message_delta', delta: '下一轮' } }) + '\n');
+          stdout.write(JSON.stringify({ id: sub.id, msg: { type: 'turn_complete', turn_id: 't', status: 'success' } }) + '\n');
+        }
+      }
+      callback();
+    },
+  });
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  try {
+    await expect(agent.prompt('第一轮')).rejects.toThrow('SSE_PARSE_ERROR');
+    expect(await agent.prompt('第二轮')).toBe('下一轮');
+  } finally {
+    stdout.end();
+    await agent.close();
+  }
+});
+
+it('关闭后提交立即报错而不是返回永远等待的迭代器', async () => {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  await agent.nextGlobalEvent({ timeoutMs: 500 });
+  await agent.close();
+  await expect(agent.submit('你好')).rejects.toThrow('agent is closed');
+  stdout.end();
+});
+
+it('stdout 断开后提交立即报错', async () => {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  await agent.nextGlobalEvent({ timeoutMs: 500 });
+  stdout.end();
+  expect(await agent.nextGlobalEvent({ timeoutMs: 500 })).toBeNull();
+  await expect(agent.submit('你好')).rejects.toThrow('agent is closed');
+  await agent.close();
+});
 
 it('公开类型与 Rust wire 值一致', () => {
+  expectTypeOf<ThreadSettings['approval_policy']>().toEqualTypeOf<'auto' | 'prompt' | 'deny' | null | undefined>();
+  expectTypeOf<ThreadSettings['sandbox_policy']>().toEqualTypeOf<'workspace_only' | 'os_sandbox' | 'full_access' | null | undefined>();
+  expectTypeOf<ThreadSettings['max_tool_concurrency']>().toEqualTypeOf<number | null | undefined>();
   expectTypeOf<TurnComplete['status']>().toEqualTypeOf<'success' | 'max_iterations' | 'stopped' | 'token_budget_exceeded'>();
   expectTypeOf<AbortReason>().toEqualTypeOf<{ type: 'user_interrupt' } | { type: 'shutdown' } | { type: 'error'; code: string; message: string }>();
   expectTypeOf<PlanApprovalChoice>().toEqualTypeOf<'auto_mode' | 'manual_approve' | 'revise'>();

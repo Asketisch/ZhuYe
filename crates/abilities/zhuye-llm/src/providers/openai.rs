@@ -311,6 +311,8 @@ fn stream_sse(
 ) -> impl Stream<Item = Result<ChatEvent, LlmError>> + Send {
     let byte_stream = response.bytes_stream();
     let mut sse = EventStream::new(byte_stream).peekable();
+    let mut tools = StreamingTools::default();
+    let mut saw_stop = false;
 
     async_stream::stream! {
         loop {
@@ -321,7 +323,12 @@ fn stream_sse(
                     return;
                 }
                 next = sse.next() => {
-                    let Some(item) = next else { return };
+                    let Some(item) = next else {
+                        if !saw_stop {
+                            yield Err(LlmError::SseParse("OpenAI 流在终态前结束".into()));
+                        }
+                        return;
+                    };
                     let evt = match item {
                         Ok(ev) => ev,
                         Err(e) => {
@@ -330,6 +337,7 @@ fn stream_sse(
                         }
                     };
                     if evt.data == "[DONE]" {
+                        for event in tools.finish() { yield Ok(event); }
                         return;
                     }
                     let val: Value = match serde_json::from_str(&evt.data) {
@@ -339,12 +347,155 @@ fn stream_sse(
                             return;
                         }
                     };
+                    let mut tool_events = Some(tools.accept(&val));
                     for ev in parse_chunk(&val) {
-                        yield Ok(ev);
+                        match ev {
+                            ChatEvent::ToolUseStart { .. } | ChatEvent::ToolUseDelta(_) => {
+                                if let Some(events) = tool_events.take() {
+                                    for event in events { yield Ok(event); }
+                                }
+                            }
+                            ChatEvent::MessageStop | ChatEvent::MessageStopTruncated { .. } => {
+                                saw_stop = true;
+                                if let Some(events) = tool_events.take() {
+                                    for event in events { yield Ok(event); }
+                                }
+                                for event in tools.finish() { yield Ok(event); }
+                                yield Ok(ev);
+                            }
+                            _ => yield Ok(ev),
+                        }
+                    }
+                    if let Some(events) = tool_events {
+                        for event in events { yield Ok(event); }
                     }
                 }
             }
         }
+    }
+}
+
+/// OpenAI 可按 index 交错发送多个工具的参数。内部事件协议只表示
+/// 当前工具的增量,因此首个工具实时转发,其余工具按首次出现顺序暂存,
+/// 在模型结束前依次输出,避免分片归错工具且不改变既有事件类型。
+#[derive(Default)]
+struct StreamingTools {
+    calls: Vec<StreamingTool>,
+}
+
+#[derive(Default)]
+struct StreamingTool {
+    choice: u64,
+    index: u64,
+    id: String,
+    name: String,
+    chunks: Vec<String>,
+    started: bool,
+    finished: bool,
+}
+
+impl StreamingTools {
+    fn accept(&mut self, value: &Value) -> Vec<ChatEvent> {
+        let mut events = Vec::new();
+        let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+            return events;
+        };
+        for (choice_pos, choice) in choices.iter().enumerate() {
+            let choice_index = choice
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or(choice_pos as u64);
+            let Some(calls) = choice
+                .get("delta")
+                .and_then(|d| d.get("tool_calls"))
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for (pos, call) in calls.iter().enumerate() {
+                let index = call
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(pos as u64);
+                let slot = self
+                    .calls
+                    .iter()
+                    .position(|c| c.choice == choice_index && c.index == index)
+                    .unwrap_or_else(|| {
+                        self.calls.push(StreamingTool {
+                            choice: choice_index,
+                            index,
+                            ..Default::default()
+                        });
+                        self.calls.len() - 1
+                    });
+                let entry = &mut self.calls[slot];
+                if let Some(id) = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    entry.id = id.to_string();
+                }
+                if let Some(name) = call
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    entry.name.push_str(name);
+                }
+                if let Some(args) = call
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    entry.chunks.push(args.to_string());
+                }
+                if slot == 0 && !entry.finished {
+                    // 函数名也可能分片;参数开始前等待名称拼接完成。
+                    if !entry.started
+                        && !entry.id.is_empty()
+                        && !entry.name.is_empty()
+                        && !entry.chunks.is_empty()
+                    {
+                        events.push(ChatEvent::ToolUseStart {
+                            id: entry.id.clone(),
+                            name: entry.name.clone(),
+                            input_json: String::new(),
+                        });
+                        entry.started = true;
+                    }
+                    if entry.started {
+                        events.extend(entry.chunks.drain(..).map(ChatEvent::ToolUseDelta));
+                    }
+                }
+            }
+        }
+        events
+    }
+
+    fn finish(&mut self) -> Vec<ChatEvent> {
+        let mut events = Vec::new();
+        for entry in &mut self.calls {
+            if entry.finished {
+                continue;
+            }
+            if !entry.started && (!entry.id.is_empty() || !entry.name.is_empty()) {
+                events.push(ChatEvent::ToolUseStart {
+                    id: entry.id.clone(),
+                    name: entry.name.clone(),
+                    input_json: String::new(),
+                });
+                entry.started = true;
+            }
+            if entry.started {
+                events.extend(entry.chunks.drain(..).map(ChatEvent::ToolUseDelta));
+            }
+            entry.finished = true;
+        }
+        events
     }
 }
 
@@ -732,6 +883,76 @@ fn base64_encode(input: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::request::{SystemBlocks, UserContent};
+
+    #[test]
+    fn 交错的工具参数按索引归属且首个工具实时输出() {
+        let mut tools = StreamingTools::default();
+        let first = tools.accept(
+            &serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"id":"a","function":{"name":"alpha","arguments":"{\"x\":"}},
+                {"index":1,"id":"b","function":{"name":"beta","arguments":"{\"y\":"}}
+            ]}}]}),
+        );
+        assert!(
+            matches!(&first[..], [ChatEvent::ToolUseStart { id, name, .. }, ChatEvent::ToolUseDelta(part)]
+            if id == "a" && name == "alpha" && part == "{\"x\":")
+        );
+        let next = tools.accept(
+            &serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":1,"function":{"arguments":"2}"}},
+                {"index":0,"function":{"arguments":"1}"}}
+            ]}}]}),
+        );
+        assert!(matches!(&next[..], [ChatEvent::ToolUseDelta(part)] if part == "1}"));
+        let rest = tools.finish();
+        assert!(
+            matches!(&rest[..], [ChatEvent::ToolUseStart { id, name, .. }, ChatEvent::ToolUseDelta(a), ChatEvent::ToolUseDelta(b)]
+            if id == "b" && name == "beta" && a == "{\"y\":" && b == "2}")
+        );
+        assert!(tools.finish().is_empty());
+    }
+
+    #[test]
+    fn 工具标识和名称分片到齐后再输出参数() {
+        let mut tools = StreamingTools::default();
+        assert!(
+            tools
+                .accept(
+                    &serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                        {"index":0,"id":"a","function":{"arguments":"{}"}}
+                    ]}}]})
+                )
+                .is_empty()
+        );
+        let events = tools.accept(
+            &serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"function":{"name":"echo"}}
+            ]}}]}),
+        );
+        assert!(
+            matches!(&events[..], [ChatEvent::ToolUseStart { id, name, .. }, ChatEvent::ToolUseDelta(args)]
+            if id == "a" && name == "echo" && args == "{}")
+        );
+    }
+
+    #[test]
+    fn 函数名跨分片拼接后才开始调用() {
+        let mut tools = StreamingTools::default();
+        assert!(
+            tools
+                .accept(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+                    {"index":0,"id":"a","function":{"name":"find_"}}
+                ]}}]}))
+                .is_empty()
+        );
+        let events = tools.accept(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"function":{"name":"file","arguments":"{}"}}
+        ]}}]}));
+        assert!(
+            matches!(&events[..], [ChatEvent::ToolUseStart { id, name, .. }, ChatEvent::ToolUseDelta(args)]
+            if id == "a" && name == "find_file" && args == "{}")
+        );
+    }
 
     /// 版本段拼接规则 —— 无版本段补 /v1;已有版本段(/v1、/v4)
     /// 不重复追加;尾斜杠归一。

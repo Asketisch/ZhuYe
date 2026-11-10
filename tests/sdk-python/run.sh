@@ -11,7 +11,7 @@
 # 服务端语义(19 Op / 事件流 / 重连 / 容错)由能力覆盖层承担:
 #   tests/functional/(原始 wire,不经 SDK)。
 #
-# 退出码 0 = 全部通过;缺 pytest / node 时相应批次 SKIP(不算失败)。
+# 退出码 0 = 全部通过;缺少依赖时失败。
 
 set -u
 
@@ -34,7 +34,8 @@ if require_cmd python3 && python3 -m pytest --version >/dev/null 2>&1; then
         RC=1
     fi
 else
-    echo "  [SKIP] 未安装 python3/pytest,跳过"
+    echo "  [FAIL] 未安装 python3/pytest" >&2
+    RC=1
 fi
 
 echo
@@ -49,7 +50,8 @@ if require_cmd python3 node && python3 -m pytest --version >/dev/null 2>&1; then
         RC=1
     fi
 else
-    echo "  [SKIP] 缺 python3/node/pytest,跳过"
+    echo "  [FAIL] 缺 python3/node/pytest" >&2
+    RC=1
 fi
 
 exit "$RC"

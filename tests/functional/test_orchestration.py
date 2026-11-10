@@ -8,6 +8,9 @@
 - O3 任务 / 团队(task create/ls/update);
 - O4 流水线(预设模板受限 → 错误路径断言:no runner / team not found);
 - O5 goal 模式与其他 op 共存(进出 goal 模式不破坏会话)。
+- O11–O16 集成链路(原 tests/rust/integrations.sh 迁入):MCP 生命周期与
+  in-turn 调用 / workspace skill(exec)/ session notes / bubble 权限模式 /
+  配置热重载 / plugin marketplace 全链路。
 
 运行:tests/run_all.sh functional,或
   ZHUYE_BIN=... python3 -m pytest tests/functional/test_orchestration.py -v
@@ -312,3 +315,198 @@ def test_O10_任务输出读取上限(serve_session, mock_script, sandbox) -> No
     assert result["metadata"]["outputTruncated"] is True
     assert result["metadata"]["contentLength"] == 1024 * 1024
     assert result["content"][0]["text"] == "x" * (1024 * 1024)
+
+
+# ══ 集成链路迁移(原 tests/rust/integrations.sh 44 断言)══
+
+
+def _exec_json_events(proc: Any) -> list[dict[str, Any]]:
+    """严格解析 `zhuye exec` stdout 的 JSONL 事件流(坏行直接失败)。"""
+    events: list[dict[str, Any]] = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"exec stdout 非 JSONL:{line[:120]!r}({exc})") from exc
+    return events
+
+
+def test_O11_mcp生命周期与in_turn调用(serve_session, mock_script, sandbox) -> None:
+    """mcp_server_started / failed 字段级 + mcp_tool_invoked + 输出回传。
+
+    原 integrations.sh 组 1;T5 只断言 started 存在,此处补全字段面。
+    """
+    from wire import MOCK_MCP
+
+    if not MOCK_MCP.is_file():
+        pytest.skip("mock_mcp_server 未构建(cargo build -p zhuye-mcp)")
+    require_binary()
+    sandbox.write_config(
+        f'\n[mcp_servers.fsx]\ntype = "stdio"\ncommand = "{MOCK_MCP}"\n'
+        f'[mcp_servers.bad]\ntype = "stdio"\ncommand = "/nonexistent/bad_mcp_server"\n'
+    )
+    script = mock_script([
+        '{"type":"tool_call","name":"mcp__fsx__echo","args":{"text":"mcp-hello"}}',
+        '{"type":"text","text":"done"}',
+    ])
+    with serve_session(env=sandbox.mock_env(script)) as s:
+        started = s.wait_global(lambda e: e.get("msg", {}).get("type") == "mcp_server_started" and e["msg"].get("server") == "fsx")
+        assert "mcp__fsx__echo" in started["msg"]["tool_names"], started
+        assert started["msg"]["tool_count"] == 2, started
+        failed = s.wait_global(lambda e: e.get("msg", {}).get("type") == "mcp_server_failed" and e["msg"].get("server") == "bad")
+        assert failed["msg"].get("error"), failed
+
+        evs = s.submit({"type": "user_input", "items": [{"type": "text", "text": "call it"}]}, timeout=DRAIN_TIMEOUT)
+        # mcp_tool_invoked 是全局事件(EVENT_ID_NONE,与生命周期事件同通道)。
+        invoked = s.wait_global(lambda e: e.get("msg", {}).get("type") == "mcp_tool_invoked")
+        assert invoked["msg"]["server"] == "fsx" and invoked["msg"]["tool"] == "echo", invoked
+        end = first_event(evs, "tool_call_end")
+        assert end is not None and not end["msg"]["is_error"], evs
+        assert "mcp-hello" in json.dumps(end["msg"]["output"], ensure_ascii=False)
+        assert "turn_complete" in msg_types(evs)
+
+
+def test_O12_workspace_skill_load_skill(mock_script, sandbox) -> None:
+    """exec 路径:workspace skill 正文与激活工具回执;不存在时优雅报错。"""
+    require_binary()
+    skill_dir = sandbox.cwd / ".zhuye" / "skills" / "greet"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: greet\ndescription: Greets people politely\ntools: [echo]\ntriggers: [hello]\n---\n"
+        "# Greet\nGREET_BODY_MARKER: always say hello.\n"
+    )
+
+    def _run(name: str):
+        script = mock_script([
+            json.dumps({"type": "tool_call", "name": "load_skill", "args": {"name": name}}),
+            '{"type":"text","text":"done"}',
+        ])
+        return run_cli(sandbox, "exec", f"use {name}", env={
+            "ZHUYE_MODEL": "mock",
+            "ZHUYE_MOCK_SCRIPT": str(script),
+        })
+
+    proc = _run("greet")
+    assert proc.returncode == 0, proc.stderr
+    events = _exec_json_events(proc)
+    end = first_event(events, "tool_call_end")
+    assert end is not None and not end["msg"]["is_error"], events
+    raw = json.dumps(end["msg"]["output"], ensure_ascii=False)
+    assert "GREET_BODY_MARKER" in raw, raw[:300]
+    assert "echo" in raw, raw[:300]
+    assert "turn_complete" in msg_types(events)
+
+    proc2 = _run("nope")
+    assert proc2.returncode == 0, proc2.stderr
+    end2 = first_event(_exec_json_events(proc2), "tool_call_end")
+    assert end2 is not None and end2["msg"]["is_error"], proc2.stdout
+    assert "not found" in json.dumps(end2["msg"]["output"], ensure_ascii=False)
+
+
+def test_O13_session_notes落盘(mock_script, sandbox) -> None:
+    """add_session_note 成功且 JSONL 落盘(每行含 created_at)。"""
+    require_binary()
+    script = mock_script([
+        '{"type":"tool_call","name":"add_session_note","args":{"text":"note-marker-xyz"}}',
+        '{"type":"text","text":"done"}',
+    ])
+    proc = run_cli(sandbox, "exec", "note it", env={
+        "ZHUYE_MODEL": "mock",
+        "ZHUYE_MOCK_SCRIPT": str(script),
+    })
+    assert proc.returncode == 0, proc.stderr
+    end = first_event(_exec_json_events(proc), "tool_call_end")
+    assert end is not None and not end["msg"]["is_error"], proc.stdout
+
+    notes_dir = sandbox.home / ".zhuye" / "session-notes"
+    files = list(notes_dir.glob("*.jsonl"))
+    assert files and files[0].read_text().strip(), "session-notes JSONL 未落盘"
+    content = "".join(f.read_text() for f in files)
+    assert "note-marker-xyz" in content
+    for line in files[0].read_text().splitlines():
+        if line.strip():
+            assert json.loads(line).get("created_at"), line[:120]
+
+
+def test_O14_bubble模式自动放行(serve_session, mock_script, sandbox) -> None:
+    """bubble 权限模式:Prompt 权限 MCP 工具发 permission_bubble 后自动放行。"""
+    from wire import MOCK_MCP
+
+    if not MOCK_MCP.is_file():
+        pytest.skip("mock_mcp_server 未构建(cargo build -p zhuye-mcp)")
+    require_binary()
+    sandbox.write_config(f'\n[mcp_servers.fsx]\ntype = "stdio"\ncommand = "{MOCK_MCP}"\n')
+    script = mock_script([
+        '{"type":"tool_call","name":"mcp__fsx__echo","args":{"text":"bubble-echo"}}',
+        '{"type":"text","text":"done"}',
+    ])
+    with serve_session(env=sandbox.mock_env(script, ZHUYE_APPROVALS="1")) as s:
+        s.wait_global(lambda e: e.get("msg", {}).get("type") == "mcp_server_started" and e["msg"].get("server") == "fsx")
+        s.submit({"type": "set_permission_mode", "mode": "bubble"})
+        pmc = s.wait_global(lambda e: e.get("msg", {}).get("type") == "permission_mode_changed" and e["msg"].get("to") == "bubble")
+        assert pmc["msg"]["to"] == "bubble"
+
+        evs = s.submit({"type": "user_input", "items": [{"type": "text", "text": "echo it"}]}, timeout=DRAIN_TIMEOUT)
+        bubble = first_event(evs, "permission_bubble")
+        assert bubble is not None, f"未见 permission_bubble:{msg_types(evs)}"
+        assert bubble["msg"]["tool_name"] == "mcp__fsx__echo", bubble
+        assert isinstance(bubble["msg"].get("risk"), str), bubble
+        end = first_event(evs, "tool_call_end")
+        assert end is not None and not end["msg"]["is_error"], evs
+        assert "bubble-echo" in json.dumps(end["msg"]["output"], ensure_ascii=False)
+        assert "turn_complete" in msg_types(evs)
+
+
+def test_O15_config热重载(serve_session, mock_script, sandbox) -> None:
+    """追加 [compact] 段 → config_reloaded(sections 含 compact),会话存活。"""
+    require_binary()
+    script = mock_script(['{"type":"text","text":"x"}'])
+    with serve_session(env=sandbox.mock_env(script)) as s:
+        time.sleep(0.5)
+        cfg = sandbox.home / ".zhuye" / "config.toml"
+        cfg.write_text(cfg.read_text() + "\n[compact]\ntrigger_tokens = 99999\n")
+        reloaded = s.wait_global(lambda e: e.get("msg", {}).get("type") == "config_reloaded")
+        assert reloaded["msg"]["path"].endswith("config.toml"), reloaded
+        assert reloaded["msg"]["sections_changed"], reloaded
+        assert "compact" in reloaded["msg"]["sections_changed"], reloaded
+        evs = s.submit({"type": "user_input", "items": [{"type": "text", "text": "still alive"}]}, timeout=DRAIN_TIMEOUT)
+        assert "turn_complete" in msg_types(evs), msg_types(evs)
+
+
+def test_O16_plugin_marketplace全链路(mock_script, sandbox) -> None:
+    """marketplace add → install → enable → exec 启动期 plugin_loaded。"""
+    require_binary()
+    mkt = sandbox.cwd / "mkt"
+    (mkt / ".claude-plugin").mkdir(parents=True)
+    (mkt / "plugins" / "hello").mkdir(parents=True)
+    (mkt / "plugins" / "hello" / "plugin.toml").write_text(
+        'name = "hello"\nversion = "0.1.0"\ndescription = "integ test plugin"\n'
+    )
+    (mkt / ".claude-plugin" / "marketplace.json").write_text(json.dumps({
+        "name": "integ-mk",
+        "owner": {"name": "Test"},
+        "plugins": [{"name": "hello", "version": "0.1.0",
+                     "source": {"source": "directory", "path": "./plugins/hello"}}],
+    }))
+    for args in (
+        ["plugin", "marketplace", "add", "integ-mk", "--from", "directory", "--path", str(mkt)],
+        ["plugin", "install", "hello@integ-mk"],
+        ["plugin", "enable", "hello@integ-mk"],
+    ):
+        proc = run_cli(sandbox, *args)
+        assert proc.returncode == 0, f"{args} 失败:{proc.stderr or proc.stdout}"
+
+    script = mock_script(['{"type":"text","text":"hi"}'])
+    proc = run_cli(sandbox, "exec", "hi", env={
+        "ZHUYE_MODEL": "mock",
+        "ZHUYE_MOCK_SCRIPT": str(script),
+    })
+    assert proc.returncode == 0, proc.stderr
+    events = _exec_json_events(proc)
+    loaded = first_event(events, "plugin_loaded")
+    assert loaded is not None, f"未见 plugin_loaded:{msg_types(events)}"
+    assert loaded["msg"]["plugin"] == "hello@integ-mk", loaded
+    assert loaded["msg"]["version"] == "0.1.0", loaded
+    assert "turn_complete" in msg_types(events)
