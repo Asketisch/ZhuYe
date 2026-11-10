@@ -5,7 +5,7 @@
 ## 构建
 
 ```bash
-cd crates/zhuye-py
+cd crates/runtime/zhuye-py
 maturin develop
 ```
 
@@ -13,4 +13,10 @@ maturin develop
 
 ```bash
 python examples/basic_builder.py
+```
+
+完整离线验证会构建并安装 wheel,再执行真实 Python 多轮调用:
+
+```bash
+./tests/run_all.sh native-python
 ```

@@ -5,10 +5,14 @@
 覆盖:
 - D 组 基础通信与事件流:握手 / 单轮事件序列 / 多轮上下文 / token_count / 终态语义 /
   工具参数增量事件(`tool_call_args_delta`);
+  整段消息变体(`agent_message`,非流式 provider 形态,不经 delta);
 - S 组 并发与路由:submission 隔离 / 队列串行 / 收尾不变量;
 - A 组 会话状态 Op:user_input+thread_settings / set_effort / 权限模式 / rewind /
   interrupt / compact / goal 模式 / plan 模式 / 四种孤儿回执 / steer /
   query_subagents / prompt_command。
+  shutdown op 优雅退出与 plan_approval revise 拒绝分支(A28 / A29,
+  原 tests/rust/serve_ops.sh 迁入);
+  内联 question_answer 与 local_image 输入变体接线(A30 / A31)。
 
 运行:tests/run_all.sh functional,或
   ZHUYE_BIN=... python3 -m pytest tests/functional/test_serve.py -v
@@ -19,6 +23,7 @@ from __future__ import annotations
 import time
 
 import json
+import shlex
 from typing import Any
 
 import pytest
@@ -309,7 +314,7 @@ def test_S3_每条submission恰好一条收尾标记(serve_session, mock_script)
 def test_A1_user_input_带thread_settings(serve_session, mock_script) -> None:
     """thread_settings 四字段下发 → turn 正常完成、不产生 error 事件。
 
-    依据:tests/rust/serve_ops.sh:101-112
+    依据:原 tests/rust/serve_ops.sh 组 1(该脚本已迁入本文件 A 组)。
     """
     require_binary()
     script = mock_script(['{"type":"text","text":"t1"}'])
@@ -329,6 +334,26 @@ def test_A1_user_input_带thread_settings(serve_session, mock_script) -> None:
     assert "turn_complete" in msg_types(evs), f"turn 未完成:{msg_types(evs)}"
     errs = [e for e in evs if e["msg"]["type"] == "error"]
     assert not errs, f"thread_settings 不应产生 error:{errs}"
+
+
+def test_A1b_回合审批策略阻止工具副作用(serve_session, mock_script, sandbox) -> None:
+    """回合级 deny 必须实际阻止工具执行,而不是仅接受字段。"""
+    marker = sandbox.cwd / "thread-settings-must-not-exist"
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "bash", "args": {"cmd": f"touch {shlex.quote(str(marker))}"}}),
+        '{"type":"text","text":"已处理"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        events = session.submit({
+            "type": "user_input",
+            "items": [{"type": "text", "text": "运行命令"}],
+            "thread_settings": {"approval_policy": "deny"},
+        }, timeout=DRAIN_TIMEOUT)
+    end = first_event(events, "tool_call_end")
+    assert end is not None and end["msg"]["is_error"] is True, end
+    assert "deny" in json.dumps(end, ensure_ascii=False).lower(), end
+    assert not marker.exists()
+    assert "turn_complete" in msg_types(events)
 
 
 def test_A2_set_effort_静默(serve_session, mock_script) -> None:
@@ -445,7 +470,7 @@ def test_A7_goal模式_进出静默且turn正常(serve_session, mock_script) -> 
 def test_A8_plan模式_全链路(serve_session, mock_script) -> None:
     """enter_plan_mode → plan_request;exit_plan_mode → plan_ready(含 fallback markdown)。
 
-    依据:tests/rust/serve_ops.sh:197-265
+    依据:原 tests/rust/serve_ops.sh 组 2(该脚本已迁入本文件 A 组)。
     """
     require_binary()
     script = mock_script(['{"type":"text","text":"t1"}'])
@@ -1070,3 +1095,180 @@ def test_A27_activity跨进程轮转(serve_session, mock_script, sandbox) -> Non
     current = [json.loads(line) for line in active.read_text().splitlines()]
     assert any(row.get("summary") == "并发标记" for row in archived)
     assert any(row.get("kind") == "turn_started" for row in current), current
+
+
+def test_D13_整段消息agent_message变体(serve_session, mock_script) -> None:
+    """非流式 provider 形态:整段 agent_message 事件不经 delta。
+
+    文本等价进入历史 —— 下一轮 request_echo 的 messages 快照应含该
+    assistant 消息全文(与 delta 路径落点一致)。
+    """
+    require_binary()
+    script = mock_script([
+        '{"type":"agent_message","text":"整段回复标记-D13"}',
+        '{"type":"request_echo"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        turn1 = session.submit({"type": "user_input", "items": [{"type": "text", "text": "用整段消息回复我"}]}, timeout=DRAIN_TIMEOUT)
+        turn2 = session.submit({"type": "user_input", "items": [{"type": "text", "text": "复述上文"}]}, timeout=DRAIN_TIMEOUT)
+
+    # turn1:恰好一条 agent_message,全文一次到位,不存在任何 delta。
+    types = msg_types(turn1)
+    assert "agent_message" in types, types
+    assert "agent_message_delta" not in types, types
+    msg = first_event(turn1, "agent_message")
+    assert msg is not None and msg["msg"]["text"] == "整段回复标记-D13", msg
+    # 终态序列完整:agent_message 最先,turn_complete 收尾(token_count
+    # 可能有多条:一条带模型 / provider 维度,一条汇总)。
+    order = [t for t in types if t in ("agent_message", "token_count", "turn_complete")]
+    assert order[0] == "agent_message" and order[-1] == "turn_complete", types
+    assert "token_count" in order, types
+
+    # turn2:整段文本等价累积进模型上下文(request_echo messages 快照)。
+    payload = json.loads(
+        "".join(
+            ev["msg"].get("delta", "") + ev["msg"].get("text", "")
+            for ev in turn2
+            if ev["msg"]["type"] in ("agent_message_delta", "agent_message")
+        )
+    )
+    assistant_texts = [m["text"] for m in payload["messages"] if m["role"] == "assistant"]
+    assert any("整段回复标记-D13" in t for t in assistant_texts), payload["messages"]
+
+
+def test_A28_shutdown_op_优雅退出(serve_session, mock_script) -> None:
+    """`shutdown` op → `shutdown_complete` 优雅退出,无 error 事件。
+
+    该路径此前仅由 fixture close() 隐式覆盖;此处按 serve_ops.sh 语义
+    显式断言事件形状与静默语义(非 turn op:无 turn 事件)。
+    """
+    require_binary()
+    script = mock_script(['{"type":"text","text":"bye"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        s.submit({"type": "user_input", "items": [{"type": "text", "text": "一轮"}]})
+        evs = s.submit({"type": "shutdown"})
+    types = msg_types(evs)
+    assert "shutdown_complete" in types, types
+    assert "submission_closed" in types, types
+    assert "error" not in types and "turn_complete" not in types, types
+
+
+def test_A29_plan审批revise_拒绝分支(serve_session, mock_script) -> None:
+    """plan_approval revise → `plan_rejected` 指向原 plan_id,留在 plan 模式。
+
+    二次 exit_plan_mode 生成独立 plan_id;会话保持可用。
+    """
+    require_binary()
+    script = mock_script(['{"type":"text","text":"t1"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+        s.submit({"type": "enter_plan_mode", "task": "revise probe"})
+        evs1 = s.submit({"type": "exit_plan_mode"})
+        ready = first_event(evs1, "plan_ready")
+        assert ready is not None and ready["msg"].get("plan_id"), msg_types(evs1)
+        pid1 = ready["msg"]["plan_id"]
+
+        # 实测时序:plan_rejected 携带 approval 的 sub id,但在该 sub 的
+        # submission_closed **之后**到达(collect 在首个终态即返回,原
+        # serve_ops.sh 的文件轮询掩盖了这一点),因此这里轮询全量事件流。
+        s.submit({"type": "plan_approval", "id": pid1, "choice": "revise"})
+        deadline = time.monotonic() + 5.0
+        rejected = None
+        while time.monotonic() < deadline and rejected is None:
+            rejected = next(
+                (e for e in s.all_events()
+                 if e.get("msg", {}).get("type") == "plan_rejected"),
+                None,
+            )
+            if rejected is None:
+                time.sleep(0.05)
+        assert rejected is not None, "revise 未触发 plan_rejected"
+        assert rejected["msg"].get("plan_id") == pid1, rejected["msg"]
+
+        # 留在 plan 模式:未发生 accept_edits 权限切换。
+        accept = [
+            e for e in s.global_events()
+            if e.get("msg", {}).get("type") == "permission_mode_changed"
+            and e["msg"].get("to") == "accept_edits"
+        ]
+        assert not accept, "revise 不应切出 plan 模式"
+
+        # 二次 exit → 独立 plan_id。
+        evs3 = s.submit({"type": "exit_plan_mode"})
+        ready2 = first_event(evs3, "plan_ready")
+        assert ready2 is not None and ready2["msg"].get("plan_id"), msg_types(evs3)
+        assert ready2["msg"]["plan_id"] != pid1, "两次 plan_ready 应有独立 plan_id"
+
+        # 会话存活。
+        assert msg_types(s.submit({"type": "set_effort", "effort": "low"})) == ["submission_closed"]
+
+
+def test_A30_inline_question_answer经user_input回答(serve_session, mock_script) -> None:
+    """user_input 内联 `question_answer` item 与 dedicated Op 同语义。
+
+    挂起的 ask_user_question gate 被解除、工具拿到答案 JSON、原 turn 完成;
+    回答方 submission 自身也正常收尾(会话存活)。无 waiter 时静默丢弃、
+    不产生 error(与 dedicated Op 一致,不在此重复断言)。
+    """
+    require_binary()
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "ask_user_question", "args": {"questions": [
+            {"header": "选择", "question": "选哪项?",
+             "options": [{"label": "甲", "description": "第一项"},
+                         {"label": "乙", "description": "第二项"}],
+             "multi_select": False}]}}),
+        '{"type":"text","text":"answer consumed"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script), "ZHUYE_APPROVALS": "1"}) as session:
+        seen: dict[str, Any] = {}
+
+        def _on_event(ev: dict[str, Any]) -> None:
+            m = ev.get("msg", {})
+            if m.get("type") == "ask_user_question" and "request_id" in m and not seen:
+                seen.update(m)
+                # 内联回答:走 user_input + question_answer item。
+                session.send({"type": "user_input", "items": [
+                    {"type": "question_answer", "request_id": m["request_id"],
+                     "answers": {"answers": [{"selected": [0]}]}},
+                ]})
+
+        events = session.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "问我"}]},
+            on_event=_on_event,
+        )
+        assert seen, f"未见 ask_user_question:{msg_types(events)}"
+
+    # 原回合:工具解除阻塞并拿到答案 JSON,turn 完成。
+    end = first_event(events, "tool_call_end")
+    assert end is not None and not end["msg"]["is_error"], msg_types(events)
+    out_json = json.dumps(end["msg"]["output"], ensure_ascii=False)
+    assert '"selected": [0]' in out_json or '"selected":[0]' in out_json, out_json[:300]
+    assert "turn_complete" in msg_types(events)
+
+    # 回答方 submission 自身也产生一个 turn_complete(会话存活,共 2 个)。
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if msg_types(session.all_events()).count("turn_complete") >= 2:
+            break
+        time.sleep(0.05)
+    assert msg_types(session.all_events()).count("turn_complete") >= 2
+    assert "error" not in msg_types(session.all_events())
+
+
+def test_A31_local_image进入模型上下文(serve_session, mock_script, sandbox) -> None:
+    """`local_image` item 就地读盘转内联 Image 块,与文本合并进同一 user 消息。"""
+    require_binary()
+    (sandbox.cwd / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    script = mock_script(['{"type":"request_echo"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        evs = session.submit({"type": "user_input", "items": [
+            {"type": "text", "text": "看这张图"},
+            {"type": "local_image", "path": "shot.png"},
+        ]}, timeout=DRAIN_TIMEOUT)
+    text = "".join(
+        ev["msg"].get("delta", "") + ev["msg"].get("text", "")
+        for ev in evs
+        if ev["msg"]["type"] in ("agent_message_delta", "agent_message")
+    )
+    payload = json.loads(text)
+    user_texts = [m["text"] for m in payload["messages"] if m["role"] == "user"]
+    assert any("[image: image/png" in t and "看这张图" in t for t in user_texts), payload["messages"]

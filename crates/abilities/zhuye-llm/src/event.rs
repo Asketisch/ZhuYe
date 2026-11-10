@@ -26,6 +26,11 @@ pub enum ChatEvent {
     /// 助手返回的增量文本内容。
     ContentDelta(String),
 
+    /// 助手整段消息(非流式 provider 形态:适配器已握有完整回复,无需
+    /// 拆 delta)。引擎据此发协议 `agent_message`(完整消息变体),文本
+    /// 等价累积,历史 / rollout 与 delta 路径一致。
+    AgentMessage { text: String },
+
     /// 工具调用块的起始事件。
     ToolUseStart {
         id: String,
@@ -71,6 +76,7 @@ impl ChatEvent {
         match self {
             ChatEvent::MessageStart { .. } => "message_start",
             ChatEvent::ContentDelta(_) => "content_delta",
+            ChatEvent::AgentMessage { .. } => "agent_message",
             ChatEvent::ToolUseStart { .. } => "tool_use_start",
             ChatEvent::ToolUseDelta(_) => "tool_use_delta",
             ChatEvent::ThinkingDelta(_) => "thinking_delta",

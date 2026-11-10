@@ -274,6 +274,8 @@ fn parse_retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
 
 #[derive(Debug, Default)]
 struct StreamState {
+    /// 只有 message_stop 才代表正常结束。
+    finished: bool,
     /// 当前 content block 是否为 thinking 块。
     in_thinking: bool,
     /// 累计 input tokens(取自 `message_start.message.usage.input_tokens`)。
@@ -296,6 +298,9 @@ struct StreamState {
     /// 若输出触达 `max_tokens`,据此上报 `MessageStopTruncated`;
     /// 引擎据此自动续接被截断的回合。
     stop_reason: Option<String>,
+    /// Anthropic content block 可按 index 交错;内部事件只表示当前工具,
+    /// 因此缓冲除首个工具外的参数分片,消息结束前按出现顺序输出。
+    tools: AnthropicTools,
 }
 
 fn stream_sse(
@@ -315,7 +320,12 @@ fn stream_sse(
                     return;
                 }
                 next = sse.next() => {
-                    let Some(item) = next else { return };
+                    let Some(item) = next else {
+                        if !state.finished {
+                            yield Err(LlmError::SseParse("Anthropic 流在 message_stop 前结束".into()));
+                        }
+                        return;
+                    };
                     let evt = match item {
                         Ok(ev) => ev,
                         Err(e) => {
@@ -327,6 +337,9 @@ fn stream_sse(
                     for ev in parse_sse_event(&evt.event, &evt.data, &mut state) {
                         yield Ok(ev);
                     }
+                    if evt.event == "error" {
+                        return;
+                    }
                 }
             }
         }
@@ -337,8 +350,13 @@ fn parse_sse_event(event: &str, data: &str, state: &mut StreamState) -> Vec<Chat
     let mut out = Vec::new();
     let v: Value = match serde_json::from_str(data) {
         Ok(v) => v,
-        Err(_e) => {
-            // SSE 数据格式错误 —— 丢弃该事件并继续流。
+        Err(e) => {
+            // 无法解析的错误事件也必须显式失败;未知事件继续兼容忽略。
+            if event == "error" {
+                return vec![ChatEvent::Error(LlmError::SseParse(format!(
+                    "Anthropic 错误事件 JSON 无效: {e}"
+                )))];
+            }
             return vec![];
         }
     };
@@ -398,11 +416,8 @@ fn parse_sse_event(event: &str, data: &str, state: &mut StreamState) -> Vec<Chat
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
-                out.push(ChatEvent::ToolUseStart {
-                    id,
-                    name,
-                    input_json: String::new(),
-                });
+                let index = v.get("index").and_then(Value::as_u64);
+                out.extend(state.tools.start(index, &id, &name));
             }
         }
         "content_block_delta" => {
@@ -419,7 +434,8 @@ fn parse_sse_event(event: &str, data: &str, state: &mut StreamState) -> Vec<Chat
                 "input_json_delta" => {
                     if let Some(partial) = v.pointer("/delta/partial_json").and_then(|x| x.as_str())
                     {
-                        out.push(ChatEvent::ToolUseDelta(partial.to_string()));
+                        let index = v.get("index").and_then(Value::as_u64);
+                        out.extend(state.tools.delta(index, partial));
                     }
                 }
                 "thinking_delta" => {
@@ -481,6 +497,8 @@ fn parse_sse_event(event: &str, data: &str, state: &mut StreamState) -> Vec<Chat
             }
         }
         "message_stop" => {
+            state.finished = true;
+            out.extend(state.tools.finish());
             // `max_tokens` ⇒ 输出在生成中途被截断;以独立事件上报,
             // 让引擎自动续接被截断的回合。
             if state.stop_reason.as_deref() == Some("max_tokens") {
@@ -491,11 +509,141 @@ fn parse_sse_event(event: &str, data: &str, state: &mut StreamState) -> Vec<Chat
                 out.push(ChatEvent::MessageStop);
             }
         }
+        "error" => {
+            // Anthropic 可在 HTTP 200 的事件流中报告错误,必须交给
+            // 路由器处理,不能把错误流当成成功的空回复。
+            let kind = v
+                .pointer("/error/type")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let message = v
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let retry_after_ms = v
+                .pointer("/error/retry_after_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(1000);
+            let error = match kind {
+                "overloaded_error" => LlmError::Overloaded { retry_after_ms },
+                "rate_limit_error" => LlmError::RateLimited { retry_after_ms },
+                "authentication_error" => LlmError::Auth,
+                "invalid_request_error" => LlmError::InvalidRequest {
+                    message: message.to_owned(),
+                },
+                "permission_error" => LlmError::Provider {
+                    status: 403,
+                    message: message.to_owned(),
+                },
+                "not_found_error" => LlmError::Provider {
+                    status: 404,
+                    message: message.to_owned(),
+                },
+                _ => LlmError::Provider {
+                    status: 500,
+                    message: format!("Anthropic 流错误 {kind}: {message}"),
+                },
+            };
+            out.push(ChatEvent::Error(error));
+        }
         _ => {
-            // ping / error / 其它类型化事件 —— 忽略
+            // ping / 其它未知类型化事件 —— 忽略
         }
     }
     out
+}
+
+/// 按 Anthropic content block index 归属并行工具参数。
+#[derive(Debug, Default)]
+struct AnthropicTools {
+    calls: Vec<AnthropicTool>,
+}
+
+#[derive(Debug)]
+struct AnthropicTool {
+    index: u64,
+    id: String,
+    name: String,
+    chunks: Vec<String>,
+    started: bool,
+}
+
+impl AnthropicTools {
+    fn start(&mut self, index: Option<u64>, id: &str, name: &str) -> Vec<ChatEvent> {
+        let Some(index) = index else {
+            return vec![anthropic_parse_error("工具 content_block_start 缺少 index")];
+        };
+        if id.is_empty() || name.is_empty() {
+            return vec![anthropic_parse_error(
+                "工具 content_block_start 缺少 id 或 name",
+            )];
+        }
+        if self
+            .calls
+            .iter()
+            .any(|call| call.index == index || call.id == id)
+        {
+            return vec![anthropic_parse_error(
+                "工具 content_block 的 index 或 id 重复",
+            )];
+        }
+        let started = self.calls.is_empty();
+        let mut events = Vec::new();
+        if started {
+            events.push(ChatEvent::ToolUseStart {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                input_json: String::new(),
+            });
+        }
+        self.calls.push(AnthropicTool {
+            index,
+            id: id.to_owned(),
+            name: name.to_owned(),
+            chunks: Vec::new(),
+            started,
+        });
+        events
+    }
+
+    fn delta(&mut self, index: Option<u64>, partial: &str) -> Vec<ChatEvent> {
+        if partial.is_empty() {
+            return Vec::new();
+        }
+        let Some(index) = index else {
+            return vec![anthropic_parse_error("工具 content_block_delta 缺少 index")];
+        };
+        let Some(slot) = self.calls.iter().position(|call| call.index == index) else {
+            return vec![anthropic_parse_error(
+                "工具参数增量找不到对应 content_block",
+            )];
+        };
+        self.calls[slot].chunks.push(partial.to_owned());
+        if slot == 0 && self.calls[slot].started {
+            vec![ChatEvent::ToolUseDelta(partial.to_owned())]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn finish(&mut self) -> Vec<ChatEvent> {
+        let mut events = Vec::new();
+        for call in self.calls.iter_mut().skip(1) {
+            events.push(ChatEvent::ToolUseStart {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                input_json: String::new(),
+            });
+            events.extend(call.chunks.drain(..).map(ChatEvent::ToolUseDelta));
+            call.started = true;
+        }
+        self.calls.clear();
+        events
+    }
+}
+
+fn anthropic_parse_error(message: &str) -> ChatEvent {
+    ChatEvent::Error(LlmError::SseParse(message.to_owned()))
 }
 
 // ── ChatRequest → Anthropic 请求体 转换 ────────────────────────────────────
@@ -967,6 +1115,120 @@ mod tests {
         let data = r#"{"index":1,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":"}}"#;
         let evs = parse_sse_event("content_block_delta", data, &mut state);
         assert!(matches!(&evs[0], ChatEvent::ToolUseDelta(s) if s.contains("cmd")));
+    }
+
+    #[test]
+    fn 并行工具交错参数按index归属() {
+        let mut state = StreamState::default();
+        let start = |state: &mut StreamState, index: u64, id: &str| {
+            parse_sse_event(
+                "content_block_start",
+                &serde_json::json!({
+                    "index": index,
+                    "content_block": {"type": "tool_use", "id": id, "name": "lookup", "input": {}}
+                })
+                .to_string(),
+                state,
+            )
+        };
+        let delta = |state: &mut StreamState, index: u64, partial: &str| {
+            parse_sse_event(
+                "content_block_delta",
+                &serde_json::json!({
+                    "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": partial}
+                })
+                .to_string(),
+                state,
+            )
+        };
+        let first = start(&mut state, 0, "toolu-a");
+        assert!(matches!(&first[..], [ChatEvent::ToolUseStart { id, .. }] if id == "toolu-a"));
+        assert!(start(&mut state, 1, "toolu-b").is_empty());
+        assert!(matches!(
+            &delta(&mut state, 0, r#"{"key":"#)[..],
+            [ChatEvent::ToolUseDelta(part)] if part == r#"{"key":"#
+        ));
+        assert!(delta(&mut state, 1, r#"{"key":"#).is_empty());
+        assert!(matches!(
+            &delta(&mut state, 0, r#""alpha"}"#)[..],
+            [ChatEvent::ToolUseDelta(part)] if part == r#""alpha"}"#
+        ));
+        assert!(delta(&mut state, 1, r#""beta"}"#).is_empty());
+        let finished = state.tools.finish();
+        assert!(matches!(
+            &finished[..],
+            [ChatEvent::ToolUseStart { id, .. }, ChatEvent::ToolUseDelta(first),
+             ChatEvent::ToolUseDelta(last)]
+            if id == "toolu-b" && first == r#"{"key":"# && last == r#""beta"}"#
+        ));
+    }
+
+    #[test]
+    fn 工具content_block标识缺失或重复时显式报错() {
+        let mut state = StreamState::default();
+        let missing_index = parse_sse_event(
+            "content_block_start",
+            r#"{"content_block":{"type":"tool_use","id":"a","name":"lookup"}}"#,
+            &mut state,
+        );
+        assert!(matches!(
+            &missing_index[..],
+            [ChatEvent::Error(LlmError::SseParse(_))]
+        ));
+        parse_sse_event(
+            "content_block_start",
+            r#"{"index":0,"content_block":{"type":"tool_use","id":"a","name":"lookup"}}"#,
+            &mut state,
+        );
+        let duplicate = parse_sse_event(
+            "content_block_start",
+            r#"{"index":1,"content_block":{"type":"tool_use","id":"a","name":"lookup"}}"#,
+            &mut state,
+        );
+        assert!(matches!(
+            &duplicate[..],
+            [ChatEvent::Error(LlmError::SseParse(_))]
+        ));
+        let orphan = parse_sse_event(
+            "content_block_delta",
+            r#"{"index":9,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+            &mut state,
+        );
+        assert!(matches!(
+            &orphan[..],
+            [ChatEvent::Error(LlmError::SseParse(_))]
+        ));
+    }
+
+    #[test]
+    fn 流内错误按类型分类且坏错误事件不静默() {
+        let mut state = StreamState::default();
+        let overloaded = parse_sse_event(
+            "error",
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"busy"}}"#,
+            &mut state,
+        );
+        assert!(matches!(
+            &overloaded[..],
+            [ChatEvent::Error(LlmError::Overloaded {
+                retry_after_ms: 1000
+            })]
+        ));
+        let limited = parse_sse_event(
+            "error",
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"limited"}}"#,
+            &mut state,
+        );
+        assert!(matches!(
+            &limited[..],
+            [ChatEvent::Error(LlmError::RateLimited { .. })]
+        ));
+        let malformed = parse_sse_event("error", "bad json", &mut state);
+        assert!(matches!(
+            &malformed[..],
+            [ChatEvent::Error(LlmError::SseParse(_))]
+        ));
     }
 
     #[test]

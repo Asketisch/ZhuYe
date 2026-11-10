@@ -281,7 +281,7 @@ class ZhuyeAgent:
         """高层便捷:`prompt(text)` → 最终 assistant 文本。
 
         聚合 `agent_message_delta` / `agent_message`,遇到 `turn_complete`
-        结束;`turn_aborted` / `error` 抛错。
+        结束;`turn_aborted` / `error` 或终态前断线抛错。
 
         全量 `agent_message` 到达时**清空**已累计的 delta 缓冲 ——
         协议允许同一轮 delta 与全量混合下发,不去重会产生重复文本
@@ -297,12 +297,12 @@ class ZhuyeAgent:
                 # 全量消息覆盖 delta 缓冲:全量是权威快照。
                 out = [msg["text"]]
             elif t == "turn_complete":
-                break
+                return "".join(out)
             elif t == "turn_aborted":
                 raise RuntimeError(f"zhuye turn aborted: {msg.get('reason')}")
             elif t == "error":
                 raise RuntimeError(f"zhuye error: {msg.get('code')}: {msg.get('message')}")
-        return "".join(out)
+        raise RuntimeError("zhuye stream ended before turn_complete")
 
     def interrupt(self, child_id: Optional[str] = None) -> None:
         self._write_submission(
@@ -577,6 +577,7 @@ class _SubmissionIterator(Iterator[dict[str, Any]]):
         ev = self._q.get()
         if ev is None:
             # EOF / 通道关闭:抛出 StopIteration 即可。
+            self._done = True
             raise StopIteration
         msg = ev.get("msg") or {}
         if _is_terminal(msg):

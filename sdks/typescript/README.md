@@ -97,11 +97,16 @@ await agent.close();
 ### 一步拿全文(prompt)
 
 ```ts
-const answer = await agent.prompt('北京天气如何?');
+const answer = await agent.prompt('北京天气如何?', { timeoutMs: 30_000 });
 ```
 
 聚合所有 delta;`turn_complete` 正常返回,`turn_aborted` / `error` 事件
 抛 `Error`(部分文本不会被当作完整答案静默返回)。
+可选 `timeoutMs` 从调用开始计时,包括握手、写入和等待回复;超时抛错并
+清理本地监听,但服务端已收到的回合仍可能运行。需要中断时可显式调用
+`interrupt()`,其影响范围见协议。超时值须为 0 到 2,147,483,647 毫秒的有限数。
+模型流发生错误时,若已发出文本、思考或工具调用事件,本轮不会自动
+重试;已发出的文本会在错误事件前尝试写入会话记录,可在下一轮继续。
 
 ### 自定义工具(宿主函数 → LLM 工具)
 
@@ -154,6 +159,21 @@ await Promise.all([
 
 ### 打断与审批
 
+打断父回合会取消其在途子代理和服务端对远程工具的等待,但不会强制停止已经运行的宿主
+handler;迟到回执会被忽略,handler 的副作用需由客户端自行管理。
+模型流中已经发出的文本会在中断终态之前尝试写入会话记录,供后续回合恢复。
+子代理中途失败会作为工具错误返回父代理,状态查询显示 `failed`;中断
+显示 `cancelled`。`call_<role>` 的 `context_tail` 默认不传父历史,
+设置后传递尾部消息,并在工具调用边界补齐配对。
+子代理内部需要审批的工具会向父会话发送 `approval_request`;同一会话的
+`tool_approval` 回执会唤醒子代理工具调用,批准与拒绝均按实际结果返回。
+子代理的自由文本提问和结构化选择题也进入父会话事件流,使用标准
+`ask_user_input_response` / `ask_user_question_response` 回执。
+子代理继承父会话的权限规则、权限模式、YOLO 分类和沙箱配置;显式拒绝
+的工具不会因为跨入子代理而变成可审批执行。
+子代理工具步骤前的过程文本可由 `subagent_progress` 观察,最终结果
+只包含最后工具步骤后的助手回复。
+
 ```ts
 // 打断当前 turn(随后该 turn 以 turn_aborted 收尾)
 await agent.interrupt();
@@ -189,7 +209,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 
 | 类别 | Op | 关键字段 |
 |---|---|---|
-| 对话 | `user_input` | `items`(text/image)、可选 `thread_settings{effort, permission_mode, model}` |
+| 对话 | `user_input` | `items`(text/image)、可选 `thread_settings{model, approval_policy, sandbox_policy, max_tool_concurrency}` |
 | 对话 | `compact` / `rewind` | rewind 可选 `to_turn_id` |
 | 控制 | `interrupt` / `shutdown` | interrupt 可选 `child_id` |
 | 审批 | `tool_approval` / `hook_approval` | `id` + `decision` |
@@ -215,9 +235,12 @@ for await (const e of await agent.submit({ type: 'set_permission_mode', mode: 'p
 for await (const e of await agent.submit({
   type: 'user_input',
   items: [{ type: 'text', text: '调研一下' }],
-  thread_settings: { effort: 'high' }, // 档位 'low'|'medium'|'high'|'max'|'ultra';引擎按模型族钳制
+  thread_settings: { approval_policy: 'deny' },
 })) {}
 ```
+
+`thread_settings` 里的旧字段 `effort`、`permission_mode` 保留类型兼容,
+但服务端不读取;请分别使用 `set_effort` 和 `set_permission_mode` Op。
 
 ## API 参考
 
@@ -228,13 +251,13 @@ for await (const e of await agent.submit({
 | `ZhuyeAgent.spawn(options?): Promise<ZhuyeAgent>` | 拉起 `zhuye serve`,等握手完成;二进制找不到(经 `await` 后首个调用暴露)/ 握手超时抛 `Error` |
 | `ZhuyeAgent.fromStdio(stdin, stdout, handshakeTimeoutMs?)` | 测试注入:用现成 duplex 流代替 spawn |
 | `registerTool(name, description, parameters, handler): Promise<void>` | 注册远程工具,任意时刻可调;静默接受,错误异步以 error 事件回报 |
-| `submit(text): Promise<AsyncIterable<Event>>` | 提交用户文本,返回该提交的事件流 |
+| `submit(text): Promise<AsyncIterable<Event>>` | 提交用户文本,返回该提交的事件流;关闭或断线后抛错 |
 | `submit(op, opts?): Promise<AsyncIterable<Event>>` | 提交任意 Op;`opts.submissionId` 可显式指定 id |
-| `prompt(text): Promise<string>` | 聚合 delta 返回全文;`turn_aborted` / `error` 抛 `Error` |
+| `prompt(text, opts?): Promise<string>` | 聚合 delta 返回全文;`timeoutMs` 可限制本地等待,中断、错误或终态前断线抛 `Error` |
 | `interrupt(childId?): Promise<void>` | 打断在飞 turn |
 | `approve(approvalId, decision): Promise<void>` | 回审批决策(wire 形态透传) |
 | `nextGlobalEvent(opts?): Promise<Event \| null>` | 读全局事件;`timeoutMs` 到点抛错,EOF 后返回 `null` |
-| `close(): Promise<void>` | 幂等关闭:Shutdown → 等 2s → 强杀;之后所有写入静默丢弃,迭代器收尾 |
+| `close(): Promise<void>` | 幂等关闭:Shutdown → 等 2s → 强杀;后续公开写入报错,迭代器收尾 |
 | `childProcess` (getter) | 暴露 serve 子进程句柄(测试/诊断用) |
 
 ### `ZhuyeAgentOptions`
@@ -288,6 +311,13 @@ for await (const e of await agent.submit({
 | `turn_rewound` / `config_reloaded` / `collab_*` / `mcp_server_*` / `mcp_tool_invoked` / `lsp_server_*` / `plugin_loaded` / `quota_exhausted` / `routing` | — | 其余变体见 protocol.ts |
 | `UnknownEventMsg` 形态 | 任意 | 未识别变体降级(`type` 保留原值),保证前向兼容 |
 
+OpenAI 兼容流、Responses 和 Anthropic 的并行工具参数按 `call_id` 归属;首个工具实时发送增量,
+其余工具的增量在该次模型输出结束时按调用顺序发送。
+Anthropic 流内错误和 Responses 失败终态会走错误或凭证切换路径;
+Responses 输出达到上限时尝试续写,未完成的工具调用不会执行。
+工具参数不是有效 JSON 时,SDK 的宿主 handler 不会被调用;模型会收到
+工具错误并可继续处理。
+
 ## 错误处理速查
 
 | 场景 | 表现 |
@@ -296,6 +326,7 @@ for await (const e of await agent.submit({
 | 握手超时 | 抛 `zhuye serve handshake timed out after ...ms` |
 | 模型返回 error 事件 | `prompt()` 抛 `Error: zhuye error: <code>: <message>`;`submit()` 流里自行处理 |
 | turn 被打断 | `prompt()` 抛 `Error: zhuye turn aborted: ...`;`submit()` 流里见 `turn_aborted` |
+| 回合完成前断线 | `prompt()` 抛 `Error: zhuye stream ended before turn_complete`,不返回不完整的文本 |
 | 全局事件读超时 | `nextGlobalEvent` 抛 `zhuye nextGlobalEvent timed out ...` |
 | handler 抛异常 | 自动转 `is_error=true` 回执,不影响 turn;不影响 SDK |
 | `close()` 后写入 | 静默丢弃(回执无处可去,不炸宿主) |

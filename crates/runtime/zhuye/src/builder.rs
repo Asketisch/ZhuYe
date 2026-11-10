@@ -1006,6 +1006,7 @@ mod tests {
                 "OLLAMA_API_KEY",
                 "ZHUYE_PROVIDER",
                 "ZHUYE_MODEL",
+                "ZHUYE_MOCK_SCRIPT",
             ];
             let prior = keys
                 .into_iter()
@@ -1034,19 +1035,16 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires real OPENAI_API_KEY"]
     async fn builder_returns_thread_with_approvals() {
         let _g = env_lock().lock().unwrap();
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "test-key");
-        }
-        let agent = Zhuye::builder("openai/gpt-4o")
+        let _env = ProviderEnvGuard::clear();
+        let agent = Zhuye::builder("mock")
             .workspace("/tmp")
             .approvals(true)
             .build()
             .unwrap();
         let cfg = agent.thread().config();
-        assert_eq!(cfg.current_model(), "openai/gpt-4o");
+        assert_eq!(cfg.current_model(), "mock");
         assert!(cfg.approvals);
     }
 
@@ -1314,8 +1312,9 @@ mod tests {
     #[test]
     fn default_tool_registry_has_all_builtins_plus_plan_tools_plus_ast_plus_web() {
         // 内置清单收编至 zhuye_tools::register_builtin_tools(单一事实源,
-        // 与 exec / serve 共用)。全量 26 个(含 AskUser / ToolSearch /
-        // Checkpoint / Rewind 等此前门面缺失的 9 个)。
+        // 与 exec / serve 共用)。全量 27 个(含 AskUser / ToolSearch /
+        // Checkpoint / Rewind 等此前门面缺失的 9 个,以及 bash 后台任务
+        // 配套的 background_status)。
         let r = default_tool_registry();
         let names = r.list();
         assert_eq!(
@@ -1324,6 +1323,7 @@ mod tests {
             "got {names:?}"
         );
         assert!(names.contains(&"bash".into()));
+        assert!(names.contains(&"background_status".to_string()));
         assert!(names.contains(&"read".into()));
         assert!(names.contains(&"EnterPlanMode".to_string()));
         assert!(names.contains(&"ExitPlanMode".to_string()));
@@ -1394,16 +1394,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires real OPENAI_API_KEY"]
     async fn from_thread_wraps_existing_thread() {
         let _g = env_lock().lock().unwrap();
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "test");
-        }
-        drop(_g);
+        let _env = ProviderEnvGuard::clear();
         let t = Arc::new(AgentThread::new(
-            AgentConfig::new("openai/gpt-4o", Path::new(".")),
-            build_registry_from_env("openai/gpt-4o").unwrap(),
+            AgentConfig::new("mock", Path::new(".")),
+            build_registry_from_env("mock").unwrap(),
             default_tool_registry(),
             None,
             None,
@@ -1413,43 +1409,32 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires real OPENAI_API_KEY"]
     async fn next_thread_id_is_unique() {
         let _g = env_lock().lock().unwrap();
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "test");
-        }
-        drop(_g);
-        let agent = Zhuye::builder("openai/gpt-4o").build().unwrap();
+        let _env = ProviderEnvGuard::clear();
+        let agent = Zhuye::builder("mock").build().unwrap();
         let a = agent.next_thread_id();
         let b = agent.next_thread_id();
         assert_ne!(a, b);
     }
 
     #[tokio::test]
-    #[ignore = "requires real OPENAI_API_KEY"]
     async fn cancel_token_returns_cloneable_handle() {
         let _g = env_lock().lock().unwrap();
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "test");
-        }
-        drop(_g);
-        let agent = Zhuye::builder("openai/gpt-4o").build().unwrap();
+        let _env = ProviderEnvGuard::clear();
+        let agent = Zhuye::builder("mock").build().unwrap();
         let t = agent.cancel_token().clone();
         t.cancel();
         assert!(agent.cancel_token().is_cancelled());
     }
 
     #[tokio::test]
-    #[ignore = "requires real OPENAI_API_KEY"]
     async fn session_subscriber_yields_configured_event() {
         let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
         use std::time::Duration;
         use zhuye_protocol::EventMsg;
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "test");
-        }
-        let agent = Zhuye::builder("openai/gpt-4o").build().unwrap();
+        let agent = Zhuye::builder("mock").build().unwrap();
         let mut rx = agent.subscribe_session();
         let _ = agent.submit(Submission::user_input("hello")).await;
         let ev = tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -1460,15 +1445,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires real OPENAI_API_KEY"]
     async fn submit_with_session_attaches_session_subscriber() {
         let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
         use std::time::Duration;
         use zhuye_protocol::EventMsg;
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "test");
-        }
-        let agent = Zhuye::builder("openai/gpt-4o").build().unwrap();
+        let agent = Zhuye::builder("mock").build().unwrap();
         let mut stream = agent
             .submit_with_session(Submission::user_input("hello"))
             .await;

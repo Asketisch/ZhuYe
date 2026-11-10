@@ -129,14 +129,10 @@ async fn eval_multi_op_scenario_with_interrupt_and_steer() {
                 "turn_complete".into(),
             ],
             tool_calls: vec![],
-            request_contains: {
-                let mut m = std::collections::HashMap::new();
-                // 第二次模型请求(收尾回合)应含合并的转向文本。
-                m.insert("1".to_string(), vec!["改用中文".to_string()]);
-                m
-            },
+            // 中断可能发生在首个模型请求启动之前,不能假定其调用序号。
+            request_contains: Default::default(),
             final_status: FinalStatus::Success,
-            model_calls: Some(2),
+            model_calls: None,
         },
     };
     let report = run_scenario(&scenario, Path::new(".")).await;
@@ -144,6 +140,33 @@ async fn eval_multi_op_scenario_with_interrupt_and_steer() {
         report.passed,
         "多操作场景应通过,失败: {:?}",
         report.failures
+    );
+    // 单独验证回合边界合并,避免依赖中断与首次模型调用的调度顺序。
+    let steer_scenario = EvalScenario {
+        name: "steer-at-boundary".into(),
+        ops: vec![
+            EvalOp::Steer {
+                text: "改用中文".into(),
+            },
+            EvalOp::UserInput {
+                text: "继续".into(),
+                wait: true,
+            },
+        ],
+        script: vec![vec![]],
+        expect: EvalExpectations {
+            request_contains: [("0".to_string(), vec!["改用中文".to_string()])]
+                .into_iter()
+                .collect(),
+            model_calls: Some(1),
+            ..Default::default()
+        },
+    };
+    let steer_report = run_scenario(&steer_scenario, Path::new(".")).await;
+    assert!(
+        steer_report.passed,
+        "转向应进入模型请求: {:?}",
+        steer_report.failures
     );
 }
 

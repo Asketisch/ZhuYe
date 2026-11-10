@@ -21,7 +21,7 @@ use zhuye_hooks::builtins::{PlanModeGate, build_read_before_edit};
 use zhuye_llm::ModelRegistry;
 use zhuye_mcp::McpConnectionManager;
 use zhuye_plugin::runtime::{SharedPluginRuntime, bootstrap_plugins};
-use zhuye_protocol::{Event, Submission, ThreadId};
+use zhuye_protocol::{Event, EventMsg, Submission, ThreadId};
 use zhuye_task::coordinator::CoordinatorConfig;
 use zhuye_tools::{Sanitizer, ToolRegistry, ToolSource};
 
@@ -144,6 +144,8 @@ pub struct HeadlessCommon {
     pub registry: Arc<ModelRegistry>,
     pub hook_engine: Arc<zhuye_hooks::HookEngine>,
     pub sanitizer: Arc<Sanitizer>,
+    /// v1.x:prompt injection guard(`[prompt_guard]` / env opt-in;None = 关闭)。
+    pub prompt_guard: Option<Arc<zhuye_sanitize::prompt_guard::PromptGuard>>,
     pub tools: Arc<ToolRegistry>,
     pub task_manager: Arc<zhuye_task::TaskManager>,
     pub cancel: CancellationToken,
@@ -217,6 +219,19 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
 
     // `[sanitize]` 段接到 queue 的脱敏 pass;失败 → warn + fallback 默认。
     let sanitizer = build_sanitizer(initial_cfg.sanitize.as_ref());
+
+    // v1.x:`[prompt_guard]` / `ZHUYE_PROMPT_GUARD=1` 接输入侧提示注入
+    // 检测。默认关闭(opt-in);开启后工具输出进模型上下文前被扫描。
+    let prompt_guard_enabled = initial_cfg
+        .prompt_guard
+        .as_ref()
+        .and_then(|s| s.enabled)
+        .unwrap_or(false)
+        || std::env::var("ZHUYE_PROMPT_GUARD").ok().as_deref() == Some("1");
+    let prompt_guard = prompt_guard_enabled.then(|| {
+        tracing::info!("[prompt_guard] enabled: 工具输出将在进入模型上下文前扫描");
+        Arc::new(zhuye_sanitize::prompt_guard::PromptGuard::new())
+    });
 
     // 从 `~/.zhuye/config.toml [hooks]` 段构建 HookEngine(含 builtin +
     // 插件 hook),AgentThread 与 TaskManager 共享同一份。
@@ -369,6 +384,7 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         registry,
         hook_engine,
         sanitizer,
+        prompt_guard,
         tools,
         task_manager,
         cancel,
@@ -545,6 +561,110 @@ async fn apply_permission_layers(
     cfg
 }
 
+/// 读取 cron driver tick 间隔;缺省 30 秒,允许测试和运维调小。
+fn cron_tick_secs() -> u64 {
+    const DEFAULT: u64 = 30;
+    std::env::var("ZHUYE_CRON_TICK_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map_or(DEFAULT, |secs: u64| secs.clamp(1, 3600))
+}
+
+/// 读取 autopilot driver tick 间隔;缺省 30 秒,允许测试和运维调小
+/// (与 `cron_tick_secs` 同款 env 口径)。
+fn autopilot_tick_secs() -> u64 {
+    const DEFAULT: u64 = 30;
+    std::env::var("ZHUYE_AUTOPILOT_TICK_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map_or(DEFAULT, |secs: u64| secs.clamp(1, 3600))
+}
+
+/// v1.x:Autopilot 真实调度 driver(`~/.zhuye/autopilot/config.json`
+/// opt-in)。注入走 `fire_if_due` + `submission_sender`(与 cron 同款
+/// orphan 转发路径,事件同时到 stdout 与终态 watcher);终态回填用
+/// 会话订阅里 fire 之后的第一个 turn 终态 / error 事件。
+///
+/// 简化语义(文档化):autopilot 面向默认会话的无人值守执行;若客户端
+/// 回合与注入回合并发,回填可能取到先到者的终态 —— max_concurrent
+/// 占位仍在,不会双发。首 tick 延后一个间隔:interval 的首次 tick 在
+/// spawn 后立即触发,而 serve 的会话订阅此时可能尚未建立(实测竞态),
+/// 且与「配置保存后从下一个 schedule 点开始」语义一致。
+fn spawn_autopilot_driver(thread: &Arc<AgentThread>) {
+    let manager = zhuye_stream::autopilot::shared_manager(zhuye_config::data_path_or_relative(&[
+        "autopilot",
+    ]));
+    let tx = thread.submission_sender();
+    let mut session_rx = thread.subscribe_session();
+    let tick = autopilot_tick_secs();
+    // fire 与终态回填之间的在途计数:fire 成功注入即 +1;watcher 收到
+    // 第一个 turn 终态且计数 >0 时 -1 并回填对应运行(单会话语义下
+    // 先到先得,见函数文档的简化说明)。
+    let pending: std::sync::Arc<std::sync::Mutex<usize>> =
+        std::sync::Arc::new(std::sync::Mutex::new(0));
+    let fire_manager = manager.clone();
+    let fire_pending = pending.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(tick)).await;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(tick));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let fired =
+                zhuye_stream::autopilot::fire_if_due(&fire_manager, &Some(tx.clone())).await;
+            if let Ok(Some(run)) = fired {
+                if run.status == zhuye_stream::autopilot::AutopilotRunStatus::InProgress {
+                    *fire_pending.lock().expect("pending lock poisoned") += 1;
+                }
+            }
+        }
+    });
+    // 终态回填:在途计数 >0 时,会话事件流里第一个 turn 终态归本次注入
+    // (Error 事件在无终态前出现则记为失败证据,不消耗计数)。
+    let watcher_manager = manager;
+    let watcher_pending = pending;
+    tokio::spawn(async move {
+        let mut failure: Option<String> = None;
+        while let Some(ev) = session_rx.recv().await {
+            match &ev.msg {
+                EventMsg::TurnComplete(_) => {
+                    if *watcher_pending.lock().expect("pending lock poisoned") == 0 {
+                        continue;
+                    }
+                    *watcher_pending.lock().expect("pending lock poisoned") -= 1;
+                    let _ = watcher_manager.finalize_run_by_status(
+                        zhuye_stream::autopilot::AutopilotRunStatus::InProgress,
+                        if failure.is_none() {
+                            zhuye_stream::autopilot::AutopilotRunStatus::Success
+                        } else {
+                            zhuye_stream::autopilot::AutopilotRunStatus::Failed
+                        },
+                        failure.take(),
+                    );
+                    failure = None;
+                }
+                EventMsg::TurnAborted(_) => {
+                    if *watcher_pending.lock().expect("pending lock poisoned") == 0 {
+                        continue;
+                    }
+                    *watcher_pending.lock().expect("pending lock poisoned") -= 1;
+                    let _ = watcher_manager.finalize_run_by_status(
+                        zhuye_stream::autopilot::AutopilotRunStatus::InProgress,
+                        zhuye_stream::autopilot::AutopilotRunStatus::Failed,
+                        Some("autopilot turn aborted".into()),
+                    );
+                    failure = None;
+                }
+                EventMsg::Error(e) => {
+                    failure = Some(e.message.clone());
+                }
+                _ => {}
+            }
+        }
+    });
+    tracing::info!(tick_secs = tick, "autopilot driver started");
+}
+
 /// 装配普通分支后半段(与原 `async_main` 普通分支逐行对应),返回
 /// 可供 exec / serve 使用的 session。
 pub async fn bootstrap_normal(
@@ -557,6 +677,7 @@ pub async fn bootstrap_normal(
         registry,
         hook_engine,
         sanitizer,
+        prompt_guard,
         tools,
         task_manager,
         cancel,
@@ -655,6 +776,7 @@ pub async fn bootstrap_normal(
         .with_sandbox_writable(sandbox_writable.clone())
         .with_sandbox_network(sandbox_network)
         .with_m4(m4)
+        .with_approval_context(factory.approval_context())
         .with_policy(policy)
         .with_token_budget(token_budget)
         .with_max_iterations(max_iterations)
@@ -677,6 +799,9 @@ pub async fn bootstrap_normal(
             zhuye_protocol::PermissionMode::Auto
         });
     cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    // v1.x:prompt injection guard 注入(None = 关闭;子代理 factory
+    // 自行读同一 config,这里只接主会话与 resume 路径)。
+    cfg.prompt_guard = prompt_guard.clone();
     // 侧通道复用主会话策略,避免独立执行绕过权限规则。
     let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
         zhuye_core::side_channel::SideChannelRegistry::new(),
@@ -700,6 +825,7 @@ pub async fn bootstrap_normal(
         ),
     );
     cfg = cfg.with_side_channel_driver(side_channel_driver);
+    factory.set_parent_config(cfg.clone());
     let cfg_for_reload = cfg.clone(); // 共享 model Arc<RwLock>
     // v1.10 功能2:goal 槽的共享 Arc 先取出(构造 GoalTool 用,避免
     // 工具持有 AgentThread 造成引用环)。
@@ -739,12 +865,15 @@ pub async fn bootstrap_normal(
         ToolSource::Builtin,
         Arc::new(crate::CronTool::new(cron_scheduler.clone())),
     );
-    let cron_driver = (*cron_scheduler).clone().start(30);
+    let cron_driver = (*cron_scheduler).clone().start(cron_tick_secs());
     tokio::spawn(async move {
         let _handle = cron_driver;
         std::future::pending::<()>().await;
     });
-    tracing::info!(session_id = %thread_id, "cron scheduler started (tick=30s)");
+    tracing::info!(session_id = %thread_id, tick_secs = cron_tick_secs(), "cron scheduler started");
+
+    // v1.x:Autopilot 真实调度(config.json opt-in;到期注入真实 turn)。
+    spawn_autopilot_driver(&thread);
 
     // Plan mode hooks:PlanModeGate + read_before_edit。
     thread.register_hook(PlanModeGate::default_mode());
@@ -898,6 +1027,7 @@ pub async fn bootstrap_resumed(
         registry,
         hook_engine,
         sanitizer,
+        prompt_guard,
         tools,
         task_manager: _task_manager,
         cancel,
@@ -952,6 +1082,7 @@ pub async fn bootstrap_resumed(
         .with_sandbox_writable(sandbox_writable.clone())
         .with_sandbox_network(sandbox_network)
         .with_m4(m4)
+        .with_approval_context(factory.approval_context())
         .with_policy(Arc::new(initial_cfg.routing_policy_with(&model)))
         .with_telemetry(telemetry_sink.clone())
         .with_cancel(cancel.clone())
@@ -967,7 +1098,10 @@ pub async fn bootstrap_resumed(
         .with_preload_messages(bundle.initial_messages.clone());
     // 与 normal 分支同权:权限三层装配(config > project > user)+ YOLO
     // 分类器。此前 resume 分支漏装,resume 会话会绕过权限规则。
-    let cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    let mut cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    // v1.x:prompt injection guard 注入(resume 路径与新会话一致)。
+    cfg.prompt_guard = prompt_guard.clone();
+    factory.set_parent_config(cfg.clone());
     let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
         zhuye_core::side_channel::SideChannelRegistry::new(),
         cfg.workspace.clone(),
@@ -1034,12 +1168,15 @@ pub async fn bootstrap_resumed(
             ToolSource::Builtin,
             Arc::new(crate::CronTool::new(Arc::new(scheduler.clone()))),
         );
-        let cron_driver = scheduler.start(30);
+        let cron_driver = scheduler.start(cron_tick_secs());
         tokio::spawn(async move {
             let _handle = cron_driver;
             std::future::pending::<()>().await;
         });
-        tracing::info!(session_id = %thread_id, "cron scheduler started (resume, tick=30s)");
+        tracing::info!(session_id = %thread_id, tick_secs = cron_tick_secs(), "cron scheduler started (resume)");
+
+        // v1.x:resume 路径同样接 Autopilot(与 cron 对齐)。
+        spawn_autopilot_driver(&thread);
     }
     // 0.5:Plan mode 的执行机制是 hook,不是 permission mode。normal 分支
     // 注册的 PlanModeGate / read_before_edit 在 resume 分支也要有。

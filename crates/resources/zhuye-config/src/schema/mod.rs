@@ -86,6 +86,8 @@ pub struct ReflectConfig {
     #[serde(default)]
     pub sanitize: Option<SanitizeSection>,
     #[serde(default)]
+    pub prompt_guard: Option<PromptGuardSection>,
+    #[serde(default)]
     pub ask_user_question: Option<AskUserQuestionSection>,
     #[serde(default)]
     pub model: Option<ModelSection>,
@@ -243,6 +245,7 @@ impl Default for ReflectConfig {
             subagent_providers: None,
             coordinator: None,
             sanitize: None,
+            prompt_guard: None,
             ask_user_question: None,
             model: None,
             goal: None,
@@ -548,6 +551,14 @@ pub struct SanitizeSection {
     pub marker: Option<String>,
     pub disable_default_patterns: Option<bool>,
     pub extra_patterns: Option<Vec<String>>,
+}
+
+/// v1.x:输入侧提示注入检测(`[prompt_guard]`)。默认关闭(opt-in);
+/// 开启后工具输出进入模型上下文前被扫描:`Block` 裁决拦截输出,
+/// `Review` 在 metadata 标注。env `ZHUYE_PROMPT_GUARD=1` 可压开。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PromptGuardSection {
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]

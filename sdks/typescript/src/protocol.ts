@@ -70,9 +70,14 @@ export interface UserInputItem {
 }
 
 export interface ThreadSettings {
+  /** @deprecated 服务端不读取此字段;请使用 set_effort Op。 */
   effort?: ReasoningEffort | null;
+  /** @deprecated 服务端不读取此字段;请使用 set_permission_mode Op。 */
   permission_mode?: PermissionMode | null;
   model?: string | null;
+  approval_policy?: 'auto' | 'prompt' | 'deny' | null;
+  sandbox_policy?: 'workspace_only' | 'os_sandbox' | 'full_access' | null;
+  max_tool_concurrency?: number | null;
 }
 
 // v1.10 功能4:max / ultra 为新增档位(不同模型族上限不同,由引擎按模型钳制)

@@ -13,6 +13,7 @@
 | `session` | 列会话、看内容、删、fork、跨会话搜索 |
 | `plugin` / `mcp` / `lsp` | 装扩展、接 MCP server、接语言服务器 |
 | `models` | 看当前 provider 有哪些模型可用，清单实时取自接口 |
+| `secrets` | 加密密钥存储：set(stdin)/ get / list / delete(AES-256-GCM + machine key) |
 | `discussion` / `pipeline` / `task` | 跑多 agent 讨论、DAG 流水线、任务与团队 |
 
 完整列表看 `zhuye --help`，参数看 `zhuye <命令> --help`。

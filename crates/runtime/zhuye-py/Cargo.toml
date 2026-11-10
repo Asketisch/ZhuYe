@@ -7,7 +7,7 @@ description = "ZhuYe: PyO3 Python bindings for ZhuyeBuilder + sync run API"
 
 [lib]
 name = "zhuye_py"
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 zhuye          = { workspace = true }

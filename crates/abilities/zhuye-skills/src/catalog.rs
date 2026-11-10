@@ -47,6 +47,11 @@ pub const ALWAYS_ON_TOOLS: &[&str] = &[
     "PlanWrite",
     // v1.4 D3:渐进披露第三级 —— 附属资源按需读取,常驻可见。
     "read_skill_resource",
+    // v1.5 R2:bash 后台任务的状态查询面。run_in_background 的回执让
+    // 模型「可用 background_status 查询」,不在 always_on 时
+    // pre_loop 的 curated 过滤会把它从模型工具集移除,回执承诺落空
+    // (真二进制 wire 实测暴露;引擎测试手工注册绕过了这层过滤)。
+    "background_status",
 ];
 
 /// 可用 skill 与当前激活 skill 集合的线程安全 catalog

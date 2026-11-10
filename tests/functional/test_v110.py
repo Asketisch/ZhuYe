@@ -547,7 +547,8 @@ def test_V12_wasm插件_工具与hook字段级(sandbox, mock_script) -> None:
         '{"type":"tool_call","name":"demo_echo","args":{"text":"V12-wasm-echo"}}',
         '{"type":"text","text":"V12 done"}',
     ])
-    with ServeSession(sandbox, env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
+    with ServeSession(sandbox, env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script),
+                                    "RUST_LOG": "info"}) as s:
         evs = s.submit(
             {"type": "user_input", "items": [{"type": "text", "text": "run wasm"}]},
             timeout=DRAIN_TIMEOUT,

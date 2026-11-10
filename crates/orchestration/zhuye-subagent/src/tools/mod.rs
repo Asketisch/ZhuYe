@@ -76,6 +76,11 @@ impl Tool for CallSubAgentTool {
         true
     }
 
+    fn parent_context_limit(&self, _args: &serde_json::Value) -> Option<usize> {
+        // PreToolUse hook 可以改写 context_tail,因此需在改写前准备历史。
+        None
+    }
+
     async fn execute(
         &self,
         ctx: ToolContext,
@@ -95,24 +100,24 @@ impl Tool for CallSubAgentTool {
             .get("context_tail")
             .and_then(|v| v.as_u64())
             .map_or(self.spec.data_transfer.pass_context_messages, |n| {
-                n as usize
+                usize::try_from(n).unwrap_or(usize::MAX)
             });
-        let parent_tail: Vec<zhuye_llm::ChatMessage> = if pass_n > 0 {
+        let parent_history: Vec<zhuye_llm::ChatMessage> = if pass_n > 0 {
             ctx.parent_tail_json
                 .iter()
-                .rev()
-                .take(pass_n)
-                .rev()
                 .filter_map(|v| serde_json::from_value(v.clone()).ok())
                 .collect()
         } else {
             Vec::new()
         };
-        let spawned = self
-            .factory
-            .spawn(self.spec.clone(), parent_tail, prompt.clone())
-            .await
-            .map_err(ToolError::from)?;
+        let parent_tail =
+            crate::data_transfer::select_parent_context(parent_history, &ctx.call_id, pass_n);
+        let spawned = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
+            result = self.factory.spawn(self.spec.clone(), parent_tail, prompt.clone()) =>
+                result.map_err(ToolError::from)?,
+        };
         let child_session_id = spawned.session_id.to_string();
         // v1.4 C1:进度推送 —— 把子代理的中间事件(助手文本 / 工具开始 /
         // 结束)包装为 SubagentProgress 事件经转发器发往父事件通道;
@@ -128,6 +133,16 @@ impl Tool for CallSubAgentTool {
             let tool_names: std::sync::Mutex<std::collections::HashMap<String, String>> =
                 std::sync::Mutex::new(std::collections::HashMap::new());
             move |ev: &zhuye_protocol::Event| {
+                if matches!(
+                    &ev.msg,
+                    zhuye_protocol::EventMsg::ApprovalRequest(_)
+                        | zhuye_protocol::EventMsg::AskUserQuestion(_)
+                        | zhuye_protocol::EventMsg::AskUserInput(_)
+                        | zhuye_protocol::EventMsg::PermissionBubble(_)
+                ) {
+                    fwd.forward(ev.msg.clone());
+                    return;
+                }
                 let payload = match &ev.msg {
                     zhuye_protocol::EventMsg::AgentMessage(m) => Some((
                         zhuye_protocol::SubagentProgressKind::Message,
@@ -178,15 +193,15 @@ impl Tool for CallSubAgentTool {
                 }
             }
         });
-        let result = spawned
-            .collect_result_with_progress(
+        let result = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
+            result = spawned.collect_result_with_progress(
                 progress_cb
                     .as_ref()
                     .map(|cb| cb as &(dyn Fn(&zhuye_protocol::Event) + Send + Sync)),
-            )
-            .await
-            .map_err(ToolError::from)?
-            .text;
+            ) => result.map_err(ToolError::from)?.text,
+        };
         // v1.1.0:coordinator 模式下 subagent 返回后向父协调者注入 principle footer。
         let result_text = if self.factory.is_coordinator_mode() {
             crate::data_transfer::append_coordinator_principle_footer(

@@ -30,6 +30,11 @@ pub fn register_builtin_tools(
 ) {
     tools.register(Arc::new(builtins::EchoTool));
     tools.register(Arc::new(builtins::BashTool::default()));
+    // 后台任务状态查询:bash 的 run_in_background 回执让模型「可用
+    // background_status 查询」,三条路径必须真的注册它,否则真二进制
+    // 里模型按提示调用只会拿到 tool not found(此前仅引擎测试手工
+    // 注册,遮住了这个缺口)。
+    tools.register(Arc::new(builtins::BackgroundStatusTool));
     // 核心文件工具。
     tools.register(Arc::new(builtins::ReadTool));
     tools.register(Arc::new(builtins::WriteTool));
@@ -68,7 +73,7 @@ pub fn register_builtin_tools(
 }
 
 /// 内置工具数量(清单变更时同步更新测试期望)。
-pub const BUILTIN_TOOL_COUNT: usize = 26;
+pub const BUILTIN_TOOL_COUNT: usize = 27;
 
 #[cfg(test)]
 mod tests {
@@ -106,6 +111,7 @@ mod tests {
         for expected in [
             "echo",
             "bash",
+            "background_status",
             "read",
             "write",
             "edit",

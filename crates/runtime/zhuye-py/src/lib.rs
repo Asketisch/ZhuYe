@@ -14,13 +14,13 @@
 //! ## 设计取舍
 //!
 //! - 同步 `run` 让 Python 侧一行调用,不依赖 pyo3-asyncio 异步 runtime。
-//!   内部释放 GIL (`py.allow_threads`) 后阻塞等待当前线程 tokio runtime
-//!   完成整轮 turn。
+//!   内部释放 GIL 后阻塞等待 agent 持有的 tokio runtime 完成整轮 turn。
 //! - 结果以 `RunResult` dataclass 返回:`text` / `status` / `input_tokens` /
 //!   `output_tokens` / `elapsed_ms`,覆盖 99% 一次性脚本场景。
 //! - 流式输出暂未提供 —— 这是后续扩展点;需要时建议走 pyo3-asyncio。
 //! - `SubmitError` 异常类型对应 Rust 侧 `anyhow::Error`,转字符串抛出。
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use pyo3::IntoPyObjectExt;
@@ -111,24 +111,28 @@ impl PyZhuyeBuilder {
 
     /// 构建 `Zhuye` 实例(需要 `OPENAI_API_KEY` 等 env)。
     ///
-    /// 走 `build_async` 完整装配 —— 真实 HookEngine + 插件挂载。Python 侧
-    /// 无异步上下文,与 `run` 同款:释放 GIL 后在临时 current-thread
-    /// tokio runtime 上 `block_on`。
+    /// 走 `build_async` 完整装配 —— 真实 HookEngine + 插件挂载。释放 GIL
+    /// 后创建运行时,由返回的 agent 持有,以保持后台 submission loop 运行。
     fn build<'py>(&self, py: Python<'py>) -> PyResult<PyZhuye> {
         let builder = self.inner.clone();
         // `detach` 即旧版的 `allow_threads`:释放 GIL 后执行闭包,闭包返回
         // 时重新拿回 GIL(pyo3 0.26 起 `allow_threads` 更名为 `detach`)。
         // 闭包内 tokio runtime 构造(io::Error)与 build_async(BuilderError)
         // 两类错误统一收敛到 anyhow,再转字符串抛 Python 异常。
-        let agent = py
-            .detach(move || -> anyhow::Result<zhuye::Zhuye> {
-                let rt = tokio::runtime::Builder::new_current_thread()
+        py.detach(move || -> anyhow::Result<PyZhuye> {
+            let runtime = Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
                     .enable_all()
-                    .build()?;
-                Ok(rt.block_on(builder.build_async())?)
+                    .build()?,
+            );
+            let agent = runtime.block_on(builder.build_async())?;
+            Ok(PyZhuye {
+                inner: agent,
+                runtime,
             })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(PyZhuye { inner: agent })
+        })
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 
@@ -136,6 +140,7 @@ impl PyZhuyeBuilder {
 #[pyclass(name = "Zhuye")]
 pub struct PyZhuye {
     inner: zhuye::Zhuye,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 #[pymethods]
@@ -167,10 +172,9 @@ impl PyZhuye {
     #[pyo3(signature = (prompt))]
     fn run<'py>(&self, py: Python<'py>, prompt: String) -> PyResult<Bound<'py, PyAny>> {
         let agent = self.inner.clone();
-        // 释放 GIL 跑异步 turn —— 在工作线程上 spawn 一个 current-thread
-        // tokio runtime,阻塞到 turn 终结。Python 主线程在此期间可继续
-        // 处理其他任务(若启用子线程)。
-        let result = py.detach(move || run_turn_blocking(agent, prompt));
+        let runtime = Arc::clone(&self.runtime);
+        // 释放 GIL 等待回合结束,使其他 Python 线程能继续工作。
+        let result = py.detach(move || run_turn_blocking(agent, runtime, prompt));
         match result {
             Ok(r) => PyRunResult::from(r).into_bound_py_any(py),
             Err(e) => Err(PyRuntimeError::new_err(e.to_string())),
@@ -179,16 +183,14 @@ impl PyZhuye {
 }
 
 /// 阻塞跑完整轮 turn。返回 `RunResult`。
-fn run_turn_blocking(agent: zhuye::Zhuye, prompt: String) -> anyhow::Result<RunResult> {
+fn run_turn_blocking(
+    agent: zhuye::Zhuye,
+    runtime: Arc<tokio::runtime::Runtime>,
+    prompt: String,
+) -> anyhow::Result<RunResult> {
     let started_at = Instant::now();
-    // 构造当前线程 runtime。Zhuye 内部 `submission_loop` 已是 `tokio::spawn`,
-    // 必须在某个 tokio runtime 上下文中运行;这里提供 current_thread runtime
-    // 即足够(future 链短,IO 主要走网络)。
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
     let sub = Submission::user_input(&prompt);
-    let outcome = rt.block_on(async move {
+    let outcome = runtime.block_on(async move {
         let mut stream = agent.submit(sub).await;
         drain_to_completion(&mut stream).await
     });
@@ -224,8 +226,9 @@ async fn drain_to_completion(stream: &mut EventStream) -> anyhow::Result<TurnOut
             }
             EventMsg::TurnComplete(tc) => {
                 status = turn_status_label(&tc.status).to_string();
-                input_tokens = input_tokens.saturating_add(tc.usage.input_tokens);
-                output_tokens = output_tokens.saturating_add(tc.usage.output_tokens);
+                // 终态用量已包含本轮所有模型调用,不能再累加中间事件。
+                input_tokens = tc.usage.input_tokens;
+                output_tokens = tc.usage.output_tokens;
                 hit_terminal = true;
                 break;
             }
@@ -290,8 +293,8 @@ struct RunResult {
 /// - `status`: `"success"` / `"max_iterations"` / `"stopped"` /
 ///   `"token_budget_exceeded"` / `"aborted:..."` / `"shutdown"` /
 ///   `"error:..."` / `"incomplete"`
-/// - `input_tokens` / `output_tokens`: 累计 token(来自 `TokenCount` +
-///   `TurnComplete.usage`)
+/// - `input_tokens` / `output_tokens`: 本轮累计 token(正常终态以
+///   `TurnComplete.usage` 为准)
 /// - `elapsed_ms`: 本轮总耗时(从 `submit` 到 `TurnComplete` 等终结事件)
 #[pyclass(name = "RunResult")]
 #[derive(Clone)]

@@ -75,6 +75,7 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         // `ToolResult(is_error=true)`,告知模型「该调用被循环守卫抑制」,
         // 否则孤立 tool_use 会把整个 turn 打死(400 → GiveUp)。
         for c in &calls {
+            state.invalid_tool_args.remove(&c.id);
             state
                 .messages
                 .messages
@@ -98,11 +99,16 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         return Some(GraphNode::PreLoop);
     }
     // v1.2 P1:记录 call_id → tool_name + args 映射,供 telemetry 在结果
-    // 返回后恢复工具名 / 参数(retain 会移除 ToolUse blocks)。必须持有
+    // 返回后恢复工具名 / 参数。必须持有
     // 克隆:`calls` 随后按值 move 进执行队列,结果阶段无法反查借用。
     let call_meta: std::collections::HashMap<String, (String, serde_json::Value)> = calls
         .iter()
         .map(|c| (c.id.clone(), (c.name.clone(), c.args.clone())))
+        .collect();
+    let call_order: std::collections::HashMap<String, usize> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| (call.id.clone(), index))
         .collect();
     // v1.4 C1:子代理自报告 —— 本线程若是父会话 spawn 的子代理
     // (cfg.subagent_status 为 Some),把本批工具开始写入自己的状态槽,
@@ -114,15 +120,24 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
     }
     // v1.4 C1:构造事件转发器 —— 携带 sub_id / event_tx / 父历史尾部
     // 快照,供 CallSubAgentTool 转发子代理进度(SubagentProgress)与
-    // 按 pass_context_messages 截取上下文。普通工具不读这些字段,零开销。
-    // 快照:最近 10 条消息(含本轮 assistant 工具调用),JSON 形态规避
-    // zhuye-tools → llm 反向依赖。
+    // 按每个工具的声明决定快照范围;需要完整历史的子代理可在工具内
+    // 安全选择尾部并补齐工具调用边界。普通工具仍最多读取最近 10 条。
+    let context_limit = calls
+        .iter()
+        .filter_map(|call| {
+            ctx.tools_queue
+                .registry()
+                .get(&call.name)
+                .map(|tool| tool.parent_context_limit(&call.args).unwrap_or(usize::MAX))
+        })
+        .max()
+        .unwrap_or(0);
     let parent_tail: Vec<serde_json::Value> = state
         .messages
         .messages
         .iter()
         .rev()
-        .take(10)
+        .take(context_limit)
         .rev()
         .filter_map(|m| serde_json::to_value(m).ok())
         .collect();
@@ -130,21 +145,44 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         zhuye_tools::ToolEventForwarder::new(ctx.sub_id.clone(), ctx.event_tx.clone(), parent_tail);
     // v1.5 R1:每回合沙箱覆盖透传给队列(→ ToolContext.os_sandbox)。
     forwarder.os_sandbox = ctx.sandbox_override;
+    // 队列由会话共享;取消令牌必须逐批传递,不能修改队列的会话级上下文。
+    forwarder.turn_cancel = Some(ctx.cancel.clone());
     let forwarder = Arc::new(forwarder);
-    let results = ctx
+    let mut valid_calls = Vec::new();
+    let mut results = Vec::new();
+    for call in calls {
+        if let Some(message) = state.invalid_tool_args.remove(&call.id) {
+            results.push(zhuye_tools::ToolResult {
+                call_id: call.id,
+                content: vec![ContentBlock::text(message)],
+                is_error: true,
+                elapsed_ms: 0,
+                metadata: serde_json::json!({"error": "invalid_arguments"}),
+            });
+        } else {
+            valid_calls.push(call);
+        }
+    }
+    let valid_results = ctx
         .tools_queue
-        .execute_all_with_progress(calls, ctx.approval_gate.clone(), Some(forwarder))
+        .execute_all_with_progress(valid_calls, ctx.approval_gate.clone(), Some(forwarder))
         .await;
+    results.extend(valid_results);
+    results.sort_by_key(|result| {
+        call_order
+            .get(&result.call_id)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
     // v1.4 C1:本批工具全部结束 → 清空子代理状态槽的 current_tool。
     if let Some(slot) = ctx.cfg.subagent_status.as_ref() {
         for (name, _) in call_meta.values() {
             slot.end_tool(name);
         }
     }
-    // 移除 ToolUse 块,用它们的结果替换。
-    state
-        .latest_content
-        .retain(|b| !matches!(b, ContentBlock::ToolUse { .. }));
+    // 在写入结果前归档本批模型输出,保持调用与结果在 rollout 中成对。
+    // 若只移除 ToolUse,恢复时会把孤立结果丢弃,导致重连后模型失去工具上下文。
+    state.turn_content.append(&mut state.latest_content);
     for mut r in results {
         // v1.9 C3:本 turn 工具证据计数(供中毒会话检测器在 turn 末读取)。
         state.turn_tool_calls += 1;
@@ -448,6 +486,9 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         // is_error 用于循环检测日志,避免 unused 警告。
         let _ = is_error;
         state.latest_content.push(r.into_content_block());
+    }
+    if ctx.cancel.is_cancelled() {
+        return None;
     }
     // v1.x progress-nudge:本轮所有工具执行完后,根据 web_fetch 次数 / 域名
     // 重复 / 迭代剩余注入结构化「已收集事实」+「请立即作答」提示。这是循环

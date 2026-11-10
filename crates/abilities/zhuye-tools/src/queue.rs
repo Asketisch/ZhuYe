@@ -27,6 +27,7 @@ use crate::builtins::bash::{BashCommandClass, classify_command};
 use crate::registry::ToolRegistry;
 use crate::sanitize::{Sanitizer, sanitize_output, sanitize_text};
 use crate::tool::ToolContext;
+use zhuye_sanitize::prompt_guard::PromptGuard;
 
 /// 单次工具调用的请求。由 graph 的 `model_call` 节点生成,由
 /// `ToolExecutionQueue::execute_all` 消费。
@@ -149,6 +150,12 @@ pub struct ToolExecutionQueue {
     /// 后续 clone 共享同一组编译好的正则。`Sanitizer::disabled()` 等价
     /// 「no-op pass」,无须在 queue 内部做 enabled 判断。
     sanitizer: Arc<Sanitizer>,
+    /// v1.x:输入侧提示注入检测(prompt injection guard)。`Some` 时对
+    /// 成功工具输出的文本做扫描:`Block` 裁决把输出替换为 guard 错误
+    /// (注入内容不进模型上下文),`Review` 只在 metadata 标注不改正文。
+    /// `None`(默认)= 不扫描。由 bootstrap 按 `[prompt_guard]` 配置 /
+    /// `ZHUYE_PROMPT_GUARD=1` 注入。
+    prompt_guard: Option<Arc<PromptGuard>>,
     /// 会话级 `permission_mode` 的共享句柄(同 `ApprovalGate` 持有的那份)。
     ///
     /// **为什么需要这个**:`base_ctx.permission_mode` 是值类型快照,在
@@ -184,6 +191,7 @@ impl ToolExecutionQueue {
             semaphore: Arc::new(Semaphore::new(max)),
             max_concurrency: std::sync::Mutex::new(max),
             sanitizer: Arc::new(Sanitizer::with_defaults()),
+            prompt_guard: None,
             session_permission_mode: None,
             permission_resolver: None,
         }
@@ -210,6 +218,13 @@ impl ToolExecutionQueue {
         let mut q = Self::with_defaults(registry, hook_engine, base_ctx);
         q.sanitizer = sanitizer;
         q
+    }
+
+    /// v1.x:注入 prompt injection guard(`None` = 关闭)。与
+    /// `set_session_permission_mode` 同款"构造后注入"模式,避免
+    /// `AgentThread::new` 签名继续膨胀。
+    pub fn set_prompt_guard(&mut self, guard: Option<Arc<PromptGuard>>) {
+        self.prompt_guard = guard;
     }
 
     pub fn hook_engine(&self) -> &Arc<HookEngine> {
@@ -349,7 +364,24 @@ impl ToolExecutionQueue {
         forwarder: Option<Arc<crate::tool::ToolEventForwarder>>,
     ) -> ToolResult {
         // 限制并发数。
-        let _permit = match self.semaphore.acquire().await {
+        let permit = if let Some(cancel) = forwarder.as_ref().and_then(|f| f.turn_cancel.as_ref()) {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    return ToolResult {
+                        call_id: call.id,
+                        content: vec![ContentBlock::text("tool call cancelled")],
+                        is_error: true,
+                        elapsed_ms: 0,
+                        metadata: serde_json::json!({"error": "cancelled"}),
+                    };
+                }
+                permit = self.semaphore.acquire() => permit,
+            }
+        } else {
+            self.semaphore.acquire().await
+        };
+        let _permit = match permit {
             Ok(p) => p,
             Err(_) => {
                 return ToolResult {
@@ -382,10 +414,22 @@ impl ToolExecutionQueue {
         // v1.4 C1:注入事件转发器(子代理进度等自定义事件)+ 父历史尾部
         // 快照快照(CallSubAgentTool 按需截取)。
         if let Some(fwd) = forwarder.as_ref() {
-            ctx.event_forwarder = Some(fwd.clone());
+            let limit = tool.parent_context_limit(&call.args);
+            let history = match limit {
+                Some(n) if n < fwd.parent_tail_json.len() => {
+                    Arc::new(fwd.parent_tail_json[fwd.parent_tail_json.len() - n..].to_vec())
+                }
+                _ => Arc::clone(&fwd.parent_tail_json),
+            };
+            // 转发器也暴露历史字段,必须对两条访问路径使用相同限制。
+            let mut per_tool = (**fwd).clone();
+            per_tool.parent_tail_json = Arc::clone(&history);
+            ctx.event_forwarder = Some(Arc::new(per_tool));
             ctx.os_sandbox = fwd.os_sandbox;
-            // 快照每批冻结一次,Arc 共享给本批全部调用 —— 不逐调用深拷贝。
-            ctx.parent_tail_json = Arc::clone(&fwd.parent_tail_json);
+            if let Some(cancel) = &fwd.turn_cancel {
+                ctx.cancel = cancel.clone();
+            }
+            ctx.parent_tail_json = history;
         }
         // v1.4 A3:注入进度转发闭包(见 `execute_all_with_progress` 文档):
         // 工具逐段上报的输出 → `ToolCallOutputDelta` 事件。try_send 满则
@@ -689,6 +733,93 @@ impl ToolExecutionQueue {
                 // `Err(_)` 分支(行 434-486)时跳过 sanitize —— 那里合成
                 // 的错误模板文本不含真实工具数据。
                 sanitize_output(&mut output, &self.sanitizer);
+                // v1.x:输入侧提示注入检测(在脱敏后、PostToolUse 前)。
+                // `Block` → 整条输出替换为 guard 错误(注入指令不进模型
+                // 上下文,PostToolUse 也只见替换后版本);`Review` → 正文
+                // 原样保留,metadata 标注 verdict / 规则码 / 指纹供审计
+                // 与上层裁决;`Allow` → 不做任何改动。
+                if let Some(guard) = self.prompt_guard.as_ref() {
+                    let scan_text = output
+                        .content
+                        .iter()
+                        .map(|c| match c {
+                            ContentBlock::Text { text } => text.as_str(),
+                            _ => "",
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let report = guard.scan(&scan_text);
+                    match report.verdict {
+                        zhuye_sanitize::prompt_guard::Verdict::Allow => {}
+                        zhuye_sanitize::prompt_guard::Verdict::Review => {
+                            tracing::warn!(
+                                tool = %call.name,
+                                codes = ?report.findings.iter().map(|f| &f.code).collect::<Vec<_>>(),
+                                fingerprint = %report.fingerprint_sha256,
+                                "prompt_guard: tool output flagged for review"
+                            );
+                            let guard_meta = serde_json::json!({
+                                "verdict": "review",
+                                "codes": report.findings.iter().map(|f| f.code.clone()).collect::<Vec<_>>(),
+                                "fingerprint_sha256": report.fingerprint_sha256,
+                            });
+                            match output.metadata.as_object_mut() {
+                                Some(obj) => {
+                                    obj.insert("prompt_guard".into(), guard_meta);
+                                }
+                                None => {
+                                    output.metadata =
+                                        serde_json::json!({ "prompt_guard": guard_meta });
+                                }
+                            }
+                        }
+                        zhuye_sanitize::prompt_guard::Verdict::Block => {
+                            let codes: Vec<String> = report
+                                .findings
+                                .iter()
+                                .map(|f| f.code.clone())
+                                .collect::<Vec<_>>();
+                            tracing::warn!(
+                                tool = %call.name,
+                                codes = ?codes,
+                                fingerprint = %report.fingerprint_sha256,
+                                "prompt_guard: tool output blocked"
+                            );
+                            let blocked = ToolOutput {
+                                content: vec![ContentBlock::text(format!(
+                                    "[prompt injection guard] 工具输出被拦截(规则: {})。原内容未进入模型上下文。",
+                                    codes.join(", ")
+                                ))],
+                                is_error: true,
+                                metadata: serde_json::json!({
+                                    "prompt_guard": {
+                                        "verdict": "block",
+                                        "codes": codes,
+                                        "fingerprint_sha256": report.fingerprint_sha256,
+                                        "input_bytes": report.input_bytes,
+                                    }
+                                }),
+                                elapsed_ms: output.elapsed_ms,
+                            };
+                            let blocked_clone = blocked.clone();
+                            let _ = self
+                                .hook_engine
+                                .dispatch(&HookEvent::PostToolUse {
+                                    tool: call.name.clone(),
+                                    result: blocked_clone,
+                                    elapsed_ms,
+                                })
+                                .await;
+                            return ToolResult {
+                                call_id: call.id,
+                                content: blocked.content,
+                                is_error: true,
+                                elapsed_ms,
+                                metadata: blocked.metadata,
+                            };
+                        }
+                    }
+                }
                 // v1.9 C1/C2:登记成功输出指纹(进度证据)。
                 let success_text = output
                     .content
@@ -880,6 +1011,83 @@ mod tests {
         let q = ToolExecutionQueue::with_defaults(reg, engine, ctx());
         let out = q.execute_all(vec![]).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn 同批工具的父上下文访问范围互不扩大() {
+        struct ContextTool {
+            name: &'static str,
+            full: bool,
+        }
+        #[async_trait]
+        impl Tool for ContextTool {
+            fn name(&self) -> &str {
+                self.name
+            }
+            fn description(&self) -> &str {
+                "上下文范围测试"
+            }
+            fn parameters_schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn is_concurrency_safe(&self) -> bool {
+                true
+            }
+            fn parent_context_limit(&self, _args: &Value) -> Option<usize> {
+                if self.full { None } else { Some(10) }
+            }
+            async fn execute(
+                &self,
+                ctx: ToolContext,
+                _args: Value,
+            ) -> Result<ToolOutput, ToolError> {
+                Ok(ToolOutput {
+                    content: vec![],
+                    is_error: false,
+                    elapsed_ms: 0,
+                    metadata: serde_json::json!({
+                        "context": ctx.parent_tail_json.as_ref(),
+                        "forwarder": ctx.event_forwarder.unwrap().parent_tail_json.as_ref(),
+                    }),
+                })
+            }
+        }
+        let reg = Arc::new(ToolRegistry::default());
+        reg.register(Arc::new(ContextTool {
+            name: "limited",
+            full: false,
+        }));
+        reg.register_runtime_tool(Arc::new(ContextTool {
+            name: "full",
+            full: true,
+        }));
+        let q = ToolExecutionQueue::with_defaults(reg, Arc::new(HookEngine::new()), ctx());
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let history = (0..25).map(|n| serde_json::json!(n)).collect();
+        let forwarder = Arc::new(crate::tool::ToolEventForwarder::new("sub", tx, history));
+        let calls = vec![
+            ToolCallRequest {
+                id: "a".into(),
+                name: "limited".into(),
+                args: serde_json::json!({}),
+            },
+            ToolCallRequest {
+                id: "b".into(),
+                name: "full".into(),
+                args: serde_json::json!({}),
+            },
+        ];
+        let out = q
+            .execute_all_with_progress(calls, None, Some(forwarder))
+            .await;
+        let limited = out[0].metadata["context"].as_array().unwrap();
+        let full = out[1].metadata["context"].as_array().unwrap();
+        assert_eq!(limited.len(), 10);
+        assert_eq!(limited[0], 15);
+        assert_eq!(full.len(), 25);
+        assert_eq!(full[0], 0);
+        assert_eq!(out[0].metadata["forwarder"], out[0].metadata["context"]);
+        assert_eq!(out[1].metadata["forwarder"], out[1].metadata["context"]);
     }
 
     #[tokio::test]

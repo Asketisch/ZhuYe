@@ -306,6 +306,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn 队列按回合取消远程工具且不影响其他回合() {
+        use crate::queue::{ToolCallRequest, ToolExecutionQueue};
+        use crate::registry::ToolRegistry;
+        use crate::tool::ToolEventForwarder;
+        use zhuye_hooks::HookEngine;
+
+        let (bridge, mut requests) = RemoteBridge::new(8);
+        let registry = Arc::new(ToolRegistry::default());
+        registry.register(Arc::new(RemoteTool::new(
+            RemoteToolSpec {
+                name: "remote".into(),
+                description: "测试".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+            bridge.clone(),
+            Duration::from_secs(30),
+        )));
+        let base = ToolContext::for_workspace(".");
+        let session_cancel = base.cancel.clone();
+        let queue = Arc::new(ToolExecutionQueue::new(
+            registry,
+            Arc::new(HookEngine::new()),
+            base,
+            2,
+        ));
+        let (events, _rx) = mpsc::channel(8);
+        let cancelled = CancellationToken::new();
+        let other = CancellationToken::new();
+        let spawn_call = |round: &'static str, token: CancellationToken| {
+            let queue = queue.clone();
+            let mut forwarder = ToolEventForwarder::new(round, events.clone(), vec![]);
+            forwarder.turn_cancel = Some(token);
+            tokio::spawn(async move {
+                queue
+                    .execute_all_with_progress(
+                        vec![ToolCallRequest {
+                            id: round.into(),
+                            name: "remote".into(),
+                            args: serde_json::json!({"round":round}),
+                        }],
+                        None,
+                        Some(Arc::new(forwarder)),
+                    )
+                    .await
+            })
+        };
+        let first = spawn_call("first", cancelled.clone());
+        let second = spawn_call("second", other.clone());
+        let a = tokio::time::timeout(Duration::from_secs(5), next_request(&mut requests))
+            .await
+            .unwrap();
+        let b = tokio::time::timeout(Duration::from_secs(5), next_request(&mut requests))
+            .await
+            .unwrap();
+        let (first_req, second_req) = if a.args["round"] == "first" {
+            (a, b)
+        } else {
+            (b, a)
+        };
+
+        cancelled.cancel();
+        let first_result = tokio::time::timeout(Duration::from_secs(5), first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first_result[0].is_error);
+        assert!(
+            !bridge.complete(&first_req.call_id, 空_output()),
+            "取消后必须移除旧等待者"
+        );
+        assert!(!session_cancel.is_cancelled() && !other.is_cancelled());
+        assert!(!second.is_finished(), "取消一个回合不能结束另一个回合");
+        assert!(bridge.complete(&second_req.call_id, 空_output()));
+        let second_result = tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!second_result[0].is_error);
+
+        // 并发槽已占满时,排队中的回合也必须能被取消。
+        queue.set_max_concurrency(1);
+        let third = spawn_call("third", CancellationToken::new());
+        let third_req = tokio::time::timeout(Duration::from_secs(5), next_request(&mut requests))
+            .await
+            .unwrap();
+        let queued_cancel = CancellationToken::new();
+        let queued = spawn_call("queued", queued_cancel.clone());
+        queued_cancel.cancel();
+        let queued_result = tokio::time::timeout(Duration::from_secs(5), queued)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(queued_result[0].is_error);
+        assert!(
+            requests.try_recv().is_err(),
+            "取消的排队调用不得发起远程请求"
+        );
+        assert!(bridge.complete(&third_req.call_id, 空_output()));
+        assert!(!third.await.unwrap()[0].is_error);
+    }
+
+    #[tokio::test]
     async fn remote_tool_失败包装为_is_error_输出() {
         let (bridge, mut rx) = RemoteBridge::new(8);
         let tool = RemoteTool::new(

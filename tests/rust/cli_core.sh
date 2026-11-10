@@ -24,10 +24,10 @@ cli_core_info() {
     tcase "update 打印升级说明" "$ZHUYE_BIN" update
     tcase "doctor 干净配置下退出 0" "$ZHUYE_BIN" doctor
 
-    # --help 应列出全部 17 个子命令(防意外删改命令)
+    # --help 应列出全部 18 个子命令(防意外删改命令)
     "$ZHUYE_BIN" --help > help.txt 2>&1
     local sub
-    for sub in exec serve discussion login mcp config session traces doctor \
+    for sub in exec serve discussion login mcp config session traces secrets doctor \
         plugin lsp task pipeline security workspace update version; do
         tcase "--help 含子命令 $sub" grep -qE "^  $sub" help.txt
     done
@@ -227,8 +227,19 @@ cli_core_serve() {
 
     # 6a. 握手 + 单轮
     echo '{"id":"t1","op":{"type":"user_input","items":[{"type":"text","text":"hi"}]}}' >&3
-    # 6b. interrupt 打断当前 turn
+    # 等首轮终态后测试空闲 interrupt,避免 shutdown 与在飞回合收尾竞争。
+    local deadline=$((SECONDS + 15))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        grep -q '"turn_complete"' "$OUT" 2>/dev/null && break
+        sleep 0.2
+    done
+    # 6b. 空闲时 interrupt 应给出回执
     echo '{"id":"i1","op":{"type":"interrupt"}}' >&3
+    deadline=$((SECONDS + 15))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        grep -q '"turn_aborted"' "$OUT" 2>/dev/null && break
+        sleep 0.2
+    done
     # 6c. 优雅退出
     echo '{"id":"bye","op":{"type":"shutdown"}}' >&3
     exec 3>&-
@@ -236,8 +247,10 @@ cli_core_serve() {
     tcase "serve 处理 interrupt+shutdown 后退出 0" test $? -eq 0
     tcase "serve 握手 session_configured" \
         jq -e 'select(.msg.type=="session_configured")' "$OUT"
+    tcase "serve 首轮正常完成" \
+        jq -e 'select(.id=="t1" and .msg.type=="turn_complete" and .msg.status=="success")' "$OUT"
     tcase "serve interrupt 触发 turn_aborted" \
-        jq -e 'select(.msg.type=="turn_aborted")' "$OUT"
+        jq -e 'select(.id=="i1" and .msg.type=="turn_aborted")' "$OUT"
     tcase "serve shutdown_complete 收尾" \
         jq -e 'select(.msg.type=="shutdown_complete")' "$OUT"
 
@@ -256,7 +269,8 @@ cli_core_serve() {
     echo '{"id":"t1","op":{"type":"user_input","items":[{"type":"text","text":"调工具"}]}}' >&4
 
     # 轮询等远程工具请求(最长 15s),读到 call_id 后回执
-    local deadline=$((SECONDS + 15)) call_id=""
+    local call_id=""
+    deadline=$((SECONDS + 15))
     while [ $SECONDS -lt $deadline ]; do
         if grep -q '"tool_execution_request"' "$OUT2" 2>/dev/null; then
             call_id=$(jq -r 'select(.msg.type=="tool_execution_request") | .msg.call_id' "$OUT2" | head -1)

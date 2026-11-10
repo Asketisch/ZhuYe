@@ -17,6 +17,7 @@ zhuye-permissions = { workspace = true }
 # v1.2 P0-1:`OsSandbox`(macOS Seatbelt / Linux Landlock)给 `BashTool`
 # 提供真实 OS 沙箱。`zhuye-sandbox` 不反向依赖 `zhuye-tools`,无环。
 zhuye-sandbox    = { workspace = true }
+zhuye-sanitize  = { workspace = true }
 # WP8:checkpoint 原语下沉至 zhuye-git(git 能力族统一家);zhuye-git 只
 # 依赖 serde/tokio,不反向依赖 tools,无环。
 zhuye-git         = { workspace = true }

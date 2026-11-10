@@ -93,6 +93,9 @@ impl AgentThread {
             }
             None => ToolExecutionQueue::with_defaults(tools.clone(), hook_engine, base_ctx),
         };
+        // v1.x:prompt injection guard([prompt_guard] 配置 / env opt-in)。
+        // `None` = 关闭,queue 内部零开销。
+        tools_queue.set_prompt_guard(cfg.prompt_guard.clone());
         // 注入会话级 permission_mode 共享句柄,让 PreToolUse hook(PlanModeGate)
         // 能读到运行时 `/mode` 切换后的实时模式。与 `ApprovalGate` 持有的句柄
         // 同源(cfg.permission_mode),保证 hook 与 gate 决策一致。

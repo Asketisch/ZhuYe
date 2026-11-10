@@ -25,6 +25,8 @@ import pytest
 
 from wire import (
     DRAIN_TIMEOUT,
+    first_event,
+    msg_types,
     require_binary,
     rollout_files,
     rollout_records,
@@ -529,6 +531,57 @@ def test_P12_cron表达式边界值(serve_session, mock_script) -> None:
     assert len(jobs) == 1 and jobs[0]["schedule"] == "1/2147483647 * * * *", jobs
 
 
+def test_P14_cron到期注入真实回合(serve_session, mock_script, sandbox) -> None:
+    """启用 tick=1 后,cron 到期会把 prompt 注入一条新的 submission。"""
+    import datetime as dt
+
+    script = mock_script([
+        '{"type":"tool_call","name":"cron","args":{"action":"create",'
+        '"schedule":"* * * * *","prompt":"定时触发的提示"}}',
+        '{"type":"text","text":"scheduled"}',
+    ])
+    env = {
+        "ZHUYE_MODEL": "mock",
+        "ZHUYE_MOCK_SCRIPT": str(script),
+        "ZHUYE_CRON_TICK_SECS": "1",
+    }
+    with serve_session(env=env) as session:
+        created_id = session.send({"type": "user_input", "items": [
+            {"type": "text", "text": "创建每分钟任务"}
+        ]})
+        events = session.collect(created_id, timeout=30)
+        end = next(e["msg"] for e in events if e["msg"]["type"] == "tool_call_end")
+        assert end["is_error"] is False, end
+        next_fire = dt.datetime.fromisoformat(
+            end["output"]["metadata"]["next_fire"].replace("Z", "+00:00")
+        )
+        delay = max(0.0, (next_fire - dt.datetime.now(dt.timezone.utc)).total_seconds())
+        deadline = time.monotonic() + delay + 10
+        cron_started = None
+        while time.monotonic() < deadline:
+            all_events = session.all_events()
+            cron_started = next((
+                e for e in all_events
+                if e["id"] != created_id and e["msg"].get("type") == "turn_started"
+            ), None)
+            if cron_started is not None:
+                break
+            time.sleep(0.1)
+        thread_id_for_debug = rollout_thread_id(sandbox.home)
+        store_for_debug = sandbox.home / ".zhuye" / "cron" / f"{thread_id_for_debug}.json"
+        assert cron_started is not None, {"events": session.all_events(), "store": store_for_debug.read_text()}
+        cron_id = cron_started["id"]
+        cron_result = session.collect(cron_id, timeout=30)
+        assert first_event(cron_result, "turn_started") is not None, cron_result
+        assert first_event(cron_result, "agent_message_delta") is not None, cron_result
+        assert first_event(cron_result, "turn_complete")["msg"]["status"] == "success", cron_result
+        thread_id = rollout_thread_id(sandbox.home)
+        store = sandbox.home / ".zhuye" / "cron" / f"{thread_id}.json"
+        job = json.loads(store.read_text())[0]
+        assert job["prompt"] == "定时触发的提示", job
+        assert job["last_fired"] and job["next_fire"] > job["last_fired"], job
+
+
 def test_P13_会话按数据目录隔离并恢复(serve_session, mock_script, sandbox) -> None:
     """不同 ZHUYE_HOME 不共享会话，恢复会续写原来的目录和文件。"""
     require_binary()
@@ -576,3 +629,64 @@ def test_P14_trace随数据目录隔离(serve_session, mock_script, sandbox) -> 
     result = run_cli(sandbox, "traces", "ls", env={"ZHUYE_HOME": str(data)})
     assert result.returncode == 0 and "mock" in result.stdout, result.stderr + result.stdout
     assert not (sandbox.home / ".zhuye/traces").exists()
+
+
+def test_P15_autopilot到期注入真实回合(serve_session, mock_script, sandbox) -> None:
+    """`~/.zhuye/autopilot/config.json` opt-in → 到期注入真实 turn,
+    历史记录落盘并回填 success;warmup turn 与 autopilot turn 共存。"""
+    require_binary()
+    import uuid
+
+    ap_dir = sandbox.home / ".zhuye" / "autopilot"
+    ap_dir.mkdir(parents=True)
+    config_path = ap_dir / "config.json"
+    # camelCase 序列化口径(与 zhuye-stream AutopilotConfig 一致)。
+    config_path.write_text(json.dumps({
+        "enabled": True,
+        "schedule": "* * * * *",
+        "taskTemplate": "autopilot-task-template-p15",
+        "maxConcurrent": 1,
+    }))
+    # 首次到期以 config mtime 为起点:把 mtime 拨回 3 分钟前,让
+    # 「下一分钟边界」已过 → 首个 tick(1s)即触发,不用等真实整分。
+    past = time.time() - 180
+    os.utime(config_path, (past, past))
+
+    script = mock_script([
+        '{"type":"text","text":"warmup"}',
+        '{"type":"text","text":"autopilot-ack-42"}',
+        '{"type":"text","text":"autopilot-ack-42"}',
+    ])
+    env = sandbox.mock_env(script)
+    env["ZHUYE_AUTOPILOT_TICK_SECS"] = "1"
+    with serve_session(env=env) as session:
+        session.submit({"type": "user_input", "items": [{"type": "text", "text": "warmup 一轮"}]}, timeout=DRAIN_TIMEOUT)
+        # 等 autopilot turn 出现:all_events 里出现第二个 turn_complete
+        # (driver tick 1s + turn 执行,余量充足)。
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if msg_types(session.all_events()).count("turn_complete") >= 2:
+                break
+            time.sleep(0.1)
+        all_types = msg_types(session.all_events())
+
+    assert all_types.count("turn_complete") >= 2, all_types
+    # mock 走 delta 路径:聚合全部 agent_message_delta 再找标记。
+    full_text = "".join(
+        ev["msg"].get("delta", "")
+        for ev in session.all_events()
+        if ev["msg"].get("type") == "agent_message_delta"
+    )
+    assert "autopilot-ack-42" in full_text, full_text[:300]
+    assert "autopilot-task-template-p15" not in full_text, "模板不应作为回复出现"
+
+    # 历史落盘:恰好一条运行记录,终态 success。
+    history_path = ap_dir / "history.json"
+    assert history_path.exists(), "history.json 未落盘"
+    history = json.loads(history_path.read_text())
+    assert len(history) == 1, history
+    run = history[0]
+    assert run["status"] == "success", run
+    assert run["id"], run
+    assert isinstance(run["executedAtMs"], int) and run["executedAtMs"] > 0, run
+    uuid.UUID(run["id"])

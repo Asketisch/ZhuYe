@@ -1,4 +1,4 @@
-"""能力覆盖层 · CLI 能力面:子命令的**行为**断言(参数矩阵仍在 tests/rust/*.sh)。
+"""能力覆盖层 · CLI 能力面与深度参数面(全 17 子命令)。
 
 覆盖:
 - C1 `serve` 的三个恢复入口(参数被接受 / 非法 id 报错明确);
@@ -7,6 +7,9 @@
 - C4 `doctor` / `version` 的输出契约;
 - C5 `session search` 跨会话全文搜索(命中 / 未命中 / `--json` 字段);
 - C6 `exec` 的退出码映射(成功 0 / turn 失败 1 / plan mode 未产出计划 122)。
+- C10–C18 全子命令深度参数面(原 tests/rust/cli_deep.sh 194 断言迁入):
+  login / config / mcp / session 双 ID / traces / task+team / plugin
+  marketplace / workspace+update+doctor+lsp+security / pipeline+discussion。
 
 运行:tests/run_all.sh functional,或
   ZHUYE_BIN=... python3 -m pytest tests/functional/test_cli.py -v
@@ -376,3 +379,509 @@ def test_C9_插件随数据目录隔离(sandbox, serve_session, mock_script) -> 
         if marker.exists():
             assert marker.read_text() == "ran"
             marker.unlink()
+
+
+# ══ CLI 参数面迁移(原 tests/rust/cli_deep.sh 194 断言)══
+
+
+def _write_fake_session(base, thread_id: str, internal_id: str) -> None:
+    """在 rollout 目录树写一个最小 2 行 session fixture(可控 UUID)。"""
+    d = base / "2026" / "08" / "01"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{thread_id}.jsonl").write_text(
+        json.dumps({"type": "session_meta", "session_id": internal_id,
+                    "model": "mock/mock-1", "started_at": "2026-08-01T00:00:00Z",
+                    "message_count": 1}) + "\n"
+        + json.dumps({"type": "message", "role": "user", "content": "fake session body"}) + "\n"
+    )
+
+
+def _real_session_ids(sandbox):
+    """mock exec 一次后,返回 (thread 文件名 id, 内部 session_id)。"""
+    files = sorted((sandbox.home / ".zhuye" / "sessions").rglob("*.jsonl"))
+    assert files, "exec 未产生 session 文件"
+    thread = files[0].stem
+    internal = json.loads(files[0].read_text().splitlines()[0])["session_id"]
+    return thread, internal
+
+
+def test_C10_login四provider与脱敏(sandbox) -> None:
+    """login 四 provider / 缺 key 报错 / 短 key 告警与 --force。"""
+    require_binary()
+    p = run_cli(sandbox, "login", "--provider", "anthropic", "--api-key", "sk-ant-test-12345678")
+    assert p.returncode == 0, p.stderr
+    assert "Config saved to" in p.stdout
+    assert "[anthropic]" in run_cli(sandbox, "config", "show").stdout
+
+    p = run_cli(sandbox, "login", "--provider", "openai", "--api-key", "sk-oai-test-12345678")
+    assert p.returncode == 0, p.stderr
+    # api_key 脱敏(短 key 覆写之前检查)。
+    show = run_cli(sandbox, "config", "show")
+    assert "sk-oai-test-12345678" not in show.stdout, show.stdout[:300]
+    revealed = run_cli(sandbox, "config", "show", "--reveal")
+    assert "sk-oai-test-12345678" in revealed.stdout
+
+    for provider, key in (("ollama", "ollama-local-key-123"), ("local", "ollama-local-key-456")):
+        p = run_cli(sandbox, "login", "--provider", provider, "--api-key", key)
+        assert p.returncode == 0, f"{provider}: {p.stderr}"
+
+    p = run_cli(sandbox, "login", "--provider", "openai", input_text="")
+    assert p.returncode != 0, p.stdout
+    assert "api_key" in p.stdout + p.stderr
+
+    p = run_cli(sandbox, "login", "--provider", "openai", "--api-key", "sk-x")
+    assert p.returncode == 0, p.stderr
+    assert "very short" in p.stdout + p.stderr
+    p = run_cli(sandbox, "login", "--provider", "openai", "--api-key", "sk-x", "--force")
+    assert p.returncode == 0, p.stderr
+    assert "very short" not in p.stdout + p.stderr
+
+
+def test_C11_config_set_unset_ls(sandbox) -> None:
+    """config set / ls / 非法 key / unset / show 输出契约。"""
+    require_binary()
+    p = run_cli(sandbox, "config", "set", "anthropic.model", "claude-x-test")
+    assert p.returncode == 0, p.stderr
+    assert "set anthropic.model = claude-x-test" in p.stdout
+
+    ls = run_cli(sandbox, "config", "ls")
+    assert "claude-x-test" in ls.stdout
+    assert "<unset>" in ls.stdout
+
+    p = run_cli(sandbox, "config", "set", "not.a.real.key", "1")
+    assert p.returncode != 0
+    assert "allowed keys" in p.stdout + p.stderr
+    assert "anthropic.model" in p.stdout + p.stderr
+
+    p = run_cli(sandbox, "config", "unset", "anthropic.model")
+    assert p.returncode == 0, p.stderr
+    ls = run_cli(sandbox, "config", "ls")
+    model_line = next(line for line in ls.stdout.splitlines() if "anthropic.model" in line)
+    assert "<unset>" in model_line, model_line
+
+    show = run_cli(sandbox, "config", "show")
+    assert "ReflectConfig @" in show.stdout
+
+
+def test_C12_mcp双传输与registry(sandbox) -> None:
+    """mcp add(stdio+http)/ 互斥 / ls / show / test / remove / registry。"""
+    from wire import MOCK_MCP
+
+    require_binary()
+    if not MOCK_MCP.is_file():
+        pytest.skip("mock_mcp_server 未构建(cargo build -p zhuye-mcp)")
+
+    p = run_cli(sandbox, "mcp", "add", "fsx", "--command", str(MOCK_MCP))
+    assert p.returncode == 0, p.stderr
+    assert "added server 'fsx'" in p.stdout
+    p = run_cli(sandbox, "mcp", "add", "http1", "--url", "https://example.com/mcp",
+                "--header", "Authorization: Bearer x")
+    assert p.returncode == 0, p.stderr
+    p = run_cli(sandbox, "mcp", "add", "both1", "--command", "x", "--url", "https://e.com")
+    assert p.returncode == 2, p.returncode
+    assert "cannot be used with" in p.stdout + p.stderr
+
+    ls = run_cli(sandbox, "mcp", "ls").stdout
+    assert "fsx" in ls and "http1" in ls and "stdio" in ls
+
+    show = run_cli(sandbox, "mcp", "show", "fsx").stdout
+    assert 'type = "stdio"' in show and "command" in show
+    show = run_cli(sandbox, "mcp", "show", "http1").stdout
+    assert "example.com/mcp" in show
+    p = run_cli(sandbox, "mcp", "show", "missing")
+    assert p.returncode != 0 and "not in config" in p.stdout + p.stderr
+
+    p = run_cli(sandbox, "mcp", "test", "fsx")
+    assert p.returncode == 0, p.stderr
+    assert "mcp__fsx__echo" in p.stdout and "mcp__fsx__slow" in p.stdout
+    run_cli(sandbox, "mcp", "add", "bad", "--command", "/nonexistent/zhuye-mcp-bad")
+    p = run_cli(sandbox, "mcp", "test", "bad")
+    assert p.returncode != 0
+    assert "failed to start" in p.stdout + p.stderr
+
+    p = run_cli(sandbox, "mcp", "remove", "fsx")
+    assert p.returncode == 0 and "removed server 'fsx'" in p.stdout
+    assert run_cli(sandbox, "mcp", "show", "fsx").returncode != 0
+
+    ls = run_cli(sandbox, "mcp", "registry", "ls")
+    assert ls.returncode == 0, ls.stderr
+    for rid in ("filesystem", "github", "postgres"):
+        assert rid in ls.stdout, ls.stdout[:300]
+    assert run_cli(sandbox, "mcp", "registry", "show", "fetch").returncode == 0
+    p = run_cli(sandbox, "mcp", "registry", "show", "google-search")
+    assert p.returncode != 0 and "unknown registry id" in p.stdout + p.stderr
+
+
+def test_C13_session双ID前缀与生命周期(sandbox, serve_session, mock_script) -> None:
+    """双 ID 前缀解析回归 + ls 过滤 / rename / export / fork / rm。"""
+    require_binary()
+    script = mock_script(['{"type":"text","text":"hello"}'])
+    p = run_cli(sandbox, "exec", "hello", env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)})
+    assert p.returncode == 0, p.stderr
+    thread, internal = _real_session_ids(sandbox)
+    base = sandbox.home / ".zhuye" / "sessions"
+
+    # 双 ID 前缀解析(产品修复回归)。
+    p = run_cli(sandbox, "session", "show", thread[:8])
+    assert p.returncode == 0, p.stderr
+    assert "Path:" in p.stdout and f"{thread}.jsonl" in p.stdout
+    p = run_cli(sandbox, "session", "show", internal[:8])
+    assert p.returncode == 0 and "Path:" in p.stdout, p.stderr
+    assert run_cli(sandbox, "session", "show", internal[:12]).returncode == 0
+    assert run_cli(sandbox, "session", "show", internal).returncode == 0
+    assert run_cli(sandbox, "session", "show", thread).returncode == 0
+    p = run_cli(sandbox, "session", "show", "zz")
+    assert "no session matches prefix" in p.stdout + p.stderr
+
+    # 受控 fixture:8 位前缀歧义。
+    _write_fake_session(base, "11111111-0000-4000-8000-000000000001", "11111111-0000-4000-8000-000000000001")
+    _write_fake_session(base, "11111111-0000-4000-8000-000000000002", "11111111-0000-4000-8000-000000000002")
+    p = run_cli(sandbox, "session", "show", "1111")
+    assert p.returncode != 0
+    assert "matches 2 sessions" in p.stdout + p.stderr
+    assert run_cli(sandbox, "session", "show", "11111111-0000-4000-8000-000000000001").returncode == 0
+
+    # 受控 fixture:文件名 id ≠ 内部 id(双 ID 兜底)。
+    _write_fake_session(base, "22222222-0000-4000-8000-000000000001", "44444444-0000-4000-8000-000000000001")
+    assert run_cli(sandbox, "session", "show", "44444444").returncode == 0
+    p = run_cli(sandbox, "session", "show", "22222222")
+    assert p.returncode == 0, p.stderr
+    assert "22222222-0000-4000-8000-000000000001.jsonl" in p.stdout
+
+    # 生命周期。
+    ls = run_cli(sandbox, "session", "ls").stdout
+    assert internal in ls and "11111111-0000-4000-8000-000000000001" in ls
+    ls = run_cli(sandbox, "session", "ls", "--model", "mock").stdout
+    assert internal in ls
+    ls = run_cli(sandbox, "session", "ls", "--model", "no-such-model").stdout
+    assert "(no sessions found" in ls
+    ls = run_cli(sandbox, "session", "ls", "--limit", "2").stdout
+    # grep -c 语义:按「匹配行数」计,不按出现次数。
+    import re as _re
+    matched_lines = [line for line in ls.splitlines() if _re.search(r"  \d", line)]
+    assert len(matched_lines) <= 3, ls
+
+    p = run_cli(sandbox, "session", "rename", internal[:8], "mytest-name")
+    assert p.returncode == 0 and "Renamed session" in p.stdout, p.stderr
+    p = run_cli(sandbox, "session", "show", internal[:8])
+    assert "Title:   mytest-name" in p.stdout
+
+    p = run_cli(sandbox, "session", "export", internal)
+    assert p.returncode == 0 and "# ZhuYe session" in p.stdout
+    out_md = sandbox.cwd / "c13-export.md"
+    run_cli(sandbox, "session", "export", internal, "--out", str(out_md))
+    assert out_md.stat().st_size > 0
+
+    p = run_cli(sandbox, "session", "fork", internal, "--branch", "b1")
+    assert p.returncode == 0 and "Forked session" in p.stdout, p.stderr
+
+    victim = base / "2026" / "08" / "01" / "11111111-0000-4000-8000-000000000001.jsonl"
+    vid = "11111111-0000-4000-8000-000000000001"
+    p = run_cli(sandbox, "session", "rm", vid, input_text="n")
+    assert victim.exists() and "aborted" in p.stdout + p.stderr
+    p = run_cli(sandbox, "session", "rm", vid, "--yes")
+    assert p.returncode == 0, p.stderr
+    assert not victim.exists()
+    assert run_cli(sandbox, "session", "show", vid).returncode != 0
+
+
+def test_C14_traces_show与ls(sandbox, mock_script) -> None:
+    """traces 落盘 / show 前缀(Calls/model/usage/request)/ ls / 错误路径。"""
+    require_binary()
+    script = mock_script(['{"type":"text","text":"trace-me"}'])
+    p = run_cli(sandbox, "exec", "trace-me", env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)})
+    assert p.returncode == 0, p.stderr
+
+    traces_dir = sandbox.home / ".zhuye" / "traces" / "model-io"
+    files = sorted(traces_dir.glob("*.jsonl")) if traces_dir.exists() else []
+    assert files, "traces 未落盘 model-io"
+    name = files[0].stem
+    assert name.startswith("model-io-sess_")
+    tprefix = name[len("model-io-sess_"):][:8]
+    p = run_cli(sandbox, "traces", "show", tprefix)
+    assert p.returncode == 0, p.stderr
+    for needle in ("Calls:", "model:", "usage:", "request:"):
+        assert needle in p.stdout, needle
+
+    ls = run_cli(sandbox, "traces", "ls")
+    assert ls.returncode == 0 and "mock" in ls.stdout
+    assert run_cli(sandbox, "traces", "ls", "-n", "5").returncode == 0
+    p = run_cli(sandbox, "traces", "show", "deadbeef")
+    assert p.returncode != 0
+    assert "no trace session matches" in p.stdout + p.stderr
+
+
+def test_C15_task与team全链路(sandbox) -> None:
+    """task create/ls/show/update/stop/purge + team create/sync/delete。"""
+    require_binary()
+    p = run_cli(sandbox, "task", "create", "--subject", "S1", "--list", "L1",
+                "--description", "d1", "--active-form", "Doing")
+    assert p.returncode == 0, p.stderr
+    assert "Task #1 created in list 'L1'" in p.stdout
+    tid = next(ch for ch in p.stdout.split() if ch.startswith("#")).lstrip("#")
+
+    ls = run_cli(sandbox, "task", "ls").stdout
+    assert "S1" in ls and "pending" in ls
+
+    p = run_cli(sandbox, "task", "show", tid, "--list", "L1")
+    assert p.returncode == 0 and "S1" in p.stdout and "pending" in p.stdout
+    p = run_cli(sandbox, "task", "show", tid)
+    assert p.returncode == 2, p.returncode
+
+    p = run_cli(sandbox, "task", "update", tid, "--list", "L1", "--status", "completed")
+    assert p.returncode == 0, p.stderr
+    assert "completed" in run_cli(sandbox, "task", "ls").stdout
+    p = run_cli(sandbox, "task", "update", tid, "--list", "L1", "--subject", "S1-renamed")
+    assert p.returncode == 0, p.stderr
+    assert "S1-renamed" in run_cli(sandbox, "task", "ls").stdout
+
+    # 非数字 id:clap u32 解析失败(rc=2)。
+    assert run_cli(sandbox, "task", "update", "abc", "--list", "L1", "--status", "done").returncode == 2
+    assert run_cli(sandbox, "task", "stop", "abc", "--list", "L1").returncode == 2
+
+    assert run_cli(sandbox, "task", "team", "create", "myteam", "--description", "d").returncode == 0
+    assert "myteam" in run_cli(sandbox, "task", "team", "ls").stdout
+    assert run_cli(sandbox, "task", "team", "show", "myteam").returncode == 0
+    assert run_cli(sandbox, "task", "team", "sync", "--list-specs").returncode == 0
+    p = run_cli(sandbox, "task", "team", "delete", "myteam", input_text="n")
+    assert "myteam" in run_cli(sandbox, "task", "team", "ls").stdout
+    assert "aborted" in p.stdout + p.stderr
+    p = run_cli(sandbox, "task", "team", "delete", "myteam", "--yes")
+    assert p.returncode == 0, p.stderr
+    assert "myteam" not in run_cli(sandbox, "task", "team", "ls").stdout
+
+    p = run_cli(sandbox, "task", "stop", tid, "--list", "L1")
+    assert p.returncode == 0, p.stderr
+    assert "S1-renamed" not in run_cli(sandbox, "task", "ls").stdout
+    assert run_cli(sandbox, "task", "purge", "--list", "L1", "--yes").returncode == 0
+
+
+def test_C16_plugin_marketplace全链路(sandbox) -> None:
+    """marketplace add/ls/坏目录/install/info/show/enable/disable/uninstall/inline/remove。"""
+    require_binary()
+    mkt = sandbox.cwd / "mkt"
+    (mkt / ".claude-plugin").mkdir(parents=True)
+    (mkt / "plugins" / "hello").mkdir(parents=True)
+    (mkt / "plugins" / "hello" / "plugin.toml").write_text(
+        'name = "hello"\nversion = "0.1.0"\ndescription = "deep test plugin"\n'
+    )
+    (mkt / ".claude-plugin" / "marketplace.json").write_text(json.dumps({
+        "name": "deep-mk",
+        "owner": {"name": "Test"},
+        "plugins": [{"name": "hello", "version": "0.1.0",
+                     "source": {"source": "directory", "path": "./plugins/hello"}}],
+    }))
+
+    p = run_cli(sandbox, "plugin", "marketplace", "add", "deep-mk",
+                "--from", "directory", "--path", str(mkt))
+    assert p.returncode == 0 and "added marketplace 'deep-mk'" in p.stdout, p.stderr
+    assert "deep-mk" in run_cli(sandbox, "plugin", "marketplace", "ls").stdout
+
+    badmkt = sandbox.cwd / "badmkt"
+    badmkt.mkdir()
+    p = run_cli(sandbox, "plugin", "marketplace", "add", "bad-mk",
+                "--from", "directory", "--path", str(badmkt))
+    assert p.returncode != 0 and "manifest" in p.stdout + p.stderr
+
+    p = run_cli(sandbox, "plugin", "install", "hello@deep-mk")
+    assert p.returncode == 0 and "hello@deep-mk" in p.stdout, p.stderr
+    assert "hello@deep-mk" in run_cli(sandbox, "plugin", "list").stdout
+
+    p = run_cli(sandbox, "plugin", "info", "hello@deep-mk")
+    assert p.returncode == 0, p.stderr
+    assert "user" in p.stdout and "0.1.0" in p.stdout
+    assert 'name = "hello"' in run_cli(sandbox, "plugin", "show", "hello@deep-mk").stdout
+
+    p = run_cli(sandbox, "plugin", "enable", "hello@deep-mk")
+    assert p.returncode == 0, p.stderr
+    cfg = (sandbox.home / ".zhuye" / "config.toml").read_text()
+    assert 'enabled_plugins = ["hello@deep-mk"]' in cfg
+    p = run_cli(sandbox, "plugin", "disable", "hello@deep-mk")
+    assert p.returncode == 0, p.stderr
+    assert "hello@deep-mk" not in (sandbox.home / ".zhuye" / "config.toml").read_text()
+
+    p = run_cli(sandbox, "plugin", "uninstall", "hello@deep-mk", "--yes")
+    assert p.returncode == 0 and "uninstalled" in p.stdout, p.stderr
+    p = run_cli(sandbox, "plugin", "info", "hello@deep-mk")
+    assert p.returncode != 0 and "not installed" in p.stdout + p.stderr
+
+    p = run_cli(sandbox, "plugin", "install", str(mkt / "plugins" / "hello"))
+    assert p.returncode == 0 and "hello@inline" in p.stdout, p.stderr
+    assert run_cli(sandbox, "plugin", "marketplace", "refresh").returncode == 0
+    p = run_cli(sandbox, "plugin", "marketplace", "remove", "deep-mk")
+    assert p.returncode == 0 and "removed marketplace 'deep-mk'" in p.stdout
+    assert "deep-mk" not in run_cli(sandbox, "plugin", "marketplace", "ls").stdout
+
+
+def test_C17_workspace_update_doctor_lsp_security(sandbox) -> None:
+    """workspace clone(本地 / file:// shallow / 坏 URL)、update、doctor、lsp、security。"""
+    import subprocess
+
+    require_binary()
+    assert "workspace" in run_cli(sandbox, "workspace", "ls").stdout
+
+    src = sandbox.cwd / "clone_src"
+    src.mkdir()
+    def _git(*args: str, cwd=None) -> bool:
+        return subprocess.run(["git", *args], cwd=str(cwd or src),
+                              capture_output=True).returncode == 0
+    assert _git("init", "-q")
+    assert _git("config", "user.email", "t@t")
+    assert _git("config", "user.name", "t")
+    (src / "f.txt").write_text("hello")
+    assert _git("add", "f.txt")
+    assert _git("commit", "-qm", "init")
+
+    p = run_cli(sandbox, "workspace", "clone", str(src), "--dest", "cloned")
+    assert p.returncode == 0, p.stderr
+    assert (sandbox.cwd / "cloned" / "f.txt").exists()
+
+    p = run_cli(sandbox, "workspace", "clone", f"file://{src}",
+                "--dest", "cloned_shallow", "--depth", "1")
+    assert p.returncode == 0, p.stderr
+    shallow = sandbox.cwd / "cloned_shallow"
+    assert (shallow / "f.txt").exists() and (shallow / ".git" / "shallow").exists()
+    rev = subprocess.run(["git", "-C", str(shallow), "rev-parse", "--is-shallow-repository"],
+                         capture_output=True, text=True)
+    assert "true" in rev.stdout
+
+    p = run_cli(sandbox, "workspace", "clone", "https://invalid.invalid/nope", "--dest", "wbad")
+    assert p.returncode != 0 and "git clone" in p.stdout + p.stderr
+
+    p = run_cli(sandbox, "update")
+    assert "zhuye v" in p.stdout and "cargo install" in p.stdout
+    p = run_cli(sandbox, "update", "--check-only")
+    assert p.returncode == 0 and "check-only" in p.stdout, p.stderr
+
+    p = run_cli(sandbox, "doctor")
+    assert p.returncode == 0, p.stderr
+    assert "config" in p.stdout and "rollout" in p.stdout
+    assert "network probe skipped" in p.stdout
+    p = run_cli(sandbox, "doctor", "--check-network", env={"ZHUYE_MODEL": "mock"})
+    assert p.returncode == 0, p.stderr
+    assert "[network]" in p.stdout and "checking provider" in p.stdout
+
+    p = run_cli(sandbox, "lsp", "list")
+    assert "no [lsp_servers" in p.stdout
+    p = run_cli(sandbox, "lsp", "status", "rust")
+    assert p.returncode != 0 and "not configured" in p.stdout + p.stderr
+    cfg = sandbox.home / ".zhuye" / "config.toml"
+    cfg.write_text(cfg.read_text() + (
+        '\n[lsp_servers.rust]\ncommand = "rust-analyzer"\n'
+        'file_patterns = [{ glob = "**/*.rs", language_id = "rust" }]\n'
+    ))
+    assert "rust-analyzer" in run_cli(sandbox, "lsp", "list").stdout
+    p = run_cli(sandbox, "lsp", "status", "rust")
+    assert p.returncode == 0, p.stderr
+    assert "rust-analyzer" in p.stdout and "**/*.rs" in p.stdout
+
+    p = run_cli(sandbox, "security", "audit")
+    assert p.returncode == 0 and "ZhuYe security audit" in p.stdout, p.stderr
+
+
+def test_C18_pipeline与discussion错误路径(sandbox, mock_script) -> None:
+    """pipeline team/runner 错误路径;discussion mock 驱动与 --output 文件。"""
+    require_binary()
+    p = run_cli(sandbox, "pipeline", "team", "ghost", "--topic", "t")
+    assert p.returncode != 0 and "team not found: ghost" in p.stdout + p.stderr
+
+    run_cli(sandbox, "task", "team", "create", "only")
+    (sandbox.cwd / "pipe.toml").write_text(
+        '[pipeline]\nname = "deep"\nfailure_policy = "abort"\n\n'
+        '[nodes.only]\nteam = "only"\ntemplate = "Do: {{topic}}"\ndepends_on = []\n'
+    )
+    p = run_cli(sandbox, "pipeline", "run", "-c", str(sandbox.cwd / "pipe.toml"), "--topic", "t1")
+    assert p.returncode != 0
+    assert "no runner for node 'only'" in p.stdout + p.stderr
+
+    script = mock_script([
+        '{"type":"tool_call","name":"send_message","args":{"content":"advocate says async","kind":"utterance"}}',
+        '{"type":"tool_call","name":"send_message","args":{"content":"skeptic says sync","kind":"utterance"}}',
+        '{"type":"text","text":"a"}',
+        '{"type":"text","text":"b"}',
+    ])
+    (sandbox.cwd / "disc.toml").write_text(
+        '[discussion]\nmode = "sequential"\ntopic = "deep-topic"\nmax_rounds = 1\n\n'
+        '[[agents]]\nrole = "advocate"\nsystem_prompt = "advocate"\n'
+        'allowed_tools = ["send_message", "read_messages", "finish_discussion"]\n\n'
+        '[[agents]]\nrole = "skeptic"\nsystem_prompt = "skeptic"\n'
+        'allowed_tools = ["send_message", "read_messages", "finish_discussion"]\n'
+    )
+    disc_env = {"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}
+    p = run_cli(sandbox, "discussion", "run", "-c", str(sandbox.cwd / "disc.toml"), env=disc_env)
+    assert p.returncode == 0, p.stderr
+    for needle in ("=== Discussion Transcript ===", "=== Result ===", "rounds_completed",
+                   '"transcript_len": 2', "advocate says async", "skeptic says sync",
+                   '"collab_message"'):
+        assert needle in p.stdout, needle
+
+    out_file = sandbox.cwd / "c18-report.json"
+    p = run_cli(sandbox, "discussion", "run", "-c", str(sandbox.cwd / "disc.toml"),
+                "-o", str(out_file), env=disc_env)
+    assert out_file.stat().st_size > 0
+    content = out_file.read_text()
+    assert '"rounds_completed"' in content and "Discussion Transcript" in content
+
+    p = run_cli(sandbox, "discussion", "ls")
+    assert p.returncode == 0 and "(no sessions found" in p.stdout
+    p = run_cli(sandbox, "discussion", "ls", "--discussion-id",
+                "00000000-0000-4000-8000-000000000000")
+    assert p.returncode == 0, p.stderr
+
+
+def test_C19_secrets加密存储全链路(sandbox) -> None:
+    """`secrets` 子命令:set(stdin)/ get / list / delete 确认与 --yes /
+    损坏 store fail-closed / machine key 权限 fail-closed(unix)。"""
+    import sys
+
+    require_binary()
+    store_dir = sandbox.home / ".zhuye" / "secrets"
+
+    # set(stdin 读明文)→ get 往返一致。
+    p = run_cli(sandbox, "secrets", "set", "openai", input_text="sk-live-abc123\n")
+    assert p.returncode == 0 and "stored" in p.stdout, p.stderr
+    assert (store_dir / "secrets.json").exists()
+    raw = (store_dir / "secrets.json").read_text()
+    assert "sk-live-abc123" not in raw, "明文不得落盘"
+    p = run_cli(sandbox, "secrets", "get", "openai")
+    assert p.returncode == 0 and p.stdout == "sk-live-abc123\n", (p.returncode, p.stdout)
+
+    # list 只出条目名;set 空输入报错。
+    p = run_cli(sandbox, "secrets", "set", "empty", input_text="\n")
+    assert p.returncode != 0, p.stdout
+    assert "stdin is empty" in p.stdout + p.stderr
+    run_cli(sandbox, "secrets", "set", "anthropic", input_text="sk-ant-def")
+    ls = run_cli(sandbox, "secrets", "list")
+    assert ls.returncode == 0
+    assert "openai" in ls.stdout and "anthropic" in ls.stdout
+    assert "sk-" not in ls.stdout, "list 不得泄露值"
+
+    # delete:拒绝保留 + aborted;--yes 删除;缺失报错。
+    p = run_cli(sandbox, "secrets", "delete", "anthropic", input_text="n")
+    assert p.returncode == 0 and "aborted" in p.stdout + p.stderr
+    assert "anthropic" in run_cli(sandbox, "secrets", "list").stdout
+    p = run_cli(sandbox, "secrets", "delete", "anthropic", "--yes")
+    assert p.returncode == 0 and "deleted" in p.stdout, p.stderr
+    assert "anthropic" not in run_cli(sandbox, "secrets", "list").stdout
+    p = run_cli(sandbox, "secrets", "get", "anthropic")
+    assert p.returncode != 0 and "secret not found" in p.stdout + p.stderr
+
+    # 损坏 store:fail-closed,绝不返回部分明文。
+    sj = store_dir / "secrets.json"
+    sj.write_text('{"version":1,"entries":{"openai":{"salt":"zz","nonce":"zz","ct":"zz","created_at":"x"}}}')
+    p = run_cli(sandbox, "secrets", "get", "openai")
+    assert p.returncode != 0
+    assert "corrupt" in p.stdout + p.stderr or "authentication failed" in p.stdout + p.stderr
+    sj.unlink()
+
+    # machine key 权限过宽:打开即失败(fail-closed;unix 专属语义)。
+    if sys.platform != "win32":
+        run_cli(sandbox, "secrets", "set", "again", input_text="v2")
+        key = store_dir / ".machine.key"
+        assert key.exists()
+        key.chmod(0o644)
+        p = run_cli(sandbox, "secrets", "get", "again")
+        assert p.returncode != 0
+        assert "insecure permissions" in p.stdout + p.stderr
+        key.chmod(0o600)
+        assert run_cli(sandbox, "secrets", "get", "again").stdout == "v2\n"
