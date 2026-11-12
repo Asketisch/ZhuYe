@@ -274,7 +274,7 @@ impl StatsAccumulator {
                         self.cost_sum += c;
                         self.cost_present = true;
                     }
-                    let entry = self.per_model.entry(key.clone()).or_default();
+                    let entry = self.per_model.entry(key).or_default();
                     entry.calls = entry.calls.saturating_add(1);
                     entry.input_tokens =
                         entry.input_tokens.saturating_add(usage.input_tokens as u64);
