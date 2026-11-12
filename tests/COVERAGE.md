@@ -34,6 +34,12 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 能力域 | 能力覆盖层 | CLI 参数面 | SDK 绑定层 | crate 单测 | 实模型层 |
 |---|---|---|---|---|---|
 | 基础通信(握手/单轮/多轮/事件流/终态/工具参数增量/整段消息) | D1–D5、D9–D10、D13 | cli_core | K1–K2、K5 | ✅(build/build_async 对齐断言) | L1–L4 |
+| EventMsg 全变体线格式 | —(逐场景事件断言见能力层) | — | — | ✅(`tests/contracts/events.json` 50 变体 + 源码奇偶 + serde roundtrip) | — |
+| 协议信封与 Op 随机往返 | — | — | — | ✅(proptest:Op / Submission / Event serde) | — |
+| 协议事件变异回归(截断 / 字节替换 / 判别子破坏 / 多种子多重变异) | — | — | — | ✅(`event_mutation_fuzz`,默认 1 万次可配置) | — |
+| Rollout 只读目录写失败 | — | — | — | ✅(返回错误、已有会话文件字节不变) | — |
+| Rollout 磁盘满写失败 | — | — | — | ✅(`/dev/full` 真实 ENOSPC,返回错误且不 panic) | — |
+| 跨实例任务存储锁竞争 | — | — | — | ✅(`file_store_lock_contention`:ID 唯一、两任务均落盘) | — |
 | 会话中毒检测(输出、错误率、超时及传输异常) | D10 | — | — | ✅(完整文本指纹、回合滑动窗口及迭代上限) | — |
 | 并发与路由 | S1–S3 | — | K15(双 SDK 真二进制隔离),TS 写入前快速响应及并发 EOF | — | — |
 | 并行远程工具、逆序回执与会话恢复 | 场景测试(本地 OpenAI SSE 网关,完整及交错参数分片、记录落盘和恢复后请求) | — | — | OpenAI 分片重组 | — |
