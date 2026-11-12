@@ -85,8 +85,8 @@ fn run_audit_cmd(cmd: &mut Command, timeout: Duration) -> SecurityScanReport {
         }
     };
 
-    let stdout = stdout_handle.map(join_reader).unwrap_or_default();
-    let stderr = stderr_handle.map(join_reader).unwrap_or_default();
+    let stdout = stdout_handle.map_or_else(String::default, join_reader);
+    let stderr = stderr_handle.map_or_else(String::default, join_reader);
 
     // 超时路径:ran=false 语义是"没有完成一次扫描"。
     let Some(status) = status else {
