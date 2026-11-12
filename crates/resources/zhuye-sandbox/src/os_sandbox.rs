@@ -547,13 +547,12 @@ impl OsSandbox {
 fn extra_writable_from_env() -> Vec<PathBuf> {
     std::env::var("ZHUYE_SANDBOX_WRITABLE")
         .ok()
-        .map(|s| {
+        .map_or_else(Vec::new, |s| {
             s.split(':')
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from)
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 // ── Linux Landlock 实现 ─────────────────────────────────────────────
