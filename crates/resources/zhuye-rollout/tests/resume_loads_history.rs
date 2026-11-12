@@ -1,6 +1,7 @@
 //! 端到端测试:写入全部 4 种记录类型,经 writer 的
 //! `replay()` 方法回放,断言重建的历史与原始一致。
 
+use std::path::Path;
 use tempfile::tempdir;
 use zhuye_protocol::{MessageRole, RolloutRecord, RolloutRecorder, ThreadId, TurnId};
 use zhuye_rollout::JsonlRolloutWriter;
@@ -127,4 +128,71 @@ async fn replay_retains_messages_after_rotation() {
         .filter(|r| matches!(r, RolloutRecord::Message { .. }))
         .collect();
     assert_eq!(messages, expected);
+}
+
+/// 只读日期目录下新建 writer 必须显式失败,已有会话文件保持原样。
+#[cfg(unix)]
+#[tokio::test]
+async fn record_fails_on_read_only_directory_without_corrupting_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let sid = ThreadId::new();
+    let writer = JsonlRolloutWriter::new(dir.path(), sid);
+    writer
+        .record(RolloutRecord::session_meta(sid, "mock"))
+        .await
+        .expect("初始会话写入失败");
+
+    let files = zhuye_rollout::index::find_files_by_name_prefix(dir.path(), &sid.to_string())
+        .expect("查询会话文件失败");
+    assert_eq!(files.len(), 1, "应有一份活跃会话文件");
+    let path = files[0].clone();
+    let before = std::fs::read(&path).expect("读取初始会话失败");
+    let day = path.parent().expect("会话文件缺少日期目录");
+    let original_mode = std::fs::metadata(day).unwrap().permissions().mode();
+    std::fs::set_permissions(day, std::fs::Permissions::from_mode(0o555))
+        .expect("设置只读目录失败");
+
+    let sid2 = ThreadId::new();
+    let other = JsonlRolloutWriter::new(dir.path(), sid2);
+    let result = other
+        .record(RolloutRecord::session_meta(sid2, "mock"))
+        .await;
+    std::fs::set_permissions(day, std::fs::Permissions::from_mode(original_mode))
+        .expect("恢复目录权限失败");
+
+    assert!(result.is_err(), "只读目录写入应返回错误");
+    assert_eq!(
+        std::fs::read(&path).expect("读取已有会话失败"),
+        before,
+        "写入失败不得破坏已有会话文件"
+    );
+}
+
+/// 磁盘满(真实 ENOSPC)写入必须返回错误,不能 panic 或伪装成功。
+#[cfg(unix)]
+#[tokio::test]
+async fn record_fails_on_disk_full_device_without_panicking() {
+    let dir = tempdir().unwrap();
+    let sid = ThreadId::new();
+    let legacy_day = dir.path().join("2020/01/01");
+    std::fs::create_dir_all(&legacy_day).unwrap();
+    let target = legacy_day.join(format!("{sid}.jsonl"));
+    std::os::unix::fs::symlink("/dev/full", &target).unwrap();
+
+    let writer = JsonlRolloutWriter::new(dir.path(), sid);
+    let result = writer
+        .record(RolloutRecord::session_meta(sid, "mock"))
+        .await;
+    assert!(
+        result.is_err(),
+        "写入 /dev/full 应返回 ENOSPC,实际:{result:?}"
+    );
+    assert!(
+        target
+            .read_link()
+            .is_ok_and(|path| path == Path::new("/dev/full")),
+        "故障注入目标不应被移动或覆盖"
+    );
 }
