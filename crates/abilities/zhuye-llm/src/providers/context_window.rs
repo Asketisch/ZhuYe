@@ -144,10 +144,13 @@ pub fn normalize_model_spec(model_spec: &str) -> String {
 /// assert_eq!(context_window_for("unknown-model"), None);
 /// ```
 pub fn context_window_for(model_spec: &str) -> Option<u32> {
-    // 0. 运行时 override 表(用户在 config.toml 配的窗口)优先。
     if let Some(v) = context_window_override_for(model_spec) {
         return Some(v);
     }
+    static_context_window_for(model_spec)
+}
+
+fn static_context_window_for(model_spec: &str) -> Option<u32> {
     // 1. 去 provider 前缀(`rsplit_once('/')` 取最后一段,无 '/' 时整串)。
     let no_provider = model_spec.rsplit_once('/').map_or(model_spec, |(_, m)| m);
     // 2. 去 ollama tag(`:7b` / `:latest` / `:instruct`)。
@@ -270,62 +273,77 @@ mod tests {
     #[test]
     fn strips_provider_prefix() {
         assert_eq!(
-            context_window_for("anthropic/claude-sonnet-4-latest"),
+            static_context_window_for("anthropic/claude-sonnet-4-latest"),
             Some(200_000)
         );
-        assert_eq!(context_window_for("openai/gpt-4o"), Some(128_000));
-        assert_eq!(context_window_for("ollama/llama3.2"), Some(128_000));
+        assert_eq!(static_context_window_for("openai/gpt-4o"), Some(128_000));
+        assert_eq!(static_context_window_for("ollama/llama3.2"), Some(128_000));
     }
 
     #[test]
     fn strips_ollama_tag() {
-        assert_eq!(context_window_for("llama3.2:7b"), Some(128_000));
-        assert_eq!(context_window_for("qwen2.5:latest"), Some(128_000));
-        assert_eq!(context_window_for("gpt-4o:instruct"), Some(128_000));
-        assert_eq!(context_window_for("ollama/llama3.1:8b"), Some(128_000));
+        assert_eq!(static_context_window_for("llama3.2:7b"), Some(128_000));
+        assert_eq!(static_context_window_for("qwen2.5:latest"), Some(128_000));
+        assert_eq!(static_context_window_for("gpt-4o:instruct"), Some(128_000));
+        assert_eq!(
+            static_context_window_for("ollama/llama3.1:8b"),
+            Some(128_000)
+        );
     }
 
     #[test]
     fn case_insensitive() {
-        assert_eq!(context_window_for("Claude-Sonnet-4-Latest"), Some(200_000));
-        assert_eq!(context_window_for("GPT-4O"), Some(128_000));
-        assert_eq!(context_window_for("O3-MINI"), Some(200_000));
+        assert_eq!(
+            static_context_window_for("Claude-Sonnet-4-Latest"),
+            Some(200_000)
+        );
+        assert_eq!(static_context_window_for("GPT-4O"), Some(128_000));
+        assert_eq!(static_context_window_for("O3-MINI"), Some(200_000));
     }
 
     #[test]
     fn matches_version_suffixes() {
         // `starts_with` 让版本后缀(-latest / -20240229 等)都能命中。
         assert_eq!(
-            context_window_for("claude-3-5-sonnet-20241022"),
+            static_context_window_for("claude-3-5-sonnet-20241022"),
             Some(200_000)
         );
-        assert_eq!(context_window_for("gpt-4o-2024-08-06"), Some(128_000));
+        assert_eq!(
+            static_context_window_for("gpt-4o-2024-08-06"),
+            Some(128_000)
+        );
     }
 
     #[test]
     fn unknown_model_returns_none() {
-        assert_eq!(context_window_for("future-model-9000"), None);
-        assert_eq!(context_window_for("gpt-4.1"), None);
-        assert_eq!(context_window_for("gpt-4-32k"), None);
-        assert_eq!(context_window_for("gpt-4-0613"), Some(8_192));
-        assert_eq!(context_window_for(""), None);
-        assert_eq!(context_window_for("/"), None);
+        assert_eq!(static_context_window_for("future-model-9000"), None);
+        assert_eq!(static_context_window_for("gpt-4.1"), None);
+        assert_eq!(static_context_window_for("gpt-4-32k"), None);
+        assert_eq!(static_context_window_for("gpt-4-0613"), Some(8_192));
+        assert_eq!(static_context_window_for(""), None);
+        assert_eq!(static_context_window_for("/"), None);
     }
 
     #[test]
     fn bare_model_without_prefix() {
         // 无 provider 前缀也能查。
-        assert_eq!(context_window_for("claude-opus-4-latest"), Some(200_000));
-        assert_eq!(context_window_for("o3-mini"), Some(200_000));
+        assert_eq!(
+            static_context_window_for("claude-opus-4-latest"),
+            Some(200_000)
+        );
+        assert_eq!(static_context_window_for("o3-mini"), Some(200_000));
     }
 
     #[test]
     fn minimax_m3_1m_context() {
         // MiniMax M3/M4 官方 1M 上下文(带/不带 provider 前缀、大小写)。
-        assert_eq!(context_window_for("MiniMax-M3"), Some(1_000_000));
-        assert_eq!(context_window_for("minimax/MiniMax-M3"), Some(1_000_000));
-        assert_eq!(context_window_for("minimax-m4"), Some(1_000_000));
+        assert_eq!(static_context_window_for("MiniMax-M3"), Some(1_000_000));
+        assert_eq!(
+            static_context_window_for("minimax/MiniMax-M3"),
+            Some(1_000_000)
+        );
+        assert_eq!(static_context_window_for("minimax-m4"), Some(1_000_000));
         // 老命名 abab 系列(abab6.5 = 245k)。
-        assert_eq!(context_window_for("abab6.5-chat"), Some(245_000));
+        assert_eq!(static_context_window_for("abab6.5-chat"), Some(245_000));
     }
 }
