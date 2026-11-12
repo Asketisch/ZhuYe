@@ -1,0 +1,334 @@
+{
+  "comment": "EventMsg 线格式契约样本表:当前全部变体各一条最小合法样本。新增 EventMsg 变体时必须同步补样本,协议集成测试会做 Rust enum ↔ 样本表奇偶校验、serde 反序列化与 roundtrip。",
+  "events": {
+    "session_configured": {
+      "type": "session_configured",
+      "session_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      "model": "claude-opus-4.7",
+      "provider": "anthropic",
+      "approval_policy": "prompt",
+      "sandbox_policy": "workspace_only",
+      "context_window_size": 200000
+    },
+    "turn_started": {
+      "type": "turn_started",
+      "turn_id": "5f8a3c1e-9b2d-4c6a-8e7f-1a2b3c4d5e6f",
+      "user_message_id": "u-event-1"
+    },
+    "turn_complete": {
+      "type": "turn_complete",
+      "turn_id": "5f8a3c1e-9b2d-4c6a-8e7f-1a2b3c4d5e6f",
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 45,
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "total_tokens": 165
+      },
+      "status": "success"
+    },
+    "turn_aborted": {
+      "type": "turn_aborted",
+      "turn_id": "5f8a3c1e-9b2d-4c6a-8e7f-1a2b3c4d5e6f",
+      "reason": { "type": "user_interrupt" }
+    },
+    "turn_rewound": {
+      "type": "turn_rewound",
+      "to_turn_id": "9c1d2f2e-7a3b-4e8c-b5d6-0f1e2d3c4b5a",
+      "truncated_after": 2
+    },
+    "submission_closed": { "type": "submission_closed" },
+    "shutdown_complete": { "type": "shutdown_complete" },
+    "agent_message": { "type": "agent_message", "text": "final answer" },
+    "agent_message_delta": { "type": "agent_message_delta", "delta": "partial " },
+    "thinking_delta": {
+      "type": "thinking_delta",
+      "delta": "considering...",
+      "kind": "raw"
+    },
+    "token_count": {
+      "type": "token_count",
+      "input_tokens": 500,
+      "output_tokens": 120,
+      "cached_tokens": 50,
+      "cache_write_tokens": 0,
+      "total_tokens": 620,
+      "model": "openai/gpt-4o"
+    },
+    "tool_call_begin": {
+      "type": "tool_call_begin",
+      "call_id": "c-event-1",
+      "tool_name": "bash",
+      "args": { "cmd": "echo hi" }
+    },
+    "tool_call_args_delta": {
+      "type": "tool_call_args_delta",
+      "call_id": "c-event-1",
+      "delta": "{\"cmd\":"
+    },
+    "tool_call_end": {
+      "type": "tool_call_end",
+      "call_id": "c-event-1",
+      "output": {
+        "content": [{ "type": "text", "text": "hi" }],
+        "is_error": false,
+        "metadata": null,
+        "elapsed_ms": 42
+      },
+      "is_error": false,
+      "elapsed_ms": 42
+    },
+    "tool_call_output_delta": {
+      "type": "tool_call_output_delta",
+      "call_id": "c-event-1",
+      "delta": "stdout line\n",
+      "is_stderr": false
+    },
+    "tool_execution_request": {
+      "type": "tool_execution_request",
+      "call_id": "c-event-2",
+      "tool": "fetch",
+      "args": { "url": "https://example.invalid" }
+    },
+    "subagent_progress": {
+      "type": "subagent_progress",
+      "child_id": "child-event-1",
+      "role": "explorer",
+      "kind": "message",
+      "text": "searching..."
+    },
+    "subagent_status": {
+      "type": "subagent_status",
+      "children": [
+        {
+          "child_id": "child-event-1",
+          "role": "explorer",
+          "state": "running",
+          "started_at": "2026-01-01T00:00:00Z",
+          "iteration": 2,
+          "total_tokens": 300
+        }
+      ]
+    },
+    "side_channel_started": {
+      "type": "side_channel_started",
+      "kind": "started",
+      "id": "side-00000001",
+      "agent_name": "reviewer",
+      "prompt": "review the diff",
+      "started_at_ms": 1767225600000
+    },
+    "side_channel_finished": {
+      "type": "side_channel_finished",
+      "kind": "done",
+      "id": "side-00000001",
+      "finished_at_ms": 1767225660000,
+      "summary": "looks good"
+    },
+    "side_channel_status": {
+      "type": "side_channel_status",
+      "channels": [
+        {
+          "id": "side-00000001",
+          "agentName": "reviewer",
+          "prompt": "review the diff",
+          "startedAtMs": 1767225600000,
+          "status": "done",
+          "durationMs": 60000
+        }
+      ]
+    },
+    "approval_request": {
+      "type": "approval_request",
+      "request_id": "req-event-1",
+      "kind": { "type": "tool", "tool_name": "bash", "args": { "cmd": "ls" } },
+      "risk": "medium"
+    },
+    "ask_user_question": {
+      "type": "ask_user_question",
+      "request_id": "req-event-2",
+      "questions": [
+        {
+          "header": "Approach",
+          "question": "Which approach?",
+          "options": [
+            { "label": "A", "description": "option a" },
+            { "label": "B", "description": "option b" }
+          ],
+          "multi_select": false
+        }
+      ]
+    },
+    "ask_user_input": {
+      "type": "ask_user_input",
+      "request_id": "req-event-3",
+      "prompt": "type your answer",
+      "secret": true,
+      "placeholder": "enter value"
+    },
+    "permission_bubble": {
+      "type": "permission_bubble",
+      "tool_name": "bash",
+      "args_preview": "rm -rf /tmp/x",
+      "risk": "high"
+    },
+    "context_compacted": {
+      "type": "context_compacted",
+      "strategy": "ll_m_summarize",
+      "removed_messages": 8,
+      "before_tokens": 9000,
+      "after_tokens": 3000
+    },
+    "error": {
+      "type": "error",
+      "code": "provider_unavailable",
+      "message": "provider unreachable",
+      "details": { "attempt": 1 }
+    },
+    "stream_error": {
+      "type": "stream_error",
+      "code": "rate_limited",
+      "message": "429 too many requests",
+      "retry_in_ms": 5000,
+      "provider": "openai",
+      "credential_label": "main",
+      "tried": [{ "label": "main", "outcome": "rate_limited" }]
+    },
+    "config_reloaded": {
+      "type": "config_reloaded",
+      "path": "/tmp/zhuye/config.toml",
+      "sections_changed": ["model"],
+      "at": 1767225600
+    },
+    "routing": {
+      "type": "routing",
+      "kind": "switched",
+      "role": "main",
+      "from_credential": "primary",
+      "to_credential": "backup",
+      "reason": "rate_limited"
+    },
+    "collab_started": {
+      "type": "collab_started",
+      "id": "disc-event-1",
+      "participants": ["a", "b"],
+      "mode": "discussion"
+    },
+    "collab_message": {
+      "type": "collab_message",
+      "id": "disc-event-1",
+      "from": "a",
+      "kind": "utterance",
+      "content": "my position",
+      "round": 1
+    },
+    "collab_finished": {
+      "type": "collab_finished",
+      "id": "disc-event-1",
+      "outcome": "consensus",
+      "rounds": 2
+    },
+    "mcp_server_started": {
+      "type": "mcp_server_started",
+      "server": "fs",
+      "tool_count": 3,
+      "transport": "stdio",
+      "tool_names": ["read", "write", "list"]
+    },
+    "mcp_server_failed": {
+      "type": "mcp_server_failed",
+      "server": "fs",
+      "error": "spawn failed",
+      "will_retry": false
+    },
+    "mcp_tool_invoked": {
+      "type": "mcp_tool_invoked",
+      "server": "fs",
+      "tool": "read",
+      "call_id": "c-event-3"
+    },
+    "lsp_server_started": {
+      "type": "lsp_server_started",
+      "server": "rust-analyzer",
+      "methods": ["textDocument/hover"],
+      "language_ids": ["rust"]
+    },
+    "lsp_server_failed": {
+      "type": "lsp_server_failed",
+      "server": "rust-analyzer",
+      "error": "binary not found",
+      "will_retry": false
+    },
+    "plan_request": {
+      "type": "plan_request",
+      "plan_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "task": "refactor module x"
+    },
+    "plan_ready": {
+      "type": "plan_ready",
+      "plan_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "markdown": "# Plan\n1. do it",
+      "path": "/tmp/workspace/.zhuye/plan/plan-event-1.md"
+    },
+    "plan_approved": {
+      "type": "plan_approved",
+      "plan_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+    },
+    "plan_rejected": {
+      "type": "plan_rejected",
+      "plan_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "reason": "needs more detail"
+    },
+    "plan_draft_updated": {
+      "type": "plan_draft_updated",
+      "draft_id": "refactor.md",
+      "markdown": "# Draft",
+      "path": "/tmp/workspace/.zhuye/plan/refactor.md"
+    },
+    "plan_step": {
+      "type": "plan_step",
+      "plan_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "index": 0,
+      "total": 3,
+      "status": "in_progress",
+      "title": "step one"
+    },
+    "permission_mode_changed": {
+      "type": "permission_mode_changed",
+      "from": "prompt",
+      "to": "bubble"
+    },
+    "plugin_loaded": {
+      "type": "plugin_loaded",
+      "plugin": "git-tools",
+      "scope": "builtin",
+      "version": "0.1.0",
+      "skill_count": 2,
+      "command_count": 1
+    },
+    "quota_exhausted": {
+      "type": "quota_exhausted",
+      "provider": "openai",
+      "label": "main",
+      "used_tokens": 98000,
+      "max_tokens": 100000,
+      "window_ends_secs": 1767229200
+    },
+    "prompt_list": {
+      "type": "prompt_list",
+      "available": ["default", "review"],
+      "current_spec": "default",
+      "active_layers": ["builtin"]
+    },
+    "prompt_switched": {
+      "type": "prompt_switched",
+      "action": "switch",
+      "active_layers": ["review"]
+    },
+    "extensions_rescanned": {
+      "type": "extensions_rescanned",
+      "skills": 5,
+      "commands": true
+    }
+  }
+}

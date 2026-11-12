@@ -127,3 +127,30 @@ git 和 jq。入口默认通过 Cargo 更新二进制;功能层还会构建导�
   三个不同的 uuid。`--resume` 的参数必须用**文件名**里的 id。
 - 与 `scripts/e2e.sh` 的关系:该脚本是 CI 冒烟;本目录是**功能覆盖
   套件**(按能力域逐条断言),两者互补。
+
+## 统一测试调度器(PLAN.md §1.4 接口)
+
+`runner.py` 是跨平台(Python 3.10+,仅标准库)任务调度入口,把 PLAN.md
+第 2 章任务 ID 映射到本仓既有套件,不复制测试逻辑:
+
+```bash
+python3 tests/runner.py list                     # 任务 / 选集 / 用例索引
+python3 tests/runner.py run --suite pr           # PR 门禁选集
+python3 tests/runner.py run --case A-C03         # 按 PLAN 用例 ID 定向
+python3 tests/runner.py run --suite smoke --dry-run
+python3 tests/runner.py run --suite release --artifact <产物路径>
+```
+
+- 结果语义:`pass / fail / skip(条件不适用) / infra_error / timeout / pending(未覆盖)`;
+  skip 不计通过;pending 与基础设施错误使退出码为 2,失败为 1。
+- 报告:`.test-runner/report.json`(JSON)+ `junit.xml`(JUnit)+ 人类摘要;
+  记录 HEAD、工作树状态、平台与逐任务复现命令。
+- `agent.contract.event` 使用 `tests/contracts/events.json` 覆盖当前全部
+  `EventMsg` 变体;新增事件时缺少契约样本会直接失败。
+- `agent.fuzz` 执行协议事件确定性变异(截断、字节替换、判别子破坏)与默认
+  1 万次可复现多重变异;`ZHUYE_FUZZ_CASES` / `ZHUYE_FUZZ_SEED` 可加大规模。
+- `agent.fault` 覆盖 rollout 只读目录写失败、文件保全与真实 ENOSPC 磁盘满。
+- `agent.fault.lock` 覆盖两个 `FileTaskStore` 实例争用同一列表时的 ID 唯一
+  与任务保全;崩溃窗口仍是显式未覆盖项。
+- `agent.soak` 通过高负载 env 锁压测放大竞态;长会话压缩/重启由能力层承担。
+- 任务注册表见 `test_registry.py`;仍无法本地确定化的崩溃窗口保持显式登记。

@@ -42,6 +42,7 @@ crates/graphify-out/
 # Python 字节码缓存
 __pycache__/
 *.pyc
+.test-runner/
 
 # ── SDK(sdks/)构建产物 ──
 node_modules/

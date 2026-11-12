@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  schedule:
+    - cron: '23 18 * * *'
   push:
     branches: [main, develop]
   pull_request:
@@ -16,6 +18,16 @@ env:
   PYO3_PYTHON: python3
 
 jobs:
+  runner-tests:
+    name: test runner registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest -v tests.test_runner
+
   check:
     name: cargo check
     runs-on: ubuntu-latest
@@ -140,3 +152,26 @@ jobs:
       - run: npm ci
         working-directory: sdks/typescript
       - run: ./tests/run_all.sh functional
+
+  nightly-quality:
+    name: nightly quality
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+      - name: Build release runtime
+        run: cargo build --release -p zhuye-cli --locked
+      - name: Run sustained protocol fuzz
+        run: ZHUYE_FUZZ_CASES=100000 cargo test -p zhuye-protocol --test event_mutation_fuzz --locked
+      - name: Run storage fault matrix
+        run: cargo test -p zhuye-rollout --test resume_loads_history record_fails_on --locked
+      - name: Run lock contention
+        run: cargo test -p zhuye-task --test file_store_lock_contention --locked
+      - name: Run performance baseline
+        run: BENCH_RUNS=10 ./scripts/bench.sh
+      - name: Run env lock soak
+        run: ZHUYE_ENV_STRESS_RUNS=30 ./tests/rust/env_lock_stress.sh
