@@ -199,11 +199,34 @@ mod tests {
         ))
     }
 
+    /// Windows 上没有 OS 沙箱后端(macOS 需 /usr/bin/sandbox-exec;Linux 需
+    /// Landlock 内核支持),流水线节点命令属于不可信来源,按 fail-closed
+    /// 规则**根本不会执行** —— 该平台上「命令真的跑起来」不是可达状态。
+    ///
+    /// 所以这里不跳过用例,而是断言该平台真实语义:节点 Failed,原因说明
+    /// 无沙箱后端。其余平台继续断言原本的退出码 / 输出语义。
+    fn assert_untrusted_rejected_on_windows(out: &NodeOutcome) -> bool {
+        if !cfg!(windows) {
+            return false;
+        }
+        let NodeStatus::Failed(reason) = &out.status else {
+            panic!("Windows 上不可信命令应被闸门拒绝,得到: {:?}", out.status);
+        };
+        assert!(
+            reason.contains("无沙箱后端"),
+            "拒绝原因应说明无沙箱后端,得到: {reason}"
+        );
+        true
+    }
+
     /// 成功命令:exit 0 → Success,stdout 进 outputs。
     #[tokio::test]
     async fn shell_runner_success_captures_stdout() {
         let r = ShellNodeRunner::new("build", "echo hello-pipeline");
         let out = r.run(&node_ctx()).await.unwrap();
+        if assert_untrusted_rejected_on_windows(&out) {
+            return;
+        }
         assert_eq!(out.status, NodeStatus::Success);
         assert!(
             out.outputs["stdout"]
@@ -219,6 +242,9 @@ mod tests {
     async fn shell_runner_failure_keeps_outputs() {
         let r = ShellNodeRunner::new("check", "echo partial; exit 3");
         let out = r.run(&node_ctx()).await.unwrap();
+        if assert_untrusted_rejected_on_windows(&out) {
+            return;
+        }
         assert!(matches!(out.status, NodeStatus::Failed(_)));
         assert_eq!(out.outputs["exit_code"], 3);
         assert!(out.outputs["stdout"].as_str().unwrap().contains("partial"));
@@ -231,6 +257,9 @@ mod tests {
         let mut ctx = node_ctx();
         ctx.topic = "rocket-2".into();
         let out = r.run(&ctx).await.unwrap();
+        if assert_untrusted_rejected_on_windows(&out) {
+            return;
+        }
         assert!(
             out.outputs["stdout"]
                 .as_str()
