@@ -42,11 +42,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::aead::{Aead, Generate, Key, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce as AeadNonce, Nonce};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use typenum::U12;
 
 /// 存储格式版本(AAD 绑定,防跨版本混用密文)。
 const FORMAT_VERSION: u64 = 1;
@@ -123,7 +124,7 @@ impl SecretStore {
                 .try_into()
                 .map_err(|v: Vec<u8>| SecretError::BadKeyLen { got: v.len() })?
         } else {
-            let key = Aes256Gcm::generate_key(&mut OsRng);
+            let key = Key::<Aes256Gcm>::generate();
             let bytes: [u8; KEY_LEN] = key.into();
             write_new_0600(&key_path, &bytes)?;
             bytes
@@ -140,12 +141,12 @@ impl SecretStore {
         let mut store = self.read_store()?;
         // 每条目独立 salt + nonce:同明文两次写入密文无关。
         let mut salt = [0u8; SALT_LEN];
-        let salt_bytes = Aes256Gcm::generate_key(&mut OsRng); // 32B 随机源
+        let salt_bytes = Key::<Aes256Gcm>::generate();
         salt.copy_from_slice(&salt_bytes[..SALT_LEN]);
         let entry_key = derive_entry_key(&self.machine_key, &salt);
         let cipher = Aes256Gcm::new_from_slice(&entry_key)
             .map_err(|_| SecretError::Corrupt("key init".into()))?;
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = AeadNonce::<U12>::generate();
         let aad = aad_for(name);
         let ct = cipher
             .encrypt(
@@ -191,9 +192,13 @@ impl SecretStore {
         let cipher = Aes256Gcm::new_from_slice(&entry_key)
             .map_err(|_| SecretError::Corrupt("key init".into()))?;
         let aad = aad_for(name);
+        let nonce_array: [u8; NONCE_LEN] = nonce_bytes.try_into().map_err(|v: Vec<u8>| {
+            SecretError::Corrupt(format!("nonce len {} != {NONCE_LEN}", v.len()))
+        })?;
+        let nonce = Nonce::<U12>::from(nonce_array);
         let pt = cipher
             .decrypt(
-                Nonce::from_slice(&nonce_bytes),
+                &nonce,
                 aes_gcm::aead::Payload {
                     msg: &ct,
                     aad: &aad,
