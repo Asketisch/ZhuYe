@@ -6,6 +6,9 @@ use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::ptr;
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+};
 use windows_sys::Win32::Foundation::{HANDLE, LocalFree, NTSTATUS, RtlNtStatusToDosError};
 use windows_sys::Win32::Security::Authorization::{
     GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
@@ -19,9 +22,6 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
-use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
-};
 
 struct Descriptor(*mut std::ffi::c_void);
 
