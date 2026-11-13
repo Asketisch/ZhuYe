@@ -215,12 +215,6 @@ async fn deny_policy_rejects_prompt_tool_without_modal() {
 /// GHA runner 等 landlock 异常环境下,经 bash 工具的降级重试路径覆盖。
 #[tokio::test]
 async fn prompt_policy_forces_approval_modal_then_approves() {
-    // Windows 无 OS 沙箱后端,且模型来源命令默认受不可信闸门约束;
-    // 本用例验证审批 modal 流程,Windows 上用逃生口允许测试命令裸跑。
-    #[cfg(target_os = "windows")]
-    unsafe {
-        std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", "1");
-    }
     let client = Arc::new(ScriptedClient {
         scripts: std::sync::Mutex::new(vec![
             tool_call_script(
@@ -242,6 +236,7 @@ async fn prompt_policy_forces_approval_modal_then_approves() {
 
     let settings = ThreadSettingsOverrides {
         approval_policy: Some(zhuye_protocol::ApprovalPolicy::Prompt),
+        sandbox_policy: Some(zhuye_protocol::SandboxPolicy::WorkspaceOnly),
         ..Default::default()
     };
     let mut h = thread
