@@ -124,19 +124,27 @@ impl CommandRunner for LocalCommandRunner {
                 .stderr(std::process::Stdio::piped());
             #[cfg(unix)]
             command.process_group(0);
+            // Windows:先建空作业(失败仅降级,不阻塞命令),spawn 后立即挂入。
+            #[cfg(windows)]
+            let tree_guard = ProcessTreeGuard::create();
             let mut child = command
                 .spawn()
                 .map_err(|e| WorkspaceCommandError::Unavailable(e.to_string()))?;
             #[cfg(unix)]
             let group = ProcessGroupGuard(child.id());
+            #[cfg(windows)]
+            tree_guard.assign(child.id().unwrap_or(0));
             let stdout = child.stdout.take().expect("stdout 已配置为管道");
             let stderr = child.stderr.take().expect("stderr 已配置为管道");
             let cap = cmd.max_output_bytes;
             // 同时排空两个管道,只保留上限内的数据,避免子进程阻塞或内存无限增长。
-            // 超时丢弃 future 时终止子进程;Unix 下同时清理其进程组。
+            // 超时丢弃 future 时终止子进程;Unix 下同时清理其进程组,
+            // Windows 下随 guard drop 终止整个作业树。
             let wait = async move {
                 #[cfg(unix)]
                 let mut group = group;
+                #[cfg(windows)]
+                let mut tree_guard = tree_guard;
                 let result = tokio::try_join!(
                     child.wait(),
                     read_capped(stdout, cap),
@@ -145,6 +153,10 @@ impl CommandRunner for LocalCommandRunner {
                 #[cfg(unix)]
                 if result.is_ok() {
                     group.0 = None;
+                }
+                #[cfg(windows)]
+                if result.is_ok() {
+                    tree_guard.disarm();
                 }
                 result
             };
@@ -181,6 +193,140 @@ impl Drop for ProcessGroupGuard {
         if let Some(pid) = self.0.and_then(|pid| i32::try_from(pid).ok()) {
             // 该进程是新进程组组长;取消或超时时终止组内普通子进程。
             unsafe { libc::kill(-pid, libc::SIGKILL) };
+        }
+    }
+}
+
+/// Windows 侧与 [`ProcessGroupGuard`] 对等的实现:Job Object +
+/// KILL_ON_JOB_CLOSE。
+///
+/// 作业成员关系**永久挂在进程上**——孙进程即使父进程已死也杀得到
+/// (`taskkill /T` 靠父子关系快照,父先死就追不到,不可用)。
+/// spawn 前建作业、spawn 后立即挂入;此后该进程衍生的一切子进程
+/// 自动属于作业。drop 时仍处于 armed 状态(超时 / 取消路径)即
+/// 整树终止;正常退出先 disarm —— 清掉 kill-on-close 标志再关句柄,
+/// 不误伤合法存活的孙进程,与 Unix「正常退出不杀组」语义一致。
+///
+/// 任何一步 FFI 失败只降级为「仅杀直接子进程」(= 修复前行为),
+/// 不让探测因清理失败而失败。
+#[cfg(windows)]
+struct ProcessTreeGuard {
+    job: Option<SendHandle>,
+    armed: bool,
+}
+
+/// HANDLE 是裸指针(默认不 Send);内核句柄表进程级共享,CloseHandle /
+/// TerminateJobObject 线程安全,转移所有权跨线程安全。future 须过
+/// `BoxFuture: Send` 边界(trait 对象签名),故显式声明 Send。
+#[cfg(windows)]
+struct SendHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for SendHandle {}
+
+#[cfg(windows)]
+impl ProcessTreeGuard {
+    fn create() -> Self {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                tracing::warn!("CreateJobObjectW 失败:超时清理降级为仅杀直接子进程");
+                return Self {
+                    job: None,
+                    armed: false,
+                };
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&info) as u32,
+            );
+            if ok == 0 {
+                CloseHandle(job);
+                tracing::warn!("SetInformationJobObject 失败:超时清理降级为仅杀直接子进程");
+                return Self {
+                    job: None,
+                    armed: false,
+                };
+            }
+            Self {
+                job: Some(SendHandle(job)),
+                armed: true,
+            }
+        }
+    }
+
+    fn assign(&self, pid: u32) {
+        let Some(SendHandle(job)) = self.job else {
+            return;
+        };
+        if pid == 0 {
+            return;
+        }
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+        unsafe {
+            // Assign 要求句柄具备 SET_QUOTA | TERMINATE 权限;成功后进程句柄即可关闭,
+            // 成员关系保留在进程上。
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                tracing::warn!(pid, "OpenProcess 失败:超时清理降级为仅杀直接子进程");
+                return;
+            }
+            if AssignProcessToJobObject(job, process) == 0 {
+                tracing::warn!(
+                    pid,
+                    "AssignProcessToJobObject 失败:超时清理降级为仅杀直接子进程"
+                );
+            }
+            CloseHandle(process);
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, TerminateJobObject,
+        };
+        let Some(SendHandle(job)) = self.job else {
+            return;
+        };
+        unsafe {
+            if self.armed {
+                // 整树终止(异步发起,微秒级完成,先于调用方后续断言)。
+                TerminateJobObject(job, u32::MAX);
+            } else {
+                // 正常退出:清掉 kill-on-close 再关句柄,CloseHandle 不再连坐。
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = 0;
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of_val(&info) as u32,
+                );
+            }
+            CloseHandle(job);
         }
     }
 }
