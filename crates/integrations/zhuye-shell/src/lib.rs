@@ -38,6 +38,97 @@ pub struct OutputBuffer {
     pub seq: u64,
 }
 
+/// Windows Job Object 句柄 —— ShellSession 整树终止的实现载体。
+///
+/// 创建时设 `KILL_ON_JOB_CLOSE`:会话 kill() 走 `terminate()`(整树立即
+/// 终止,孙进程即使父死也杀得到);句柄 drop 关闭时作业内残存进程一并
+/// 终止 —— 比 Unix 侧「kill_on_drop 只杀直接子进程」更强,属有意收紧:
+/// 桌面会话池销毁会话不应留孤儿进程。
+/// 任何一步 FFI 失败 → None,行为降级为修复前(仅杀直接子进程)。
+#[cfg(windows)]
+struct JobHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for JobHandle {}
+
+#[cfg(windows)]
+impl JobHandle {
+    fn create_kill_on_close() -> Arc<std::sync::Mutex<Option<JobHandle>>> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+        let slot = unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                tracing::warn!("CreateJobObjectW 失败:shell kill 降级为仅杀直接子进程");
+                None
+            } else {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of_val(&info) as u32,
+                );
+                if ok == 0 {
+                    CloseHandle(job);
+                    tracing::warn!("SetInformationJobObject 失败:shell kill 降级为仅杀直接子进程");
+                    None
+                } else {
+                    Some(JobHandle(job))
+                }
+            }
+        };
+        Arc::new(std::sync::Mutex::new(slot))
+    }
+
+    /// 把已 spawn 的进程挂进作业;此后它衍生的一切子进程自动是成员。
+    fn assign(&mut self, pid: u32) {
+        if pid == 0 {
+            return;
+        }
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+        unsafe {
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                tracing::warn!(pid, "OpenProcess 失败:shell kill 降级为仅杀直接子进程");
+                return;
+            }
+            if AssignProcessToJobObject(self.0, process) == 0 {
+                tracing::warn!(
+                    pid,
+                    "AssignProcessToJobObject 失败:kill 降级为仅杀直接子进程"
+                );
+            }
+            CloseHandle(process);
+        }
+    }
+
+    /// 整树终止(异步发起;直接子进程随后由 start_kill 幂等收尾)。
+    fn terminate(&mut self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        unsafe {
+            TerminateJobObject(self.0, u32::MAX);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        // KILL_ON_JOB_CLOSE:关句柄即清场。
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
 /// 一个运行中的 shell 会话。
 pub struct ShellSession {
     pub id: String,
@@ -50,6 +141,10 @@ pub struct ShellSession {
     pub cursor: Arc<Mutex<(usize, usize)>>,
     stdin: Arc<AsyncMutex<Option<tokio::process::ChildStdin>>>,
     kill_requested: AtomicBool,
+    /// Windows:会话的 Job Object(整树终止句柄;与 Unix 进程组对等)。
+    /// None = 作业创建失败,降级为仅杀直接子进程(修复前行为)。
+    #[cfg(windows)]
+    job: Arc<std::sync::Mutex<Option<JobHandle>>>,
 }
 
 impl ShellSession {
@@ -78,16 +173,46 @@ impl ShellSession {
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::piped())
             .kill_on_drop(true);
-        // 为整条命令创建独立进程组,终止时可以一并清理普通子进程。
+        // 为整条命令创建独立进程组,终止时可以一并清理普通子进程;
+        // Windows 用 Job Object 达成同一语义(成员关系挂进程,父死杀得到)。
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(windows)]
+        let job = JobHandle::create_kill_on_close();
         if env_clear {
             // 与框架其它 spawn 子进程一致:不继承宿主凭据。
             command.env_clear();
             command.env("HOME", std::env::var("HOME").unwrap_or_default());
             command.env("PATH", std::env::var("PATH").unwrap_or_default());
+            // Windows 运行时候选变量:缺 SystemRoot 时 CRT 程序在输出前
+            // 即崩溃(与 zhuye-lsp / zhuye-mcp 的 inject_safe_env 同口径)。
+            #[cfg(windows)]
+            for key in [
+                "SystemRoot",
+                "windir",
+                "ComSpec",
+                "PATHEXT",
+                "USERPROFILE",
+                "TEMP",
+                "TMP",
+                "APPDATA",
+                "LOCALAPPDATA",
+                "HOMEDRIVE",
+                "HOMEPATH",
+            ] {
+                if let Ok(value) = std::env::var(key) {
+                    command.env(key, value);
+                }
+            }
         }
         let mut child = command.spawn()?;
+        #[cfg(windows)]
+        {
+            let mut job_slot = job.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(handle) = job_slot.as_mut() {
+                handle.assign(child.id().unwrap_or(0));
+            }
+        }
         let stdout = child.stdout.take().expect("piped");
         let stderr = child.stderr.take().expect("piped");
         let stdin = child.stdin.take().expect("piped");
@@ -100,6 +225,8 @@ impl ShellSession {
             cursor: Arc::new(Mutex::new((0, 0))),
             stdin: Arc::new(AsyncMutex::new(Some(stdin))),
             kill_requested: AtomicBool::new(false),
+            #[cfg(windows)]
+            job,
         };
 
         // 两条 pump:逐行 read_until + 容错解码(细节见模块 doc)。
@@ -199,7 +326,13 @@ impl ShellSession {
                 unsafe { libc::kill(-id, libc::SIGKILL) == 0 }
             });
         #[cfg(not(unix))]
-        let killed = child.start_kill().is_ok();
+        let killed = {
+            // 先作业整树终止(孙进程一并),再杀直接子进程(幂等)。
+            if let Some(handle) = self.job.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                handle.terminate();
+            }
+            child.start_kill().is_ok()
+        };
         if !killed {
             self.kill_requested.store(false, Ordering::Release);
             return false;

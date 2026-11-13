@@ -18,6 +18,15 @@ uuid               = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# 会话 kill 的整树终止用 Job Object(与 Unix 进程组对等);版本与
+# zhuye-lsp / zhuye-mcp 的 windows-sys 对齐。
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 
