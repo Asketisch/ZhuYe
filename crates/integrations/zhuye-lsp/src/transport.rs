@@ -580,6 +580,29 @@ fn inject_safe_env(cmd: &mut Command, user_env: &HashMap<String, String>) {
     if let Ok(path) = std::env::var("PATH") {
         cmd.env("PATH", path);
     }
+    // Windows 运行时候选变量:env_clear 后缺 SystemRoot / windir 会让
+    // node.exe 等 CRT 程序在输出任何字节前就崩溃,initialize 只见 stdout
+    // EOF → inflight 全部标 Cancelled(表现为 "lsp call cancelled" 而非
+    // spawn 错误,CI Windows 实证)。只透传父进程现有值,不伪造路径。
+    // 与 zhuye-mcp::transport::inject_safe_env 同口径。
+    #[cfg(windows)]
+    for key in [
+        "SystemRoot",
+        "windir",
+        "ComSpec",
+        "PATHEXT",
+        "USERPROFILE",
+        "TEMP",
+        "TMP",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
     for (k, v) in user_env {
         cmd.env(k, v);
     }
@@ -738,6 +761,31 @@ mod tests {
         unsafe {
             std::env::remove_var("OPENAI_API_KEY");
         }
+    }
+
+    /// Windows 回归:env_clear 后运行时候选变量必须透传 —— 缺 SystemRoot
+    /// 时 node.exe 等 CRT 程序会在输出任何字节前崩溃(CI 上表现为 EOF →
+    /// "lsp call cancelled",与凭证透传无关)。
+    #[cfg(windows)]
+    #[test]
+    fn inject_safe_env_keeps_windows_runtime_vars() {
+        let mut cmd = Command::new("cmd.exe");
+        inject_safe_env(&mut cmd, &HashMap::new());
+        let keys: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|_| k.to_string_lossy().into_owned()))
+            .collect();
+        assert!(
+            keys.iter().any(|k| k.eq_ignore_ascii_case("SystemRoot")),
+            "SystemRoot 未透传,Windows 子进程 CRT 起不来: {keys:?}"
+        );
+        assert!(
+            !keys
+                .iter()
+                .any(|k| k.eq_ignore_ascii_case("OPENAI_API_KEY")),
+            "白名单不得放行凭证类变量: {keys:?}"
+        );
     }
 
     // ── JsonRpcMessage 序列化 ───────────────────────────────────────
