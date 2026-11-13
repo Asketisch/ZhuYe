@@ -1,7 +1,6 @@
 //! 端到端测试:写入全部 4 种记录类型,经 writer 的
 //! `replay()` 方法回放,断言重建的历史与原始一致。
 
-use std::path::Path;
 use tempfile::tempdir;
 use zhuye_protocol::{MessageRole, RolloutRecord, RolloutRecorder, ThreadId, TurnId};
 use zhuye_rollout::JsonlRolloutWriter;
@@ -174,6 +173,7 @@ async fn record_fails_on_read_only_directory_without_corrupting_existing_file() 
 #[cfg(unix)]
 #[tokio::test]
 async fn record_fails_on_disk_full_device_without_panicking() {
+    use std::path::Path;
     let dir = tempdir().unwrap();
     let sid = ThreadId::new();
     let legacy_day = dir.path().join("2020/01/01");
