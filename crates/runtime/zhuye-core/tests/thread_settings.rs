@@ -122,9 +122,45 @@ fn build_thread(client: Arc<ScriptedClient>) -> AgentThread {
     );
     let tools = Arc::new(ToolRegistry::default());
     tools.register(Arc::new(zhuye_tools::builtins::BashTool::default()));
+    tools.register(Arc::new(ApprovalProbeTool));
     // 会话级审批保持关闭:验证 overrides 自身的强制语义。
     let cfg = AgentConfig::new("scripted/m1", Path::new("."));
     AgentThread::new(cfg, registry, tools, None, None)
+}
+
+/// 只验证审批链路的探针工具:需要 Prompt,但执行本身不依赖平台 shell。
+struct ApprovalProbeTool;
+
+#[async_trait]
+impl zhuye_tools::Tool for ApprovalProbeTool {
+    fn name(&self) -> &str {
+        "approval_probe"
+    }
+
+    fn description(&self) -> &str {
+        "returns a deterministic marker after approval"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    fn required_permission(&self) -> zhuye_protocol::PermissionMode {
+        zhuye_protocol::PermissionMode::Prompt
+    }
+
+    async fn execute(
+        &self,
+        _ctx: zhuye_tools::ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<zhuye_tools::ToolOutput, zhuye_tools::ToolError> {
+        Ok(zhuye_tools::ToolOutput {
+            content: vec![zhuye_protocol::ContentBlock::text("approved-run")],
+            is_error: false,
+            metadata: serde_json::Value::Null,
+            elapsed_ms: 0,
+        })
+    }
 }
 
 async fn drain_until_terminal(handle: &mut zhuye_core::TurnHandle) -> Vec<zhuye_protocol::Event> {
@@ -212,16 +248,12 @@ async fn deny_policy_rejects_prompt_tool_without_modal() {
 }
 
 /// approval_policy = prompt:会话级关闭时强制弹审批;Approve 回执后工具执行。
-/// GHA runner 等 landlock 异常环境下,经 bash 工具的降级重试路径覆盖。
+/// 用无副作用的 Prompt 探针隔离审批语义,避免 Windows 沙箱后端差异。
 #[tokio::test]
 async fn prompt_policy_forces_approval_modal_then_approves() {
     let client = Arc::new(ScriptedClient {
         scripts: std::sync::Mutex::new(vec![
-            tool_call_script(
-                "c1",
-                "bash",
-                serde_json::json!({"cmd": "echo approved-run"}),
-            ),
+            tool_call_script("c1", "approval_probe", serde_json::json!({})),
             vec![
                 ChatEvent::MessageStart {
                     id: "m2".into(),
@@ -236,7 +268,6 @@ async fn prompt_policy_forces_approval_modal_then_approves() {
 
     let settings = ThreadSettingsOverrides {
         approval_policy: Some(zhuye_protocol::ApprovalPolicy::Prompt),
-        sandbox_policy: Some(zhuye_protocol::SandboxPolicy::WorkspaceOnly),
         ..Default::default()
     };
     let mut h = thread
