@@ -8,7 +8,7 @@ It is not a coding assistant you sit in front of — for that, Claude Code or Co
 
 ## Getting started
 
-The engine needs Rust 1.85. Build the binary first:
+The engine needs Rust 1.89, as required by the security-updated rmcp and rusqlite dependency set. Build the binary first:
 
 ```bash
 cargo build -p zhuye-cli

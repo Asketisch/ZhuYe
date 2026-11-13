@@ -709,8 +709,10 @@ fn rename_session_rejects_empty_name() {
     assert!(rename_session(dir.path(), ids[0], "   \t  ").is_err());
     // 拒空后 _names/ 目录不应被创建(或创建了但没 .name 文件)。
     let names_dir = dir.path().join("_names");
-    let entries: Vec<_> =
-        std::fs::read_dir(&names_dir).map_or_default(|rd| rd.filter_map(|e| e.ok()).collect());
+    let entries: Vec<_> = std::fs::read_dir(&names_dir).map_or_else(
+        |_| Default::default(),
+        |rd| rd.filter_map(|e| e.ok()).collect(),
+    );
     for e in &entries {
         assert!(e.path().extension().and_then(|s| s.to_str()) == Some("name"));
     }

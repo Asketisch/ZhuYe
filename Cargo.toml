@@ -67,7 +67,7 @@ members = [
 [workspace.package]
 version = "0.1.12"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 license = "Apache-2.0"
 repository = "https://github.com/Asketisch/ZhuYe"
 
@@ -169,7 +169,8 @@ clap               = { version = "4", features = ["derive"] }
 # block_on,免去给整个 App 套 tokio runtime。pollster 无依赖、~200 LOC。
 pollster           = "0.4"
 # pyo3 ≥ 0.27 才正式支持 Python 3.14 final(0.25/0.26 仅支持 3.14 beta);
-# 0.30 进一步支持 3.15,MSRV 1.85 与本仓库一致。旧版 0.23 在 CI runner
+# 0.30 进一步支持 3.15;rmcp / rusqlite 安全升级把仓库 MSRV 提到 1.89。
+# 旧版 0.23 在 CI runner
 # 默认 Python 3.14 下构建失败(pyo3-ffi build.rs 硬校验版本上限)。
 pyo3               = "0.30"
 reqwest            = { version = "0.12", features = ["json", "stream", "gzip", "rustls-tls"] }
@@ -178,7 +179,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 futures            = "0.3"
 
 # MCP (v0.3+)
-rmcp               = { version = "=1.7.0", features = [
+rmcp               = { version = "=3.10.0", features = [
     "client",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
@@ -228,21 +229,21 @@ sled = "0.34"
 
 # 会话导入(zhuye-import):ZCode 历史存于 SQLite;bundled 自带 C 源,
 # 免系统依赖。仅 zhuye-import 消费,不进 SDK facade。
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 # 并发原语
 parking_lot = "0.12"
 # v1.x WASM 插件宿主(组件模型;C2):features 裁剪 —— 只要运行时 +
 # 组件模型 + Cranelift 编译器 + async(epoch 中断计时)。default 的
 # cache/gc/wat/profiling 等不进依赖面,控制二进制体积。
-wasmtime = { version = "=30.0.1", default-features = false, features = [
+wasmtime = { version = "=36.0.20", default-features = false, features = [
     "async", "cranelift", "component-model", "runtime",
 ] }
 # WASI 实现(wasip2 组件规范隐式 import wasi:io/poll;宿主 linker 必须提供)。
-# 版本锁定 30:与 guest 侧 wit-bindgen 0.40(产 wasi 0.2.3 组件)同代 ——
+# 版本锁定 36:兼容 guest 侧 wit-bindgen 0.40(产 wasi 0.2.3 组件)——
 # 组件模型接口版本要求精确匹配,宿主与社区组件的 wasi 小版本必须一致;
 # 组合见 wit/README.md 的「工具链矩阵」。
-wasmtime-wasi = { version = "=30.0.1", default-features = false }
+wasmtime-wasi = { version = "=36.0.20", default-features = false }
 # v1.0.0-rc3:`read_before_edit` hook 测试可控 mtime 漂移。
 filetime    = "0.2"
 

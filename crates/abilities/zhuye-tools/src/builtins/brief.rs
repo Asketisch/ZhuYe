@@ -57,14 +57,14 @@ impl Tool for BriefTool {
             .get("max_chars")
             .and_then(|v| v.as_u64())
             .unwrap_or(800) as usize;
-        let paths: Vec<String> = args
-            .get("paths")
-            .and_then(|v| v.as_array())
-            .map_or_default(|a| {
+        let paths: Vec<String> = args.get("paths").and_then(|v| v.as_array()).map_or_else(
+            || Default::default(),
+            |a| {
                 a.iter()
                     .filter_map(|x| x.as_str().map(String::from))
                     .collect()
-            });
+            },
+        );
 
         let body = if content.is_empty() && !paths.is_empty() {
             format!("Attachments: {}", paths.join(", "))

@@ -6,7 +6,7 @@
 `zhuye-cli` 只是附带产出的薄 headless CLI 入口(单一 `zhuye` 二进制,
 **不含** `tui` 子命令)。
 
-- Rust stable,edition 2024,MSRV 1.85(rust-toolchain.toml 锁定)
+- Rust stable,edition 2024,MSRV 1.89(安全依赖面要求)
 - 42 crate workspace,按 6 层分组于 `crates/<layer>/<crate>/`
 
 ## 常用命令

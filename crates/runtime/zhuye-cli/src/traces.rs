@@ -36,7 +36,9 @@ pub fn ls(limit: usize) -> anyhow::Result<()> {
             || "?".into(),
             |r| r.completed_at.format("%Y-%m-%d %H:%M").to_string(),
         );
-        let model = recs.last().map_or_default(|r| r.model.model_id.clone());
+        let model = recs
+            .last()
+            .map_or_else(|| Default::default(), |r| r.model.model_id.clone());
         // 可读名 fallback:rollout title → session_id 前 8 字符。
         let title = sessions
             .iter()

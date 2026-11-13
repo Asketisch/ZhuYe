@@ -185,7 +185,9 @@ impl QueueTool {
             &format!(
                 "任务已入队:{}{}\n  排队中:{} 条;队列模式:{}(未开启时用 start 开启)",
                 task.id,
-                task.name.as_deref().map_or_default(|n| format!(" ({n})")),
+                task.name
+                    .as_deref()
+                    .map_or_else(|| Default::default(), |n| format!(" ({n})")),
                 s.counts.queued,
                 if s.running { "开启" } else { "暂停" }
             ),

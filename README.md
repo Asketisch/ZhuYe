@@ -8,7 +8,7 @@ English: [README_EN.md](README_EN.md).
 
 ## 快速开始
 
-引擎要求 Rust 1.85。先编出二进制：
+引擎要求 Rust 1.89（安全修复后的 rmcp / rusqlite 依赖面要求）。先编出二进制：
 
 ```bash
 cargo build -p zhuye-cli

@@ -227,25 +227,25 @@ fn parse_verdict(text: &str) -> Result<GoalVerdict, VerifyError> {
         .ok_or_else(|| VerifyError::Parse(format!("missing 'verdict' field; raw: {text}")))?;
     match verdict {
         "met" => {
-            let evidence = v
-                .get("evidence")
-                .and_then(|x| x.as_array())
-                .map_or_default(|arr| {
+            let evidence = v.get("evidence").and_then(|x| x.as_array()).map_or_else(
+                || Default::default(),
+                |arr| {
                     arr.iter()
                         .filter_map(|x| x.as_str().map(String::from))
                         .collect()
-                });
+                },
+            );
             Ok(GoalVerdict::Met { evidence })
         }
         "unmet" => {
-            let remaining = v
-                .get("remaining")
-                .and_then(|x| x.as_array())
-                .map_or_default(|arr| {
+            let remaining = v.get("remaining").and_then(|x| x.as_array()).map_or_else(
+                || Default::default(),
+                |arr| {
                     arr.iter()
                         .filter_map(|x| x.as_str().map(String::from))
                         .collect()
-                });
+                },
+            );
             Ok(GoalVerdict::Unmet { remaining })
         }
         "blocked" => {

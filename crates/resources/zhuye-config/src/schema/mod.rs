@@ -158,7 +158,7 @@ impl ReflectConfig {
     pub fn context_window_override_entries(&self) -> HashMap<String, u32> {
         self.context_windows
             .as_ref()
-            .map_or_default(|c| c.entries.clone())
+            .map_or_else(|| Default::default(), |c| c.entries.clone())
     }
 
     /// v1.10 功能3:合并后的上下文窗口覆盖表 —— `[context_windows]`

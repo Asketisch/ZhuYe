@@ -283,14 +283,14 @@ fn tool_save_page(args: &Value, manager: &KnowledgeManager) -> Result<String, St
     let page = str_arg(args, "page")?;
     let content = str_arg(args, "content")?;
     let title = args.get("title").and_then(Value::as_str).map(String::from);
-    let tags: Vec<String> = args
-        .get("tags")
-        .and_then(Value::as_array)
-        .map_or_default(|a| {
+    let tags: Vec<String> = args.get("tags").and_then(Value::as_array).map_or_else(
+        || Default::default(),
+        |a| {
             a.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
-        });
+        },
+    );
     let create_only = args
         .get("create_only")
         .and_then(Value::as_bool)

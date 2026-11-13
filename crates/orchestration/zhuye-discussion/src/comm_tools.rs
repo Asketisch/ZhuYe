@@ -93,7 +93,7 @@ impl Tool for SendMessageTool {
         let recipients: Vec<AgentId> = args
             .get("to")
             .and_then(|v| v.as_str())
-            .map_or_default(|s| vec![AgentId(s.to_string())]);
+            .map_or_else(|| Default::default(), |s| vec![AgentId(s.to_string())]);
         let kind = match args
             .get("kind")
             .and_then(|v| v.as_str())
@@ -106,14 +106,17 @@ impl Tool for SendMessageTool {
         let discussion_id = self.bus.discussion_id();
         // v0.2.4: 把 spawning thread 写入的 TokenUsage 翻译成 DiscussionMessage
         // 兼容的 BTreeMap<String, u32>。空 map = non-LLM / early-abort 路径。
-        let token_usage_map = self.token_usage.lock().clone().map_or_default(|u| {
-            let mut m = std::collections::BTreeMap::new();
-            m.insert("input".to_string(), u.input_tokens);
-            m.insert("output".to_string(), u.output_tokens);
-            m.insert("cached".to_string(), u.cached_tokens);
-            m.insert("cache_write".to_string(), u.cache_write_tokens);
-            m
-        });
+        let token_usage_map = self.token_usage.lock().clone().map_or_else(
+            || Default::default(),
+            |u| {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert("input".to_string(), u.input_tokens);
+                m.insert("output".to_string(), u.output_tokens);
+                m.insert("cached".to_string(), u.cached_tokens);
+                m.insert("cache_write".to_string(), u.cache_write_tokens);
+                m
+            },
+        );
         let msg = DiscussionMessage {
             // id 由 bus.route 重写(0 是占位)
             id: MessageId(0),

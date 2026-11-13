@@ -43,13 +43,11 @@ const EPOCH_TICK_MS: u64 = 10;
 wasmtime::component::bindgen!({
     path: "../../../wit",
     world: "zhuye:plugin/zhuye-hook@0.1.0",
-    trappable_imports: true,
 });
 
 wasmtime::component::bindgen!({
     path: "../../../wit",
     world: "zhuye:plugin/zhuye-tool@0.1.0",
-    trappable_imports: true,
 });
 
 // 两个 world 均无 import(纯计算沙箱):linker 无需额外 define。
@@ -87,15 +85,12 @@ struct HostState {
     table: wasmtime::component::ResourceTable,
 }
 
-impl wasmtime_wasi::IoView for HostState {
-    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
-        &mut self.table
-    }
-}
-
 impl wasmtime_wasi::WasiView for HostState {
-    fn ctx(&mut self) -> &mut wasmtime_wasi::WasiCtx {
-        &mut self.wasi
+    fn ctx(&mut self) -> wasmtime_wasi::WasiCtxView<'_> {
+        wasmtime_wasi::WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -314,7 +309,7 @@ impl zhuye_hooks::Hook for WasmHook {
             // wasi:io/poll 隐式 imports(wasip2 规范)由 wasmtime-wasi
             // 提供(sync 实现);组件导出是同步纯 CPU 函数,不实际调用
             // wasi,import 满足声明即可。
-            wasmtime_wasi::add_to_linker_sync(&mut linker)?;
+            wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
             let world = ZhuyeHook::instantiate(&mut store, &component, &linker)?;
             world.call_handle(&mut store, &event_json)
         })
@@ -374,7 +369,7 @@ impl WasmTool {
         // wasi:io/poll@0.2.12 等隐式 imports 由 wasmtime-wasi(p2)提供;
         // p2 实现是 async 注册,实例化走 async 路径。样例/社区组件的
         // 导出是同步函数且不实际调用 wasi —— import 满足声明即可。
-        wasmtime_wasi::add_to_linker_sync(&mut linker)
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|e| WasmError::Call(format!("wasi linker: {e}")))?;
         let world = ZhuyeTool::instantiate(&mut store, &component, &linker)
             .map_err(WasmError::Component)?;
@@ -510,7 +505,7 @@ impl zhuye_tools::Tool for WasmTool {
             store.set_epoch_deadline(deadline_ticks);
             let mut linker: Linker<HostState> = Linker::new(engine);
             // wasi:io/poll 隐式 imports(同 hook 路径)。
-            wasmtime_wasi::add_to_linker_sync(&mut linker)?;
+            wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
             let world = ZhuyeTool::instantiate(&mut store, &component, &linker)?;
             world.call_invoke(&mut store, &args_json)
         })

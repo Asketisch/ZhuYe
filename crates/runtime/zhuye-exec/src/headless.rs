@@ -935,7 +935,7 @@ pub async fn bootstrap_normal(
             .current_workspace()
             .join(".zhuye")
             .join("commands"),
-        zhuye_config::data_path(&[]).map_or_default(|d| d.join("commands")),
+        zhuye_config::data_path(&[]).map_or_else(|| Default::default(), |d| d.join("commands")),
     ];
     // SharedPluginRuntime 是锁包装:快照内部句柄尽快释放(展开范式同款)。
     let user_cmds = {
@@ -1215,7 +1215,7 @@ pub async fn bootstrap_resumed(
             .current_workspace()
             .join(".zhuye")
             .join("commands"),
-        zhuye_config::data_path(&[]).map_or_default(|d| d.join("commands")),
+        zhuye_config::data_path(&[]).map_or_else(|| Default::default(), |d| d.join("commands")),
     ];
     let user_cmds = {
         let guard = plugin_runtime.lock().await;

@@ -178,13 +178,13 @@ pub async fn register(
                 .config
                 .env
                 .clone()
-                .map_or_default(|m| m.into_iter().collect()),
+                .map_or_else(|| Default::default(), |m| m.into_iter().collect()),
             url: mcp_loaded.config.url.clone(),
             headers: mcp_loaded
                 .config
                 .headers
                 .clone()
-                .map_or_default(|m| m.into_iter().collect()),
+                .map_or_else(|| Default::default(), |m| m.into_iter().collect()),
             timeout: std::time::Duration::from_secs(mcp_loaded.config.timeout_secs.unwrap_or(30)),
         };
         let timeout = cfg.timeout;
@@ -314,11 +314,14 @@ pub async fn register(
             .command
             .get("env")
             .and_then(|v| v.as_array())
-            .map_or_default(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            });
+            .map_or_else(
+                || Default::default(),
+                |arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                },
+            );
         let shell = zhuye_hooks::ShellHook::new(
             format!("plugin:{}:{}#{}", loaded.plugin_id, hook.event, i),
             kind,
