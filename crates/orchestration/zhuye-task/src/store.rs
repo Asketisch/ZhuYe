@@ -330,9 +330,15 @@ impl TaskStore for FileTaskStore {
         let dir = self.dir_for(list);
         let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File, TaskError> {
             std::fs::create_dir_all(&dir)?;
+            // 锁文件必须以「读 + 写」打开:Windows 的 LockFileEx 要求句柄带
+            // GENERIC_READ 或 GENERIC_WRITE,而 Rust std 的 append(true) 会
+            // 刻意剔除 FILE_WRITE_DATA(只留 FILE_APPEND_DATA),导致加锁直接
+            // 返回 ACCESS_DENIED(code 5)。锁文件本身不写入任何内容,
+            // 读权限只是为了满足加锁 API 的句柄要求。
             Ok(std::fs::OpenOptions::new()
                 .create(true)
-                .append(true)
+                .read(true)
+                .write(true)
                 .open(dir.join(".task-transaction.lock"))?)
         })
         .await
