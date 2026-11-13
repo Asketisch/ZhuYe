@@ -74,11 +74,14 @@ fn parse_member(v: &Value) -> Result<TeamMemberSpec, ToolError> {
     let allowed_tools = v
         .get("allowed_tools")
         .and_then(|x| x.as_array())
-        .map_or_default(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str().map(String::from))
-                .collect()
-        });
+        .map_or_else(
+            || Default::default(),
+            |arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            },
+        );
     let color = parse_optional_string(v, "color");
     // `agent_id` 格式校验:必须含 `@` 且前半段(角色)符合 `[a-z0-9_-]+`。
     if let Some((role_part, team_part)) = crate::team::parse_agent_id(&agent_id) {

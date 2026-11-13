@@ -228,14 +228,14 @@ impl JudgeVerdict {
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_string();
-        let blockers = v
-            .get("blockers")
-            .and_then(|x| x.as_array())
-            .map_or_default(|arr| {
+        let blockers = v.get("blockers").and_then(|x| x.as_array()).map_or_else(
+            || Default::default(),
+            |arr| {
                 arr.iter()
                     .filter_map(|x| x.as_str().map(String::from))
                     .collect()
-            });
+            },
+        );
         Ok(Self {
             agreed,
             summary,

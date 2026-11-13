@@ -158,7 +158,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         let caps = ctx
             .registry
             .resolve(&spec)
-            .map_or_default(|c| c.capabilities());
+            .map_or_else(|| Default::default(), |c| c.capabilities());
         // 指纹只由 system/工具/模型名构成(不含 messages),这里只需
         // 预热 cache 断点观测 —— 借用参与,不为拼装完整请求而克隆
         // 整个消息列表与工具列表。

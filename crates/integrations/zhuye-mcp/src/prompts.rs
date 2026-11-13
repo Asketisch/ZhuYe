@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rmcp::model::{GetPromptRequestParams, PromptMessageContent, PromptMessageRole};
+use rmcp::model::{ContentBlock as McpContent, GetPromptRequestParams, Role};
 use zhuye_tools::{Tool, ToolContext, ToolError, ToolOutput};
 
 use crate::manager::McpConnectionManager;
@@ -233,20 +233,24 @@ impl Tool for GetMcpPromptTool {
         let mut parts: Vec<String> = Vec::new();
         for (i, msg) in result.messages.iter().enumerate() {
             let role = match msg.role {
-                PromptMessageRole::User => "user",
-                PromptMessageRole::Assistant => "assistant",
+                Role::User => "user",
+                Role::Assistant => "assistant",
             };
             let content = match &msg.content {
-                PromptMessageContent::Text { text } => text.clone(),
-                PromptMessageContent::Image { image } => {
+                McpContent::Text(text) => text.text.clone(),
+                McpContent::Image(image) => {
                     format!("[image data, {} bytes base64, omitted]", image.data.len())
                 }
-                PromptMessageContent::Resource { .. } => {
+                McpContent::Resource { .. } => {
                     "[embedded resource, use ReadMcpResource to fetch]".to_string()
                 }
-                PromptMessageContent::ResourceLink { link } => {
+                McpContent::ResourceLink(link) => {
                     format!("[resource link: {}]", link.uri)
                 }
+                McpContent::Audio(audio) => {
+                    format!("[audio data, {} bytes base64, omitted]", audio.data.len())
+                }
+                _ => "[unsupported MCP prompt content]".to_string(),
             };
             parts.push(format!("## message {} [{}]\n\n{}", i + 1, role, content));
         }

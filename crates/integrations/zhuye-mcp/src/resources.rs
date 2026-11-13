@@ -60,9 +60,8 @@ impl Tool for ListMcpResourcesTool {
             match peer.list_all_resources().await {
                 Ok(resources) => {
                     for r in resources {
-                        let raw = &r.raw;
                         total += 1;
-                        lines.push(format!("{}: {} <{}>", server, raw.name, raw.uri));
+                        lines.push(format!("{}: {} <{}>", server, r.name, r.uri));
                     }
                 }
                 Err(e) => errors.push(format!("{server}: {e}")),
@@ -192,6 +191,7 @@ impl Tool for ReadMcpResourceTool {
                         blob.len()
                     ));
                 }
+                _ => lines.push("[unsupported MCP resource content]".to_string()),
             }
         }
         let body = if !text_parts.is_empty() {

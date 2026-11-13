@@ -229,7 +229,9 @@ impl SubagentRuntimeRegistry {
     pub fn snapshot(&self, child_id: Option<&str>) -> Vec<SubagentStatusSnapshot> {
         let map = self.inner.read();
         match child_id {
-            Some(id) => map.get(id).map_or_default(|s| vec![s.snapshot()]),
+            Some(id) => map
+                .get(id)
+                .map_or_else(|| Default::default(), |s| vec![s.snapshot()]),
             None => {
                 let mut v: Vec<_> = map.values().map(|s| s.snapshot()).collect();
                 v.sort_by_key(|s| s.started_at);

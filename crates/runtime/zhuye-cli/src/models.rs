@@ -95,7 +95,10 @@ pub async fn list(args: ListArgs) -> anyhow::Result<i32> {
         }
     };
 
-    let rules = cfg.model_discovery.as_ref().map_or_default(|d| d.rules());
+    let rules = cfg
+        .model_discovery
+        .as_ref()
+        .map_or_else(|| Default::default(), |d| d.rules());
 
     // 过滤:只要免费的 → 用规则判定;全要 → 全列。
     let rows: Vec<ModelRow> = catalog
@@ -230,7 +233,10 @@ pub async fn doctor_summary(cfg: &ReflectConfig, registry: &ModelRegistry) -> Op
         .unwrap_or(zhuye_config::DEFAULT_DISCOVERY_TIMEOUT_SECS);
     match fetch_catalog(registry, provider, timeout_secs).await {
         Ok(catalog) => {
-            let rules: FreeModelRules = cfg.model_discovery.as_ref().map_or_default(|d| d.rules());
+            let rules: FreeModelRules = cfg
+                .model_discovery
+                .as_ref()
+                .map_or_else(|| Default::default(), |d| d.rules());
             let free_count = catalog
                 .models
                 .iter()
