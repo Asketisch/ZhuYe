@@ -369,7 +369,10 @@ mod platform {
             match OpenOptions::new()
                 .read(true)
                 .share_mode(SHARE_READ_WRITE)
-                .custom_flags(OPEN_REPARSE_POINT)
+                // 目录目标也要能打开:Windows 打开目录必须带 BACKUP_SEMANTICS,
+                // 才能像 Unix 那样走到 read_text 的「不是普通文件」判定,
+                // 让上层报 InvalidArgs 而不是一句 Io 噪声。
+                .custom_flags(OPEN_REPARSE_POINT | BACKUP_SEMANTICS)
                 .open(&self.path)
             {
                 Ok(file) => {
@@ -440,6 +443,8 @@ mod platform {
             // rename 任一步,裸的 os error 无法区分,只能一轮轮猜。
             // (step 闭包复用本函数开头的定义。)
             let mut file = options.open(&temp).map_err(|e| step("open-temp", e))?;
+            // 目标是否存在决定改名是否允许覆盖(与 Unix 的 NOREPLACE 分支同义)。
+            let existed = source.is_some();
             let result = (|| {
                 if let Some(source) = &source {
                     super::metadata_windows::copy_dacl(source, &file)
@@ -447,6 +452,14 @@ mod platform {
                 }
                 file.write_all(content).map_err(|e| step("write", e))?;
                 file.sync_all().map_err(|e| step("sync", e))?;
+                // Windows 不允许替换「仍有打开句柄」的文件:实测旧目标无论以
+                // 读写还是只读打开、无论是否共享删除,改名一律返回
+                // STATUS_ACCESS_DENIED(0xC0000022);只有先关闭句柄才过得去。
+                // Unix 可以边持有旧文件句柄边 rename(POSIX 语义),Windows 不行,
+                // 故 DACL 拷贝完成后必须释放旧目标句柄再改名。
+                // 目录根仍是已固定的父目录句柄,叶子名写死,路径组件中途被
+                // 换成符号链接也改不到工作区之外。
+                drop(source);
                 let parent = self
                     ._directories
                     .last()
@@ -455,7 +468,7 @@ mod platform {
                     .path
                     .file_name()
                     .ok_or_else(|| io::Error::other("missing file name"))?;
-                super::metadata_windows::rename_file(&file, parent, name, source.is_some())
+                super::metadata_windows::rename_file(&file, parent, name, existed)
                     .map_err(|e| step("rename", e))
             })();
             if let Err(error) = result {

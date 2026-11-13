@@ -49,7 +49,9 @@ uuid               = { workspace = true }
 rustix = { version = "1.1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }
+# Wdk_Storage_FileSystem:NT 层 NtSetInformationFile(句柄根相对改名,Win32
+# 封装层不接受 RootDirectory);Win32_System_IO:IO_STATUS_BLOCK。
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Wdk_Storage_FileSystem"] }
 
 [dev-dependencies]
 # Phase 7 `read_before_edit_e2e.rs` 用 `filetime::set_file_mtime` 模拟
