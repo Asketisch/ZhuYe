@@ -119,7 +119,11 @@ pub(super) fn rename_file(
     // 与 Unix 路径 renameat 的行为对齐)。
     const FILE_RENAME_FLAG_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
     let result = unsafe {
-        (*info).Anonymous.Flags = if replace { FILE_RENAME_FLAG_REPLACE_IF_EXISTS } else { 0 };
+        (*info).Anonymous.Flags = if replace {
+            FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+        } else {
+            0
+        };
         (*info).RootDirectory = parent.as_raw_handle();
         (*info).FileNameLength = bytes;
         ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
