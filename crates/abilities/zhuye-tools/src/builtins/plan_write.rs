@@ -98,7 +98,14 @@ impl Tool for PlanWriteTool {
 
         // 拒绝绝对路径与任何 parent/`..` 段 —— 这些是路径逃逸的必要条件。
         // (normalize 在 join 之后还会用 canonicalize + strip_prefix 再校验一次。)
-        if rel.is_absolute() {
+        // Windows 的 `is_absolute()` 要求盘符分量,`/etc/evil.md` 这种 POSIX 式
+        // 根路径会漏网(其 components 首项是 RootDir 而非 Prefix)—— 必须按
+        // **分量**判定,两种平台的绝对路径才都落进 PathEscape。
+        if rel.is_absolute()
+            || rel
+                .components()
+                .any(|c| matches!(c, Component::RootDir | Component::Prefix(_)))
+        {
             return Err(ToolError::PathEscape {
                 path: rel.to_path_buf(),
             });

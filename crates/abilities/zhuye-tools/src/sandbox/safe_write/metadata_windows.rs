@@ -16,7 +16,7 @@ use windows_sys::Win32::Security::{
     UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_DISPOSITION_INFO, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfo,
+    FILE_DISPOSITION_INFO, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfoEx,
     SetFileInformationByHandle,
 };
 
@@ -107,12 +107,23 @@ pub(super) fn rename_file(
     let mut storage = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     // SAFETY: storage 已按结构体对齐并分配足够空间，句柄及 UTF-16 数据在调用期间有效。
+    //
+    // 必须用 FileRenameInformationEx(类 22)而非 FileRenameInformation(类 3):
+    // 非 Ex 类**不接受非 NULL 的 RootDirectory** —— 传句柄根直接返回
+    // ERROR_INVALID_PARAMETER(code 87),这是 write/edit/plan_write 全部
+    // 落盘在 Windows 上恒红的根因。Ex 类(Windows 10 1607+)才支持
+    // 「RootDirectory 句柄 + 相对文件名」的目录句柄根改名,即本模块依赖的
+    // 不重新解析路径的安全不变量。union 按 std 同款口径写 32 位 Flags 域,
+    // 替换语义走 FILE_RENAME_FLAG_REPLACE_IF_EXISTS 位(windows-sys 未导出
+    // 该常量,本地定义;不加 POSIX_SEMANTICS,保持 NTFS 式大小写不敏感替换,
+    // 与 Unix 路径 renameat 的行为对齐)。
+    const FILE_RENAME_FLAG_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
     let result = unsafe {
-        (*info).Anonymous.ReplaceIfExists = replace;
+        (*info).Anonymous.Flags = if replace { FILE_RENAME_FLAG_REPLACE_IF_EXISTS } else { 0 };
         (*info).RootDirectory = parent.as_raw_handle();
         (*info).FileNameLength = bytes;
         ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        SetFileInformationByHandle(file.as_raw_handle(), FileRenameInfo, info.cast(), size)
+        SetFileInformationByHandle(file.as_raw_handle(), FileRenameInfoEx, info.cast(), size)
     };
     if result == 0 {
         Err(io::Error::last_os_error())
