@@ -335,10 +335,13 @@ impl TaskStore for FileTaskStore {
             // 刻意剔除 FILE_WRITE_DATA(只留 FILE_APPEND_DATA),导致加锁直接
             // 返回 ACCESS_DENIED(code 5)。锁文件本身不写入任何内容,
             // 读权限只是为了满足加锁 API 的句柄要求。
+            // truncate(false) 显式声明「保留已有内容」——锁文件内容无意义,
+            // 但缺了它会触发 clippy::suspicious_open_options。
             Ok(std::fs::OpenOptions::new()
                 .create(true)
                 .read(true)
                 .write(true)
+                .truncate(false)
                 .open(dir.join(".task-transaction.lock"))?)
         })
         .await
