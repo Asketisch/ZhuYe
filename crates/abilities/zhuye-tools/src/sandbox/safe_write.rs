@@ -387,6 +387,9 @@ mod platform {
         }
 
         pub(crate) fn replace(&self, content: &[u8]) -> io::Result<()> {
+            let step = |name: &'static str, e: io::Error| {
+                io::Error::other(format!("safe_write.{name}: {e}"))
+            };
             let source = match OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -410,8 +413,9 @@ mod platform {
                     }
                     Some(file)
                 }
+                // NotFound 不能包装(下游按 kind 判新建/覆盖),其余错误带步骤标签。
                 Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error),
+                Err(error) => return Err(step("open-source", error)),
             };
             let temp = self
                 .path
@@ -432,13 +436,17 @@ mod platform {
                     0
                 };
             options.access_mode(access);
-            let mut file = options.open(&temp)?;
+            // 每步带标签:Windows 排障时 87(code 87)可能出自 open/write/sync/
+            // rename 任一步,裸的 os error 无法区分,只能一轮轮猜。
+            // (step 闭包复用本函数开头的定义。)
+            let mut file = options.open(&temp).map_err(|e| step("open-temp", e))?;
             let result = (|| {
                 if let Some(source) = &source {
-                    super::metadata_windows::copy_dacl(source, &file)?;
+                    super::metadata_windows::copy_dacl(source, &file)
+                        .map_err(|e| step("copy-dacl", e))?;
                 }
-                file.write_all(content)?;
-                file.sync_all()?;
+                file.write_all(content).map_err(|e| step("write", e))?;
+                file.sync_all().map_err(|e| step("sync", e))?;
                 let parent = self
                     ._directories
                     .last()
@@ -448,6 +456,7 @@ mod platform {
                     .file_name()
                     .ok_or_else(|| io::Error::other("missing file name"))?;
                 super::metadata_windows::rename_file(&file, parent, name, source.is_some())
+                    .map_err(|e| step("rename", e))
             })();
             if let Err(error) = result {
                 // 临时文件句柄始终不共享删除，失败时通过句柄删除，避免重新解析路径。
