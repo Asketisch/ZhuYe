@@ -138,13 +138,18 @@ pub struct FileSink {
 impl FileSink {
     /// 打开(不存在则创建)追加句柄。
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<FileSink> {
-        Self::open_inner(path.as_ref(), false)
+        Self::open_inner(path.as_ref())
     }
 
-    fn open_inner(path: &Path, read: bool) -> std::io::Result<FileSink> {
+    fn open_inner(path: &Path) -> std::io::Result<FileSink> {
+        // 句柄后续要交给 lock_exclusive:Windows 的 LockFileEx 要求句柄带
+        // GENERIC_READ 或 GENERIC_WRITE,而 Rust std 的 `append(true)` 会
+        // 刻意剔除 FILE_WRITE_DATA(只留 FILE_APPEND_DATA),纯 append 句柄
+        // 加锁会直接失败在 ACCESS_DENIED(code 5)。因此读权限必须常开,
+        // 不能再由调用方选择;追加写语义不受影响。
         let file = std::fs::OpenOptions::new()
             .create(true)
-            .read(read)
+            .read(true)
             .append(true)
             .open(path)?;
         Ok(FileSink {
@@ -387,7 +392,7 @@ impl AuditLog {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
         let path = dir.join("audit.jsonl");
-        let sink = std::sync::Arc::new(FileSink::open_inner(&path, true)?);
+        let sink = std::sync::Arc::new(FileSink::open_inner(&path)?);
         let baseline = sink.baseline().map_err(|error| match error {
             AuditError::Io(error) => error,
             error => std::io::Error::new(std::io::ErrorKind::InvalidData, error),

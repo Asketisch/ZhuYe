@@ -241,8 +241,9 @@ impl ActivityLogger {
     pub fn new(root: PathBuf) -> Self {
         let path = root.join("activity.jsonl");
         // 跨进程共享锁保护追加和轮转;无法打开时降级到纯内存。
+        // 日志文件句柄只用于探路(随后丢弃);锁文件句柄必须走 open_lock。
         let lock_file = open_append(&path)
-            .and_then(|_| open_append(&root.join("activity.lock")))
+            .and_then(|_| open_lock(&root.join("activity.lock")))
             .map_err(|e| {
                 tracing::warn!(path = %path.display(), error = %e, "activity: open log failed; falling back to in-memory");
                 e
@@ -391,6 +392,24 @@ fn open_append(path: &Path) -> std::io::Result<File> {
         std::fs::create_dir_all(parent)?;
     }
     OpenOptions::new().create(true).append(true).open(path)
+}
+
+/// 打开锁文件专用句柄:锁文件本身不读写任何内容,但 Windows 的 LockFileEx
+/// 要求句柄带 GENERIC_READ 或 GENERIC_WRITE —— Rust std 的 `append(true)`
+/// 会刻意剔除 FILE_WRITE_DATA(只留 FILE_APPEND_DATA),拿 append 句柄加锁
+/// 会直接失败在 ACCESS_DENIED(code 5)。必须用 read + write 方式打开。
+/// `truncate(false)` 显式声明保留已有内容,同时消解
+/// clippy::suspicious_open_options(与 zhuye-task 锁文件同一口径)。
+fn open_lock(path: &Path) -> std::io::Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
 }
 
 fn now_ms() -> u64 {
