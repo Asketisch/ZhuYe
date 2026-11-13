@@ -1195,8 +1195,7 @@ pub async fn submission_loop(
                 let children = cfg
                     .subagent_runtime
                     .as_ref()
-                    .map(|reg| reg.snapshot(child_id.as_deref()))
-                    .unwrap_or_default();
+                    .map_or_default(|reg| reg.snapshot(child_id.as_deref()));
                 if child_id.is_some() && children.is_empty() {
                     tracing::debug!(?child_id, "query_subagents: no matching child");
                 }
@@ -1318,17 +1317,13 @@ pub async fn submission_loop(
                 }
             }
             zhuye_protocol::Op::QuerySideChannels { id } => {
-                let channels = cfg
-                    .side_channel_driver
-                    .as_ref()
-                    .map(|d| {
-                        d.list()
-                            .into_iter()
-                            .filter(|c| id.as_deref().is_none_or(|want| want == c.id))
-                            .map(protocol_side_channel_info)
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let channels = cfg.side_channel_driver.as_ref().map_or_default(|d| {
+                    d.list()
+                        .into_iter()
+                        .filter(|c| id.as_deref().is_none_or(|want| want == c.id))
+                        .map(protocol_side_channel_info)
+                        .collect()
+                });
                 let ev = Event::new(
                     sub.id.clone(),
                     EventMsg::SideChannelStatus(zhuye_protocol::SideChannelStatusSnapshot {
@@ -1581,11 +1576,7 @@ pub async fn submission_loop(
                     }
                     PromptAction::Switch { layer } => {
                         // layer 槽位当前固定走全量重扫;预留未来聚焦切换。
-                        let dirs = cfg
-                            .m4
-                            .as_ref()
-                            .map(|m| m.prompt_dirs.clone())
-                            .unwrap_or_default();
+                        let dirs = cfg.m4.as_ref().map_or_default(|m| m.prompt_dirs.clone());
                         let dir_refs: Vec<&std::path::Path> =
                             dirs.iter().map(|p| p.as_path()).collect();
                         zhuye_prompt::init_library(&dir_refs, None);

@@ -161,8 +161,7 @@ fn value_to_string(outputs: &Value, field: &str) -> Result<String, PipelineError
             "missing field '{field}' on outputs (available: {:?})",
             outputs
                 .as_object()
-                .map(|o| o.keys().collect::<Vec<_>>())
-                .unwrap_or_default()
+                .map_or_default(|o| o.keys().collect::<Vec<_>>())
         ))
     })?;
     match v {

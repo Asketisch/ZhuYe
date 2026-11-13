@@ -52,7 +52,7 @@ pub fn build_worker_tool_registry(parent: &ToolRegistry) -> ToolRegistry {
         }
         if let Some(tool) = parent.get(&name) {
             // source 无 Copy(Plugin 携带 id):entry 键克隆。
-            by_source.entry(source.clone()).or_default().push(tool);
+            by_source.entry(source).or_default().push(tool);
         }
     }
     let worker = ToolRegistry::default();

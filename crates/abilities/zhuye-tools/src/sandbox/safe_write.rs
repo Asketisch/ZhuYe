@@ -795,7 +795,7 @@ mod windows_tests {
         assert!(target.replace(b"rejected").is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated");
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_readonly(false);
+        permissions.clear_readonly();
         std::fs::set_permissions(&path, permissions).unwrap();
     }
 }

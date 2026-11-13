@@ -196,7 +196,7 @@ async fn approve_unblocks_prompt_required_tool() {
         match ev.msg {
             EventMsg::ApprovalRequest(req) => {
                 let t = thread.clone();
-                let rid = req.request_id.clone();
+                let rid = req.request_id;
                 let sid = sub_id.to_string();
                 tokio::spawn(async move {
                     t.submit(approval_sub(&sid, &rid, ReviewDecision::Approve))
@@ -243,7 +243,7 @@ async fn deny_returns_error_result() {
         match ev.msg {
             EventMsg::ApprovalRequest(req) => {
                 let t = thread.clone();
-                let rid = req.request_id.clone();
+                let rid = req.request_id;
                 let sid = sub_id.to_string();
                 tokio::spawn(async move {
                     t.submit(approval_sub(

@@ -150,7 +150,7 @@ pub async fn register(
                     .register_plugin_spec(loaded.plugin_id.as_str(), spec.clone());
                 let tool = Arc::new(CallSubAgentTool::new(
                     Arc::clone(&registries.subagent_factory),
-                    spec.clone(),
+                    spec,
                 ));
                 registries
                     .tools
@@ -178,15 +178,13 @@ pub async fn register(
                 .config
                 .env
                 .clone()
-                .map(|m| m.into_iter().collect())
-                .unwrap_or_default(),
+                .map_or_default(|m| m.into_iter().collect()),
             url: mcp_loaded.config.url.clone(),
             headers: mcp_loaded
                 .config
                 .headers
                 .clone()
-                .map(|m| m.into_iter().collect())
-                .unwrap_or_default(),
+                .map_or_default(|m| m.into_iter().collect()),
             timeout: std::time::Duration::from_secs(mcp_loaded.config.timeout_secs.unwrap_or(30)),
         };
         let timeout = cfg.timeout;
@@ -316,12 +314,11 @@ pub async fn register(
             .command
             .get("env")
             .and_then(|v| v.as_array())
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let shell = zhuye_hooks::ShellHook::new(
             format!("plugin:{}:{}#{}", loaded.plugin_id, hook.event, i),
             kind,

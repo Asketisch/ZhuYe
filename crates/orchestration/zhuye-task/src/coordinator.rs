@@ -111,10 +111,7 @@ pub(crate) fn is_truthy_env_value(v: &str) -> bool {
         return false;
     }
     let lower = v.to_lowercase();
-    if lower == "0" || lower == "false" || lower == "no" || lower == "off" {
-        return false;
-    }
-    true
+    !matches!(lower.as_str(), "0" | "false" | "no" | "off")
 }
 
 /// Coordinator 模式的运行时配置 —— 由 `CoordinatorConfig::from_env_or_config`

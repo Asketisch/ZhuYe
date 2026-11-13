@@ -231,12 +231,11 @@ impl JudgeVerdict {
         let blockers = v
             .get("blockers")
             .and_then(|x| x.as_array())
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|x| x.as_str().map(String::from))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         Ok(Self {
             agreed,
             summary,

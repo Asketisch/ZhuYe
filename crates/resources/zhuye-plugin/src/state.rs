@@ -138,11 +138,8 @@ impl InstalledPluginsFile {
 
     /// 列出某 plugin id 的所有 entries(按 scope precedence 降序)。
     pub fn entries_for(&self, id: &PluginId) -> Vec<&InstallationEntry> {
-        let mut out: Vec<&InstallationEntry> = self
-            .plugins
-            .get(id)
-            .map(|v| v.iter().collect())
-            .unwrap_or_default();
+        let mut out: Vec<&InstallationEntry> =
+            self.plugins.get(id).map_or_default(|v| v.iter().collect());
         out.sort_by_key(|e| std::cmp::Reverse(e.scope.precedence()));
         out
     }

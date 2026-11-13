@@ -178,7 +178,7 @@ async fn single_turn_emits_expected_events() {
 
     let mut got: Vec<EventMsg> = Vec::new();
     while let Some(ev) = handle.next().await {
-        got.push(ev.msg.clone());
+        got.push(ev.msg);
     }
 
     // 事件序列:SessionConfigured, TurnStarted, AgentMessageDelta("hi"),
@@ -241,7 +241,7 @@ async fn handles_tool_call_gracefully() {
 
     let mut got: Vec<EventMsg> = Vec::new();
     while let Some(ev) = handle.next().await {
-        got.push(ev.msg.clone());
+        got.push(ev.msg);
     }
     let saw_begin = got
         .iter()
@@ -1173,7 +1173,7 @@ async fn usage_after_message_stop_is_still_reported() {
     let mut handle = thread.submit(make_sub("echo hi")).await;
     let mut got: Vec<EventMsg> = Vec::new();
     while let Some(ev) = handle.next().await {
-        got.push(ev.msg.clone());
+        got.push(ev.msg);
     }
 
     let token = got
