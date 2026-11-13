@@ -215,7 +215,7 @@ sha2        = "0.10"
 # v1.9 S8:密钥加密存储(zhuye-secrets)。AES-256-GCM 认证加密 +
 # HKDF-SHA256 每条目派生(per-entry salt),getrandom 由 aes-gcm 默认
 # feature 提供(Nonce/Key 生成用 OsRng)。
-aes-gcm     = "0.10"
+aes-gcm     = "0.11"
 hkdf        = "0.12"
 
 # Prompt 构建
