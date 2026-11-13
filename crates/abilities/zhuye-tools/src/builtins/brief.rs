@@ -60,12 +60,11 @@ impl Tool for BriefTool {
         let paths: Vec<String> = args
             .get("paths")
             .and_then(|v| v.as_array())
-            .map(|a| {
+            .map_or_default(|a| {
                 a.iter()
                     .filter_map(|x| x.as_str().map(String::from))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         let body = if content.is_empty() && !paths.is_empty() {
             format!("Attachments: {}", paths.join(", "))

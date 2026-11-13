@@ -238,72 +238,37 @@ fn model_mut(cfg: &mut ReflectConfig) -> &mut ModelSection {
 fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
     let v = match key {
         "active.provider" => cfg.active.provider.clone().unwrap_or_default(),
-        "anthropic.api_key" => anthropic(cfg)
-            .api_key
-            .as_deref()
-            .map(redact_key)
-            .unwrap_or_default(),
+        "anthropic.api_key" => anthropic(cfg).api_key.as_deref().map_or_default(redact_key),
         "anthropic.base_url" => anthropic(cfg).base_url.unwrap_or_default(),
         "anthropic.model" => anthropic(cfg).model.unwrap_or_default(),
         "anthropic.timeout_secs" => anthropic(cfg)
             .timeout_secs
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
-        "openai.api_key" => openai(cfg)
-            .api_key
-            .as_deref()
-            .map(redact_key)
-            .unwrap_or_default(),
+            .map_or_default(|v| v.to_string()),
+        "openai.api_key" => openai(cfg).api_key.as_deref().map_or_default(redact_key),
         "openai.base_url" => openai(cfg).base_url.unwrap_or_default(),
         "openai.model" => openai(cfg).model.unwrap_or_default(),
-        "openai.timeout_secs" => openai(cfg)
-            .timeout_secs
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
+        "openai.timeout_secs" => openai(cfg).timeout_secs.map_or_default(|v| v.to_string()),
         "ollama.base_url" => ollama(cfg).base_url.unwrap_or_default(),
-        "ollama.api_key" => ollama(cfg)
-            .api_key
-            .map(|k| redact_key(&k))
-            .unwrap_or_default(),
+        "ollama.api_key" => ollama(cfg).api_key.map_or_default(|k| redact_key(&k)),
         "ollama.model" => ollama(cfg).model.unwrap_or_default(),
         "ollama.keep_alive_secs" => ollama(cfg)
             .keep_alive_secs
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
-        "ollama.num_ctx" => ollama(cfg)
-            .num_ctx
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
-        "ollama.num_gpu" => ollama(cfg)
-            .num_gpu
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
-        "ollama.timeout_secs" => ollama(cfg)
-            .timeout_secs
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
-        "compact.trigger_tokens" => cfg
-            .compact
-            .trigger_tokens
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
+            .map_or_default(|v| v.to_string()),
+        "ollama.num_ctx" => ollama(cfg).num_ctx.map_or_default(|v| v.to_string()),
+        "ollama.num_gpu" => ollama(cfg).num_gpu.map_or_default(|v| v.to_string()),
+        "ollama.timeout_secs" => ollama(cfg).timeout_secs.map_or_default(|v| v.to_string()),
+        "compact.trigger_tokens" => cfg.compact.trigger_tokens.map_or_default(|v| v.to_string()),
         "model.context_window" => cfg
             .model
             .as_ref()
             .and_then(|m| m.context_window)
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
+            .map_or_default(|v| v.to_string()),
         "model.reasoning_effort" => cfg
             .model
             .as_ref()
             .and_then(|m| m.reasoning_effort.clone())
             .unwrap_or_default(),
-        "hooks.enabled" => cfg
-            .hooks
-            .enabled
-            .clone()
-            .map(|v| v.join(","))
-            .unwrap_or_default(),
+        "hooks.enabled" => cfg.hooks.enabled.clone().map_or_default(|v| v.join(",")),
         _ => return "(unknown)".into(),
     };
     if v.is_empty() { "<unset>".into() } else { v }

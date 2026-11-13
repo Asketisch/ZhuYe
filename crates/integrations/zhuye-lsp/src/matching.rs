@@ -48,8 +48,7 @@ pub fn pick_server_for(
             .startup_config
             .patterns
             .first()
-            .map(|p| p.language_id.clone())
-            .unwrap_or_default();
+            .map_or_default(|p| p.language_id.clone());
         return Some(RouteResult {
             server_name: name.to_string(),
             language_id: lang,

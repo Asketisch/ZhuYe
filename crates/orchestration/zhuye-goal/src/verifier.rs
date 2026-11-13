@@ -230,24 +230,22 @@ fn parse_verdict(text: &str) -> Result<GoalVerdict, VerifyError> {
             let evidence = v
                 .get("evidence")
                 .and_then(|x| x.as_array())
-                .map(|arr| {
+                .map_or_default(|arr| {
                     arr.iter()
                         .filter_map(|x| x.as_str().map(String::from))
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             Ok(GoalVerdict::Met { evidence })
         }
         "unmet" => {
             let remaining = v
                 .get("remaining")
                 .and_then(|x| x.as_array())
-                .map(|arr| {
+                .map_or_default(|arr| {
                     arr.iter()
                         .filter_map(|x| x.as_str().map(String::from))
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             Ok(GoalVerdict::Unmet { remaining })
         }
         "blocked" => {

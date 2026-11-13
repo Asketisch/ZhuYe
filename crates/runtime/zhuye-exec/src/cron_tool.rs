@@ -263,10 +263,7 @@ fn job_output(
             "Cron job created: {} — `{}`{}\n  next fire: {}",
             j.id,
             j.schedule,
-            j.name
-                .as_deref()
-                .map(|n| format!(" ({n})"))
-                .unwrap_or_default(),
+            j.name.as_deref().map_or_default(|n| format!(" ({n})")),
             j.next_fire
                 .map_or_else(|| "unknown".into(), |t| t.to_rfc3339())
         ),

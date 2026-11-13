@@ -111,7 +111,7 @@ impl CheckpointTool {
         let text = format!(
             "Checkpoint created: `{sha}`{}\nThe workspace git tree is snapshotted; use `rewind` \
              with this sha to restore it later.",
-            label.map(|l| format!(" ({l})")).unwrap_or_default()
+            label.map_or_default(|l| format!(" ({l})"))
         );
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::Text { text }],
@@ -153,10 +153,7 @@ impl CheckpointTool {
             let mut lines = vec!["Checkpoints this session:".to_string()];
             for s in &summaries {
                 let sha = s["sha"].as_str().unwrap_or("?");
-                let label = s["label"]
-                    .as_str()
-                    .map(|l| format!(" ({l})"))
-                    .unwrap_or_default();
+                let label = s["label"].as_str().map_or_default(|l| format!(" ({l})"));
                 lines.push(format!("  - {sha}{label}"));
             }
             lines.join("\n")

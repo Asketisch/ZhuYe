@@ -286,12 +286,11 @@ fn tool_save_page(args: &Value, manager: &KnowledgeManager) -> Result<String, St
     let tags: Vec<String> = args
         .get("tags")
         .and_then(Value::as_array)
-        .map(|a| {
+        .map_or_default(|a| {
             a.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let create_only = args
         .get("create_only")
         .and_then(Value::as_bool)

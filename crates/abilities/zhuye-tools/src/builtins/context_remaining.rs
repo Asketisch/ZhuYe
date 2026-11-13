@@ -75,9 +75,7 @@ impl Tool for GetContextRemainingTool {
         match window {
             Some(w) => {
                 let rem = context_remaining.unwrap_or(0);
-                let pct = pct_of_window
-                    .map(|p| format!(" ({p:.1}% used)"))
-                    .unwrap_or_default();
+                let pct = pct_of_window.map_or_default(|p| format!(" ({p:.1}% used)"));
                 lines.push(format!("Context window: {w} tokens — {rem} remaining{pct}"));
             }
             None => {
@@ -87,9 +85,7 @@ impl Tool for GetContextRemainingTool {
         match budget {
             Some(b) => {
                 let rem = budget_remaining.unwrap_or(0);
-                let pct = pct_of_budget
-                    .map(|p| format!(" ({p:.1}% used)"))
-                    .unwrap_or_default();
+                let pct = pct_of_budget.map_or_default(|p| format!(" ({p:.1}% used)"));
                 lines.push(format!("Token budget: {b} tokens — {rem} remaining{pct}"));
             }
             None => lines.push("Token budget: none (only max_iterations bounds the loop)".into()),

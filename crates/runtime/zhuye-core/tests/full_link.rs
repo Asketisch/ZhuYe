@@ -868,7 +868,8 @@ async fn full_link_steer_when_idle_merges_at_boundary() {
 
 /// 全链路:模型调 bash(真实执行)→ 事件流中 ToolCallOutputDelta
 /// 先于 ToolCallEnd 到达,且 End 的完整输出包含全部内容。
-/// 注意:与 bash 单测一致,显式关沙箱避免 env 串扰(锁内)。
+/// 注意:与 bash 单测一致,显式关沙箱并豁免测试命令,避免 Unix/Windows
+/// 平台后端差异影响本用例的事件顺序断言(锁内恢复原值)。
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn full_link_tool_output_delta_on_wire() {
@@ -876,9 +877,11 @@ async fn full_link_tool_output_delta_on_wire() {
     let _g = LOCK.lock().unwrap();
     let prior_on = std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok();
     let prior_strict = std::env::var("ZHUYE_SANDBOX_STRICT").ok();
+    let prior_allow_bare = std::env::var("ZHUYE_UNTRUSTED_ALLOW_BARE").ok();
     unsafe {
         std::env::set_var("ZHUYE_SANDBOX_OS_LEVEL", "0");
         std::env::set_var("ZHUYE_SANDBOX_STRICT", "0");
+        std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", "1");
     }
 
     let client = ScriptedClient::new(vec![
@@ -921,6 +924,10 @@ async fn full_link_tool_output_delta_on_wire() {
     match prior_strict {
         Some(p) => unsafe { std::env::set_var("ZHUYE_SANDBOX_STRICT", p) },
         None => unsafe { std::env::remove_var("ZHUYE_SANDBOX_STRICT") },
+    }
+    match prior_allow_bare {
+        Some(p) => unsafe { std::env::set_var("ZHUYE_UNTRUSTED_ALLOW_BARE", p) },
+        None => unsafe { std::env::remove_var("ZHUYE_UNTRUSTED_ALLOW_BARE") },
     }
 
     // 增量事件先于 End;End 输出完整。

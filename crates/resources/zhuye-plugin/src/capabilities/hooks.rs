@@ -106,7 +106,7 @@ pub fn load(spec: &HookSpec, plugin_root: &Path) -> Result<Vec<LoadedHook>> {
                     })?;
                 (label, json)
             }
-            SourceOrJson::Inline(v) => ("<inline>".into(), v.clone()),
+            SourceOrJson::Inline(v) => ("<inline>".into(), v),
         };
         expand(&label, &json, plugin_root, &mut out)?;
     }
