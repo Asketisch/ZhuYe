@@ -7,6 +7,9 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  # nightly quality(schedule 触发)失败后需要手动重跑验证 —— 不加这个,
+  # 修完只能等第二天凌晨的 cron 才知道结果。
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
