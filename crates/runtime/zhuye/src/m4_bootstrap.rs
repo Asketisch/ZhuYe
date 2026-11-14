@@ -116,12 +116,6 @@ pub fn build_default_m4_with_prompts(
         workspace,
         &user_data_dir,
     ));
-    // v1.11 基建#8:后台整理句柄(submission_loop 每 N turns 调;节流值
-    // 由调用方在 AgentConfig 上设置,默认 12 / 0 关闭)。
-    let consolidator = Arc::new(zhuye_memory::Consolidator::new(
-        file_store.clone(),
-        agent_name,
-    ));
     let memory: Arc<dyn MemoryStore> = Arc::new(InMemoryStore::with_fallback(file_store));
 
     // ── Session notes(落盘失败 → 内存 fallback) ──────────────
@@ -196,7 +190,6 @@ pub fn build_default_m4_with_prompts(
         prompt_dirs,
         skill_dirs: vec![ws_skills, home_skills],
         bundled_skills: zhuye_config::load_default().active.bundled_skills,
-        consolidator: Some(consolidator),
     }
 }
 

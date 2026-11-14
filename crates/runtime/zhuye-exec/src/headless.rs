@@ -611,14 +611,52 @@ fn cron_tick_secs() -> u64 {
         .map_or(DEFAULT, |secs: u64| secs.clamp(1, 3600))
 }
 
-/// v1.11 基建#8:后台记忆整理节流 —— env `ZHUYE_MEMORY_CONSOLIDATE_TURNS`
-/// (0 = 关闭;缺省 / 非法值 = 默认 12;上限 1000 防误配)。
-fn memory_consolidate_every() -> u32 {
-    const DEFAULT: u32 = 12;
-    match std::env::var("ZHUYE_MEMORY_CONSOLIDATE_TURNS") {
-        Ok(v) => v.trim().parse::<u32>().unwrap_or(DEFAULT).min(1000),
+/// v1.11 基建#8(重构):后台记忆整理节流 —— env
+/// `ZHUYE_MEMORY_CONSOLIDATE_SECS`(秒;0 = 关闭;缺省 / 非法值 = 默认
+/// 300;上限 86400 防误配)。
+fn memory_consolidate_interval_secs() -> u64 {
+    const DEFAULT: u64 = 300;
+    match std::env::var("ZHUYE_MEMORY_CONSOLIDATE_SECS") {
+        Ok(v) => v.trim().parse::<u64>().unwrap_or(DEFAULT).min(86_400),
         Err(_) => DEFAULT,
     }
+}
+
+/// v1.11 基建#8(重构):后台记忆整理任务 —— **纯 exec 层时间节流**,
+/// 不订阅引擎事件(TurnComplete 只走 per-turn 通道,session 订阅者
+/// 收不到;精确的「每 N turns」语义在 core 无免费挂点)。
+///
+/// 归属说明:「定期整理」是宿主侧的运维特性,核心层只提供
+/// `Consolidator` 幂等纯函数(无变化不写盘);interval / 触发全部留在
+/// 本层,保证引擎循环稳定。`secs == 0` 显式关闭。
+fn spawn_memory_consolidation_task(workspace: &std::path::Path, agent_name: &str) {
+    let secs = memory_consolidate_interval_secs();
+    if secs == 0 {
+        return;
+    }
+    let user_data_dir = zhuye_config::data_path_or_relative(&[]);
+    let consolidator = Arc::new(zhuye_memory::Consolidator::new(
+        Arc::new(zhuye_memory::FileMemoryStore::with_user_data_dir(
+            workspace,
+            &user_data_dir,
+        )),
+        agent_name,
+    ));
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(secs));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // interval 首 tick 立即返回 —— 首轮 run 跳过(会话刚开始,文件
+        // 尚未形成;冷启动空跑虽幂等但无意义)。
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let c = consolidator.clone();
+            // spawn_blocking:文件 I/O 不阻塞事件流;失败仅记日志
+            // (Consolidator::run 内部已逐 scope 降级)。
+            let _ = tokio::task::spawn_blocking(move || c.run()).await;
+        }
+    });
+    tracing::info!(secs, agent = %agent_name, "memory consolidation task spawned");
 }
 
 /// 读取 autopilot driver tick 间隔;缺省 30 秒,允许测试和运维调小
@@ -831,12 +869,6 @@ pub async fn bootstrap_normal(
         .with_policy(policy)
         .with_token_budget(token_budget)
         .with_max_iterations(max_iterations)
-        // v1.11 基建#9:`[active] agents_md` 未表态时默认开启(pre_loop
-        // 注入项目根 AGENTS.md + 用户级 ~/.zhuye/AGENTS.md)。
-        .with_agents_md(initial_cfg.active.agents_md.unwrap_or(true))
-        // v1.11 基建#8:后台记忆整理节流(env `ZHUYE_MEMORY_CONSOLIDATE_TURNS`;
-        // 0 = 关闭,其余值覆盖默认 12,非法值维持默认)。
-        .with_memory_consolidate_every(memory_consolidate_every())
         .with_quota_tracker(quota_tracker)
         .with_tool_env(tool_env)
         .with_telemetry(telemetry_sink.clone())
@@ -942,6 +974,20 @@ pub async fn bootstrap_normal(
 
     // Plan mode hooks:PlanModeGate + read_before_edit。
     thread.register_hook(PlanModeGate::default_mode());
+    // v1.11 重构:AGENTS.md 首轮注入 + 跨会话笔记召回 —— 特性以
+    // UserPromptSubmit 内置 hook 形态挂在 exec 层,不进引擎循环
+    // (见 builtin_hooks.rs 模块文档)。`[active] agents_md = false`
+    // 显式关闭时不注册 AgentsMdHook。
+    if initial_cfg.active.agents_md.unwrap_or(true) {
+        let user_data_dir = zhuye_config::data_path_or_relative(&[]);
+        thread.register_hook(crate::builtin_hooks::AgentsMdHook::new(
+            workspace.clone(),
+            Some(user_data_dir),
+        ));
+    }
+    thread.register_hook(crate::builtin_hooks::CrossSessionRecallHook::new(
+        thread_id.to_string(),
+    ));
     let rbe_section = initial_cfg.hooks.read_before_edit.as_ref();
     let (_rbe_state, rbe_hook) = build_read_before_edit(
         rbe_section.and_then(|s| s.enabled),
@@ -1061,6 +1107,10 @@ pub async fn bootstrap_normal(
             }
         }
     });
+
+    // v1.11 基建#8(重构):后台记忆整理 —— 时间节流,触发留在 exec 层,
+    // 不进引擎循环(见 spawn_memory_consolidation_task 文档)。
+    spawn_memory_consolidation_task(&workspace, args.agent.as_deref().unwrap_or("default"));
 
     Ok(HeadlessSession {
         thread,
@@ -1245,6 +1295,17 @@ pub async fn bootstrap_resumed(
     // 注册的 PlanModeGate / read_before_edit 在 resume 分支也要有。
     if args.plan_mode {
         thread.register_hook(PlanModeGate::default_mode());
+        // v1.11 重构:resume 路径同款内置注入 hooks(见上方普通分支注释)。
+        if initial_cfg.active.agents_md.unwrap_or(true) {
+            let user_data_dir = zhuye_config::data_path_or_relative(&[]);
+            thread.register_hook(crate::builtin_hooks::AgentsMdHook::new(
+                workspace.clone(),
+                Some(user_data_dir),
+            ));
+        }
+        thread.register_hook(crate::builtin_hooks::CrossSessionRecallHook::new(
+            thread_id.to_string(),
+        ));
         let rbe_section = initial_cfg.hooks.read_before_edit.as_ref();
         let (_rbe_state, rbe_hook) = build_read_before_edit(
             rbe_section.and_then(|s| s.enabled),

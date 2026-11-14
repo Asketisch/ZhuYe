@@ -214,26 +214,12 @@ pub struct AgentConfig {
     pub sandbox_writable: Vec<PathBuf>,
     /// v1.x:`[sandbox].allow_network` 透传。
     pub sandbox_network: Option<bool>,
-    /// v1.11 基建#8:后台记忆整理节流 —— 每 N 个 turn 结束后 spawn 一次
-    /// MEMORY.md 去重 / 合并(后台,不阻塞 turn)。`0` = 关闭;默认 12。
-    /// 与 `agents_md` 同款共享槽(热重载 / bootstrap 可改)。
-    pub memory_consolidate_every: Arc<RwLock<u32>>,
-    /// v1.11 基建#8:整理计数器(内部;每 turn +1,达阈值清零并触发)。
-    pub memory_turn_counter: Arc<RwLock<u32>>,
     /// v1.11 桌面#3:复杂度分级路由 —— effort 档位 → 模型 spec 映射
     /// (config `[routing.main.complexity]`,bootstrap / 热重载装配;
     /// core 不读 config)。`model_call` 在 effort 档位命中映射时覆盖
     /// initial spec(「简单任务用快模型、复杂任务用旗舰模型」);空表 =
     /// 不启用(纯 effort 档位,模型不变)。
     pub effort_model_routes: Arc<RwLock<HashMap<ReasoningEffortMirror, String>>>,
-    /// v1.11 基建#9:AGENTS.md 默认加载开关(`[active] agents_md`)。
-    ///
-    /// 共享 `Arc<RwLock>` 镜像 `max_iterations` pattern:配置热重载后
-    /// 下一轮 pre_loop 立刻读到新值。`true`(默认)= 每轮 pre_loop 把
-    /// `<workspace>/AGENTS.md` 与用户级 `~/.zhuye/AGENTS.md`(存在时)
-    /// 注入 core system prompt 的 `## Project Instructions` 段;
-    /// `false` = 显式关闭(等价旧行为)。
-    pub agents_md: Arc<RwLock<bool>>,
 }
 
 impl Default for AgentConfig {
@@ -280,10 +266,7 @@ impl AgentConfig {
             sandbox_default: None,
             sandbox_writable: Vec::new(),
             sandbox_network: None,
-            memory_consolidate_every: Arc::new(RwLock::new(12)),
-            memory_turn_counter: Arc::new(RwLock::new(0)),
             effort_model_routes: Arc::new(RwLock::new(HashMap::new())),
-            agents_md: Arc::new(RwLock::new(true)),
         }
     }
 
@@ -359,17 +342,6 @@ impl AgentConfig {
     /// 用户审批通过后调用;与 `ToolContext` 共享 `Arc<RwLock<…>>`。
     pub fn set_workspace(&self, path: impl Into<PathBuf>) {
         *self.workspace.write() = path.into();
-    }
-
-    /// v1.11 基建#9:AGENTS.md 默认加载是否开启(当前值快照)。
-    pub fn agents_md_enabled(&self) -> bool {
-        *self.agents_md.read()
-    }
-
-    /// v1.11 基建#9:写入 AGENTS.md 加载开关。仅供 `zhuye-exec`
-    /// bootstrap / 配置热重载调用;默认 `true`。
-    pub fn set_agents_md(&self, enabled: bool) {
-        *self.agents_md.write() = enabled;
     }
 
     /// 读取 worktree 会话状态。
@@ -611,19 +583,6 @@ impl AgentConfig {
     /// 启动期用(`max_iterations_from_env` 解析的结果注入)。
     pub fn with_max_iterations(self, max_iterations: u32) -> Self {
         *self.max_iterations.write() = max_iterations;
-        self
-    }
-
-    /// v1.11 基建#9:bootstrap 期设置 AGENTS.md 默认加载开关
-    /// (`[active] agents_md` 解析结果,`None` = 默认开启)。
-    pub fn with_agents_md(self, enabled: bool) -> Self {
-        *self.agents_md.write() = enabled;
-        self
-    }
-
-    /// v1.11 基建#8:bootstrap 期设置后台记忆整理节流(每 N turns;0=关)。
-    pub fn with_memory_consolidate_every(self, every_turns: u32) -> Self {
-        *self.memory_consolidate_every.write() = every_turns;
         self
     }
 

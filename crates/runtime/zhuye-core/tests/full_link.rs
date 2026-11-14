@@ -397,7 +397,6 @@ fn make_m4(recorder: Option<Arc<dyn RolloutRecorder>>, compactor: Arc<Compactor>
         prompt_dirs: Vec::new(),
         skill_dirs: Vec::new(),
         bundled_skills: false,
-        consolidator: None,
     }
 }
 

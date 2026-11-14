@@ -2,6 +2,7 @@
 //! 以 JSONL 流形式向 stdout 输出事件。tracing 日志走 stderr。
 
 mod bootstrap;
+pub mod builtin_hooks;
 mod cron_tool;
 mod goal_tool;
 mod headless;

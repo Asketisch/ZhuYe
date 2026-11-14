@@ -109,6 +109,12 @@ enum Command {
         /// 同时对当前 provider 发一次 1 token 请求探测(会消耗 token)。
         #[arg(long)]
         check_network: bool,
+        /// v1.11 F6 组合透明性:打印当前**生效**配置的 JSON 快照
+        /// (provider / model / 路由 / hooks / MCP / LSP / 插件 / 沙箱 /
+        /// 预算;密钥只出 label 不出值),对齐 DSH `--dump-config` 的
+        /// 「组合透明性」语义。给出本 flag 时跳过其余诊断。
+        #[arg(long)]
+        dump_config: bool,
     },
     /// 列出 / 挑选 provider 当前可用的模型(清单实时取自 provider 接口)。
     Models {
@@ -877,7 +883,10 @@ fn main() -> anyhow::Result<()> {
             TracesAction::Ls { limit } => traces::ls(limit),
             TracesAction::Show { id } => traces::show(&id),
         },
-        Command::Doctor { check_network } => rt.block_on(doctor::run(check_network)),
+        Command::Doctor {
+            check_network,
+            dump_config,
+        } => rt.block_on(doctor::run(check_network, dump_config)),
         Command::Models { action } => {
             let code = match action {
                 ModelsAction::List {

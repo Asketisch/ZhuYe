@@ -651,19 +651,24 @@ impl Tool for BashTool {
             }
         }
         if text.len() > OUTPUT_LIMIT {
-            // v1.7 截断落盘:已捕获的完整输出(stdout/stderr 分段)写临时
-            // 文件,供模型用 read 工具取回;写失败维持纯截断(尽力而为)。
+            // v1.7 截断落盘:完整输出(stdout/stderr 分段)写到
+            // `<workspace>/.zhuye/spill/`(v1.11 F5:原写 /tmp —— read 工具
+            // 有 workspace 边界检查,模型按提示读回会被 PathEscape 拒掉,
+            // 「落盘供读回」的承诺形同虚设。`.zhuye/` 在边界内,与
+            // `.zhuye/plan` 同款先例;workspace 缺失时退回 /tmp)。
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos());
-            let spill_path =
-                std::env::temp_dir().join(format!("zhuye-bash-{}-{nanos}.log", std::process::id()));
+            let spill_dir = workspace.join(".zhuye").join("spill");
+            let spill_path = spill_dir.join(format!("bash-{}-{nanos}.log", std::process::id()));
             let mut spill = cleaned_out;
             if !cleaned_err.is_empty() {
                 spill.extend_from_slice(b"\n\n--- stderr ---\n");
                 spill.extend_from_slice(&cleaned_err);
             }
-            let spilled = std::fs::write(&spill_path, &spill).is_ok();
+            let spilled = std::fs::create_dir_all(&spill_dir)
+                .and_then(|_| std::fs::write(&spill_path, &spill))
+                .is_ok();
             // 0.8:`String::truncate` 在非 char 边界会 panic(一个汉字 3 字节,
             // 恰好切在第二 / 第三字节就炸)。改用协议层提供的安全截断。
             zhuye_protocol::truncate_string_in_place(&mut text, OUTPUT_LIMIT);
@@ -1515,6 +1520,14 @@ mod tests {
         assert!(
             !String::from_utf8_lossy(&bytes).contains("__ZHUYE_STATE__"),
             "落盘内容不应包含 sentinel 行"
+        );
+        // v1.11 F5:落盘必须在 **workspace 内**(`.zhuye/spill/`)—— read
+        // 工具有 workspace 边界,写到 /tmp 的 spill 模型读不回(原实现
+        // 的「供 read 取回」承诺形同虚设)。这里 workspace 是 /tmp,
+        // 即 `/tmp/.zhuye/spill/`。
+        assert!(
+            path_str.contains(".zhuye/spill/"),
+            "spill 应落在 workspace 的 .zhuye/spill/ 下: {path_str}"
         );
         let _ = std::fs::remove_file(path_str);
     }

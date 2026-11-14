@@ -174,8 +174,8 @@ def test_零相关查询不注入召回(serve_session, mock_script, sandbox) -> 
 
 
 def test_后台自动整理_周期触发(serve_session, mock_script, sandbox) -> None:
-    """`ZHUYE_MEMORY_CONSOLIDATE_TURNS=1` → turn 结束后台自动合并同名
-    条目(无需手动 consolidate;轮询 MEMORY.md 直到合并生效)。"""
+    """`ZHUYE_MEMORY_CONSOLIDATE_SECS=3`(时间节流,exec 层后台任务)→
+    自动合并同名条目(无需手动 consolidate;轮询 MEMORY.md 直到合并生效)。"""
     require_binary()
     script = mock_script(
         [
@@ -189,14 +189,14 @@ def test_后台自动整理_周期触发(serve_session, mock_script, sandbox) ->
         env={
             "ZHUYE_MODEL": "mock",
             "ZHUYE_MOCK_SCRIPT": str(script),
-            "ZHUYE_MEMORY_CONSOLIDATE_TURNS": "1",
+            "ZHUYE_MEMORY_CONSOLIDATE_SECS": "3",
         }
     ) as s:
         s.submit({"type": "user_input", "items": [{"type": "text", "text": "第一轮"}]})
         # 第二 turn:整理在第一 turn 后台 spawn,轮询等文件被合并。
         s.submit({"type": "user_input", "items": [{"type": "text", "text": "第二轮"}]})
         memory_md = sandbox.cwd / ".zhuye" / "agent-memory" / "default" / "MEMORY.md"
-        deadline = time.monotonic() + 15.0
+        deadline = time.monotonic() + 30.0
         merged = False
         while time.monotonic() < deadline:
             if memory_md.exists() and memory_md.read_text().count("## ") == 1:

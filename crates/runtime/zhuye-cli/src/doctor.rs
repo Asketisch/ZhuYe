@@ -10,9 +10,18 @@ const WARN: &str = "!";
 ///
 /// 检查项(config / provider / rollout / MCP / LSP / plugins / rustc / sessions),
 /// 整体 exit code 0(doctor 是诊断,不是校验)。
-pub async fn run(check_network: bool) -> anyhow::Result<()> {
+/// v1.11 F6:`dump_config = true` 时打印生效配置 JSON 快照并跳过诊断
+/// (组合透明性,对齐 DSH `--dump-config`;报告的是「引擎实际会装配什么」)。
+pub async fn run(check_network: bool, dump_config: bool) -> anyhow::Result<()> {
     let cfg = load_default();
     let config_path = default_config_path();
+    if dump_config {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&dump_effective_config(&cfg)).expect("dump serialize")
+        );
+        return Ok(());
+    }
 
     println!("ZhuYe doctor");
     println!("==================");
@@ -380,6 +389,131 @@ fn snapshot_summary(cfg: &zhuye_config::ReflectConfig) -> String {
     out
 }
 
+/// v1.11 F6:当前生效配置的 JSON 快照(组合透明性)。
+///
+/// 覆盖引擎装配的每个决策面:active provider / 解析后的 model spec /
+/// 路由 slot / 凭据 label(只出 label,不出密钥值)/ hooks / MCP / LSP /
+/// 插件 / 沙箱 / 预算 / 思考强度 / agent 定义目录 / 数据目录。
+/// 机器可读(`zhuye doctor --dump-config | jq`),供排障与「到底是什么
+/// 在生效」的一眼回答。
+fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value {
+    use serde_json::json;
+
+    // provider / model:解析后的生效值(env 优先级已含)。
+    let active_provider = cfg.active_provider();
+    let model_spec = cfg.resolved_model_spec();
+
+    // 凭据:只出 label 与「是否设了 key」,绝不出 key 本身。
+    // 凭据条目摘要(label + 布尔,绝不出 key 值)。
+    fn cred_labels(
+        creds: Option<&Vec<zhuye_config::schema::provider::CredentialConfig>>,
+    ) -> Vec<serde_json::Value> {
+        creds
+            .map(|list| {
+                list.iter()
+                    .map(|c| {
+                        json!({
+                            "label": c.label,
+                            "has_api_key": !c.api_key.is_empty(),
+                            "has_base_url": c.base_url.is_some(),
+                            "model": c.model,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    let routing = cfg.routing.as_ref();
+    let routing_json = json!({
+        "main": routing.map(|r| json!({
+            "primary": r.main.primary,
+            "fallbacks": r.main.fallbacks,
+            "weights": r.main.weights,
+            "complexity": r.main.complexity.as_ref().map(|c| json!({
+                "low": c.low, "medium": c.medium, "high": c.high,
+                "max": c.max, "ultra": c.ultra,
+            })),
+        })),
+        "compact": routing.map(|r| json!({ "primary": r.compact.primary, "fallbacks": r.compact.fallbacks })),
+        "subagent": routing.map(|r| json!({ "primary": r.subagent.primary, "fallbacks": r.subagent.fallbacks })),
+    });
+
+    let mcp: Vec<serde_json::Value> = match cfg.mcp_server_configs() {
+        Ok(configs) => configs
+            .iter()
+            .map(|c| {
+                json!({
+                    "name": c.name,
+                    "transport": c.transport,
+                })
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    json!({
+        "schema": "zhuye-dump-config/1",
+        "version": env!("CARGO_PKG_VERSION"),
+        "config_path": default_config_path().map(|p| p.display().to_string()),
+        "data_dir": zhuye_config::data_path(&[]).map(|p| p.display().to_string()),
+        "active": {
+            "provider": active_provider,
+            "credential": cfg.active.credential,
+            "model_spec": model_spec,
+            "max_iterations": cfg.active.max_iterations,
+            "agents_md": cfg.active.agents_md,
+            "bundled_skills": cfg.active.bundled_skills,
+            "tools_allowlist": !cfg.active.tools.is_empty(),
+            "disallowed_tools": cfg.active.disallowed_tools,
+        },
+        "providers": {
+            "anthropic": cfg.anthropic.as_ref().map(|a| json!({
+                "has_api_key": a.api_key.as_ref().is_some_and(|k| !k.is_empty()),
+                "base_url": a.base_url,
+                "model": a.model,
+                "credentials": cred_labels(Some(&a.credentials)),
+            })),
+            "openai": cfg.openai.as_ref().map(|o| json!({
+                "has_api_key": o.api_key.as_ref().is_some_and(|k| !k.is_empty()),
+                "base_url": o.base_url,
+                "model": o.model,
+                "credentials": cred_labels(Some(&o.credentials)),
+            })),
+            "ollama": cfg.ollama.as_ref().map(|o| json!({
+                "base_url": o.base_url,
+                "has_api_key": o.api_key.as_ref().is_some_and(|k| !k.is_empty()),
+                "model": o.model,
+            })),
+        },
+        "routing": routing_json,
+        "model": cfg.model.as_ref().map(|m| json!({
+            "context_window": m.context_window,
+            "reasoning_effort": m.reasoning_effort,
+        })),
+        "hooks": {
+            "enabled": cfg.hooks.enabled,
+            "disabled": cfg.hooks.disabled,
+        },
+        "mcp_servers": mcp,
+        "lsp_servers": cfg.lsp_servers.servers.len(),
+        "plugins": {
+            "enabled_plugins": cfg.plugins.enabled_plugins,
+            "marketplaces": cfg.plugins.marketplaces.keys().cloned().collect::<Vec<_>>(),
+        },
+        "sandbox": json!({
+            "os_level": cfg.sandbox.os_level,
+            "allow_network": cfg.sandbox.allow_network,
+            "writable_dirs_count": cfg.sandbox.writable_dirs.len(),
+        }),
+        "token_budget": cfg.token_budget.as_ref().and_then(|t| t.session_total_tokens),
+        "effort": cfg.resolve_reasoning_effort().map(|e| e.as_str()),
+        "subagent_specs": cfg.subagents.len(),
+        "coordinator_enabled": cfg.coordinator.as_ref().map(|c| c.enabled),
+        "compact_trigger_tokens": cfg.compact.trigger_tokens,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,7 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn doctor_runs_without_panic_with_default() {
-        let result = run(false).await;
+        let result = run(false, false).await;
         assert!(result.is_ok());
     }
 

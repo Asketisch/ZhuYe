@@ -31,6 +31,29 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest -v tests.test_runner
 
+
+  # F12(gap-report §6):框架 CI 此前全 ubuntu —— Windows/macOS 上的原生
+  # 行为(safe_write NT 层、Job Object 整树终止、文件锁 code 5、Seatbelt
+  # 路径)只靠桌面端 CI 间接覆盖。补关键 crate 的跨平台 test job(离线,
+  # ZHUYE_MODEL=mock;不含 pyo3 绑定层 —— 其构建依赖随桌面/发布链覆盖)。
+  cross-platform-tests:
+    name: cargo test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      ZHUYE_MODEL: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # Windows 上文件锁(code 5)对并发 cargo 进程敏感 —— 单线程测试进程。
+      - run: cargo test -p zhuye-tools -p zhuye-config -p zhuye-core -p zhuye-rollout --lib
+
   check:
     name: cargo check
     runs-on: ubuntu-latest
