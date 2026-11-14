@@ -53,6 +53,7 @@ fn ephemeral_tasks_field_is_bool_with_default_false() {
         resume_by: None,
         agent: Some("default".into()),
         plan_mode: false,
+        full_auto: false,
         auto_root: false,
         images: Vec::new(),
     };
@@ -269,6 +270,13 @@ async fn handle_reload_returns_err_when_channel_closed() {
 /// 这是核心路径:用户编辑 TOML 改 model,下一个 turn 自动用新值。
 #[tokio::test]
 async fn handle_reload_updates_agent_config_model_when_section_changes() {
+    // env 隔离:handle_reload 经 `resolve_model_spec` 读 `ZHUYE_MODEL`,
+    // 且 mock 值优先级高于 TOML(v1.3 SDK 设计)。runner 门禁恒设
+    // `ZHUYE_MODEL=mock`,不隔离则 old/new spec 恒相等,reload 永不换模
+    // 型,本断言假失败。保存 → 清除 → 恢复。
+    let prior_model = std::env::var("ZHUYE_MODEL").ok();
+    // SAFETY: 单线程 tokio 测试;断言 env-无关路径。
+    unsafe { std::env::remove_var("ZHUYE_MODEL") };
     use std::sync::Arc;
     use zhuye_config::{ActiveSection, AnthropicSection};
     let registry = Arc::new(ModelRegistry::new());
@@ -310,6 +318,10 @@ async fn handle_reload_updates_agent_config_model_when_section_changes() {
         "anthropic/claude-3-haiku-20240307",
         "AgentConfig.model must zhuye the new TOML value"
     );
+    if let Some(m) = prior_model {
+        // SAFETY: 恢复进程 env,不影响其他测试的初始假设。
+        unsafe { std::env::set_var("ZHUYE_MODEL", m) };
+    }
 }
 
 /// 仅 `[anthropic].api_key` 变(model 字段不动)→ 不动 `AgentConfig.model`。

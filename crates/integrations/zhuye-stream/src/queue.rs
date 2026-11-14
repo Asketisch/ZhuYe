@@ -55,6 +55,16 @@ pub struct QueueTask {
     /// 可选任务名(给人看)。
     #[serde(default)]
     pub name: Option<String>,
+    /// v1.11 基建#6:goal 任务载荷。`Some` 时本任务以目标模式执行 ——
+    /// 出队时先注入 `Op::EnterGoalMode`,prompt 作为首个目标 turn;
+    /// turn 结束后经 [`GoalProbe`] 探测目标状态,未完成则继续注入
+    /// 续跑 turn(目标模式的续作文本在 steering 队列,任意 user_input
+    /// 在 turn 边界合并),直到目标 Complete / Blocked / 预算尽,
+    /// 最后注入 `Op::ExitGoalMode` 收尾 —— 队列由此**顺序执行多个
+    /// goal**,每个 goal 的 controller 生命周期被严格框在自身任务内,
+    /// 不污染下一条任务。
+    #[serde(default)]
+    pub goal: Option<QueueTaskGoal>,
     pub status: QueueTaskStatus,
     /// 入队时间(UTC)。
     pub created_at: DateTime<Utc>,
@@ -68,6 +78,48 @@ pub struct QueueTask {
     #[serde(default)]
     pub note: Option<String>,
 }
+
+/// v1.11 基建#6:goal 任务的载荷字段(镜像 `Op::EnterGoalMode`)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueTaskGoal {
+    /// 目标描述(EnterGoalMode.goal / 首个 turn 的 prompt 即此文本)。
+    pub objective: String,
+    /// AND 条件 verify 命令(verdict=met 且命令 exit 0 才算完成)。
+    #[serde(default)]
+    pub verify_command: Option<String>,
+    /// 目标模式 token 预算(软停)。
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+}
+
+/// v1.11 基建#6:goal 状态探针 —— driver 在每个 goal turn 结束后读它
+/// 决定续跑 / 结清。zhuye-stream(integrations 层)不依赖 zhuye-core,
+/// 由 `zhuye-exec` 装配时闭包读 `AgentConfig.goal` 的 controller 快照。
+pub type GoalProbe = Arc<dyn Fn() -> GoalProbeSnapshot + Send + Sync>;
+
+/// 探针返回的目标状态快照。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoalProbeSnapshot {
+    pub status: GoalProbeStatus,
+    /// 已跑的 goal turn 数(controller.turn_count)。
+    pub turns: u32,
+}
+
+/// 目标状态(driver 只关心「是否继续」与终态归类)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalProbeStatus {
+    /// 无活跃 controller(未进入 / 已退出目标模式)。
+    None,
+    Active,
+    Paused,
+    Blocked,
+    BudgetLimited,
+    Complete,
+}
+
+/// 单个 goal 任务的续跑 turn 上限(防探针失真时无限循环;
+/// 正常路径由 controller 的 3-strike / token 预算先行兜底)。
+pub const MAX_GOAL_TURNS_PER_TASK: u32 = 16;
 
 /// 任务生命周期。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +196,9 @@ pub struct QueueScheduler {
     /// turn 注入器(出队 → 观察 per-turn 事件终态)。`None` = 回退纯
     /// `sub_tx` 注入(测试 / 未接线场景,结清走 best-effort 语义)。
     submitter: Option<TurnSubmitter>,
+    /// v1.11 基建#6:goal 状态探针。`None` = 未接线,goal 任务出队时
+    /// 直接结清为 Failed(无法观测目标终态,不盲跑)。
+    goal_probe: Option<GoalProbe>,
     /// driver 唤醒信号:结清 / 入队 / start 时 `notify_one`,driver 不必
     /// 等周期 tick。监视任务用它代替直接递归调 `tick`(递归 async 会让
     /// rustc 在 Send 证明上陷入循环义务)。
@@ -176,6 +231,7 @@ impl QueueScheduler {
             state: Arc::new(RwLock::new(QueueState::default())),
             sub_tx,
             submitter: None,
+            goal_probe: None,
             wake: Arc::new(tokio::sync::Notify::new()),
             session_id,
             store_path: None,
@@ -188,6 +244,12 @@ impl QueueScheduler {
     /// 终态,按任务 id 结清)。接线后 `tick` 不再走 `sub_tx` 直发。
     pub fn with_turn_submitter(mut self, submitter: TurnSubmitter) -> Self {
         self.submitter = Some(submitter);
+        self
+    }
+
+    /// v1.11 基建#6:接线 goal 状态探针(goal 任务续跑 / 结清的依据)。
+    pub fn with_goal_probe(mut self, probe: GoalProbe) -> Self {
+        self.goal_probe = Some(probe);
         self
     }
 
@@ -272,6 +334,7 @@ impl QueueScheduler {
             id: uuid_v4(),
             prompt: prompt.into(),
             name,
+            goal: None,
             status: QueueTaskStatus::Queued,
             created_at: Utc::now(),
             started_at: None,
@@ -289,6 +352,47 @@ impl QueueScheduler {
         }
         self.persist();
         // 队列已在跑且无 active 时让 driver 立即出队,不等周期 tick。
+        self.wake();
+        task
+    }
+
+    /// v1.11 基建#6:入队一条 **goal 任务**(FIFO 尾部)。出队时以目标
+    /// 模式执行:EnterGoalMode → objective 首个 turn → 探针驱动续跑 →
+    /// 终态(Complete=Done / Blocked|BudgetLimited=Failed)→ ExitGoalMode。
+    /// 与普通 prompt 任务同队列混排、严格串行。
+    pub fn enqueue_goal(
+        &self,
+        objective: impl Into<String>,
+        verify_command: Option<String>,
+        token_budget: Option<u64>,
+        name: Option<String>,
+    ) -> QueueTask {
+        let objective = objective.into();
+        let task = QueueTask {
+            id: uuid_v4(),
+            // prompt 冗余存 objective(driver 注入直接用;list 渲染也用它),
+            // goal 载荷里保留全量参数。
+            prompt: objective.clone(),
+            name,
+            goal: Some(QueueTaskGoal {
+                objective,
+                verify_command,
+                token_budget,
+            }),
+            status: QueueTaskStatus::Queued,
+            created_at: Utc::now(),
+            started_at: None,
+            finished_at: None,
+            note: None,
+        };
+        self.state.write().tasks.push(task.clone());
+        if self.store_error.is_some() {
+            tracing::warn!(
+                id = %task.id,
+                "queue: store unavailable; goal task is memory-only and will be lost on restart"
+            );
+        }
+        self.persist();
         self.wake();
         task
     }
@@ -478,6 +582,8 @@ impl QueueScheduler {
     }
 
     /// `tick` 的 submitter 接线版:标 Running → 提交并观察 turn 终态。
+    /// v1.11 基建#6:goal 任务先注入 `Op::EnterGoalMode`,再注入 objective
+    /// 首个 turn;续跑与结清走 [`watch_goal_task`](探针驱动)。
     async fn tick_with_submitter(&self, submitter: TurnSubmitter, id: String) -> bool {
         // 先占位(标 Running),提交失败再结清为 Failed —— 占位期间
         // active().is_some() 阻止并发出队。
@@ -496,16 +602,42 @@ impl QueueScheduler {
                     Some(t) => {
                         t.status = QueueTaskStatus::Running;
                         t.started_at = Some(started_at);
-                        Some((t.id.clone(), t.prompt.clone()))
+                        Some((t.id.clone(), t.prompt.clone(), t.goal.clone()))
                     }
                     None => None,
                 }
             }
         };
-        let Some((t_id, prompt)) = dequeued else {
+        let Some((t_id, prompt, goal)) = dequeued else {
             return false;
         };
         self.persist();
+        // goal 任务:先注入 EnterGoalMode op(mpsc 有序,先于下面的
+        // user_input 处理;fire-and-forget,receiver 直接丢弃)。
+        if let Some(g) = &goal {
+            if self.goal_probe.is_none() {
+                // 未接线探针:无法观测目标终态,不盲跑 —— 直接结清 Failed。
+                self.settle_task(
+                    &t_id,
+                    false,
+                    Some("goal probe not wired; goal task refused".into()),
+                );
+                tracing::warn!(task_id = %t_id, "queue: goal task refused (no probe)");
+                return false;
+            }
+            let enter = Submission::with_id(
+                uuid_v4(),
+                zhuye_protocol::Op::EnterGoalMode {
+                    goal: g.objective.clone(),
+                    verify_command: g.verify_command.clone(),
+                    token_budget: g.token_budget,
+                },
+            );
+            if submitter(enter).await.is_none() {
+                self.settle_task(&t_id, false, Some("submission channel closed".into()));
+                return false;
+            }
+        }
         let submission = Submission::user_input(prompt);
         match submitter(submission).await {
             None => {
@@ -518,14 +650,28 @@ impl QueueScheduler {
             Some(rx) => {
                 tracing::info!(task_id = %t_id, "queue: task dequeued and injected");
                 let sched = self.clone();
-                // 监视 turn 终态:终态事件或通道关闭(异常路径不总有终态
-                // 事件,但 spawned turn task 结束时通道必然关闭)都结清。
-                // 结清后唤醒 driver 出队下一条(不直接递归调 `tick`)。
-                tokio::spawn(async move {
-                    let (ok, note) = watch_turn_terminal(rx).await;
-                    sched.settle_task(&t_id, ok, note);
-                    sched.wake();
-                });
+                match goal {
+                    // goal 任务:探针驱动续跑,终态结清 + ExitGoalMode 收尾。
+                    Some(g) => {
+                        let probe = self
+                            .goal_probe
+                            .clone()
+                            .expect("goal probe 已在上文校验非空");
+                        tokio::spawn(async move {
+                            watch_goal_task(sched.clone(), submitter, probe, t_id, g, rx).await;
+                        });
+                    }
+                    // 普通任务:终态事件或通道关闭(异常路径不总有终态
+                    // 事件,但 spawned turn task 结束时通道必然关闭)都结清。
+                    // 结清后唤醒 driver 出队下一条(不直接递归调 `tick`)。
+                    None => {
+                        tokio::spawn(async move {
+                            let (ok, note) = watch_turn_terminal(rx).await;
+                            sched.settle_task(&t_id, ok, note);
+                            sched.wake();
+                        });
+                    }
+                }
                 true
             }
         }
@@ -591,6 +737,138 @@ async fn watch_turn_terminal(mut rx: mpsc::Receiver<Event>) -> (bool, Option<Str
         }
     }
     (false, Some("turn ended without terminal event".into()))
+}
+
+/// v1.11 基建#6:goal 任务的 turn 循环监视器。
+///
+/// 语义:首个 turn(已注入)终态后,**先等 `on_turn_end` 校验落定**
+/// (引擎先发 TurnComplete 再跑 goal 自校验,校验含 LLM 调用可能滞后
+/// 数秒 —— 探针需轮询到 `turn_count` 增量或状态离开 Active,否则会
+/// 把刚完成的目标误判为 Active 空跑一轮),再按落定状态决策 ——
+/// - `Active` 且未超 [`MAX_GOAL_TURNS_PER_TASK`] → 注入一条续跑
+///   user_input(目标模式的续作文本在 steering 队列,turn 边界自动
+///   合并进本条输入),继续监视;
+/// - `Complete` → ExitGoalMode + 结清 Done;
+/// - `Blocked` / `BudgetLimited` / `Paused` / `None`(未开成 /
+///   中途被清)→ ExitGoalMode + 结清 Failed(note 带状态);
+/// - `Active` 但超 turn 上限(探针失真兜底)→ ExitGoalMode + Failed。
+///
+/// ExitGoalMode 保证 controller 生命周期框在单任务内,下一条队列
+/// 任务(普通 / goal)从干净状态开始。
+async fn watch_goal_task(
+    sched: QueueScheduler,
+    submitter: TurnSubmitter,
+    probe: GoalProbe,
+    t_id: String,
+    goal: QueueTaskGoal,
+    first_rx: mpsc::Receiver<Event>,
+) {
+    let mut rx = first_rx;
+    // 本任务已观察到的 turn 终态数;on_turn_end 每跑一次 turn_count +1,
+    // `turn_count >= 已观察终态数` 即代表最新 turn 的校验已落定。
+    let mut turns_seen: u32 = 0;
+    loop {
+        // 等当前 turn 终态(首圈是 objective turn,后续是续跑 turn)。
+        let (turn_ok, note) = watch_turn_terminal(rx).await;
+        if !turn_ok {
+            // turn 失败(含中断):目标未竟,结清 Failed;仍发 ExitGoalMode
+            // 清理 controller(submission 通道关闭时放弃 —— 会话已死)。
+            submit_exit_goal(&submitter).await;
+            sched.settle_task(&t_id, false, note.or(Some("goal turn failed".into())));
+            sched.wake();
+            return;
+        }
+        turns_seen += 1;
+        let snap = wait_goal_settled(&probe, turns_seen).await;
+        match snap.status {
+            GoalProbeStatus::Active => {
+                if turns_seen >= MAX_GOAL_TURNS_PER_TASK || snap.turns >= MAX_GOAL_TURNS_PER_TASK {
+                    submit_exit_goal(&submitter).await;
+                    sched.settle_task(
+                        &t_id,
+                        false,
+                        Some(format!(
+                            "goal turn cap reached ({MAX_GOAL_TURNS_PER_TASK}); objective: {}",
+                            truncate_str(&goal.objective, 60)
+                        )),
+                    );
+                    sched.wake();
+                    return;
+                }
+                // 续跑:续作文本由引擎推进 steering 队列,与本条输入在
+                // turn 边界合并(pre_loop 的 inject_turn_boundary_steering)。
+                let cont = Submission::user_input("继续推进当前目标(队列 goal 续跑)。");
+                match submitter(cont).await {
+                    Some(next_rx) => {
+                        rx = next_rx;
+                        continue;
+                    }
+                    None => {
+                        sched.settle_task(&t_id, false, Some("submission channel closed".into()));
+                        sched.wake();
+                        return;
+                    }
+                }
+            }
+            GoalProbeStatus::Complete => {
+                submit_exit_goal(&submitter).await;
+                sched.settle_task(&t_id, true, Some("goal complete".into()));
+                sched.wake();
+                return;
+            }
+            status => {
+                submit_exit_goal(&submitter).await;
+                let label = match status {
+                    GoalProbeStatus::Blocked => "goal blocked",
+                    GoalProbeStatus::BudgetLimited => "goal budget limited",
+                    GoalProbeStatus::Paused => "goal paused",
+                    _ => "goal mode inactive",
+                };
+                sched.settle_task(&t_id, false, Some(label.into()));
+                sched.wake();
+                return;
+            }
+        }
+    }
+}
+
+/// 轮询等待最新 turn 的 `on_turn_end` 校验落定:
+/// `turn_count >= min_turns`(校验已跑)或状态离开 Active(终态)即返回。
+/// 超时(校验 LLM 卡死 / 探针失真)按当时快照返回,由调用方按上限兜底。
+async fn wait_goal_settled(probe: &GoalProbe, min_turns: u32) -> GoalProbeSnapshot {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+    const SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    let deadline = tokio::time::Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let snap = probe();
+        if snap.status != GoalProbeStatus::Active || snap.turns >= min_turns {
+            return snap;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(
+                min_turns,
+                "queue: goal settle poll timed out; using stale snapshot"
+            );
+            return snap;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// 注入 `Op::ExitGoalMode`(fire-and-forget;通道关闭时静默放弃)。
+async fn submit_exit_goal(submitter: &TurnSubmitter) {
+    let exit = Submission::with_id(uuid_v4(), zhuye_protocol::Op::ExitGoalMode);
+    let _ = submitter(exit).await;
+}
+
+/// 简单按字符截断(note 用)。
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max).collect();
+        format!("{cut}…")
+    }
 }
 
 /// `TurnStatus` 的稳定字符串(note 用;不依赖 Debug 输出)。
@@ -943,5 +1221,255 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert!(f(), "条件在 1s 内未满足");
+    }
+    // ── v1.11 基建#6:goal 任务(多 goal 顺序执行) ────────────────────
+
+    /// 可脚本化的 fake turn 注入器:把每次 submission 与它的 rx 转发给
+    /// 测试驱动侧,由测试模拟引擎(发 TurnComplete / 改探针状态)。
+    fn fake_submitter() -> (
+        TurnSubmitter,
+        mpsc::UnboundedReceiver<(Submission, mpsc::Sender<Event>)>,
+    ) {
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let submitter: TurnSubmitter = Arc::new(move |sub| {
+            let (tx, rx) = mpsc::channel(4);
+            let _ = out_tx.send((sub, tx));
+            Box::pin(async move { Some(rx) })
+        });
+        (submitter, out_rx)
+    }
+
+    /// 驱动一次「引擎模拟」:等下一个 submission;若是 UserInput turn →
+    /// 发 TurnComplete(Success) 并按脚本推进探针;若是 EnterGoalMode /
+    /// ExitGoalMode op → 记录。返回这次 submission 的 op 类型标签。
+    async fn drive_one(
+        rx: &mut mpsc::UnboundedReceiver<(Submission, mpsc::Sender<Event>)>,
+        probe_state: &Arc<std::sync::Mutex<GoalProbeSnapshot>>,
+        next_snapshot: GoalProbeSnapshot,
+    ) -> String {
+        use tokio::time::Duration;
+        let (sub, tx) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("submitter 未收到新 submission")
+            .expect("submitter 通道关闭");
+        match sub.op {
+            zhuye_protocol::Op::EnterGoalMode { .. } => "enter_goal".into(),
+            zhuye_protocol::Op::ExitGoalMode => "exit_goal".into(),
+            zhuye_protocol::Op::UserInput { .. } => {
+                // 模拟引擎:turn 成功收尾,随后 on_turn_end 落定(推进探针)。
+                let _ = tx.send(turn_complete_event(true)).await;
+                *probe_state.lock().unwrap() = next_snapshot;
+                "user_turn".into()
+            }
+            other => panic!("未预期的 Op:{other:?}"),
+        }
+    }
+
+    /// goal 任务完整生命周期:EnterGoalMode → objective turn(unmet,
+    /// Active)→ 续跑 turn(met,Complete)→ ExitGoalMode → 结清 Done。
+    /// 验证「一个队列排 goal,顺序跑到底才轮到下一条」。
+    #[tokio::test]
+    async fn goal_task_runs_to_terminal_then_settles_done() {
+        let (submitter, mut loop_rx) = fake_submitter();
+        // 探针状态由 drive_one 按脚本推进(模拟 on_turn_end 落定)。
+        let probe_state: Arc<std::sync::Mutex<GoalProbeSnapshot>> =
+            Arc::new(std::sync::Mutex::new(GoalProbeSnapshot {
+                status: GoalProbeStatus::None,
+                turns: 0,
+            }));
+        let ps = probe_state.clone();
+        let probe: GoalProbe = Arc::new(move || *ps.lock().unwrap());
+        let q = QueueScheduler::new(None, ThreadId::new())
+            .with_turn_submitter(submitter)
+            .with_goal_probe(probe);
+        q.enqueue_goal("目标A", Some("true".into()), Some(1000), Some("g1".into()));
+        q.set_running(true);
+        assert!(q.tick().await, "goal 任务应出队");
+
+        // 1) 先 EnterGoalMode(objective / verify / budget 全量透传)。
+        let (sub, _) = tokio::time::timeout(std::time::Duration::from_secs(5), loop_rx.recv())
+            .await
+            .expect("等 EnterGoalMode")
+            .expect("通道关闭");
+        match sub.op {
+            zhuye_protocol::Op::EnterGoalMode {
+                goal,
+                verify_command,
+                token_budget,
+            } => {
+                assert_eq!(goal, "目标A");
+                assert_eq!(verify_command.as_deref(), Some("true"));
+                assert_eq!(token_budget, Some(1000));
+            }
+            other => panic!("首个 submission 应是 EnterGoalMode,得到 {other:?}"),
+        }
+        // 2) objective turn → 未达成(Active, turns=1)。
+        let step = drive_one(
+            &mut loop_rx,
+            &probe_state,
+            GoalProbeSnapshot {
+                status: GoalProbeStatus::Active,
+                turns: 1,
+            },
+        )
+        .await;
+        assert_eq!(step, "user_turn");
+        // 3) 续跑 turn → 达成(Complete, turns=2)。
+        let step = drive_one(
+            &mut loop_rx,
+            &probe_state,
+            GoalProbeSnapshot {
+                status: GoalProbeStatus::Complete,
+                turns: 2,
+            },
+        )
+        .await;
+        assert_eq!(step, "user_turn", "Active 后应注入续跑 turn");
+        // 4) ExitGoalMode 收尾。
+        let (sub, _) = tokio::time::timeout(std::time::Duration::from_secs(5), loop_rx.recv())
+            .await
+            .expect("等 ExitGoalMode")
+            .expect("通道关闭");
+        assert!(matches!(sub.op, zhuye_protocol::Op::ExitGoalMode));
+        // 5) 任务结清 Done,note 标完成。
+        wait_for(|| {
+            q.list().first().is_some_and(|t| {
+                t.status == QueueTaskStatus::Done && t.note.as_deref() == Some("goal complete")
+            })
+        })
+        .await;
+    }
+
+    /// 两个 goal 任务顺序执行:第一个跑完 ExitGoalMode 后,第二个才
+    /// EnterGoalMode(严格串行,controller 生命周期不互相污染)。
+    #[tokio::test]
+    async fn two_goal_tasks_run_strictly_serial() {
+        let (submitter, mut loop_rx) = fake_submitter();
+        let probe_state: Arc<std::sync::Mutex<GoalProbeSnapshot>> =
+            Arc::new(std::sync::Mutex::new(GoalProbeSnapshot {
+                status: GoalProbeStatus::None,
+                turns: 0,
+            }));
+        let ps = probe_state.clone();
+        let probe: GoalProbe = Arc::new(move || *ps.lock().unwrap());
+        let q = QueueScheduler::new(None, ThreadId::new())
+            .with_turn_submitter(submitter)
+            .with_goal_probe(probe);
+        q.enqueue_goal("目标一", None, None, None);
+        q.enqueue_goal("目标二", None, None, None);
+        q.set_running(true);
+        // 后台 driver:第一个 goal 结清后自动出队第二个(测试只驱动引擎侧)。
+        let _driver = q.clone().start(1);
+
+        // 驱动序列:enter → turn(Active,1)→ 续跑(Complete,2)→ exit
+        // → (第二任务)enter → turn(Complete,2)→ exit。
+        let script = [
+            GoalProbeSnapshot {
+                status: GoalProbeStatus::Active,
+                turns: 1,
+            },
+            GoalProbeSnapshot {
+                status: GoalProbeStatus::Complete,
+                turns: 2,
+            },
+            GoalProbeSnapshot {
+                status: GoalProbeStatus::Complete,
+                turns: 2,
+            },
+        ];
+        let mut script_iter = script.iter().copied();
+        let mut seen: Vec<String> = Vec::new();
+        // 两个任务共:2×(enter + N turns + exit);用有限步数驱动。
+        for _ in 0..10 {
+            let next = script_iter.next().unwrap_or(GoalProbeSnapshot {
+                status: GoalProbeStatus::Complete,
+                turns: 2,
+            });
+            let label = drive_one(&mut loop_rx, &probe_state, next).await;
+            seen.push(label.clone());
+            // 两个任务都 Done 即停。
+            let all_done = q.list().iter().all(|t| t.status == QueueTaskStatus::Done);
+            if all_done && seen.iter().filter(|s| *s == "exit_goal").count() >= 2 {
+                break;
+            }
+        }
+        // enter 与 exit 各恰好两次,且第二次 enter 在第一次 exit 之后。
+        let enter_positions: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.as_str() == "enter_goal")
+            .map(|(i, _)| i)
+            .collect();
+        let exit_positions: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.as_str() == "exit_goal")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(enter_positions.len(), 2, "两个 goal 各 enter 一次:{seen:?}");
+        assert_eq!(exit_positions.len(), 2, "两个 goal 各 exit 一次:{seen:?}");
+        assert!(
+            exit_positions[0] < enter_positions[1],
+            "第二任务必须在第一任务 exit 后才 enter:{seen:?}"
+        );
+        wait_for(|| q.list().iter().all(|t| t.status == QueueTaskStatus::Done)).await;
+    }
+
+    /// 未接线探针时,goal 任务出队被拒(结清 Failed,不盲跑)。
+    #[tokio::test]
+    async fn goal_task_without_probe_refused() {
+        let (submitter, _loop_rx) = fake_submitter();
+        let q = QueueScheduler::new(None, ThreadId::new()).with_turn_submitter(submitter);
+        q.enqueue_goal("无探针目标", None, None, None);
+        q.set_running(true);
+        assert!(!q.tick().await, "未接线探针时不应真正出队");
+        wait_for(|| {
+            q.list().first().is_some_and(|t| {
+                t.status == QueueTaskStatus::Failed
+                    && t.note.as_deref().is_some_and(|n| n.contains("probe"))
+            })
+        })
+        .await;
+    }
+
+    /// goal turn 失败(turn 非 Success)→ ExitGoalMode + 结清 Failed。
+    #[tokio::test]
+    async fn goal_task_failed_turn_settles_failed() {
+        let (submitter, mut loop_rx) = fake_submitter();
+        let probe_state: Arc<std::sync::Mutex<GoalProbeSnapshot>> =
+            Arc::new(std::sync::Mutex::new(GoalProbeSnapshot {
+                status: GoalProbeStatus::Active,
+                turns: 1,
+            }));
+        let ps = probe_state.clone();
+        let probe: GoalProbe = Arc::new(move || *ps.lock().unwrap());
+        let q = QueueScheduler::new(None, ThreadId::new())
+            .with_turn_submitter(submitter)
+            .with_goal_probe(probe);
+        q.enqueue_goal("会失败的目标", None, None, None);
+        q.set_running(true);
+        assert!(q.tick().await);
+        // 消费 EnterGoalMode。
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), loop_rx.recv())
+            .await
+            .expect("等 EnterGoalMode");
+        // objective turn 以 MaxIterations 失败收尾。
+        let (_, tx) = tokio::time::timeout(std::time::Duration::from_secs(5), loop_rx.recv())
+            .await
+            .expect("等 objective turn")
+            .expect("通道关闭");
+        let _ = tx.send(turn_complete_event(false)).await;
+        // ExitGoalMode 收尾 + Failed 结清。
+        let (sub, _) = tokio::time::timeout(std::time::Duration::from_secs(5), loop_rx.recv())
+            .await
+            .expect("等 ExitGoalMode")
+            .expect("通道关闭");
+        assert!(matches!(sub.op, zhuye_protocol::Op::ExitGoalMode));
+        wait_for(|| {
+            q.list()
+                .first()
+                .is_some_and(|t| t.status == QueueTaskStatus::Failed)
+        })
+        .await;
     }
 }

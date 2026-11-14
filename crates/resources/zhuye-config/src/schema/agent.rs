@@ -37,6 +37,47 @@ pub struct SpecSlotConfig {
     pub fallbacks: Vec<String>,
     #[serde(default)]
     pub weights: Vec<u32>,
+    /// v1.11 桌面#3:复杂度分级路由(`[routing.<role>.complexity]`)——
+    /// 把思考强度档位(low/medium/high/max/ultra,即用户对「任务复杂度」
+    /// 的表达)映射到不同模型 spec。配置后 `Op::SetEffort` / `/effort`
+    /// 切档时**同时切模型**(未配置的档位回退 `primary`),实现「简单任务
+    /// 用便宜快模型、复杂任务用旗舰模型」的分级路由。
+    ///
+    /// ⚠️ 缓存提示:同一路由组内切换模型会使 provider prompt cache
+    /// **全部失效**(cache 键含模型名)。高频档位建议固定同一模型,
+    /// `fallbacks` 仅用于可用性兜底;组间共享前缀的收益只在同模型时成立。
+    #[serde(default)]
+    pub complexity: Option<ComplexityRoutes>,
+}
+
+/// v1.11 桌面#3:effort 档位 → 模型 spec 映射表。
+/// `None` 档位 = 回退 slot 的 `primary`。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ComplexityRoutes {
+    #[serde(default)]
+    pub low: Option<String>,
+    #[serde(default)]
+    pub medium: Option<String>,
+    #[serde(default)]
+    pub high: Option<String>,
+    #[serde(default)]
+    pub max: Option<String>,
+    #[serde(default)]
+    pub ultra: Option<String>,
+}
+
+impl ComplexityRoutes {
+    /// 查某档位的映射模型(空串 = 未配置,调用方回退 primary)。
+    pub fn route_for(&self, effort: zhuye_protocol::ReasoningEffortMirror) -> Option<&str> {
+        let spec = match effort {
+            zhuye_protocol::ReasoningEffortMirror::Low => &self.low,
+            zhuye_protocol::ReasoningEffortMirror::Medium => &self.medium,
+            zhuye_protocol::ReasoningEffortMirror::High => &self.high,
+            zhuye_protocol::ReasoningEffortMirror::Max => &self.max,
+            zhuye_protocol::ReasoningEffortMirror::Ultra => &self.ultra,
+        };
+        spec.as_deref().filter(|s| !s.trim().is_empty())
+    }
 }
 
 // ── 子代理 provider 配置 ──────────────────────────────────────

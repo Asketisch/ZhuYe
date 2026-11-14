@@ -253,9 +253,31 @@ pub async fn resolve_model_spec(
     cfg: &ReflectConfig,
     registry: &ModelRegistry,
 ) -> Result<Option<String>, ConfigError> {
+    resolve_model_spec_with_env(
+        cfg,
+        registry,
+        std::env::var(crate::builder::ENV_ZHUYE_PROVIDER)
+            .ok()
+            .as_deref(),
+        std::env::var(crate::builder::ENV_ZHUYE_MODEL)
+            .ok()
+            .as_deref(),
+    )
+    .await
+}
+
+/// [`resolve_model_spec`](fn.resolve_model_spec) 的 env 注入版(单测用;
+/// runner 门禁会设 `ZHUYE_MODEL=mock`,直接调 env 版的断言在该环境下
+/// 必假失败)。行为与公开版逐行一致,仅 model 解析改走注入值。
+pub async fn resolve_model_spec_with_env(
+    cfg: &ReflectConfig,
+    registry: &ModelRegistry,
+    env_provider: Option<&str>,
+    env_model: Option<&str>,
+) -> Result<Option<String>, ConfigError> {
     match resolve_dynamic_model(cfg, registry).await? {
         Some(spec) => Ok(Some(spec)),
-        None => Ok(cfg.resolved_model_spec()),
+        None => Ok(cfg.resolved_model_spec_with_env(env_provider, env_model)),
     }
 }
 
@@ -289,7 +311,7 @@ mod tests {
         };
         let registry = ModelRegistry::new();
         // provider 未注册 → 静态路径不应报错(不查清单)。
-        let resolved = resolve_model_spec(&cfg, &registry)
+        let resolved = resolve_model_spec_with_env(&cfg, &registry, None, None)
             .await
             .expect("静态解析不应失败");
         assert_eq!(resolved.as_deref(), Some("openai/gpt-4o"));

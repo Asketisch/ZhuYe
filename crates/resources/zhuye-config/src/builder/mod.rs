@@ -42,8 +42,8 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_MCP_TIMEOUT_MS: u64 = 30_000;
 /// LSP request 默认超时 30s,与 MCP 对齐。
 const DEFAULT_LSP_TIMEOUT_MS: u64 = 30_000;
-const ENV_ZHUYE_PROVIDER: &str = "ZHUYE_PROVIDER";
-const ENV_ZHUYE_MODEL: &str = "ZHUYE_MODEL";
+pub(crate) const ENV_ZHUYE_PROVIDER: &str = "ZHUYE_PROVIDER";
+pub(crate) const ENV_ZHUYE_MODEL: &str = "ZHUYE_MODEL";
 const ENV_ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
 const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 /// Ollama 启动时可被 `apply_to_registry` 识别的 env。本地 `ollama serve`
@@ -55,8 +55,21 @@ const ENV_OLLAMA_API_KEY: &str = "OLLAMA_API_KEY";
 impl ReflectConfig {
     /// 构造一个新的 `ModelRegistry`,把本配置中所有非空 provider 注册进去。
     pub fn to_registry(&self) -> Result<ModelRegistry, ConfigError> {
+        self.to_registry_with_env(
+            std::env::var(ENV_ZHUYE_PROVIDER).ok().as_deref(),
+            std::env::var(ENV_ZHUYE_MODEL).ok().as_deref(),
+        )
+    }
+
+    /// [`to_registry`](Self::to_registry) 的 env 注入版(单测用;理由同
+    /// [`Self::apply_to_registry_with_env`])。
+    pub fn to_registry_with_env(
+        &self,
+        env_provider: Option<&str>,
+        env_model: Option<&str>,
+    ) -> Result<ModelRegistry, ConfigError> {
         let r = ModelRegistry::new();
-        self.apply_to_registry(&r)?;
+        self.apply_to_registry_with_env(&r, env_provider, env_model)?;
         Ok(r)
     }
 
@@ -67,6 +80,22 @@ impl ReflectConfig {
     /// `api_key = "..."` 单值在 builder 内部 wrap 为
     /// `label = "default"` / `weight = 1` 的单 entry pool。
     pub fn apply_to_registry(&self, registry: &ModelRegistry) -> Result<(), ConfigError> {
+        self.apply_to_registry_with_env(
+            registry,
+            std::env::var(ENV_ZHUYE_PROVIDER).ok().as_deref(),
+            std::env::var(ENV_ZHUYE_MODEL).ok().as_deref(),
+        )
+    }
+
+    /// [`apply_to_registry`](Self::apply_to_registry) 的 env 注入版(单测
+    /// 用:runner 门禁会设 `ZHUYE_MODEL=mock`,直接调 env 版的断言在该
+    /// 环境下必假失败 —— 这些测试验证的是 TOML 配置行为而非 env 行为)。
+    pub fn apply_to_registry_with_env(
+        &self,
+        registry: &ModelRegistry,
+        env_provider: Option<&str>,
+        env_model: Option<&str>,
+    ) -> Result<(), ConfigError> {
         // provider 池即将重建(可能换了 base_url / 凭据)→ 旧的模型清单缓存
         // 必须失效,否则新端点的清单会被旧端点的条目顶掉(TTL 内)。
         crate::discovery::clear_catalog_cache();
@@ -88,7 +117,10 @@ impl ReflectConfig {
         // v1.3 SDK:mock provider —— `ZHUYE_PROVIDER=mock` 或
         // `ZHUYE_MODEL` 形如 `mock` / `mock/...` 时注册(离线测试用,
         // 免 key、零网络)。显式 opt-in,不作为无 key 时的静默兜底。
-        if matches!(self.active_provider(), Some("mock")) {
+        if matches!(
+            self.active_provider_inner(env_provider, env_model),
+            Some("mock")
+        ) {
             registry.register_pool(
                 "mock",
                 CredentialPool {
@@ -104,7 +136,10 @@ impl ReflectConfig {
         // 健康则始终优先派位,其余条目只在该条目 cooldown 时作 failover。
         // label 未命中池内条目时 registry 侧静默忽略(全池 round-robin),
         // 不让一个手写错的 label 阻断启动。
-        if let (Some(provider), Some(label)) = (self.active_provider(), self.active_credential()) {
+        if let (Some(provider), Some(label)) = (
+            self.active_provider_inner(env_provider, env_model),
+            self.active_credential(),
+        ) {
             registry.set_preferred(provider, &label);
         }
         // v1.10 功能3:窗口覆盖表同步到 zhuye-llm 进程级全局表 ——
@@ -201,11 +236,20 @@ impl ReflectConfig {
     /// UI 显示"未配置"),而非回落内置默认 —— 默认模型名打向第三方
     /// 兼容端点只会得到更难诊断的远端错误。
     pub fn resolve_model(&self, provider: &str) -> Option<String> {
-        self.resolve_model_inner(provider, std::env::var(ENV_ZHUYE_MODEL).ok().as_deref())
+        self.resolve_model_inner(
+            provider,
+            std::env::var(ENV_ZHUYE_PROVIDER).ok().as_deref(),
+            std::env::var(ENV_ZHUYE_MODEL).ok().as_deref(),
+        )
     }
 
     /// `resolve_model` 的纯函数核心(env 值由调用方注入,便于单测)。
-    fn resolve_model_inner(&self, provider: &str, env_model: Option<&str>) -> Option<String> {
+    fn resolve_model_inner(
+        &self,
+        provider: &str,
+        env_provider: Option<&str>,
+        env_model: Option<&str>,
+    ) -> Option<String> {
         // v1.3 SDK:mock provider 的 model 取 `mock/` 前缀后的部分
         // (`ZHUYE_MODEL=mock/mock-1` → `mock-1`),裸 `mock` / 未设 →
         // `mock-1`。不能走下面的通用 env 分支,否则会把完整 spec
@@ -233,7 +277,7 @@ impl ReflectConfig {
         }
         // 被钉住的凭证条目自带 model 时优先取用:它比段级覆盖更具体
         // (描述的就是当前 plan 本身);钉住只对 active provider 生效。
-        if self.active_provider() == Some(provider) {
+        if self.active_provider_inner(env_provider, env_model) == Some(provider) {
             if let Some(label) = self.active_credential() {
                 let entry_model = self
                     .credentials_of(provider)
@@ -281,8 +325,21 @@ impl ReflectConfig {
     /// `AgentConfig.model`。集中在这里便于单测覆盖 env > 钉住条目 >
     /// 段级优先级和 provider 切换场景。
     pub fn resolved_model_spec(&self) -> Option<String> {
-        let provider = self.active_provider()?;
-        let model = self.resolve_model(provider)?;
+        self.resolved_model_spec_with_env(
+            std::env::var(ENV_ZHUYE_PROVIDER).ok().as_deref(),
+            std::env::var(ENV_ZHUYE_MODEL).ok().as_deref(),
+        )
+    }
+
+    /// [`resolved_model_spec`](Self::resolved_model_spec) 的 env 注入版
+    /// (单测用;理由同 [`Self::apply_to_registry_with_env`])。
+    pub fn resolved_model_spec_with_env(
+        &self,
+        env_provider: Option<&str>,
+        env_model: Option<&str>,
+    ) -> Option<String> {
+        let provider = self.active_provider_inner(env_provider, env_model)?;
+        let model = self.resolve_model_inner(provider, env_provider, env_model)?;
         Some(format!("{provider}/{model}"))
     }
 

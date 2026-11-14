@@ -386,6 +386,27 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     if !include_plan_mode {
         tracing::debug!("system.plan-mode=off: core prompt 未注入 Plan Mode 规则段");
     }
+    // v1.11 基建#9:项目指令默认注入 —— 每轮 pre_loop 读工作区根
+    // AGENTS.md(用户级 `~/.zhuye/AGENTS.md` 存在时在前、项目级在后,
+    // 项目级语义更具体故放更后),拼进 core 的 `## Project Instructions`
+    // 段。与记忆(MEMORY.md,按 agent_type 分文件)正交:AGENTS.md 是
+    // 项目规范文档,任何 agent / 任何 turn 都该遵守。
+    // `[active] agents_md = false` 显式关闭(读开关快照,热重载下一轮生效)。
+    // 每 turn 首次迭代读取并缓存到 AgentState(与 memory_retrieval_cache
+    // 同 pattern):文件很小、读一次够用,turn 内迭代复用,下个 turn 再
+    // 捡起用户对 AGENTS.md 的修改。
+    if ctx.cfg.agents_md_enabled() {
+        let cached = state.agents_md_cache.clone();
+        let agents_content = match cached {
+            Some(text) => text,
+            None => {
+                let text = read_agents_md_content(&ctx.cfg.current_workspace());
+                state.agents_md_cache = Some(text.clone());
+                text
+            }
+        };
+        zhuye_prompt::append_agents_md_section(&mut core, &agents_content);
+    }
     let current_mode = ctx.cfg.permission_mode();
     zhuye_prompt::append_active_mode_section(&mut core, current_mode);
     // 清单回灌:把**最近一次** `TodoWrite` 的清单注入 core prompt ——
@@ -558,6 +579,41 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             .recovery_meta
             .push(RecoveryEntry::new(MetaKind::SessionMemory, text));
     }
+    // v1.11 基建#8:跨会话笔记召回 —— 用本轮用户输入查其他会话的
+    // session notes(JSONL 落盘,`session-notes/*.jsonl`),BM25 top-k
+    // 注入。旧会话的发现(坑位 / 路径 / 结论)由此跨会话可用。查询为空
+    // 或零相关时静默跳过(不注入噪声);路径解析失败同样跳过 ——
+    // 召回是增强能力,不可阻塞 turn。
+    if !memory_query.trim().is_empty() {
+        let notes_home = zhuye_notes::resolve_notes_home();
+        if let Some(home) = notes_home {
+            let current_thread = ctx.session_id.to_string();
+            let hits = zhuye_notes::recall_cross_session(
+                &home,
+                &current_thread,
+                memory_query.trim(),
+                zhuye_notes::RECALL_LIMIT,
+            );
+            if !hits.is_empty() {
+                let mut text =
+                    String::from("来自其他会话的相关笔记(BM25 召回,供参考;不保证仍有效):\n");
+                for (i, n) in hits.iter().enumerate() {
+                    let at = n
+                        .created_at
+                        .map_or_else(|| "未知时间".to_string(), |t| t.to_rfc3339());
+                    text.push_str(&format!(
+                        "{}. [{at} 会话 {}] {}\n",
+                        i + 1,
+                        n.thread_id,
+                        n.text
+                    ));
+                }
+                state
+                    .recovery_meta
+                    .push(RecoveryEntry::new(MetaKind::CrossSessionNotes, text));
+            }
+        }
+    }
     // 6a. Active File Recovery:仅在 compact 触发后注入,文件读取静默跳过失败项。
     // Review 2026-06-29 BUG-5: 使用 `recover_with_deleted` 把 NotFound
     // 收集到 deleted, 在 meta 顶部提示 LLM。
@@ -696,5 +752,116 @@ async fn inject_steering_messages(
                 serde_json::to_value(&protocol_blocks).unwrap_or(serde_json::Value::Null),
             ))
             .await;
+    }
+}
+
+/// v1.11 基建#9:读取项目指令文件,合并为注入文本。
+///
+/// 读取两级(存在才读,缺失静默跳过):
+/// 1. 用户级 `<data_dir>/AGENTS.md`(`~/.zhuye/AGENTS.md`,`ZHUYE_HOME`
+///    可重定向)—— 跨项目共享的个人规范,如「注释一律中文」;
+/// 2. 项目级 `<workspace>/AGENTS.md` —— 本项目规范,语义更具体。
+///
+/// 合并顺序:用户级在前、项目级在后(项目级更具体,离任务更近,放后面
+/// 权重更高)。两级各带来源标注(`Source: ...`),便于 LLM 区分指令层级。
+/// 单文件超过 [`AGENTS_MD_MAX_CHARS`] 字符时截断并附截断提示(防止超大
+/// AGENTS.md 挤爆上下文;与 memory 注入 8k 上限同思路,放宽到 32k ——
+/// 项目规范文档通常比记忆条目长)。
+pub(crate) const AGENTS_MD_MAX_CHARS: usize = 32 * 1024;
+
+/// 读取并合并两级 AGENTS.md 内容;不存在任何文件时返回空串。
+/// 用户数据目录按进程 env 解析(`ZHUYE_HOME` / `HOME`)。
+pub(crate) fn read_agents_md_content(workspace: &std::path::Path) -> String {
+    read_agents_md_from(workspace, zhuye_fs::data_dir())
+}
+
+/// [`read_agents_md_content`] 的显式目录版(测试用;生产经 env 解析)。
+pub(crate) fn read_agents_md_from(
+    workspace: &std::path::Path,
+    user_dir: Option<std::path::PathBuf>,
+) -> String {
+    let read_capped = |path: &std::path::Path| -> Option<String> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let mut out = format!("Source: {}\n\n", path.display());
+        if raw.chars().count() > AGENTS_MD_MAX_CHARS {
+            out.push_str(&raw.chars().take(AGENTS_MD_MAX_CHARS).collect::<String>());
+            out.push_str("\n\n[AGENTS.md 超长已截断,完整内容请用 read 工具查看该文件]");
+        } else {
+            out.push_str(raw);
+        }
+        Some(out)
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(dir) = user_dir {
+        if let Some(text) = read_capped(&dir.join("AGENTS.md")) {
+            parts.push(text);
+        }
+    }
+    if let Some(text) = read_capped(&workspace.join("AGENTS.md")) {
+        parts.push(text);
+    }
+    parts.join("\n\n---\n\n")
+}
+
+#[cfg(test)]
+mod agents_md_tests {
+    use super::*;
+
+    /// 项目根 AGENTS.md 存在时被读取;无用户级文件时只含项目级。
+    #[test]
+    fn project_root_agents_md_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# 规范\n- 提交信息用中文\n").unwrap();
+        let content = read_agents_md_from(dir.path(), None);
+        assert!(content.contains("# 规范"), "项目级 AGENTS.md 正文必须读入");
+        assert!(content.contains("提交信息用中文"));
+        assert!(
+            content.contains(&format!("{}", dir.path().join("AGENTS.md").display())),
+            "来源标注应含项目级文件路径"
+        );
+    }
+
+    /// 两级并存时:用户级在前、项目级在后(项目级更具体放更后)。
+    #[test]
+    fn user_level_precedes_project_level() {
+        let ws = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("AGENTS.md"), "USER-LEVEL-RULE").unwrap();
+        std::fs::write(ws.path().join("AGENTS.md"), "PROJECT-LEVEL-RULE").unwrap();
+        let content = read_agents_md_from(ws.path(), Some(home.path().to_path_buf()));
+        let user_pos = content.find("USER-LEVEL-RULE").expect("用户级缺失");
+        let proj_pos = content.find("PROJECT-LEVEL-RULE").expect("项目级缺失");
+        assert!(user_pos < proj_pos, "用户级应在前;got: {content}");
+    }
+
+    /// 两级都不存在 → 空串(pre_loop 侧 append 是 no-op,不注入空段)。
+    #[test]
+    fn missing_files_yield_empty() {
+        let ws = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_agents_md_from(ws.path(), Some(home.path().to_path_buf())),
+            ""
+        );
+    }
+
+    /// 超长文件截断到上限并附截断提示。
+    #[test]
+    fn oversized_file_is_truncated() {
+        let ws = tempfile::tempdir().unwrap();
+        let big = "字".repeat(AGENTS_MD_MAX_CHARS + 100);
+        std::fs::write(ws.path().join("AGENTS.md"), &big).unwrap();
+        let content = read_agents_md_from(ws.path(), None);
+        assert!(content.contains("已截断"), "超长文件必须附截断提示");
+        // 正文(去掉 Source 行与截断提示后)不超过上限。
+        let body_chars = content.chars().count();
+        assert!(
+            body_chars < AGENTS_MD_MAX_CHARS + 512,
+            "截断后长度应接近上限;got {body_chars}"
+        );
     }
 }

@@ -212,6 +212,13 @@ pub(crate) fn bootstrap_m4(
     let memory_arc: Arc<dyn MemoryStore> =
         Arc::new(InMemoryStore::with_fallback(file_store.clone()));
     let memory: Arc<dyn MemoryStore> = memory_arc;
+    // v1.11 基建#8:后台记忆整理句柄(submission_loop 每 N turns 调;
+    // 节流值由 headless bootstrap 写 `AgentConfig.memory_consolidate_every`,
+    // env `ZHUYE_MEMORY_CONSOLIDATE_TURNS` 可覆盖 / 关闭)。
+    let consolidator = Arc::new(zhuye_memory::Consolidator::new(
+        file_store.clone(),
+        agent_name,
+    ));
 
     // v1.x:memory 读写工具 —— 写侧与 pre_loop 注入读侧共用同一个
     // FileMemoryStore(同一 resolve_path 口径);agent_type 取构造时的
@@ -346,6 +353,8 @@ pub(crate) fn bootstrap_m4(
         prompt_dirs: vec![home_prompts, ws_prompts],
         skill_dirs: skill_dirs_owned,
         bundled_skills: cfg.active.bundled_skills,
+        // v1.11 基建#8:后台整理句柄(节流值由 headless 写 AgentConfig 槽)。
+        consolidator: Some(consolidator),
     })
 }
 

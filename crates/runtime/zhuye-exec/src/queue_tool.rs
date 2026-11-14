@@ -47,9 +47,10 @@ impl Tool for QueueTool {
     }
 
     fn description(&self) -> &str {
-        "队列模式:把 prompt 任务排成 FIFO 队列串行执行(前一条 turn 结束后\
-         自动注入下一条)。操作:`add` / `list` / `remove` / `clear` / \
-         `start` / `pause` / `status`。任务跨 turn 持久、session 范围内生效。"
+        "队列模式:把 prompt / goal 任务排成 FIFO 队列串行执行(前一条\
+         turn 结束后自动注入下一条;goal 任务以目标模式跑到底再下一条)。\
+         操作:`add` / `add_goal` / `list` / `remove` / `clear` / `start` / \
+         `pause` / `status`。任务跨 turn 持久、session 范围内生效。"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -58,16 +59,28 @@ impl Tool for QueueTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["add", "list", "remove", "clear", "start", "pause", "status"],
+                    "enum": ["add", "add_goal", "list", "remove", "clear", "start", "pause", "status"],
                     "description": "Which queue operation to perform."
                 },
                 "prompt": {
                     "type": "string",
                     "description": "Task prompt to enqueue (add). Dequeued and run as a new turn."
                 },
+                "objective": {
+                    "type": "string",
+                    "description": "Goal objective (add_goal). Runs in goal mode: self-verified each turn, retried until met/blocked/budget-limited."
+                },
+                "verify_command": {
+                    "type": "string",
+                    "description": "Optional AND-condition verify command for the goal (add_goal). Goal counts as met only if it exits 0."
+                },
+                "token_budget": {
+                    "type": "integer",
+                    "description": "Optional token budget for the goal (add_goal)."
+                },
                 "name": {
                     "type": "string",
-                    "description": "Optional human-readable task name (add)."
+                    "description": "Optional human-readable task name (add / add_goal)."
                 },
                 "id": {
                     "type": "string",
@@ -92,9 +105,8 @@ impl Tool for QueueTool {
 
     fn action_permission(&self, args: &serde_json::Value) -> PermissionMode {
         match args.get("action").and_then(|v| v.as_str()) {
-            Some("add") | Some("remove") | Some("clear") | Some("start") | Some("pause") => {
-                PermissionMode::Prompt
-            }
+            Some("add") | Some("add_goal") | Some("remove") | Some("clear") | Some("start")
+            | Some("pause") => PermissionMode::Prompt,
             _ => PermissionMode::Auto,
         }
     }
@@ -113,6 +125,7 @@ impl Tool for QueueTool {
 
         match action {
             "add" => self.exec_add(&args),
+            "add_goal" => self.exec_add_goal(&args),
             "list" => self.exec_list(),
             "remove" => self.exec_remove(&args),
             "clear" => self.exec_clear(),
@@ -194,16 +207,78 @@ impl QueueTool {
         ))
     }
 
+    /// v1.11 基建#6:goal 任务入队。objective 必填;verify_command /
+    /// token_budget 可选(AND 校验 / 软停预算)。与普通任务同队列串行。
+    fn exec_add_goal(&self, args: &serde_json::Value) -> Result<ToolOutput, ToolError> {
+        let objective = require_str(args, "objective")?;
+        if objective.trim().is_empty() {
+            return Err(ToolError::InvalidArgs {
+                message: "queue: objective 不能为空".into(),
+            });
+        }
+        let verify_command = args
+            .get("verify_command")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string);
+        let token_budget = match args.get("token_budget") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => Some(v.as_u64().ok_or_else(|| ToolError::InvalidArgs {
+                message: "queue: token_budget 必须是非负整数".into(),
+            })?),
+        };
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let task =
+            self.scheduler
+                .enqueue_goal(objective, verify_command.clone(), token_budget, name);
+        let s = self.scheduler.status();
+        Ok(queue_output(
+            "added_goal",
+            serde_json::json!({
+                "id": task.id,
+                "position": s.counts.queued,
+                "queue_running": s.running,
+                "objective": task.goal.as_ref().map(|g| g.objective.clone()),
+                "verify_command": verify_command,
+                "token_budget": token_budget,
+            }),
+            &format!(
+                "goal 任务已入队:{}{}\n  目标:{}{}\n  排队中:{} 条;队列模式:{}(未开启时用 start 开启)。\
+                 goal 任务以目标模式执行:每 turn 自校验,未达成自动续跑,达成 / 受阻 / 预算尽才轮到下一条。",
+                task.id,
+                task.name
+                    .as_deref()
+                    .map_or_else(|| Default::default(), |n| format!(" ({n})")),
+                truncate(task.goal.as_ref().map_or("", |g| &g.objective), 80),
+                verify_command
+                    .as_deref()
+                    .map_or_else(|| Default::default(), |c| format!("(verify: {c})")),
+                s.counts.queued,
+                if s.running { "开启" } else { "暂停" },
+            ),
+        ))
+    }
+
     fn exec_list(&self) -> Result<ToolOutput, ToolError> {
         let tasks = self.scheduler.list();
         let lines: Vec<String> = tasks
             .iter()
             .map(|t| {
+                // goal 任务带 `goal:` 前缀,一眼区分两类任务。
+                let label = match (&t.goal, &t.name) {
+                    (Some(_), Some(n)) => format!("goal:{n}"),
+                    (Some(_), None) => "goal:<unnamed>".to_string(),
+                    (None, Some(n)) => n.clone(),
+                    (None, None) => "<unnamed>".to_string(),
+                };
                 format!(
                     "- {} [{}] {}: {}",
                     t.id,
                     status_str(t.status),
-                    t.name.as_deref().unwrap_or("<unnamed>"),
+                    label,
                     truncate(&t.prompt, 80),
                 )
             })
@@ -269,11 +344,19 @@ fn status_str(s: zhuye_stream::QueueTaskStatus) -> &'static str {
 }
 
 /// 把一条任务渲染成精简 summary(给 list / metadata 用)。
+/// v1.11 基建#6:goal 任务附 `goal` 载荷(objective / verify / budget)
+/// 与 `kind: "goal"` 标注;普通任务 `kind: "prompt"`。
 fn task_summary(t: &zhuye_stream::QueueTask) -> serde_json::Value {
     serde_json::json!({
         "id": t.id,
         "name": t.name,
+        "kind": if t.goal.is_some() { "goal" } else { "prompt" },
         "prompt": t.prompt,
+        "goal": t.goal.as_ref().map(|g| serde_json::json!({
+            "objective": g.objective,
+            "verify_command": g.verify_command,
+            "token_budget": g.token_budget,
+        })),
         "status": status_str(t.status),
         "created_at": t.created_at,
         "started_at": t.started_at,
@@ -359,6 +442,92 @@ mod tests {
         assert_eq!(list.metadata["tasks"][0]["status"], "queued");
         assert_eq!(list.metadata["tasks"][0]["prompt"], "跑一遍测试");
         assert_eq!(list.metadata["tasks"][0]["name"], "t1");
+        // v1.11 基建#6:普通任务 kind=prompt、goal 载荷为空。
+        assert_eq!(list.metadata["tasks"][0]["kind"], "prompt");
+        assert!(list.metadata["tasks"][0]["goal"].is_null());
+    }
+
+    /// v1.11 基建#6:`add_goal` 入队 goal 任务,字段级透传(objective /
+    /// verify_command / token_budget);list 回读 kind=goal + goal 载荷。
+    #[tokio::test]
+    async fn add_goal_roundtrip_with_fields() {
+        let t = tool();
+        let out = t
+            .execute(
+                ctx(),
+                serde_json::json!({
+                    "action": "add_goal",
+                    "objective": "让测试全绿",
+                    "verify_command": "cargo test -p zhuye-stream",
+                    "token_budget": 12345,
+                    "name": "绿灯目标",
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert_eq!(out.metadata["action"], "added_goal");
+        assert_eq!(out.metadata["objective"], "让测试全绿");
+        assert_eq!(out.metadata["verify_command"], "cargo test -p zhuye-stream");
+        assert_eq!(out.metadata["token_budget"], 12345);
+        let id = out.metadata["id"].as_str().unwrap().to_string();
+
+        let list = t
+            .execute(ctx(), serde_json::json!({"action": "list"}))
+            .await
+            .unwrap();
+        assert_eq!(list.metadata["count"], 1);
+        let task = &list.metadata["tasks"][0];
+        assert_eq!(task["id"], id.as_str());
+        assert_eq!(task["kind"], "goal");
+        assert_eq!(task["goal"]["objective"], "让测试全绿");
+        assert_eq!(task["goal"]["verify_command"], "cargo test -p zhuye-stream");
+        assert_eq!(task["goal"]["token_budget"], 12345);
+        // prompt 冗余存 objective(出队注入与 list 渲染用)。
+        assert_eq!(task["prompt"], "让测试全绿");
+        // 渲染文本带 goal: 前缀,一眼区分。
+        let list_text = match &list.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            other => panic!("list 输出应是文本块:{other:?}"),
+        };
+        assert!(
+            list_text.contains("goal:绿灯目标"),
+            "list 渲染应带 goal 前缀:{list_text}"
+        );
+    }
+
+    /// add_goal 的参数校验:objective 必填非空;token_budget 必须是非负整数。
+    #[tokio::test]
+    async fn add_goal_validation() {
+        let t = tool();
+        let missing = t
+            .execute(ctx(), serde_json::json!({"action": "add_goal"}))
+            .await;
+        assert!(missing.is_err(), "缺 objective 必须报错");
+        let blank = t
+            .execute(
+                ctx(),
+                serde_json::json!({"action": "add_goal", "objective": "  "}),
+            )
+            .await;
+        assert!(blank.is_err(), "空白 objective 必须报错");
+        let bad_budget = t
+            .execute(
+                ctx(),
+                serde_json::json!({"action": "add_goal", "objective": "x", "token_budget": -1}),
+            )
+            .await;
+        assert!(bad_budget.is_err(), "负 token_budget 必须报错");
+    }
+
+    /// add_goal 是改状态 action → Prompt 权限。
+    #[test]
+    fn add_goal_requires_prompt_permission() {
+        let t = tool();
+        assert_eq!(
+            t.action_permission(&serde_json::json!({"action": "add_goal"})),
+            PermissionMode::Prompt
+        );
     }
 
     #[tokio::test]

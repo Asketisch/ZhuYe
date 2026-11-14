@@ -143,6 +143,11 @@ pub struct AgentState {
     /// v1.x:本 turn 是否已落盘过 `MemoryAccess::Read` 审计(与缓存配套:
     /// 审计每 turn 一条,而非每迭代一条)。
     pub memory_read_recorded: bool,
+    /// v1.11 基建#9:AGENTS.md 注入内容的 turn 级缓存(用户级 + 项目级
+    /// 合并文本)。与 `memory_retrieval_cache` 同 pattern:`AgentState`
+    /// 每 turn 新建,turn 内迭代复用免重复读盘,下个 turn 自然捡起用户
+    /// 对 AGENTS.md 的修改。`None` = 本 turn 尚未读过。
+    pub agents_md_cache: Option<String>,
 }
 
 /// v1.x progress-nudge:每条 web_fetch 的 URL + 200 字符片段摘要,供

@@ -92,12 +92,44 @@ pub fn retrieve_relevant(
         }
         non_empty.push((*s, body));
     }
-    if non_empty.is_empty() {
+    // v1.11 基建#8:topic 文件(wiki 知识库)一并入池 —— 每个 topic 文件
+    // 独立拆条目,标题加 `(topic:<name>)` 来源标记(防跨文件同名歧义,
+    // 顺带让 topic 名参与 BM25 打分)。MEMORY.md 全量装得下时 topic 仍
+    // 参与打分(小预算场景 topic 条目可能比 MEMORY.md 条目更相关);
+    // MEMORY.md 装不下且 topic 为零相关时自然被预算裁掉。
+    let mut topic_sections: Vec<MemorySection> = Vec::new();
+    for s in scopes {
+        if matches!(s, MemoryScope::Session) {
+            continue;
+        }
+        for topic in store.list_topics(*s, agent_type)? {
+            let body = store.load_topic(*s, agent_type, &topic)?;
+            if body.trim().is_empty() {
+                continue;
+            }
+            for sec in split_sections(*s, &body) {
+                let title = if sec.title.is_empty() {
+                    format!("(topic:{topic})")
+                } else {
+                    format!("(topic:{topic}) {}", sec.title)
+                };
+                topic_sections.push(MemorySection {
+                    scope: *s,
+                    title,
+                    body: sec.body,
+                    index: usize::MAX,
+                });
+            }
+        }
+    }
+    let has_topics = !topic_sections.is_empty();
+    if non_empty.is_empty() && !has_topics {
         return Ok(String::new());
     }
     // 单 scope 无标题的场景:整文件注入,等价历史行为。
+    // (topic 存在时不走该捷径 —— topic 条目需要参与相关度装箱。)
     let total_chars: usize = non_empty.iter().map(|(_, b)| b.len()).sum();
-    if query.trim().is_empty() || total_chars <= budget {
+    if !has_topics && (query.trim().is_empty() || total_chars <= budget) {
         return crate::store::full_combined(non_empty);
     }
 
@@ -106,6 +138,7 @@ pub fn retrieve_relevant(
     for (s, body) in &non_empty {
         sections.extend(split_sections(*s, body));
     }
+    sections.extend(topic_sections);
     let query_terms = zhuye_bm25::tokenize(query);
     // review 修复:候选项的 key 必须用「拼接后向量中的位置」而不是
     // `sec.index` —— 后者由 `split_sections` 按文件各自从 0 重排,多

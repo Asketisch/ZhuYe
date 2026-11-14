@@ -59,6 +59,30 @@ pub trait MemoryStore: Send + Sync {
             "list_agent_types not implemented for this MemoryStore".into(),
         ))
     }
+
+    /// v1.11 基建#8:列出主题文件(wiki 知识库)名,按字典序。
+    /// 不支持 topic 的 store 返回空表(默认实现)—— 检索路径据此
+    /// 跳过 topic 候选,最小实现方无需关心。
+    fn list_topics(
+        &self,
+        scope: MemoryScope,
+        agent_type: &str,
+    ) -> Result<Vec<String>, MemoryError> {
+        let _ = (scope, agent_type);
+        Ok(Vec::new())
+    }
+
+    /// v1.11 基建#8:读取一个主题文件正文;不存在 → 空串。
+    /// 不支持 topic 的 store 返回空串(默认实现)。
+    fn load_topic(
+        &self,
+        scope: MemoryScope,
+        agent_type: &str,
+        topic: &str,
+    ) -> Result<String, MemoryError> {
+        let _ = (scope, agent_type, topic);
+        Ok(String::new())
+    }
 }
 
 /// v1.4 D2:把非空 scope 正文组合为注入文本(供 `load_combined` 与
@@ -310,6 +334,24 @@ impl MemoryStore for CompositeMemoryStore {
         out.sort();
         out.dedup();
         Ok(out)
+    }
+
+    /// v1.11 基建#8:topic 文件只在文件层(wiki 目录),转发 file store。
+    fn list_topics(
+        &self,
+        scope: MemoryScope,
+        agent_type: &str,
+    ) -> Result<Vec<String>, MemoryError> {
+        self.file.list_topics(scope, agent_type)
+    }
+
+    fn load_topic(
+        &self,
+        scope: MemoryScope,
+        agent_type: &str,
+        topic: &str,
+    ) -> Result<String, MemoryError> {
+        self.file.load_topic(scope, agent_type, topic)
     }
 }
 

@@ -67,3 +67,4 @@ dist
 __pycache__
 .opencode
 .cargo
+.tmp-agent-harness/

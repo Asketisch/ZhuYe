@@ -47,6 +47,10 @@ pub struct HeadlessArgs {
     pub auto_root: bool,
     /// 启动即进入 Plan mode(只读)。
     pub plan_mode: bool,
+    /// v1.11 基建#11:显式完全托管模式(`--full-auto` / `--yolo`)——
+    /// 会话以 `PermissionMode::Bubble` 启动。与 `plan_mode` 互斥
+    /// (clap 层 enforce)。
+    pub full_auto: bool,
     /// 内置 hook 仅在 `[hooks].enabled` 显式列出时启用(serve 用)。
     /// exec / TUI 保持「未配置 = 全部启用」;serve 是 SDK 嵌入入口,
     /// 默认启用 `verification` 之类 Stop hook 会在宿主 cwd 跑
@@ -106,14 +110,40 @@ fn wire_goal_queue_plugin(
     // 关闭时按任务 id 结清)—— Stop hook 覆盖不到绕过 check_stop 的结束
     // 路径(凭证耗尽 / 预算耗尽 / Interrupt),曾致 active 任务永久卡
     // Running。driver 周期 tick 只作兜底。
+    // v1.11 基建#6:goal 探针 —— driver 每个 goal turn 结束后读共享
+    // `AgentConfig.goal` 槽的 controller 快照,决定续跑 / 结清;
+    // zhuye-stream(integrations 层)不依赖 zhuye-core,经闭包解耦。
     let scheduler = {
         let thread_for_queue = Arc::clone(thread);
         let submitter: zhuye_stream::TurnSubmitter = Arc::new(move |sub| {
             let t = Arc::clone(&thread_for_queue);
             Box::pin(async move { Some(t.submit(sub).await.into_receiver()) })
         });
+        let probe_slot = goal_slot.clone();
+        let probe: zhuye_stream::GoalProbe = Arc::new(move || {
+            let controller = probe_slot.read().clone();
+            match controller.as_ref().and_then(|c| c.snapshot()) {
+                // 活跃(或 Paused 等):state 仍在,直接映射。
+                Some(state) => zhuye_stream::GoalProbeSnapshot {
+                    status: goal_status_to_probe(state.status),
+                    turns: state.turn_count,
+                },
+                // state 已 clear:终态记忆区分 met / blocked / 预算尽;
+                // 无记忆 = 未进入 / 已退出(None)。
+                None => {
+                    let controller = controller.as_ref();
+                    zhuye_stream::GoalProbeSnapshot {
+                        status: controller
+                            .and_then(|c| c.outcome())
+                            .map_or(zhuye_stream::GoalProbeStatus::None, goal_status_to_probe),
+                        turns: 0,
+                    }
+                }
+            }
+        });
         let mut s = zhuye_stream::QueueScheduler::new(Some(thread.submission_sender()), thread_id)
-            .with_turn_submitter(submitter);
+            .with_turn_submitter(submitter)
+            .with_goal_probe(probe);
         if let Some(base) = zhuye_stream::default_queue_base() {
             s = s.with_store(zhuye_stream::queue_store_path_for(&base, &thread_id));
         }
@@ -135,6 +165,17 @@ fn wire_goal_queue_plugin(
         Arc::new(crate::GoalTool::new(thread.submission_sender(), goal_slot)),
     );
     tracing::info!(session_id = %thread_id, "goal-queue plugin wired (queue + goal tools)");
+}
+
+/// v1.11 基建#6:`GoalStatus` → 队列探针状态映射(goal probe 闭包用)。
+fn goal_status_to_probe(status: zhuye_goal::GoalStatus) -> zhuye_stream::GoalProbeStatus {
+    match status {
+        zhuye_goal::GoalStatus::Active => zhuye_stream::GoalProbeStatus::Active,
+        zhuye_goal::GoalStatus::Paused => zhuye_stream::GoalProbeStatus::Paused,
+        zhuye_goal::GoalStatus::Blocked => zhuye_stream::GoalProbeStatus::Blocked,
+        zhuye_goal::GoalStatus::BudgetLimited => zhuye_stream::GoalProbeStatus::BudgetLimited,
+        zhuye_goal::GoalStatus::Complete => zhuye_stream::GoalProbeStatus::Complete,
+    }
 }
 
 /// [`bootstrap_common`] 的产物:两个分支后续装配都要用的共享句柄。
@@ -570,6 +611,16 @@ fn cron_tick_secs() -> u64 {
         .map_or(DEFAULT, |secs: u64| secs.clamp(1, 3600))
 }
 
+/// v1.11 基建#8:后台记忆整理节流 —— env `ZHUYE_MEMORY_CONSOLIDATE_TURNS`
+/// (0 = 关闭;缺省 / 非法值 = 默认 12;上限 1000 防误配)。
+fn memory_consolidate_every() -> u32 {
+    const DEFAULT: u32 = 12;
+    match std::env::var("ZHUYE_MEMORY_CONSOLIDATE_TURNS") {
+        Ok(v) => v.trim().parse::<u32>().unwrap_or(DEFAULT).min(1000),
+        Err(_) => DEFAULT,
+    }
+}
+
 /// 读取 autopilot driver tick 间隔;缺省 30 秒,允许测试和运维调小
 /// (与 `cron_tick_secs` 同款 env 口径)。
 fn autopilot_tick_secs() -> u64 {
@@ -780,6 +831,12 @@ pub async fn bootstrap_normal(
         .with_policy(policy)
         .with_token_budget(token_budget)
         .with_max_iterations(max_iterations)
+        // v1.11 基建#9:`[active] agents_md` 未表态时默认开启(pre_loop
+        // 注入项目根 AGENTS.md + 用户级 ~/.zhuye/AGENTS.md)。
+        .with_agents_md(initial_cfg.active.agents_md.unwrap_or(true))
+        // v1.11 基建#8:后台记忆整理节流(env `ZHUYE_MEMORY_CONSOLIDATE_TURNS`;
+        // 0 = 关闭,其余值覆盖默认 12,非法值维持默认)。
+        .with_memory_consolidate_every(memory_consolidate_every())
         .with_quota_tracker(quota_tracker)
         .with_tool_env(tool_env)
         .with_telemetry(telemetry_sink.clone())
@@ -793,7 +850,15 @@ pub async fn bootstrap_normal(
         // v1.10 功能4:`[model].reasoning_effort` 作为会话初始思考强度
         // (运行时仍可经 `Op::SetEffort` 覆盖;发 wire 前按模型族钳制)。
         .with_initial_effort(initial_cfg.resolve_reasoning_effort())
-        .with_initial_permission_mode(if args.plan_mode {
+        // v1.11 桌面#3:复杂度分级路由 —— `[routing.main.complexity]` 的
+        // effort → 模型映射(空表 = 不启用;热重载 routing 段可更新)。
+        .with_effort_model_routes(initial_cfg.effort_model_routes())
+        .with_initial_permission_mode(if args.full_auto {
+            // v1.11 基建#11:`--full-auto` → Bubble(通知式自动批准)。
+            // 不用 Bypass —— 它被 v1.3 安全基线降级拦截,Bubble 是可达的
+            // 「从不询问」语义(高危工具仍强制审批)。
+            zhuye_protocol::PermissionMode::Bubble
+        } else if args.plan_mode {
             zhuye_protocol::PermissionMode::Plan
         } else {
             zhuye_protocol::PermissionMode::Auto

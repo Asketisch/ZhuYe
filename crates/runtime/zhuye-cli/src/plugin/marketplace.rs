@@ -158,6 +158,45 @@ pub async fn marketplace_add(
     Ok(())
 }
 
+/// v1.11 基建#13:`zhuye plugin marketplace discover [--topic <t>] [--limit <n>]`。
+///
+/// 查 GitHub Search API(topic 索引),打印插件仓库清单 + 每条现成的
+/// `marketplace add` 接入命令。发现只读不写 —— 接入(marketplace add)
+/// 仍由用户显式执行,避免「发现即自动拉第三方代码」的供应链风险。
+pub async fn marketplace_discover(topic: &str, limit: usize) -> anyhow::Result<()> {
+    let items = zhuye_plugin::marketplace::discover_by_topic(topic, limit).await?;
+    if items.is_empty() {
+        println!("(no repositories found for topic '{topic}')");
+        return Ok(());
+    }
+    println!(
+        "{:<40}  {:>6}  description",
+        "repo (--from github --repo)", "stars"
+    );
+    for p in &items {
+        let desc = p
+            .description
+            .as_deref()
+            .map_or_else(|| "-".to_string(), |d| truncate(d, 70));
+        println!(
+            "{:<40}  {:>6}  {}",
+            truncate(&p.full_name, 40),
+            p.stars,
+            desc
+        );
+    }
+    println!();
+    println!("To connect one as a marketplace (then `zhuye plugin install <plugin>@<name>`):");
+    for p in &items {
+        let suggested = p.full_name.split('/').next_back().unwrap_or(&p.full_name);
+        println!(
+            "  zhuye plugin marketplace add {suggested} --from github --repo {}",
+            p.full_name
+        );
+    }
+    Ok(())
+}
+
 /// `zhuye plugin marketplace remove <name>` —— 从 known_marketplaces.json 移除 + 真删 cache。
 pub fn marketplace_remove(name: &str) -> anyhow::Result<()> {
     let Some(mp_path) = default_marketplaces_path() else {
@@ -288,5 +327,25 @@ pub(crate) fn write_known_marketplaces(
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &json)?;
     std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// v1.11 桌面#1:`zhuye skill install <owner/repo> [--dir <dir>]`。
+///
+/// 从 GitHub 仓库安装技能(根含 SKILL.md)到用户级 skills 目录;安装后
+/// 既有扫描链(`scan_skills_dirs`)自然发现,无需注册表。`--dir` 供测试
+/// / 工作区级安装(`<workspace>/.zhuye/skills`)。
+pub async fn skill_install(repo: &str, dir: Option<&str>) -> anyhow::Result<()> {
+    let out_dir = match dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => zhuye_config::data_path_or_relative(&["skills"]),
+    };
+    let installed = zhuye_skills::install_from_github(repo, &out_dir)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!(
+        "skill installed at {} (repo {repo}); it will be picked up on the next session bootstrap.",
+        installed.display()
+    );
     Ok(())
 }

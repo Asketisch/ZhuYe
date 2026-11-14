@@ -222,6 +222,49 @@ impl ReflectConfig {
         let raw = self.model.as_ref()?.reasoning_effort.as_deref()?;
         raw.parse().ok()
     }
+
+    /// v1.11 桌面#3:解析 `[routing.main.complexity]` 的 effort → 模型
+    /// 映射(供 bootstrap / 热重载装配 `AgentConfig.effort_model_routes`;
+    /// core 不读 config)。未配置 / 空表 → 空 map。
+    pub fn effort_model_routes(
+        &self,
+    ) -> std::collections::HashMap<zhuye_protocol::ReasoningEffortMirror, String> {
+        let mut out = std::collections::HashMap::new();
+        let Some(routes) = self
+            .routing
+            .as_ref()
+            .and_then(|r| r.main.complexity.as_ref())
+        else {
+            return out;
+        };
+        // 逐档取非空 spec;解析失败的档位丢弃(宽松容忍,配置笔误不炸启动)。
+        let mut insert = |raw: Option<&str>, effort| {
+            if let Some(spec) = raw.filter(|s| !s.trim().is_empty()) {
+                out.insert(effort, spec.trim().to_string());
+            }
+        };
+        insert(
+            routes.low.as_deref(),
+            zhuye_protocol::ReasoningEffortMirror::Low,
+        );
+        insert(
+            routes.medium.as_deref(),
+            zhuye_protocol::ReasoningEffortMirror::Medium,
+        );
+        insert(
+            routes.high.as_deref(),
+            zhuye_protocol::ReasoningEffortMirror::High,
+        );
+        insert(
+            routes.max.as_deref(),
+            zhuye_protocol::ReasoningEffortMirror::Max,
+        );
+        insert(
+            routes.ultra.as_deref(),
+            zhuye_protocol::ReasoningEffortMirror::Ultra,
+        );
+        out
+    }
 }
 
 impl Default for ReflectConfig {
@@ -300,6 +343,20 @@ pub struct ActiveSection {
     /// 文件目录扫描结果优先。
     #[serde(default)]
     pub bundled_skills: bool,
+    /// 项目指令文件默认加载开关(`[active] agents_md`)。
+    ///
+    /// **`Option<bool>` 而不是 `bool`** —— 与 `[sandbox].os_level` 同理,
+    /// 解析后要能区分「用户没写」与「用户写了 false」:
+    /// - `None` = 用户**未表态** → **默认开启**:pre_loop 每轮把
+    ///   `<workspace>/AGENTS.md` 与 `~/.zhuye/AGENTS.md`(用户级,可选)
+    ///   注入 core system prompt 的 `## Project Instructions` 段;
+    /// - `Some(false)` = 用户**显式关闭** → 不读取不注入(等价旧行为)。
+    ///
+    /// 与记忆(MEMORY.md)、`.zhuye/agents/*.md` 的加载互不冲突:AGENTS.md
+    /// 是**项目规范文档**(给人也给 agent 看),system prompt 注入让 agent
+    /// 默认遵守项目约定,无需用户手动在 `system_prompt_path` 里引用。
+    #[serde(default)]
+    pub agents_md: Option<bool>,
 }
 
 // ── 沙箱 / 提问 / 模型 / 特性开关 / 目标 ────

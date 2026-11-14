@@ -100,6 +100,12 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 模型自动输出预算与配置优先级 | ✔(本地 HTTP 网关断言模型、输出字段、中文输入余量,见 `test_bugfixes.py`) | — | — | ✅(模型上限、余量、未知型号及请求体) | — |
 | 提示注入检测库(凭据外传规则) | —(尚无运行时入口) | — | — | ✅(zhuye-sanitize 检测及误报边界) | — |
 | v1.10 功能:配置一键导入 / goal+队列插件 / 上下文窗口 / 思考强度分级 / 空 key | V1–V10 | —(独立二进制 `zhuye-import config`,非 zhuye 参数面) | ✅(effort 阶梯字面量双侧断言) | ✅(llm 能力表钳制 / override 表 / builder 免 key / queue 调度 / config_import 合并) | — |
+| v1.11 基建#9:AGENTS.md 默认读取(pre_loop 注入 `## Project Instructions`) | ✔(4 条,见 `test_agents_md.py`:默认注入 / 用户级+项目级顺序 / `[active] agents_md=false` 关闭 / 无文件不注入空段) | —(serve 内部行为,非 CLI 参数) | —(无 Op/EventMsg 变更) | ✅(zhuye-prompt 段落插桩 3 例 / zhuye-core 读取合并 4 例 / zhuye-config 三态解析 2 例) | — |
+| v1.11 基建#11:显式完全托管模式(`exec/serve --full-auto`/`--yolo`,Bubble 启动 + 初始模式通告 + Prompt 工具 bubble 自动批准) | ✔(5 条,见 `test_full_auto.py`:启动通告 / 别名等效 / ZHUYE_APPROVALS=1 下 write 免阻塞自动批准 / 默认不发通告 / 与 --plan-mode 互斥) | ✅(clap 互斥由用例 5 直接驱动) | —(复用既有 PermissionModeChanged / PermissionBubble 事件,无新变体) | —(submission_loop 通告分支由功能层覆盖) | — |
+| v1.11 基建#6:队列支持多 goal(`queue add_goal` + driver 探针驱动目标模式执行) | ✔(2 条,见 `test_goal_queue.py`:单 goal EnterGoalMode→met→ExitGoalMode→done 字段级 / 两 goal 严格串行 started_at 先后) | —(工具参数面) | —(无新 Op/EventMsg 变体;复用 EnterGoalMode/ExitGoalMode) | ✅(zhuye-stream goal watcher 4 例:跑到底 / 双 goal 串行 / 无探针拒绝 / 失败结清;zhuye-exec queue_tool add_goal 4 例;zhuye-goal outcome 记忆) | — |
+| v1.11 基建#8:deepagents 式记忆(topic 多文件 wiki / consolidate 去重 / 跨会话笔记召回 / 后台自动整理) | ✔(5 条,见 `test_memory_v11.py`:topic 工具全链路含落盘路径 / consolidate 合并统计 / 跨会话召回含原文 / 零相关不注入 / env 节流后台整理) | —(工具参数面) | —(无新 Op/EventMsg 变体;召回经既有 system-reminder 通道) | ✅(zhuye-memory topics 5 例 + consolidate 7 例;zhuye-notes recall 6 例;memory_tool topic/consolidate 4 例;MetaKind 新变体) | — |
+| v1.11 基建#13:GitHub topic 插件发现(`marketplace discover --topic`,默认 zhuye-plugin) | ✔(2 条,见 `test_plugin_discover.py`:参数面字段级 / 网络解析链路条件跑) | ✅(clap 参数面由用例 1 直接驱动) | —(纯 CLI 展示面,无 Op/EventMsg) | ✅(zhuye-plugin discover 校验 2 例:空 topic 拒绝 / limit 钳制) | — |
+| v1.11 桌面#3:复杂度分级路由(`[routing.main.complexity]` effort 档位→模型映射,model_call 自动选模型) | ✔(2 条,见 `test_complexity_routing.py`:low 档命中映射模型 / 未配置档位回退 primary / 无映射模型不变) | —(config 参数面,由 zhuye-config 单测承担) | —(无新 Op/EventMsg 变体;复用 SetEffort) | ✅(zhuye-config 复杂度解析 2 例:非空档位提取 / 空白丢弃;ReasoningEffortMirror 增 Hash derive) | — |
 
 ## 2. 能力覆盖层明细(`tests/functional/`)
 
@@ -720,6 +726,12 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_orchestration.py` | 10 条(O 组) |
 | `functional/test_cli.py` | 13 条(C 组) |
 | `functional/test_bugfixes.py` | 20 条(缺陷修复回归) |
+| `functional/test_agents_md.py` | 4 条(v1.11 基建#9:AGENTS.md 默认读取) |
+| `functional/test_full_auto.py` | 5 条(v1.11 基建#11:显式完全托管模式) |
+| `functional/test_goal_queue.py` | 2 条(v1.11 基建#6:队列多 goal) |
+| `functional/test_memory_v11.py` | 5 条(v1.11 基建#8:deepagents 式记忆) |
+| `functional/test_plugin_discover.py` | 2 条(v1.11 基建#13:GitHub topic 插件发现;网络用例 ZHUYE_FUNCTIONAL_NETWORK=1 才跑) |
+| `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:复杂度分级路由) |
 | `functional/test_v110.py` | 12 条(V 组) |
 | `functional/test_scenarios.py` | 7 条(并行工具及恢复、限流切换、修改审批、中断及迟到回执) |
 | `functional/test_long_session.py` | 1 条(摘要压缩、持久化和重启后增量摘要) |

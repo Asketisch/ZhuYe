@@ -599,6 +599,25 @@ fn bundled_skills_opt_in_parses() {
     assert!(cfg.active.bundled_skills);
 }
 
+/// v1.11 基建#9:`[active] agents_md` 缺省 → `None`(未表态)。
+/// 消费方(zhuye-exec bootstrap)按 `unwrap_or(true)` 默认开启 AGENTS.md
+/// 注入 —— 三态设计与 `[sandbox].os_level` 一致,区分「没写」与「写了
+/// false」。
+#[test]
+fn agents_md_absent_is_none() {
+    let cfg: ReflectConfig = toml::from_str("[active]\nprovider = \"anthropic\"\n").unwrap();
+    assert_eq!(cfg.active.agents_md, None);
+}
+
+/// `[active] agents_md = false` 显式关闭 → `Some(false)`,pre_loop 不再
+/// 读 AGENTS.md(等价旧行为)。
+#[test]
+fn agents_md_explicit_false_parses() {
+    let cfg: ReflectConfig =
+        toml::from_str("[active]\nprovider = \"anthropic\"\nagents_md = false\n").unwrap();
+    assert_eq!(cfg.active.agents_md, Some(false));
+}
+
 /// `[model]` 段解析 context_window + micro-USD 计价。
 #[test]
 fn model_section_parses_context_window_and_pricing() {
@@ -924,4 +943,43 @@ fn context_windows_lookup_normalizes() {
     assert_eq!(cw.lookup("minimax/MiniMax-M3"), Some(1_000_000));
     assert_eq!(cw.lookup("minimax-m3-latest"), Some(1_000_000)); // 前缀匹配
     assert_eq!(cw.lookup("unknown-model"), None);
+}
+
+/// v1.11 桌面#3:`[routing.main.complexity]` 解析 + `effort_model_routes()`
+/// 映射表(空档位丢弃;未配置 → 空 map)。
+#[test]
+fn routing_main_complexity_routes_parse() {
+    let cfg: ReflectConfig = toml::from_str(
+        r#"
+        [routing.main]
+        primary = "anthropic/claude-sonnet"
+        [routing.main.complexity]
+        low = "ollama/qwen3:8b"
+        ultra = "openai/gpt-5.2"
+        "#,
+    )
+    .unwrap();
+    let routes = cfg.effort_model_routes();
+    assert_eq!(routes.len(), 2, "只解析非空档位:{routes:?}");
+    assert_eq!(
+        routes[&zhuye_protocol::ReasoningEffortMirror::Low],
+        "ollama/qwen3:8b"
+    );
+    assert_eq!(
+        routes[&zhuye_protocol::ReasoningEffortMirror::Ultra],
+        "openai/gpt-5.2"
+    );
+    assert!(!routes.contains_key(&zhuye_protocol::ReasoningEffortMirror::High));
+}
+
+/// complexity 缺省 / 空白 spec → 空 map(不启用复杂度路由)。
+#[test]
+fn routing_complexity_absent_yields_empty() {
+    let cfg: ReflectConfig = toml::from_str("[routing.main]\nprimary = \"x\"\n").unwrap();
+    assert!(cfg.effort_model_routes().is_empty());
+    let cfg2: ReflectConfig = toml::from_str(
+        "[routing.main]\nprimary = \"x\"\n[routing.main.complexity]\nlow = \"  \"\n",
+    )
+    .unwrap();
+    assert!(cfg2.effort_model_routes().is_empty(), "空白 spec 应丢弃");
 }

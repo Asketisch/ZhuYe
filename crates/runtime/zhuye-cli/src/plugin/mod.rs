@@ -22,7 +22,10 @@ pub mod marketplace;
 mod tests;
 
 // 重导出 marketplace 公共函数,保持向后兼容。
-pub use marketplace::{marketplace_add, marketplace_ls, marketplace_refresh, marketplace_remove};
+pub use marketplace::{
+    marketplace_add, marketplace_discover, marketplace_ls, marketplace_refresh, marketplace_remove,
+    skill_install,
+};
 // `load_known_marketplaces` 供本模块的 `install` 使用。
 use marketplace::load_known_marketplaces;
 

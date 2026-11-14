@@ -248,6 +248,21 @@ pub async fn handle_reload(
         let max_iter = zhuye_core::config::max_iterations_from_env(new_cfg.active.max_iterations);
         agent_cfg.set_max_iterations(max_iter);
         tracing::info!(max_iter, "config reload: active.max_iterations updated");
+        // v1.11 基建#9:`active.agents_md` 变更 → 更新 AGENTS.md 默认加载
+        // 开关(下一轮 pre_loop 读最新值;`None` = 默认开启)。
+        agent_cfg.set_agents_md(new_cfg.active.agents_md.unwrap_or(true));
+    }
+
+    // v1.11 桌面#3:`[routing]` 段变更 → 重建复杂度路由映射(effort → 模型;
+    // 下一轮 model_call 生效,空表 = 关闭映射)。
+    if sections_changed.iter().any(|s| s == "routing") {
+        let routes = new_cfg.effort_model_routes();
+        let n = routes.len();
+        agent_cfg.set_effort_model_routes(routes);
+        tracing::info!(
+            routes = n,
+            "config reload: routing.complexity routes updated"
+        );
     }
 
     // v1.x 功能 1:`[subagent_providers]` 段变更 → 重建 child registry。

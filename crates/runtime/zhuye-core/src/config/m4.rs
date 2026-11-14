@@ -49,6 +49,11 @@ pub struct M4Deps {
     /// 文件型 skills 后按此标志补挂内置包(与 bootstrap 同口径);core
     /// 不读 config(分层约束),状态由装配方注入。
     pub bundled_skills: bool,
+    /// v1.11 基建#8:后台记忆整理句柄(包 FileMemoryStore + agent_type,
+    /// 定期去重 / 合并 MEMORY.md)。`None` = 未装配(测试 / 整理关闭);
+    /// submission_loop 每 N turns spawn 后台整理。core 不做类型下探,
+    /// 由 bootstrap 持有具体 FileMemoryStore 构造。
+    pub consolidator: Option<Arc<zhuye_memory::Consolidator>>,
 }
 
 impl std::fmt::Debug for M4Deps {
@@ -131,5 +136,6 @@ pub fn default_m4_deps(agent_name: &str) -> M4Deps {
         prompt_dirs: Vec::new(),
         skill_dirs: Vec::new(),
         bundled_skills: false,
+        consolidator: None,
     }
 }

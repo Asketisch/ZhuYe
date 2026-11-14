@@ -379,6 +379,30 @@ pub async fn submission_loop(
                             .await;
                     }
                     session_emitted = true;
+                    // v1.11 基建#11:初始权限模式通告 —— 会话以非 Auto 模式
+                    // 启动(`--plan-mode` → Plan / `--full-auto` → Bubble)时,
+                    // 在 SessionConfigured 之后发一条 `PermissionModeChanged`
+                    // 全局事件,让客户端(TUI / GUI / SDK)能感知并展示当前
+                    // 模式。此前初始模式只在引擎内部生效,客户端无从得知
+                    // 「会话正处于完全托管 / Plan 模式」。仅通告一次
+                    // (session_emitted 分支天然只进一次);from 固定 Auto
+                    // (未通告前的客户端缺省认知)。
+                    let initial_mode = cfg.permission_mode();
+                    if initial_mode != zhuye_protocol::PermissionMode::Auto {
+                        let ev = Event::new(
+                            zhuye_protocol::EVENT_ID_NONE,
+                            EventMsg::PermissionModeChanged(PermissionModeChangedEvent {
+                                from: zhuye_protocol::PermissionMode::Auto,
+                                to: initial_mode,
+                            }),
+                        );
+                        let _ = turn_tx.send(ev.clone()).await;
+                        fan_out_session(&session_subs, &ev);
+                        tracing::info!(
+                            mode = ?initial_mode,
+                            "session starts in non-default permission mode; announced"
+                        );
+                    }
                 }
                 // 共享 `cfg.model` 的 Arc 副本,让后续 graph 节点的每次
                 // LLM 调用都读最新值(配合热重载)。`thread_settings.model`
@@ -713,6 +737,11 @@ pub async fn submission_loop(
                 let steering_queue_clone = steering_queue.clone();
                 let poison_detector_clone = poison_detector.clone();
                 let cfg_telemetry_clone = cfg.telemetry.clone();
+                // v1.11 基建#8:后台记忆整理句柄(clone 进 spawned task;
+                // None = 未装配 / 整理关闭)。
+                let cfg_consolidator = cfg.m4.as_ref().and_then(|m| m.consolidator.clone());
+                let cfg_consolidate_every = cfg.memory_consolidate_every.clone();
+                let cfg_memory_counter = cfg.memory_turn_counter.clone();
                 // v1.4 A1:取消判定三件套 —— 回合令牌(被 Interrupt cancel)、
                 // 会话令牌(被 Shutdown cancel,级联回合令牌)、在飞回合表
                 // (终态注销)。区分两者才能为回合终态选择中断或关闭原因。
@@ -992,6 +1021,30 @@ pub async fn submission_loop(
                                 }
                                 Err(e) => {
                                     tracing::warn!(error = %e, "goal verification failed; continuing");
+                                }
+                            }
+                        }
+
+                        // v1.11 基建#8:后台记忆整理 —— 每 N turns 一次
+                        // (计数槽跨 turn 持续)。spawn + spawn_blocking:
+                        // 文件 I/O 不阻塞事件循环;整理失败仅记日志。
+                        if let Some(consolidator) = cfg_consolidator.as_ref() {
+                            let every = *cfg_consolidate_every.read();
+                            if every > 0 {
+                                let mut counter = cfg_memory_counter.write();
+                                *counter += 1;
+                                if *counter >= every {
+                                    *counter = 0;
+                                    drop(counter);
+                                    let c = consolidator.clone();
+                                    tokio::spawn(async move {
+                                        // 稍等:让 TurnComplete 先送达客户端,
+                                        // 整理的 MEMORY.md 写盘不与下一 turn
+                                        // 的记忆读取竞态(原子写兜底)。
+                                        tokio::time::sleep(std::time::Duration::from_millis(500))
+                                            .await;
+                                        let _ = tokio::task::spawn_blocking(move || c.run()).await;
+                                    });
                                 }
                             }
                         }

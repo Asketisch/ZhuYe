@@ -35,6 +35,11 @@ pub struct TurnResult {
 /// 目标控制器(一个 session 一个,`NodeContext.goal` 持 `Option<Arc<Self>>`)。
 pub struct GoalController {
     state: Arc<RwLock<Option<GoalState>>>,
+    /// v1.11 基建#6:最近一次终态(Complete/Blocked/BudgetLimited)。
+    /// `on_turn_end` 终止时 state 会被 clear(`snapshot()` 回 `None`),
+    /// 外部观察者(队列 goal 探针)无从区分「met 完成」与「从未进入」;
+    /// 此槽在 clear 前记下终态,`Op::ExitGoalMode` 的 `clear()` 一并清空。
+    last_outcome: RwLock<Option<GoalStatus>>,
     /// 校验用 LLM client(可与主 agent 不同)。Arc<dyn> 便于跨 spawn。
     client: Arc<dyn zhuye_llm::client::ModelClient>,
     cancel: CancellationToken,
@@ -55,6 +60,7 @@ impl GoalController {
         let state = GoalState::new(goal, verify_command, token_budget);
         Self {
             state: Arc::new(RwLock::new(Some(state))),
+            last_outcome: RwLock::new(None),
             client,
             cancel,
             telemetry,
@@ -82,6 +88,16 @@ impl GoalController {
 
     pub fn clear(&self) {
         *self.state.write() = None;
+        // 连带清空终态记忆:clear 之后 outcome() 也归 None,
+        // 「已退出目标模式」与「从未进入」对外不可区分(既有语义)。
+        *self.last_outcome.write() = None;
+    }
+
+    /// v1.11 基建#6:最近一次终态。`snapshot()` 因终态 clear 回 `None`
+    /// 时,外部观察者(队列 goal 探针)用它区分 met / blocked / 预算尽。
+    /// `None` = 无终态记忆(活跃中 / 从未进入 / 已被 `clear()`)。
+    pub fn outcome(&self) -> Option<GoalStatus> {
+        *self.last_outcome.read()
     }
 
     /// 引擎在 turn 结束后调用(work_context = 本轮 assistant 的最后文本,
@@ -186,9 +202,11 @@ impl GoalController {
             verdict: verdict.clone(),
         };
 
-        // 终止态(Complete/Blocked/BudgetLimited)→ clear state(退出目标模式);
+        // 终止态(Complete/Blocked/BudgetLimited)→ clear state(退出目标模式),
+        // 但先把终态记入 last_outcome(队列 goal 探针等外部观察者用);
         // 否则写回 state。
         if new_status.is_terminal() {
+            *self.last_outcome.write() = Some(new_status);
             *self.state.write() = None;
         } else {
             state.status = new_status;

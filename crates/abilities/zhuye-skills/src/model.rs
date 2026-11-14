@@ -60,6 +60,12 @@ pub enum SkillError {
     /// 缺少 frontmatter。
     #[error("skill missing frontmatter")]
     NoFrontmatter,
+    /// v1.11 桌面#1:参数非法(非法技能名 / repo 形态)。
+    #[error("invalid {0}: {1}")]
+    Invalid(&'static str, String),
+    /// v1.11 桌面#1:市场拉取失败(网络 / 404 / 非法 SKILL.md)。
+    #[error("skill fetch failed: {0}")]
+    Fetch(String),
 }
 
 #[cfg(test)]
