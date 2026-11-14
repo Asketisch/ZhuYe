@@ -69,6 +69,24 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     } else {
         initial_spec
     };
+    // v1.11 桌面#3:复杂度分级路由 —— 当前 effort 档位在
+    // `[routing.main.complexity]` 配置了映射模型时覆盖 initial spec
+    // (「简单任务用快模型、复杂任务用旗舰模型」)。覆盖发生在 fallback
+    // 链构建**之前**:链首即映射 spec,policy 的 fallbacks 仍作可用性兜底。
+    // 缓存提示:换模型 = provider prompt cache 全失效(config schema 文档
+    // 与 GUI 设置页均有说明)。
+    let current_effort = *ctx.effort.read();
+    if let Some(routed) = ctx.cfg.effort_model_route(current_effort) {
+        if routed != spec {
+            tracing::info!(
+                effort = ?current_effort,
+                %routed,
+                previous = %spec,
+                "complexity routing: effort tier mapped to a different model"
+            );
+            spec = routed;
+        }
+    }
 
     // R3:跨模型 fallback 链 —— primary 之后的 fallback spec 依次接管。
     //

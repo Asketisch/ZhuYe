@@ -379,7 +379,9 @@ pub enum RiskLevel {
 /// 按 serde 未知变体降级)。不同模型族支持的最高档不同(qwen 系到 High、
 /// deepseek 到 Max、OpenAI 到 Ultra),由 `zhuye_llm` 的能力表在**发 wire
 /// 前**钳制 —— 本枚举表达「用户想要的强度」,不代表目标模型一定支持。
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffortMirror {
     /// 低强度思考(默认档)。

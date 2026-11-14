@@ -14,7 +14,8 @@ use zhuye_llm::{ChatMessage, ContentBlock, UserContent};
 /// meta-message 类型标签。同时控制渲染顺序(枚举顺序 = canonical 顺序)
 /// 和未来按 kind 过滤 / 去重的能力。
 ///
-/// 顺序固定:`ActiveFiles` → `SubagentRegistry` → `SessionMemory`,
+/// 顺序固定:`ActiveFiles` → `SubagentRegistry` → `SessionMemory`
+/// → `CrossSessionNotes`,
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MetaKind {
     /// post-compact 自动重读的文件内容。
@@ -23,6 +24,8 @@ pub enum MetaKind {
     SubagentRegistry,
     /// session memory 笔记(从 `zhuye_notes` 拉取)。
     SessionMemory,
+    /// v1.11 基建#8:跨会话笔记召回(其他会话的相关发现,BM25 top-k)。
+    CrossSessionNotes,
 }
 
 impl MetaKind {
@@ -32,6 +35,7 @@ impl MetaKind {
             MetaKind::ActiveFiles => "active_files",
             MetaKind::SubagentRegistry => "subagent_registry",
             MetaKind::SessionMemory => "session_memory",
+            MetaKind::CrossSessionNotes => "cross_session_notes",
         }
     }
 }
@@ -89,6 +93,7 @@ pub fn recovery_meta_to_messages(entries: &[RecoveryEntry]) -> Vec<ChatMessage> 
         MetaKind::ActiveFiles,
         MetaKind::SubagentRegistry,
         MetaKind::SessionMemory,
+        MetaKind::CrossSessionNotes,
     ];
     let mut out: Vec<ChatMessage> = Vec::new();
     for kind in canonical {

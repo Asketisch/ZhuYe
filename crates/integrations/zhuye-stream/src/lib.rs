@@ -22,7 +22,8 @@ pub use cron::{
 };
 pub use postgres_session::{PostgresSessionConfig, PostgresSessionStore, StubPostgresSessionStore};
 pub use queue::{
-    QueueCounts, QueueDriverHandle, QueueScheduler, QueueState, QueueStatusSummary, QueueTask,
+    GoalProbe, GoalProbeSnapshot, GoalProbeStatus, MAX_GOAL_TURNS_PER_TASK, QueueCounts,
+    QueueDriverHandle, QueueScheduler, QueueState, QueueStatusSummary, QueueTask, QueueTaskGoal,
     QueueTaskStatus, TurnSubmitter, default_queue_base, load_state, queue_store_path_for,
     save_state,
 };

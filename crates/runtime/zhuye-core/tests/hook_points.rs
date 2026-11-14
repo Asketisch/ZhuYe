@@ -117,6 +117,7 @@ fn make_m4(compactor: Arc<Compactor>) -> M4Deps {
         prompt_dirs: Vec::new(),
         skill_dirs: Vec::new(),
         bundled_skills: false,
+        consolidator: None,
     }
 }
 

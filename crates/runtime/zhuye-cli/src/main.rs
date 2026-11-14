@@ -167,8 +167,27 @@ enum Command {
         #[command(subcommand)]
         action: SecretsAction,
     },
+    /// v1.11 桌面#1:Skill 市场 —— 从 GitHub 仓库安装技能到用户级
+    /// `~/.zhuye/skills/`(装完即被既有扫描链发现)。
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
     /// 打印版本号并退出。
     Version,
+}
+
+/// `zhuye skill` 子命令。
+#[derive(Debug, Subcommand)]
+enum SkillAction {
+    /// 从 GitHub 仓库(`owner/repo`,根含 SKILL.md)安装技能。
+    Install {
+        /// GitHub 仓库(owner/repo 或完整 URL)。
+        repo: String,
+        /// 安装目标目录(缺省 `~/.zhuye/skills`;ZHUYE_HOME 可重定向)。
+        #[arg(long)]
+        dir: Option<String>,
+    },
 }
 
 /// `zhuye secrets` 子命令。
@@ -696,6 +715,17 @@ enum MarketplaceAction {
         #[arg(long)]
         name: Option<String>,
     },
+    /// v1.11 基建#13:按 GitHub topic 发现插件仓库(默认 `zhuye-plugin`)。
+    /// 每条结果自带 `marketplace add ... --from github --repo` 现成命令,
+    /// 复制执行即接入既有五源拉取链路。
+    Discover {
+        /// GitHub topic(默认 zhuye-plugin)。
+        #[arg(long, default_value = "zhuye-plugin")]
+        topic: String,
+        /// 返回条数上限(1~100,GitHub per_page 上限)。
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 /// CLI 镜像 `zhuye_plugin::state::PluginScope`,给 clap derive。
@@ -834,6 +864,15 @@ fn main() -> anyhow::Result<()> {
             SecretsAction::List => secrets::list(),
             SecretsAction::Delete { name, yes } => secrets::delete(&name, yes),
         },
+        Command::Skill { action } => match action {
+            SkillAction::Install { repo, dir } => {
+                // 异步安装(reqwest);一次性 runtime,与 marketplace add 同款。
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()?;
+                rt.block_on(plugin::skill_install(&repo, dir.as_deref()))
+            }
+        },
         Command::Traces { action } => match action {
             TracesAction::Ls { limit } => traces::ls(limit),
             TracesAction::Show { id } => traces::show(&id),
@@ -915,6 +954,9 @@ fn main() -> anyhow::Result<()> {
                 MarketplaceAction::Remove { name } => plugin::marketplace_remove(&name),
                 MarketplaceAction::Refresh { name } => {
                     rt.block_on(plugin::marketplace_refresh(name.as_deref()))
+                }
+                MarketplaceAction::Discover { topic, limit } => {
+                    rt.block_on(plugin::marketplace_discover(&topic, limit))
                 }
             },
         },

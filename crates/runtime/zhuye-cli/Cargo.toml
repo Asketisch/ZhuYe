@@ -14,6 +14,8 @@ zhuye-exec       = { workspace = true }
 zhuye-discussion = { workspace = true }
 zhuye-rollout    = { workspace = true }
 zhuye-config     = { workspace = true }
+# v1.11 桌面#1:skill install 子命令(GitHub 仓库一键装技能)。
+zhuye-skills     = { workspace = true }
 zhuye-secrets    = { workspace = true }
 zhuye-hooks     = { workspace = true }
 zhuye-fs        = { workspace = true }

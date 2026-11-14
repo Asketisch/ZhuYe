@@ -25,11 +25,13 @@
 
 pub mod error;
 pub mod persisted;
+pub mod recall;
 pub mod store;
 pub mod tool;
 
 pub use error::NoteError;
 pub use persisted::FileBackedNoteStore;
+pub use recall::{RECALL_LIMIT, RecalledNote, recall_cross_session};
 pub use store::{InMemoryNoteStore, NoteStore, SESSION_NOTE_CAP, SessionNote};
 pub use tool::AddSessionNoteTool;
 

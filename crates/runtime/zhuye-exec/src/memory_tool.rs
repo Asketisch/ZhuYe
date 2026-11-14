@@ -166,9 +166,12 @@ impl Tool for MemoryTool {
     }
 
     fn description(&self) -> &str {
-        "读写 agent 持久记忆(`MEMORY.md` 的 `## <key>` 条目块)。\
-         操作:`list`(列条目)/ `read`(读正文)/ `write`(新增或更新条目,\
-         支持 create_only 与 expected_value 乐观锁)/ `remove`(删条目或整份)。\
+        "读写 agent 持久记忆(`MEMORY.md` 的 `## <key>` 条目块 + 多文件 \
+         topic 知识库)。操作:`list`(列条目)/ `read`(读正文)/ `write`\
+         (新增或更新条目,支持 create_only 与 expected_value 乐观锁)/ \
+         `remove`(删条目或整份)/ `topics`(列主题文件)/ `consolidate`\
+         (整理去重)。带 `topic` 参数时 read/write/remove 作用于 \
+         `topics/<topic>.md` 主题文件(长知识放这里,MEMORY.md 保持索引)。\
          写入对后续所有会话生效(project scope 可入 VCS)。"
     }
 
@@ -178,7 +181,7 @@ impl Tool for MemoryTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "read", "write", "remove"],
+                    "enum": ["list", "read", "write", "remove", "topics", "consolidate"],
                     "description": "Which memory operation to perform."
                 },
                 "scope": {
@@ -192,7 +195,11 @@ impl Tool for MemoryTool {
                 },
                 "value": {
                     "type": "string",
-                    "description": "Entry body; required for write."
+                    "description": "Entry body; required for write. With `topic`: whole topic file content (empty = delete topic)."
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Topic file name (`topics/<topic>.md`, [A-Za-z0-9_-]); read/write/remove target the topic file instead of MEMORY.md."
                 },
                 "create_only": {
                     "type": "boolean",
@@ -221,9 +228,9 @@ impl Tool for MemoryTool {
     }
 
     fn action_permission(&self, args: &Value) -> PermissionMode {
-        // list / read 只读;write / remove 有副作用。
+        // list / read / topics 只读;write / remove / consolidate 有副作用。
         match args.get("action").and_then(|v| v.as_str()) {
-            Some("list") | Some("read") => PermissionMode::Auto,
+            Some("list") | Some("read") | Some("topics") => PermissionMode::Auto,
             _ => PermissionMode::Prompt,
         }
     }
@@ -232,6 +239,11 @@ impl Tool for MemoryTool {
         let action = Self::require_str(&args, "action")?;
         let scope = Self::parse_scope(&args)?;
         let agent = self.agent_type.as_str();
+        // v1.11 基建#8:`topic` 参数把 read/write/remove 重定向到主题文件。
+        let topic = args.get("topic").and_then(|v| v.as_str());
+        if let Some(topic) = topic {
+            zhuye_memory::validate_topic_name(topic).map_err(Self::map_err)?;
+        }
         let text = match action {
             "list" => {
                 let entries = self
@@ -259,42 +271,115 @@ impl Tool for MemoryTool {
                 }
             }
             "read" => {
-                let body = self.store.load(scope, agent).map_err(Self::map_err)?;
-                if body.trim().is_empty() {
-                    format!("(no memory in {scope} scope)")
+                if let Some(topic) = topic {
+                    // 主题文件正文。
+                    let body = self
+                        .store
+                        .load_topic(scope, agent, topic)
+                        .map_err(Self::map_err)?;
+                    if body.trim().is_empty() {
+                        format!("(topic `{topic}` not found or empty in {scope} scope)")
+                    } else {
+                        body
+                    }
                 } else {
-                    body
+                    let body = self.store.load(scope, agent).map_err(Self::map_err)?;
+                    if body.trim().is_empty() {
+                        format!("(no memory in {scope} scope)")
+                    } else {
+                        body
+                    }
                 }
             }
             "write" => {
-                let key = Self::require_str(&args, "key")?;
                 let value = Self::require_str(&args, "value")?;
-                let replace_document = args
-                    .get("replace_document")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let opts = Self::write_opts(&args, replace_document)?;
-                self.store
-                    .add_entry(scope, agent, key, value, &opts)
-                    .map_err(Self::map_err)?;
-                self.record_write(&ctx, key, value.chars().count(), 1);
-                format!(
-                    "memory entry `{key}` written ({scope} scope, {} chars)",
-                    value.chars().count()
-                )
+                if let Some(topic) = topic {
+                    // 主题文件整文件写;空正文 = 删除该 topic(幂等)。
+                    self.store
+                        .save_topic(scope, agent, topic, value)
+                        .map_err(Self::map_err)?;
+                    self.record_write(&ctx, &format!("topic:{topic}"), value.chars().count(), 1);
+                    if value.trim().is_empty() {
+                        format!("topic `{topic}` removed ({scope} scope)")
+                    } else {
+                        format!(
+                            "topic `{topic}` written ({scope} scope, {} chars)",
+                            value.chars().count()
+                        )
+                    }
+                } else {
+                    let key = Self::require_str(&args, "key")?;
+                    let replace_document = args
+                        .get("replace_document")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let opts = Self::write_opts(&args, replace_document)?;
+                    self.store
+                        .add_entry(scope, agent, key, value, &opts)
+                        .map_err(Self::map_err)?;
+                    self.record_write(&ctx, key, value.chars().count(), 1);
+                    format!(
+                        "memory entry `{key}` written ({scope} scope, {} chars)",
+                        value.chars().count()
+                    )
+                }
             }
             "remove" => {
-                let key = Self::require_str(&args, "key")?;
-                let replace_document = args
-                    .get("replace_document")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let opts = Self::write_opts(&args, replace_document)?;
-                self.store
-                    .remove_entry(scope, agent, key, &opts)
+                if let Some(topic) = topic {
+                    self.store
+                        .remove_topic(scope, agent, topic)
+                        .map_err(Self::map_err)?;
+                    self.record_write(&ctx, &format!("topic:{topic}"), 0, 0);
+                    format!("topic `{topic}` removed ({scope} scope)")
+                } else {
+                    let key = Self::require_str(&args, "key")?;
+                    let replace_document = args
+                        .get("replace_document")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let opts = Self::write_opts(&args, replace_document)?;
+                    self.store
+                        .remove_entry(scope, agent, key, &opts)
+                        .map_err(Self::map_err)?;
+                    self.record_write(&ctx, key, 0, 0);
+                    format!("memory entry `{key}` removed ({scope} scope)")
+                }
+            }
+            "topics" => {
+                // 列主题文件(两 scope 合并列表)。
+                let names = self
+                    .store
+                    .list_topics(scope, agent)
                     .map_err(Self::map_err)?;
-                self.record_write(&ctx, key, 0, 0);
-                format!("memory entry `{key}` removed ({scope} scope)")
+                if names.is_empty() {
+                    format!(
+                        "(no topics in {scope} scope; write one with action=write + topic=<name>)"
+                    )
+                } else {
+                    let mut out = format!("{} topic(s) in {scope} scope:\n", names.len());
+                    for t in &names {
+                        let len = self
+                            .store
+                            .load_topic(scope, agent, t)
+                            .map_or(0, |b| b.chars().count());
+                        out.push_str(&format!("- {t} ({len} chars)\n"));
+                    }
+                    out
+                }
+            }
+            "consolidate" => {
+                // 手动整理(去重 / 合并 / 清空条目)。
+                let stats = self
+                    .store
+                    .consolidate(scope, agent)
+                    .map_err(Self::map_err)?;
+                match stats {
+                    None => format!("(no MEMORY.md in {scope} scope; nothing to consolidate)"),
+                    Some(s) => format!(
+                        "consolidated {scope} scope: merged={} dropped_empty={} sections {} -> {}",
+                        s.merged, s.dropped_empty, s.sections_before, s.sections_after
+                    ),
+                }
             }
             other => {
                 return Err(ToolError::InvalidArgs {
@@ -305,11 +390,20 @@ impl Tool for MemoryTool {
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::Text { text }],
             is_error: false,
-            metadata: json!({
-                "action": action,
-                "scope": scope.to_string(),
-                "agent_type": agent,
-            }),
+            metadata: {
+                let mut meta = json!({
+                    "action": action,
+                    "scope": scope.to_string(),
+                    "agent_type": agent,
+                });
+                // topic 操作在 metadata 里带目标文件(客户端可展示来源)。
+                if let Some(t) = topic
+                    && let Value::Object(map) = &mut meta
+                {
+                    map.insert("topic".into(), Value::String(t.to_string()));
+                }
+                meta
+            },
             elapsed_ms: 0,
         })
     }
@@ -319,6 +413,119 @@ impl Tool for MemoryTool {
 mod tests {
     use super::*;
     use zhuye_tools::ToolContext;
+
+    /// v1.11 基建#8:topic 子路径 write → topics → read → remove 全链路。
+    #[tokio::test]
+    async fn topic_actions_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = MemoryTool::new(
+            Arc::new(zhuye_memory::FileMemoryStore::new(tmp.path(), tmp.path())),
+            "agent",
+        );
+        let ctx = ToolContext::default();
+        // write topic。
+        let out = tool
+            .execute(
+                ctx.clone(),
+                json!({"action": "write", "topic": "arch", "value": "# 架构\npostgres 16"}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert_eq!(out.metadata["topic"], "arch");
+        // topics 列表可见。
+        let list = tool
+            .execute(ctx.clone(), json!({"action": "topics"}))
+            .await
+            .unwrap();
+        let text = match &list.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            other => panic!("topics 输出应是文本:{other:?}"),
+        };
+        assert!(text.contains("arch"), "topic 应在列表:{text}");
+        // read topic 拿回正文。
+        let read = tool
+            .execute(ctx.clone(), json!({"action": "read", "topic": "arch"}))
+            .await
+            .unwrap();
+        let body = match &read.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            other => panic!("read 输出应是文本:{other:?}"),
+        };
+        assert!(body.contains("postgres 16"), "topic 正文:{body}");
+        // remove topic 后列表为空。
+        tool.execute(ctx.clone(), json!({"action": "remove", "topic": "arch"}))
+            .await
+            .unwrap();
+        let list2 = tool
+            .execute(ctx.clone(), json!({"action": "topics"}))
+            .await
+            .unwrap();
+        let text2 = match &list2.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(text2.contains("no topics"), "删除后应为空:{text2}");
+    }
+
+    /// topic 名非法 → InvalidArgs(路径穿越防护)。
+    #[tokio::test]
+    async fn topic_name_validated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = MemoryTool::new(
+            Arc::new(zhuye_memory::FileMemoryStore::new(tmp.path(), tmp.path())),
+            "agent",
+        );
+        let err = tool
+            .execute(
+                ToolContext::default(),
+                json!({"action": "read", "topic": "../x"}),
+            )
+            .await;
+        assert!(err.is_err(), "穿越名必须拒绝");
+    }
+
+    /// consolidate action:有重复条目时合并并报告统计。
+    #[tokio::test]
+    async fn consolidate_action_reports_stats() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(zhuye_memory::FileMemoryStore::new(tmp.path(), tmp.path()));
+        store
+            .save(
+                zhuye_memory::MemoryScope::Project,
+                "agent",
+                "## Deploy\nuses actions\n\n## deploy\nruns on main\n",
+            )
+            .unwrap();
+        let tool = MemoryTool::new(store, "agent");
+        let out = tool
+            .execute(ToolContext::default(), json!({"action": "consolidate"}))
+            .await
+            .unwrap();
+        let text = match &out.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(text.contains("merged=1"), "应报告一次合并:{text}");
+    }
+
+    /// topics / consolidate 是只读(无副作用 action 权限口径)。
+    #[test]
+    fn topics_action_is_auto_permission() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = MemoryTool::new(
+            Arc::new(zhuye_memory::FileMemoryStore::new(tmp.path(), tmp.path())),
+            "agent",
+        );
+        assert_eq!(
+            tool.action_permission(&json!({"action": "topics"})),
+            PermissionMode::Auto
+        );
+        assert_eq!(
+            tool.action_permission(&json!({"action": "consolidate"})),
+            PermissionMode::Prompt
+        );
+    }
 
     /// record_write 落盘定位:双 ID 解析(文件名 thread id 优先命中)后,
     /// MemoryAccess::Write 记录必须 append 到该 session 的 JSONL。

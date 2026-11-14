@@ -19,6 +19,13 @@ use zhuye_tools::ToolRegistry;
 /// `claude-3-haiku-20240307` 时,`AgentConfig.model` 必须随之更新。
 #[tokio::test]
 async fn model_field_change_propagates_to_agent_config() {
+    // env 隔离:handle_reload 经 `resolve_model_spec` 读 `ZHUYE_MODEL`,且
+    // mock 值优先级高于 TOML(v1.3 SDK 设计)。runner 门禁恒设
+    // `ZHUYE_MODEL=mock`,不隔离则 old/new spec 恒相等,reload 永不换模
+    // 型。保存 → 清除 → 恢复。
+    let prior_model = std::env::var("ZHUYE_MODEL").ok();
+    // SAFETY: 单线程 tokio 测试;断言 env-无关路径。
+    unsafe { std::env::remove_var("ZHUYE_MODEL") };
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut rx) = mpsc::channel::<Event>(4);
     let old_cfg = ReflectConfig {
@@ -60,6 +67,10 @@ async fn model_field_change_propagates_to_agent_config() {
         "anthropic/claude-3-haiku-20240307",
         "AgentConfig.model must zhuye the TOML change"
     );
+    if let Some(m) = prior_model {
+        // SAFETY: 恢复进程 env。
+        unsafe { std::env::set_var("ZHUYE_MODEL", m) };
+    }
 
     // 显式 drop tx 让 channel 关闭,rx.recv() 在排空后返回 None 跳出循环。
     drop(tx);

@@ -74,6 +74,17 @@ pub struct ExecArgs {
     /// 进程以 exit code 122 退出(CI / 脚本可据此重试)。
     #[arg(long)]
     pub plan_mode: bool,
+    /// v1.11 基建#11:显式完全托管模式(`--full-auto`,别名 `--yolo`)。
+    /// 会话以 `PermissionMode::Bubble` 启动:审批门启用时(TUI /
+    /// `ZHUYE_APPROVALS=1`)非高危工具一律自动批准并发 `PermissionBubble`
+    /// 通知(不弹 blocking modal);高危(risk == High)工具仍强制人工
+    /// 确认 —— v1.3 安全基线不因本旗标松动,这与被降级拦下的旧
+    /// `Bypass` 语义的本质区别。headless 免确认路径(审批门本就未装)
+    /// 行为不变,但会话模式与 `permission_mode_changed` 通告让
+    /// 「完全托管」成为可观测、可断言的产品能力。与 `--plan-mode`
+    /// 互斥(只读规划与全自动语义冲突)。
+    #[arg(long, alias = "yolo", conflicts_with = "plan_mode")]
+    pub full_auto: bool,
     /// S2.5:用内存 `InMemoryTaskStore` 而**不**用 `FileTaskStore` —— 任务
     /// 不会持久化到 `~/.zhuye/tasks/<list>/<id>.json`。默认 `false`
     /// (持久化,与 CLI 的 `zhuye task ls` 同源)。
@@ -188,6 +199,7 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         ephemeral_teams: args.ephemeral_teams,
         auto_root: args.auto_root,
         plan_mode: args.plan_mode,
+        full_auto: args.full_auto,
         // exec 保持既有行为:未配置 [hooks] = 全部启用(仅 serve 收紧)。
         hooks_explicit_only: false,
         // exec 无 --plugin 旗标:保持 config 驱动(显式插件加载是

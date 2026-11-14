@@ -19,9 +19,11 @@
 //! - **TUI 不阻断启动** —— `MarketplaceUpdater::refresh_all` 配合 `tokio::spawn`,
 //!   单个 marketplace 失败只 `tracing::warn!`,不影响 TUI 主循环。
 
+pub mod discover;
 pub mod fetcher;
 pub mod update;
 
+pub use discover::{DEFAULT_PLUGIN_TOPIC, DiscoveredPlugin, discover_by_topic};
 pub use fetcher::{
     DirectoryFetcher, FileFetcher, GitFetcher, GithubFetcher, MarketplaceFetchRouter,
     MarketplaceFetcher, UrlFetcher,

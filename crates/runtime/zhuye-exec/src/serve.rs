@@ -54,6 +54,16 @@ pub struct ServeArgs {
     /// 启动即进入 Plan mode(只读)。
     #[arg(long, default_value_t = false)]
     pub plan_mode: bool,
+    /// v1.11 基建#11:显式完全托管模式(别名 `--yolo`)—— 会话以
+    /// `PermissionMode::Bubble` 启动,审批门启用时非高危工具自动批准。
+    /// 与 `--plan-mode` 互斥。
+    #[arg(
+        long,
+        alias = "yolo",
+        default_value_t = false,
+        conflicts_with = "plan_mode"
+    )]
+    pub full_auto: bool,
     /// 按 thread id 恢复历史 session(与 `-c` / `-r` 三选一)。
     #[arg(long, value_name = "UUID", conflicts_with_all = ["continue_last", "resume_by"])]
     pub resume: Option<String>,
@@ -78,6 +88,7 @@ impl From<&ServeArgs> for HeadlessArgs {
             ephemeral_teams: a.ephemeral_teams,
             auto_root: a.auto_root,
             plan_mode: a.plan_mode,
+            full_auto: a.full_auto,
             // serve 是 SDK 嵌入入口:内置 hook 需在 `[hooks].enabled`
             // 显式列出才启用(理由见 HeadlessArgs::hooks_explicit_only)。
             hooks_explicit_only: true,

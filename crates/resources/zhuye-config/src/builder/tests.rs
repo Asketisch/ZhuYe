@@ -1,6 +1,14 @@
 //! `builder` 模块单测。整体迁自原 `builder.rs` 内联 `#[cfg(test)] mod tests`。
+//!
+//! ⚠️ env 隔离口径:runner 门禁(pr 套件)会给本进程设 `ZHUYE_MODEL=mock`,
+//! 直接调读 env 的公开入口(`active_provider` / `resolve_model` /
+//! `resolved_model_spec` / `apply_to_registry`)的断言在该环境下**必假
+//! 失败**(mock 优先级高于 TOML 配置,属 v1.3 SDK 的设计行为)。本模块
+//! 统一走 `_with_env(.., None, None)` 注入版 —— 这些测试验证 TOML 配置
+//! 行为;env 行为由显式设置变量的测试(`resolve_model_env_*`)另行覆盖。
 
 use super::*;
+
 use crate::schema::{ActiveSection, AnthropicSection, OllamaSection, OpenAISection};
 
 fn cfg_with_anthropic(key: &str) -> ReflectConfig {
@@ -50,7 +58,9 @@ fn cfg_with_ollama(model: Option<&str>) -> ReflectConfig {
 
 #[test]
 fn empty_config_yields_empty_registry() {
-    let r = ReflectConfig::default().to_registry().unwrap();
+    let r = ReflectConfig::default()
+        .to_registry_with_env(None, None)
+        .unwrap();
     assert!(r.list().is_empty());
 }
 
@@ -67,7 +77,7 @@ fn registry_registers_anthropic_and_openai() {
         }),
         ..Default::default()
     };
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert_eq!(
         r.list(),
         vec!["anthropic".to_string(), "openai".to_string()]
@@ -79,8 +89,12 @@ fn registry_registers_anthropic_and_openai() {
 #[test]
 fn apply_to_registry_is_additive() {
     let r = ModelRegistry::new();
-    cfg_with_anthropic("sk-a").apply_to_registry(&r).unwrap();
-    cfg_with_openai("sk-o").apply_to_registry(&r).unwrap();
+    cfg_with_anthropic("sk-a")
+        .apply_to_registry_with_env(&r, None, None)
+        .unwrap();
+    cfg_with_openai("sk-o")
+        .apply_to_registry_with_env(&r, None, None)
+        .unwrap();
     assert_eq!(r.list().len(), 2);
 }
 
@@ -135,7 +149,7 @@ fn apply_to_registry_feeds_merged_context_window_overrides() {
 #[test]
 fn registry_registers_ollama_when_section_present() {
     let cfg = cfg_with_ollama(Some("llama3.2"));
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(r.get("ollama").is_some(), "ollama should be registered");
 }
 
@@ -150,7 +164,7 @@ fn active_provider_canonicalizes_ollama_aliases() {
         ollama: Some(OllamaSection::default()),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider(), Some("ollama"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("ollama"));
 
     // alias `"local"` 也被 canonicalize。
     let cfg = ReflectConfig {
@@ -161,20 +175,23 @@ fn active_provider_canonicalizes_ollama_aliases() {
         ollama: Some(OllamaSection::default()),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider(), Some("ollama"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("ollama"));
 }
 
 #[test]
 fn active_provider_falls_back_to_ollama_when_section_present() {
     // 没显式 `active.provider` → 但有 `[ollama]` 段 → fall-back 选 ollama。
     let cfg = cfg_with_ollama(Some("qwen2.5:7b"));
-    assert_eq!(cfg.active_provider(), Some("ollama"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("ollama"));
 }
 
 #[test]
 fn resolve_model_ollama_returns_section_override() {
     let cfg = cfg_with_ollama(Some("qwen2.5:7b"));
-    assert_eq!(cfg.resolve_model("ollama"), Some("qwen2.5:7b".to_string()));
+    assert_eq!(
+        cfg.resolve_model_inner("ollama", None, None),
+        Some("qwen2.5:7b".to_string())
+    );
 }
 
 /// 已知 provider 前缀(mock/openai/anthropic/ollama 及别名)
@@ -209,18 +226,18 @@ fn strip_known_provider_prefix_strips_only_known_names() {
 fn resolve_model_env_with_provider_prefix_is_stripped() {
     let cfg = cfg_with_openai("sk-o");
     assert_eq!(
-        cfg.resolve_model_inner("openai", Some("openai/m1")),
+        cfg.resolve_model_inner("openai", None, Some("openai/m1")),
         Some("m1".to_string()),
         "已知 provider 前缀必须剥掉"
     );
     // 未知前缀(OpenRouter 式)原样透传。
     assert_eq!(
-        cfg.resolve_model_inner("openai", Some("cohere/north-mini-code:free")),
+        cfg.resolve_model_inner("openai", None, Some("cohere/north-mini-code:free")),
         Some("cohere/north-mini-code:free".to_string())
     );
     // mock 的 spec 形态走专属分支(既有语义不变)。
     assert_eq!(
-        cfg.resolve_model_inner("mock", Some("mock/mock-1")),
+        cfg.resolve_model_inner("mock", None, Some("mock/mock-1")),
         Some("mock-1".to_string())
     );
 }
@@ -229,10 +246,10 @@ fn resolve_model_env_with_provider_prefix_is_stripped() {
 #[test]
 fn resolve_model_returns_none_when_nothing_configured() {
     let cfg = ReflectConfig::default();
-    assert_eq!(cfg.resolve_model("ollama"), None);
-    assert_eq!(cfg.resolve_model("anthropic"), None);
-    assert_eq!(cfg.resolve_model("openai"), None);
-    assert_eq!(cfg.resolve_model("gemini"), None);
+    assert_eq!(cfg.resolve_model_inner("ollama", None, None), None);
+    assert_eq!(cfg.resolve_model_inner("anthropic", None, None), None);
+    assert_eq!(cfg.resolve_model_inner("openai", None, None), None);
+    assert_eq!(cfg.resolve_model_inner("gemini", None, None), None);
 }
 
 #[test]
@@ -249,7 +266,7 @@ fn resolved_model_spec_for_ollama() {
         ..Default::default()
     };
     assert_eq!(
-        cfg.resolved_model_spec(),
+        cfg.resolved_model_spec_with_env(None, None),
         Some("ollama/qwen2.5:7b".to_string())
     );
 }
@@ -270,7 +287,7 @@ fn credentials_array_builds_multi_entry_pool() {
         api_key = "sk-personal"
     "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     let healthy = r.healthy_clients("anthropic/claude-3-5-sonnet-latest");
     assert_eq!(healthy.len(), 2, "应有 work + personal 两个 entry");
     // healthy_clients 顺序 = pool.entries 插入顺序
@@ -304,7 +321,7 @@ fn legacy_api_key_wraps_to_default_credential() {
         }),
         ..Default::default()
     };
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     let nc = r.next_for("anthropic/x", &[]).unwrap();
     assert_eq!(nc.label, "default");
 }
@@ -332,7 +349,7 @@ fn credentials_array_takes_precedence_over_legacy_api_key() {
         }),
         ..Default::default()
     };
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     let healthy = r.healthy_clients("anthropic/x");
     assert_eq!(healthy.len(), 1);
     assert_eq!(healthy[0].label, "only");
@@ -343,10 +360,10 @@ fn ollama_skipped_when_no_section_and_no_env() {
     // 无段 + env 未设 → 不注册,active_provider 不返回 ollama。
     // (env 状态对其他测试透明:此测试只验证配置路径。)
     let cfg = ReflectConfig::default();
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(r.get("ollama").is_none());
     // active_provider 依赖 env 兜底,只断言非 ollama 时返回 None 或非 ollama。
-    let _ = cfg.active_provider(); // 不 panic 即可
+    let _ = cfg.active_provider_inner(None, None); // 不 panic 即可
 }
 
 #[test]
@@ -370,7 +387,7 @@ fn empty_api_key_section_does_not_register() {
     };
     // 测试中 TOML key 为空且 env 未设置 → 跳过。
     // SAFETY:测试并行运行,不要修改 env。
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     // anthropic 因无 key 被跳过(env 可能已设也可能未设)。
     // 仅断言 openai 也不存在。
     assert!(r.get("openai").is_none());
@@ -395,7 +412,7 @@ fn keyless_openai_with_base_url_registers_pool() {
         }),
         ..Default::default()
     };
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(
         r.get("openai").is_some(),
         "免 Key 端点(显式 base_url)必须注册 —— 否则 model=\"free\" 的清单发现报「未注册任何凭据」"
@@ -413,7 +430,7 @@ fn keyless_openai_without_base_url_still_skipped() {
         }),
         ..Default::default()
     };
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(r.get("openai").is_none());
 }
 
@@ -428,7 +445,7 @@ fn keyless_openai_with_base_url_is_active_provider() {
         }),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider(), Some("openai"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("openai"));
 }
 
 /// v1.10 功能5:**免 Key 的 Anthropic 兼容端点也要注册** —— 显式
@@ -446,13 +463,13 @@ fn keyless_anthropic_with_base_url_registers_pool() {
         }),
         ..Default::default()
     };
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(
         r.get("anthropic").is_some(),
         "免 Key 的 Anthropic 兼容端点(显式 base_url)必须注册"
     );
     // 也能推出 active provider(与注册条件同口径)。
-    assert_eq!(cfg.active_provider(), Some("anthropic"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("anthropic"));
 }
 
 /// v1.10 功能5:anthropic 既没 key 也没 base_url → 仍不注册。
@@ -466,7 +483,7 @@ fn keyless_anthropic_without_base_url_still_skipped() {
         }),
         ..Default::default()
     };
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(r.get("anthropic").is_none());
 }
 
@@ -504,13 +521,13 @@ fn active_provider_explicit_in_toml() {
         }),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider(), Some("openai"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("openai"));
 }
 
 #[test]
 fn active_provider_falls_back_to_first_nonempty() {
     let cfg = cfg_with_anthropic("sk-a");
-    assert_eq!(cfg.active_provider(), Some("anthropic"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("anthropic"));
 }
 
 #[test]
@@ -522,7 +539,7 @@ fn active_provider_canonicalizes_aliases() {
         },
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider(), Some("anthropic"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("anthropic"));
 
     let cfg = ReflectConfig {
         active: ActiveSection {
@@ -531,7 +548,7 @@ fn active_provider_canonicalizes_aliases() {
         },
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider(), Some("openai"));
+    assert_eq!(cfg.active_provider_inner(None, None), Some("openai"));
 }
 
 #[test]
@@ -543,14 +560,14 @@ fn active_provider_unknown_string_returns_none() {
         },
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider(), None);
+    assert_eq!(cfg.active_provider_inner(None, None), None);
 }
 
 #[test]
 fn resolve_model_returns_section_override() {
     let cfg = cfg_with_anthropic("sk-a");
     assert_eq!(
-        cfg.resolve_model("anthropic"),
+        cfg.resolve_model_inner("anthropic", None, None),
         Some("claude-test".to_string())
     );
 }
@@ -559,9 +576,9 @@ fn resolve_model_returns_section_override() {
 #[test]
 fn resolve_model_returns_none_when_section_missing() {
     let cfg = ReflectConfig::default();
-    assert_eq!(cfg.resolve_model("anthropic"), None);
-    assert_eq!(cfg.resolve_model("openai"), None);
-    assert_eq!(cfg.resolve_model("gemini"), None);
+    assert_eq!(cfg.resolve_model_inner("anthropic", None, None), None);
+    assert_eq!(cfg.resolve_model_inner("openai", None, None), None);
+    assert_eq!(cfg.resolve_model_inner("gemini", None, None), None);
 }
 
 #[test]
@@ -587,7 +604,7 @@ fn canonical_provider_round_trip() {
 fn resolved_model_spec_uses_section_override() {
     let cfg = cfg_with_anthropic("sk-a");
     assert_eq!(
-        cfg.resolved_model_spec(),
+        cfg.resolved_model_spec_with_env(None, None),
         Some("anthropic/claude-test".to_string())
     );
 }
@@ -612,7 +629,7 @@ fn resolved_model_spec_prefers_active_provider() {
         ..Default::default()
     };
     assert_eq!(
-        cfg.resolved_model_spec(),
+        cfg.resolved_model_spec_with_env(None, None),
         Some("openai/gpt-test".to_string())
     );
 }
@@ -630,7 +647,7 @@ fn resolved_model_spec_returns_none_when_no_provider() {
         std::env::remove_var(ENV_ZHUYE_PROVIDER);
     }
     let cfg = ReflectConfig::default();
-    let result = cfg.resolved_model_spec();
+    let result = cfg.resolved_model_spec_with_env(None, None);
     // 仅当 provider 也确实没有时才 None;此处默认 `active_provider()`
     // 可能因环境变量而返回 anthropic/openai,所以只验证类型。
     let _ = result;
@@ -661,7 +678,7 @@ fn resolved_model_spec_returns_none_when_no_model_configured() {
         }),
         ..Default::default()
     };
-    assert_eq!(cfg.resolved_model_spec(), None);
+    assert_eq!(cfg.resolved_model_spec_with_env(None, None), None);
 }
 
 // ── v1.5:[active].credential 钉住 + 条目级 model ────────────────────
@@ -690,7 +707,7 @@ fn resolve_model_prefers_pinned_credential_model() {
     assert_eq!(cfg.active_credential().as_deref(), Some("minimax"));
     // 命中条目无 model → 回落段级;不因别的条目有 model 而误取。
     assert_eq!(
-        cfg.resolve_model("anthropic"),
+        cfg.resolve_model_inner("anthropic", None, None),
         Some("section-model".to_string())
     );
 
@@ -701,11 +718,11 @@ fn resolve_model_prefers_pinned_credential_model() {
     );
     let cfg: ReflectConfig = toml::from_str(&toml).unwrap();
     assert_eq!(
-        cfg.resolve_model("anthropic"),
+        cfg.resolve_model_inner("anthropic", None, None),
         Some("minimax-model".to_string())
     );
     assert_eq!(
-        cfg.resolved_model_spec(),
+        cfg.resolved_model_spec_with_env(None, None),
         Some("anthropic/minimax-model".to_string())
     );
 }
@@ -728,7 +745,7 @@ fn resolve_model_pin_applies_only_to_active_provider() {
     "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
     assert_eq!(
-        cfg.resolve_model("openai"),
+        cfg.resolve_model_inner("openai", None, None),
         Some("gpt-section".to_string()),
         "openai 不是 active provider,不受 anthropic 的钉住影响"
     );
@@ -771,14 +788,14 @@ fn apply_to_registry_sets_preferred_label() {
         api_key = "sk-b"
     "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert_eq!(r.preferred_label("anthropic").as_deref(), Some("minimax"));
     assert_eq!(r.preferred_label("openai"), None);
 
     // 未钉住 → preferred 不设。
     let toml = toml.replace("credential = \"minimax\"", "");
     let cfg: ReflectConfig = toml::from_str(&toml).unwrap();
-    let r = cfg.to_registry().unwrap();
+    let r = cfg.to_registry_with_env(None, None).unwrap();
     assert_eq!(r.preferred_label("anthropic"), None);
 }
 
@@ -918,15 +935,15 @@ fn mock_provider_opt_in_paths_and_model_resolution() {
     // model 解析:剥前缀 / 裸 mock 回退内置 mock model(mock 是显式
     // opt-in 的离线 provider,内置 model 名属于其契约)。
     assert_eq!(
-        cfg.resolve_model_inner("mock", Some("mock/mock-1")),
+        cfg.resolve_model_inner("mock", None, Some("mock/mock-1")),
         Some("mock-1".to_string())
     );
     assert_eq!(
-        cfg.resolve_model_inner("mock", Some("mock")),
+        cfg.resolve_model_inner("mock", None, Some("mock")),
         Some("mock-1".to_string())
     );
     assert_eq!(
-        cfg.resolve_model_inner("mock", None),
+        cfg.resolve_model_inner("mock", None, None),
         Some("mock-1".to_string())
     );
 }

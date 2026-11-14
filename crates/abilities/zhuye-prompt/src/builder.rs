@@ -39,6 +39,9 @@ pub const MEMORY_HEADER: &str = "## Agent Memory";
 /// 在 core system prompt 中标记与 provider 无关的 Plan mode 指引的标题。
 pub const PLAN_MODE_HEADER: &str = "## Plan Mode";
 
+/// 在 core system prompt 中标记项目指令(AGENTS.md)注入段的标题。
+pub const AGENTS_MD_HEADER: &str = "## Project Instructions";
+
 /// 附加到每个 agent system prompt(在 provider 序列化之前)的共享
 /// Plan mode 说明。统一放在此处可避免 Anthropic / OpenAI / Ollama
 /// 之间出现措辞漂移。
@@ -124,6 +127,54 @@ pub fn append_active_mode_section(core: &mut String, mode: zhuye_protocol::Permi
     new.push_str(&section);
     if insert_pos < core.len() {
         new.push('\n');
+        new.push_str(&core[insert_pos..]);
+    }
+    *core = new;
+}
+
+/// v1.11 基建#9:项目指令(AGENTS.md)注入段。
+///
+/// 把 `<workspace>/AGENTS.md`(以及可选的用户级 `~/.zhuye/AGENTS.md`)
+/// 的内容作为 `## Project Instructions` 段插入 core system prompt。
+/// 语义上属于「稳定的项目规范」—— 插在 agent persona 之后、
+/// Plan Mode 规则段与 Memory 段**之前**(层级:人格 → 项目规范 →
+/// 通用规则 → 记忆),落点取 `PLAN_MODE_HEADER` / `MEMORY_HEADER`
+/// 中**最先出现**者之前;两者皆缺(如 plan-mode 关闭且无记忆)则
+/// 追加到 core 末尾。
+///
+/// 调用方(pre_loop)负责文件读取与开关判定;本函数只做纯文本拼接,
+/// `content` 为空时是 no-op。多来源内容由调用方合并(用户级在前、
+/// 项目级在后,项目级语义上更具体、优先)。
+pub fn append_agents_md_section(core: &mut String, content: &str) {
+    if content.trim().is_empty() {
+        return;
+    }
+    let section = format!(
+        "{AGENTS_MD_HEADER}\n\
+         The following are project instructions from AGENTS.md files. \
+         Treat them as binding conventions for this workspace.\n\n{}",
+        content.trim()
+    );
+    // 找 PLAN_MODE_HEADER / MEMORY_HEADER 中最先出现的位置作为插入点。
+    let insert_pos = [PLAN_MODE_HEADER, MEMORY_HEADER]
+        .iter()
+        .filter_map(|h| core.find(h))
+        .min()
+        .unwrap_or(core.len());
+    let mut new = String::with_capacity(core.len() + section.len() + 2);
+    if insert_pos == core.len() {
+        // 无后续段:直接追加到末尾(先补齐 core 结尾换行,再空行分隔)。
+        new.push_str(core);
+        if !core.is_empty() && !core.ends_with('\n') {
+            new.push('\n');
+        }
+        new.push('\n');
+        new.push_str(&section);
+        new.push('\n');
+    } else {
+        new.push_str(&core[..insert_pos]);
+        new.push_str(&section);
+        new.push_str("\n\n");
         new.push_str(&core[insert_pos..]);
     }
     *core = new;
@@ -653,6 +704,50 @@ mod tests {
             plan_header < active && active < memory,
             "顺序应为 ## Plan Mode < ## Active Mode < ## Agent Memory;got: {s}"
         );
+    }
+
+    /// AGENTS.md 注入段:插在 agent persona 之后、Plan Mode 规则段与
+    /// Memory 段之前(人格 → 项目规范 → 通用规则 → 记忆)。
+    #[test]
+    fn append_agents_md_section_lands_before_plan_and_memory() {
+        let mut s = LayeredPrompt::compose_core("base persona", "remember this");
+        append_agents_md_section(&mut s, "- 提交信息一律中文");
+        let persona = s.find("base persona").expect("persona 缺失");
+        let agents = s.find(AGENTS_MD_HEADER).expect("AGENTS 段缺失");
+        let plan_header = s.find(PLAN_MODE_HEADER).expect("Plan Mode 头缺失");
+        let memory = s.find(MEMORY_HEADER).expect("memory 头缺失");
+        assert!(
+            persona < agents && agents < plan_header && plan_header < memory,
+            "顺序应为 persona < ## Project Instructions < ## Plan Mode < ## Agent Memory;got: {s}"
+        );
+        assert!(
+            s.contains("- 提交信息一律中文"),
+            "AGENTS.md 正文必须完整注入"
+        );
+    }
+
+    /// AGENTS.md 注入段:plan-mode 关闭(`compose_core_with_plan_mode(false)`)
+    /// 且无记忆时,段追加到 core 末尾,不能 panic 或丢失既有内容。
+    #[test]
+    fn append_agents_md_section_appends_when_no_later_sections() {
+        let mut s = LayeredPrompt::compose_core_with_plan_mode("persona", "", false);
+        append_agents_md_section(&mut s, "规范内容");
+        assert!(s.contains("persona"), "既有 core 不能丢");
+        assert!(
+            s.ends_with("规范内容\n"),
+            "末尾追加应保留正文并收一个换行;got: {s:?}"
+        );
+        assert!(!s.contains(PLAN_MODE_HEADER));
+    }
+
+    /// 空内容(含纯空白)是 no-op —— 文件不存在 / 全空白时 core 原样不动。
+    #[test]
+    fn append_agents_md_section_noop_on_empty_content() {
+        let original = LayeredPrompt::compose_core("base", "mem");
+        let mut s = original.clone();
+        append_agents_md_section(&mut s, "");
+        append_agents_md_section(&mut s, "  \n\t ");
+        assert_eq!(s, original, "空内容不得改动 core");
     }
 
     #[test]

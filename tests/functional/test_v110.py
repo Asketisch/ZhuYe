@@ -139,16 +139,20 @@ def test_V5_anthropic空key加base_url_可推出active_provider(sandbox) -> None
     active provider 为 anthropic;去掉 base_url 则视为未配置。"""
     require_binary()
     base = "# 测试用最小配置:关闭全部内置 hook\n[hooks]\nenabled = []\n"
+    # env 隔离:本用例验证 TOML 配置行为,进程 env 的 ZHUYE_MODEL(runner
+    # 门禁恒设 mock,mock 优先级高于 TOML)必须显式置空,否则 doctor 的
+    # provider 解析恒为 mock,下面两个断言必假失败。
+    no_model_env = {"ZHUYE_MODEL": ""}
     # 对照组先行:无 base_url 的空 key → 未配置。
     _config_toml(sandbox).write_text(base + '\n[anthropic]\napi_key = ""\n')
-    bare = run_cli(sandbox, "doctor", "--check-network", timeout=60)
+    bare = run_cli(sandbox, "doctor", "--check-network", env=no_model_env, timeout=60)
     assert "no [active].provider set" in bare.stdout, f"空 key 无 base_url 应未配置:{bare.stdout[:300]}"
 
     # 主断言:显式 base_url + 空 key → anthropic 注册并被推出。
     _config_toml(sandbox).write_text(
         base + '\n[anthropic]\napi_key = ""\nbase_url = "http://127.0.0.1:9/v1"\n'
     )
-    out = run_cli(sandbox, "doctor", "--check-network", timeout=60)
+    out = run_cli(sandbox, "doctor", "--check-network", env=no_model_env, timeout=60)
     assert "checking provider 'anthropic'" in out.stdout, (
         f"免 key anthropic 兼容端点应注册并成为 active provider:{out.stdout[:400]}"
     )

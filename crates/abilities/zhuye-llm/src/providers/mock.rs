@@ -305,6 +305,7 @@ impl ModelClient for MockClient {
                 // 各块文本与 messages(role + 文本)序列化成 JSON 作为
                 // 回复文本,供上层断言。
                 let snapshot = serde_json::json!({
+                    "model": request.model,
                     "tools": request
                         .tools
                         .iter()

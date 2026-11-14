@@ -172,6 +172,7 @@ fn make_m4() -> M4Deps {
         prompt_dirs: Vec::new(),
         skill_dirs: Vec::new(),
         bundled_skills: false,
+        consolidator: None,
     }
 }
 
