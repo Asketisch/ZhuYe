@@ -248,9 +248,6 @@ pub async fn handle_reload(
         let max_iter = zhuye_core::config::max_iterations_from_env(new_cfg.active.max_iterations);
         agent_cfg.set_max_iterations(max_iter);
         tracing::info!(max_iter, "config reload: active.max_iterations updated");
-        // v1.11 基建#9:`active.agents_md` 变更 → 更新 AGENTS.md 默认加载
-        // 开关(下一轮 pre_loop 读最新值;`None` = 默认开启)。
-        agent_cfg.set_agents_md(new_cfg.active.agents_md.unwrap_or(true));
     }
 
     // v1.11 桌面#3:`[routing]` 段变更 → 重建复杂度路由映射(effort → 模型;

@@ -123,7 +123,6 @@ fn make_m4_deps(agent_name: &str, system_prompt: &str) -> M4Deps {
         prompt_dirs: Vec::new(),
         skill_dirs: Vec::new(),
         bundled_skills: false,
-        consolidator: None,
     }
 }
 
