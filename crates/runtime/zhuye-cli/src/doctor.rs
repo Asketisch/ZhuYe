@@ -408,20 +408,18 @@ fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value
     fn cred_labels(
         creds: Option<&Vec<zhuye_config::schema::provider::CredentialConfig>>,
     ) -> Vec<serde_json::Value> {
-        creds
-            .map(|list| {
-                list.iter()
-                    .map(|c| {
-                        json!({
-                            "label": c.label,
-                            "has_api_key": !c.api_key.is_empty(),
-                            "has_base_url": c.base_url.is_some(),
-                            "model": c.model,
-                        })
+        creds.map_or_default(|list| {
+            list.iter()
+                .map(|c| {
+                    json!({
+                        "label": c.label,
+                        "has_api_key": !c.api_key.is_empty(),
+                        "has_base_url": c.base_url.is_some(),
+                        "model": c.model,
                     })
-                    .collect()
-            })
-            .unwrap_or_default()
+                })
+                .collect()
+        })
     }
 
     let routing = cfg.routing.as_ref();
