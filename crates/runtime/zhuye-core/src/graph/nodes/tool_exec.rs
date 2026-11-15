@@ -215,6 +215,13 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                     is_error: r.is_error,
                     elapsed_ms: r.elapsed_ms,
                     child_id: None,
+                    // begin.args 恒为 null(参数由落盘历史持有),GUI 实时流
+                    // 只听 begin+end —— end 补带完整参数供工具卡摘要展示。
+                    args: if args.is_null() {
+                        None
+                    } else {
+                        Some(args.clone())
+                    },
                 }),
             ))
             .await;
