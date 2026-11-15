@@ -42,7 +42,7 @@ pub struct ToolCallArgsDeltaEvent {
 pub struct ToolCallEndEvent {
     /// 工具调用标识(与 `ToolCallBegin.call_id` 配对)。
     pub call_id: String,
-    /// 工具完整输出(内容块 + 错误标记 + metadata + 耗时)。
+    /// 工具完整输出(内容块 + 错误标记 + 耗时)。
     pub output: ToolOutput,
     /// 工具执行是否失败(同 `output.is_error`)。
     pub is_error: bool,
@@ -51,6 +51,13 @@ pub struct ToolCallEndEvent {
     /// B1/B2:与 `ToolCallBeginEvent.child_id` 对应。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_id: Option<String>,
+    /// 本次调用的完整参数(解析后的 JSON)。`ToolCallBegin.args` 恒为
+    /// `null`(begin 只声明工具名,参数由 delta/落盘补齐),GUI 若只听
+    /// begin+end 就永远拿不到参数 —— 工具卡摘要会退化成工具名(实机
+    /// 实证)。end 携带解析后的完整参数,消费方可回填展示。可选 +
+    /// skip 序列化,老消费方零感知(Protocol v0 additive)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
 }
 
 /// v1.3 SDK:core → 客户端(serve 模式)的**远程工具执行请求**。

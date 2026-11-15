@@ -170,6 +170,7 @@ mod tests {
                 is_error: false,
                 elapsed_ms: 0,
                 child_id: None,
+                args: None,
             }),
         )
     }
