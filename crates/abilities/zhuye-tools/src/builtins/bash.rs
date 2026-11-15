@@ -1525,8 +1525,16 @@ mod tests {
         // 工具有 workspace 边界,写到 /tmp 的 spill 模型读不回(原实现
         // 的「供 read 取回」承诺形同虚设)。这里 workspace 是 /tmp,
         // 即 `/tmp/.zhuye/spill/`。
+        // Windows 的 display 用反斜杠(`/tmp\.zhuye\spill\...`),
+        // 按路径分量判断,不绑分隔符。
+        let path = std::path::Path::new(path_str);
+        let in_spill = path
+            .components()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair[0].as_os_str() == ".zhuye" && pair[1].as_os_str() == "spill");
         assert!(
-            path_str.contains(".zhuye/spill/"),
+            in_spill,
             "spill 应落在 workspace 的 .zhuye/spill/ 下: {path_str}"
         );
         let _ = std::fs::remove_file(path_str);
