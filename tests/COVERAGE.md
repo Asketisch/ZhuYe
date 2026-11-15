@@ -8,7 +8,7 @@
 
 | 层 | 位置 | 测谁 | 依赖 SDK? | 规模 |
 |---|---|---|---|---|
-| **能力覆盖层**(主) | `tests/functional/` | **Rust 代码在真产物上的行为**(原始 JSONL wire)与测试设施自检 | ❌ | 306 条(含 13 条设施自检) |
+| **能力覆盖层**(主) | `tests/functional/` | **Rust 代码在真产物上的行为**(原始 JSONL wire)与测试设施自检 | ❌ | 330 条(pytest 实测,含设施自检) |
 | CLI 参数面 | `tests/rust/*.sh`、能力层 | 18 个子命令的参数矩阵与输出契约 | ❌ | 128+ 断言 + C10–C19(四份 bash 深度套件已全部迁入能力层) |
 | SDK 绑定层 | `tests/sdk-python/`、`tests/sdk-ts/` | 两个**客户端自己**的行为 | ✅ | Python 19 条 / TS 19 条 |
 | SDK 单测 | `sdks/*/tests/` | SDK 纯逻辑(mock serve),随包发布 | ✅ | Python 27 / TS 39 条 |
@@ -100,12 +100,14 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 模型自动输出预算与配置优先级 | ✔(本地 HTTP 网关断言模型、输出字段、中文输入余量,见 `test_bugfixes.py`) | — | — | ✅(模型上限、余量、未知型号及请求体) | — |
 | 提示注入检测库(凭据外传规则) | —(尚无运行时入口) | — | — | ✅(zhuye-sanitize 检测及误报边界) | — |
 | v1.10 功能:配置一键导入 / goal+队列插件 / 上下文窗口 / 思考强度分级 / 空 key | V1–V10 | —(独立二进制 `zhuye-import config`,非 zhuye 参数面) | ✅(effort 阶梯字面量双侧断言) | ✅(llm 能力表钳制 / override 表 / builder 免 key / queue 调度 / config_import 合并) | — |
-| v1.11 基建#9:AGENTS.md 默认读取(pre_loop 注入 `## Project Instructions`) | ✔(4 条,见 `test_agents_md.py`:默认注入 / 用户级+项目级顺序 / `[active] agents_md=false` 关闭 / 无文件不注入空段) | —(serve 内部行为,非 CLI 参数) | —(无 Op/EventMsg 变更) | ✅(zhuye-prompt 段落插桩 3 例 / zhuye-core 读取合并 4 例 / zhuye-config 三态解析 2 例) | — |
-| v1.11 基建#11:显式完全托管模式(`exec/serve --full-auto`/`--yolo`,Bubble 启动 + 初始模式通告 + Prompt 工具 bubble 自动批准) | ✔(5 条,见 `test_full_auto.py`:启动通告 / 别名等效 / ZHUYE_APPROVALS=1 下 write 免阻塞自动批准 / 默认不发通告 / 与 --plan-mode 互斥) | ✅(clap 互斥由用例 5 直接驱动) | —(复用既有 PermissionModeChanged / PermissionBubble 事件,无新变体) | —(submission_loop 通告分支由功能层覆盖) | — |
-| v1.11 基建#6:队列支持多 goal(`queue add_goal` + driver 探针驱动目标模式执行) | ✔(2 条,见 `test_goal_queue.py`:单 goal EnterGoalMode→met→ExitGoalMode→done 字段级 / 两 goal 严格串行 started_at 先后) | —(工具参数面) | —(无新 Op/EventMsg 变体;复用 EnterGoalMode/ExitGoalMode) | ✅(zhuye-stream goal watcher 4 例:跑到底 / 双 goal 串行 / 无探针拒绝 / 失败结清;zhuye-exec queue_tool add_goal 4 例;zhuye-goal outcome 记忆) | — |
-| v1.11 基建#8:deepagents 式记忆(topic 多文件 wiki / consolidate 去重 / 跨会话笔记召回 / 后台自动整理) | ✔(5 条,见 `test_memory_v11.py`:topic 工具全链路含落盘路径 / consolidate 合并统计 / 跨会话召回含原文 / 零相关不注入 / env 节流后台整理) | —(工具参数面) | —(无新 Op/EventMsg 变体;召回经既有 system-reminder 通道) | ✅(zhuye-memory topics 5 例 + consolidate 7 例;zhuye-notes recall 6 例;memory_tool topic/consolidate 4 例;MetaKind 新变体) | — |
-| v1.11 基建#13:GitHub topic 插件发现(`marketplace discover --topic`,默认 zhuye-plugin) | ✔(2 条,见 `test_plugin_discover.py`:参数面字段级 / 网络解析链路条件跑) | ✅(clap 参数面由用例 1 直接驱动) | —(纯 CLI 展示面,无 Op/EventMsg) | ✅(zhuye-plugin discover 校验 2 例:空 topic 拒绝 / limit 钳制) | — |
-| v1.11 桌面#3:复杂度分级路由(`[routing.main.complexity]` effort 档位→模型映射,model_call 自动选模型) | ✔(2 条,见 `test_complexity_routing.py`:low 档命中映射模型 / 未配置档位回退 primary / 无映射模型不变) | —(config 参数面,由 zhuye-config 单测承担) | —(无新 Op/EventMsg 变体;复用 SetEffort) | ✅(zhuye-config 复杂度解析 2 例:非空档位提取 / 空白丢弃;ReasoningEffortMirror 增 Hash derive) | — |
+| v1.11 基建#9:AGENTS.md 默认读取(内置 UserPromptSubmit hook 注入 `## Project Instructions`) | ✔(4 条,见 `test_agents_md.py`:默认注入 / 用户级+项目级顺序 / `[active] agents_md=false` 关闭 / 无文件不注入空段) | —(serve 内部行为,非 CLI 参数) | —(无 Op/EventMsg 变更) | ✅(zhuye-prompt 段落插桩 3 例;zhuye-exec builtin_hooks 8 例:来源标注 / 空白与缺失 / 超长截断 / 合并顺序 / 单源与双缺失 / hook 首轮注入次轮放行 / 无文件不注入 / 跨会话召回 hook 命中·空查询·排除自身;zhuye-config 三态解析 3 例 None/false/true) | — |
+| v1.11 基建#11:显式完全托管模式(`exec/serve --full-auto`/`--yolo`,Bubble 启动 + 初始模式通告 + Prompt 工具 bubble 自动批准) | ✔(5 条,见 `test_full_auto.py`:启动通告 / 别名等效 / ZHUYE_APPROVALS=1 下 write 免阻塞自动批准 / 默认不发通告 / 与 --plan-mode 互斥) | ✅(clap 互斥由用例 5 直接驱动) | —(复用既有 PermissionModeChanged / PermissionBubble 事件,无新变体) | ✅(zhuye-exec headless `initial_permission_mode` 纯函数 1 例:三分支与 full_auto>plan_mode 优先级;zhuye-core `with_initial_permission_mode` Bubble 例;submission_loop 通告分支由功能层覆盖) | — |
+| v1.11 基建#6:队列支持多 goal(`queue add_goal` + driver 探针驱动目标模式执行) | ✔(2 条,见 `test_goal_queue.py`:单 goal EnterGoalMode→met→ExitGoalMode→done 字段级 / 两 goal 严格串行 started_at 先后) | —(工具参数面) | —(无新 Op/EventMsg 变体;复用 EnterGoalMode/ExitGoalMode) | ✅(zhuye-stream goal watcher 4 例:跑到底 / 双 goal 串行 / 无探针拒绝 / 失败结清;zhuye-exec queue_tool add_goal 3 例:roundtrip 字段透传 / 参数校验 / Prompt 权限;zhuye-goal outcome 记忆) | — |
+| v1.11 基建#8:deepagents 式记忆(topic 多文件 wiki / consolidate 去重 / 跨会话笔记召回 / 后台自动整理) | ✔(5 条,见 `test_memory_v11.py`:topic 工具全链路含落盘路径 / consolidate 合并统计 / 跨会话召回含原文 / 零相关不注入 / env 节流后台整理) | —(工具参数面) | —(无新 Op/EventMsg 变体;召回经既有 system-reminder 通道) | ✅(zhuye-memory topics 5 例 + consolidate 7 例;zhuye-notes recall 6 例;memory_tool topic/consolidate 4 例;MetaKind 新变体;zhuye-exec headless 节流 env 解析 1 例:缺省 / 0 关闭 / 非法回退 / 上限钳制 / 空白容忍) | — |
+| v1.11 基建#13:GitHub topic 插件发现(`marketplace discover --topic`,默认 zhuye-plugin) | ✔(2 条,见 `test_plugin_discover.py`:参数面字段级 / 网络解析链路条件跑) | ✅(clap 参数面由用例 1 直接驱动) | —(纯 CLI 展示面,无 Op/EventMsg) | ✅(zhuye-plugin discover 4 例:空 topic 拒绝 / URL 构造与 limit 钳制 0→1·超限→100 / 响应全字段解析与空白描述过滤·topics 缺省 / 坏 JSON 与空清单;非 2xx 错误映射为网络路径,由条件网络用例覆盖) | — |
+| v1.11 桌面#3:复杂度分级路由(`[routing.main.complexity]` effort 档位→模型映射,model_call 自动选模型) | ✔(2 条,见 `test_complexity_routing.py`:low 档命中映射模型 / 未配置档位回退 primary / 无映射模型不变) | —(config 参数面,由 zhuye-config 单测承担) | —(无新 Op/EventMsg 变体;复用 SetEffort) | ✅(zhuye-config 复杂度解析 2 例:非空档位提取 / 空白丢弃;zhuye-core `effort_model_route` 查表 1 例:命中 / 未配置 / 空表 / Clone 共享 RwLock 热重载可见;ReasoningEffortMirror 增 Hash derive) | — |
+| v1.11 F6:组合透明性(`zhuye doctor --dump-config` 生效配置 JSON 快照,密钥脱敏) | ✔(2 条,见 `test_dump_config.py`:空配置结构 + 密钥值不出现在整份 JSON / anthropic 段生效反映 provider·model_spec·凭据 label·has_api_key;runner 门禁下的 env 隔离口径见用例内注释) | ✅(doctor 子命令参数面) | —(CLI 只读诊断面,无 Op/EventMsg) | ✅(zhuye-cli doctor 2 例:凭据脱敏只出布尔·条目无 api_key 字段·段级与池双路径 / 路由与 complexity 档位映射·无 routing 段不 panic) | — |
+| v1.11 F5:大输出溢出落盘(spill)与读回路径 | ✔(2 条,见 `test_spill_readback.py`:stdout+stderr 合并超限 → 截断 + 落盘标记 + 路径在 `<workspace>/.zhuye/spill/` + 文件字节超上限 / read 工具读回 spill 目录文件原文) | —(工具内部行为) | —(无 Op/EventMsg 变更) | ✅(zhuye-tools bash 1 例:oversized_output_spilled_to_disk 含路径不变量与截断标记) | — |
 
 ## 2. 能力覆盖层明细(`tests/functional/`)
 
@@ -752,7 +754,15 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_invalid_tool_arguments.py` | 3 条(损坏 JSON 不执行宿主工具,同批有效工具继续) |
 | `functional/test_runner.py` | 7 条(测试入口自检) |
 | `functional/test_wire_harness.py` | 6 条(非法输出、提前断线和终态缓冲自检) |
-| **能力覆盖层合计** | **303 条**(含设施自检) |
+| `functional/test_agents_md.py` | 4 条(v1.11 基建#9:默认注入 / 用户级+项目级顺序 / 显式关闭 / 无文件不注入) |
+| `functional/test_full_auto.py` | 5 条(v1.11 基建#11:启动通告 / yolo 别名 / bubble 自动批准 / 默认不通告 / plan 互斥) |
+| `functional/test_goal_queue.py` | 2 条(v1.11 基建#6:单 goal 字段级全链 / 多 goal 严格串行) |
+| `functional/test_memory_v11.py` | 5 条(v1.11 基建#8:topic 全链路 / consolidate / 跨会话召回 / 零相关 / 后台节流) |
+| `functional/test_plugin_discover.py` | 2 条(v1.11 基建#13:参数面 / 真网络条件跳) |
+| `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:档位命中映射 / 回退 primary) |
+| `functional/test_dump_config.py` | 2 条(v1.11 F6:结构与脱敏 / 生效配置反映;env 隔离见用例内注释) |
+| `functional/test_spill_readback.py` | 2 条(v1.11 F5:大输出溢出落盘 workspace / read 工具读回) |
+| **能力覆盖层合计** | **330 条**(pytest `--collect-only` 实测,含设施自检;含早期未逐文件登记的漂移) |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |

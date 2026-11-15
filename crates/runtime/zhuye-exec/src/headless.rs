@@ -602,6 +602,20 @@ async fn apply_permission_layers(
     cfg
 }
 
+/// v1.11 基建#11 / v1.x plan-mode:会话初始权限模式选择(纯函数,便于单测)。
+/// `--full-auto` → Bubble(通知式自动批准)。不用 Bypass —— 它被 v1.3 安全
+/// 基线降级拦截,Bubble 是可达的「从不询问」语义(高危工具仍强制审批)。
+/// 否则 `--plan-mode` → Plan;默认 Auto。
+fn initial_permission_mode(full_auto: bool, plan_mode: bool) -> zhuye_protocol::PermissionMode {
+    if full_auto {
+        zhuye_protocol::PermissionMode::Bubble
+    } else if plan_mode {
+        zhuye_protocol::PermissionMode::Plan
+    } else {
+        zhuye_protocol::PermissionMode::Auto
+    }
+}
+
 /// 读取 cron driver tick 间隔;缺省 30 秒,允许测试和运维调小。
 fn cron_tick_secs() -> u64 {
     const DEFAULT: u64 = 30;
@@ -885,16 +899,9 @@ pub async fn bootstrap_normal(
         // v1.11 桌面#3:复杂度分级路由 —— `[routing.main.complexity]` 的
         // effort → 模型映射(空表 = 不启用;热重载 routing 段可更新)。
         .with_effort_model_routes(initial_cfg.effort_model_routes())
-        .with_initial_permission_mode(if args.full_auto {
-            // v1.11 基建#11:`--full-auto` → Bubble(通知式自动批准)。
-            // 不用 Bypass —— 它被 v1.3 安全基线降级拦截,Bubble 是可达的
-            // 「从不询问」语义(高危工具仍强制审批)。
-            zhuye_protocol::PermissionMode::Bubble
-        } else if args.plan_mode {
-            zhuye_protocol::PermissionMode::Plan
-        } else {
-            zhuye_protocol::PermissionMode::Auto
-        });
+        // v1.11 基建#11 / v1.x plan-mode:初始权限模式选择(纯函数见
+        // `initial_permission_mode`,含 full_auto → Bubble 的安全基线注释)。
+        .with_initial_permission_mode(initial_permission_mode(args.full_auto, args.plan_mode));
     cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
     // v1.x:prompt injection guard 注入(None = 关闭;子代理 factory
     // 自行读同一 config,这里只接主会话与 resume 路径)。
@@ -1740,5 +1747,50 @@ mod goal_queue_tests {
             "goal-queue2@inline".to_string()
         ]));
         assert_eq!(GOAL_QUEUE_PLUGIN, "goal-queue");
+    }
+}
+
+#[cfg(test)]
+mod initial_mode_and_throttle_tests {
+    use super::*;
+
+    /// v1.11 基建#11:初始权限模式映射 —— full_auto 优先于 plan_mode
+    /// (同时给两个旗标时完全托管赢),三分支逐个断言。
+    #[test]
+    fn 初始权限模式_三分支与优先级() {
+        use zhuye_protocol::PermissionMode;
+        assert_eq!(initial_permission_mode(true, true), PermissionMode::Bubble);
+        assert_eq!(initial_permission_mode(true, false), PermissionMode::Bubble);
+        assert_eq!(initial_permission_mode(false, true), PermissionMode::Plan);
+        assert_eq!(initial_permission_mode(false, false), PermissionMode::Auto);
+    }
+
+    /// v1.11 基建#8:后台记忆整理节流 env 解析 —— 缺省 300 / "0" 显式
+    /// 关闭 / 非法值回退默认 / 超上限钳到 86400 / 前后空白容忍。
+    /// (env 依赖的断言必须顺序执行,合并为一个用例。)
+    #[test]
+    fn 记忆整理节流_env_解析与钳制() {
+        const VAR: &str = "ZHUYE_MEMORY_CONSOLIDATE_SECS";
+        let prev = std::env::var(VAR).ok();
+        // SAFETY: 单测内短临界区设置 env(本用例独占该变量,测后恢复)。
+        unsafe { std::env::remove_var(VAR) };
+        assert_eq!(memory_consolidate_interval_secs(), 300, "缺省应为 300 秒");
+        unsafe { std::env::set_var(VAR, "0") };
+        assert_eq!(memory_consolidate_interval_secs(), 0, "0 = 显式关闭");
+        unsafe { std::env::set_var(VAR, "not-a-number") };
+        assert_eq!(memory_consolidate_interval_secs(), 300, "非法值回退默认");
+        unsafe { std::env::set_var(VAR, "999999") };
+        assert_eq!(
+            memory_consolidate_interval_secs(),
+            86_400,
+            "超上限钳到 86400"
+        );
+        unsafe { std::env::set_var(VAR, " 60 ") };
+        assert_eq!(memory_consolidate_interval_secs(), 60, "前后空白应容忍");
+        // SAFETY: 恢复原值。
+        unsafe { std::env::remove_var(VAR) };
+        if let Some(p) = prev {
+            unsafe { std::env::set_var(VAR, p) };
+        }
     }
 }

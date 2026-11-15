@@ -765,6 +765,52 @@ mod tests {
         let cfg = AgentConfig::new("anthropic/x", "/tmp")
             .with_initial_permission_mode(PermissionMode::Plan);
         assert_eq!(cfg.permission_mode(), PermissionMode::Plan);
+        // v1.11 基建#11:`--full-auto` 走同一构造器路径 → Bubble(通知式
+        // 自动批准;不用 Bypass —— 它被 v1.3 安全基线降级拦截)。
+        let cfg = AgentConfig::new("anthropic/x", "/tmp")
+            .with_initial_permission_mode(PermissionMode::Bubble);
+        assert_eq!(cfg.permission_mode(), PermissionMode::Bubble);
+    }
+
+    /// v1.11 桌面#3:复杂度路由查表 —— 配置档位命中返回映射模型;未配置
+    /// 档位与空表都返回 `None`(model_call 回退既有 spec 解析)。热重载
+    /// `set_effort_model_routes` 写入后,Clone 副本(共享 RwLock)可见。
+    #[test]
+    fn agent_config_effort_model_routes_lookup() {
+        let cfg = AgentConfig::new("anthropic/x", "/tmp");
+        // 空表:所有档位 None。
+        assert_eq!(cfg.effort_model_route(ReasoningEffortMirror::Ultra), None);
+        let routes = HashMap::from([
+            (
+                ReasoningEffortMirror::High,
+                "anthropic/claude-x".to_string(),
+            ),
+            (ReasoningEffortMirror::Max, "deepseek/r1".to_string()),
+        ]);
+        let cfg = cfg.with_effort_model_routes(routes);
+        assert_eq!(
+            cfg.effort_model_route(ReasoningEffortMirror::High)
+                .as_deref(),
+            Some("anthropic/claude-x")
+        );
+        assert_eq!(
+            cfg.effort_model_route(ReasoningEffortMirror::Max)
+                .as_deref(),
+            Some("deepseek/r1")
+        );
+        // 未配置档位:None(model_call 回退主 spec)。
+        assert_eq!(cfg.effort_model_route(ReasoningEffortMirror::Ultra), None);
+        // Clone 共享 RwLock:set 后旧副本读到最新表(热重载语义)。
+        let cfg2 = cfg.clone();
+        cfg.set_effort_model_routes(HashMap::from([(
+            ReasoningEffortMirror::Ultra,
+            "openai/gpt-x".to_string(),
+        )]));
+        assert_eq!(
+            cfg2.effort_model_route(ReasoningEffortMirror::Ultra)
+                .as_deref(),
+            Some("openai/gpt-x")
+        );
     }
 
     // ── v1.x Plan mode:last_abort_reason take-once 语义 ────────────────

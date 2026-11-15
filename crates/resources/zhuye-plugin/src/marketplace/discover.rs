@@ -53,15 +53,39 @@ struct SearchItem {
     topics: Vec<String>,
 }
 
+/// 构造 GitHub Search API 查询 URL(纯函数,便于离线单测)。
+/// `limit` 钳制到 `[1, 100]`(GitHub per_page 上限 100)。
+fn build_search_url(topic: &str, limit: usize) -> String {
+    let limit = limit.clamp(1, 100);
+    format!("https://api.github.com/search/repositories?q=topic:{topic}&per_page={limit}")
+}
+
+/// 解析 GitHub Search API 响应 JSON 并映射为 [`DiscoveredPlugin`]
+/// (纯函数,便于离线单测)。空白描述过滤为 `None`(「没有描述」与
+/// 「描述是空白」对展示层等价)。
+fn parse_search_response(body: &str) -> Result<Vec<DiscoveredPlugin>> {
+    let parsed: SearchResponse = serde_json::from_str(body)
+        .map_err(|e| PluginError::Http(format!("解析 GitHub 搜索响应失败: {e}")))?;
+    Ok(parsed
+        .items
+        .into_iter()
+        .map(|i| DiscoveredPlugin {
+            full_name: i.full_name,
+            html_url: i.html_url,
+            description: i.description.filter(|d| !d.trim().is_empty()),
+            stars: i.stargazers_count,
+            topics: i.topics,
+        })
+        .collect())
+}
+
 /// 按 topic 发现插件仓库(按 GitHub 相关度默认排序,截 `limit` 条)。
 pub async fn discover_by_topic(topic: &str, limit: usize) -> Result<Vec<DiscoveredPlugin>> {
     let topic = topic.trim();
     if topic.is_empty() {
         return Err(PluginError::Http("topic 不能为空".into()));
     }
-    let limit = limit.clamp(1, 100); // GitHub per_page 上限 100
-    let url =
-        format!("https://api.github.com/search/repositories?q=topic:{topic}&per_page={limit}");
+    let url = build_search_url(topic, limit);
     let mut builder = reqwest::Client::builder()
         .build()
         .map_err(|e| PluginError::Http(format!("build reqwest client 失败: {e}")))?
@@ -84,21 +108,11 @@ pub async fn discover_by_topic(topic: &str, limit: usize) -> Result<Vec<Discover
             resp.status()
         )));
     }
-    let body: SearchResponse = resp
-        .json()
+    let body = resp
+        .text()
         .await
-        .map_err(|e| PluginError::Http(format!("解析 GitHub 搜索响应失败: {e}")))?;
-    Ok(body
-        .items
-        .into_iter()
-        .map(|i| DiscoveredPlugin {
-            full_name: i.full_name,
-            html_url: i.html_url,
-            description: i.description.filter(|d| !d.trim().is_empty()),
-            stars: i.stargazers_count,
-            topics: i.topics,
-        })
-        .collect())
+        .map_err(|e| PluginError::Http(format!("读取 GitHub 搜索响应失败: {e}")))?;
+    parse_search_response(&body)
 }
 
 #[cfg(test)]
@@ -110,14 +124,65 @@ mod tests {
     async fn blank_topic_rejected() {
         let err = discover_by_topic("   ", 10).await.unwrap_err();
         assert!(matches!(err, PluginError::Http(ref m) if m.contains("topic")));
-    }
-
-    /// limit 钳制到 GitHub 合法区间(不发请求前 clamp 生效;这里只验
-    /// 超上限不 panic —— 网络调用因非法 topic 校验在前,limit 单测仅
-    /// 覆盖纯函数行为不可行,故只验证 1 与 100 之间路径不再校验)。
-    #[tokio::test]
-    async fn topic_validation_precedes_network() {
         // 空 topic 在网络调用前返回,证明校验路径独立于网络。
         assert!(discover_by_topic("", 500).await.is_err());
+    }
+
+    /// URL 构造:查询串与 per_page 精确成形;limit 钳制到 [1,100]
+    /// (0 → 1、超上限 → 100、区间内原样)。
+    #[test]
+    fn build_search_url_构造与钳制() {
+        assert_eq!(
+            build_search_url("zhuye-plugin", 30),
+            "https://api.github.com/search/repositories?q=topic:zhuye-plugin&per_page=30"
+        );
+        assert!(build_search_url("zhuye-plugin", 0).ends_with("per_page=1"));
+        assert!(
+            build_search_url("zhuye-plugin", 500).ends_with("per_page=100"),
+            "超上限必须钳到 GitHub per_page 上限"
+        );
+        assert!(build_search_url("zhuye-plugin", 100).ends_with("per_page=100"));
+    }
+
+    /// 响应解析:全字段映射(full_name / html_url / description / stars /
+    /// topics),空白描述过滤为 `None`,topics 缺省为空数组。
+    #[test]
+    fn parse_search_response_全字段映射与空白描述过滤() {
+        let body = r#"{
+            "items": [
+                {
+                    "full_name": "asketisch/zhuye-demo",
+                    "html_url": "https://github.com/asketisch/zhuye-demo",
+                    "description": "  ",
+                    "stargazers_count": 42,
+                    "topics": ["zhuye-plugin", "mcp"]
+                },
+                {
+                    "full_name": "other/plain",
+                    "html_url": "https://github.com/other/plain",
+                    "description": "一个正经描述",
+                    "stargazers_count": 0
+                }
+            ]
+        }"#;
+        let items = parse_search_response(body).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].full_name, "asketisch/zhuye-demo");
+        assert_eq!(items[0].html_url, "https://github.com/asketisch/zhuye-demo");
+        assert_eq!(items[0].description, None, "空白描述应过滤为 None");
+        assert_eq!(items[0].stars, 42);
+        assert_eq!(items[0].topics, vec!["zhuye-plugin", "mcp"]);
+        // topics 缺省 → 空数组;有描述保留原文。
+        assert_eq!(items[1].topics, Vec::<String>::new());
+        assert_eq!(items[1].description.as_deref(), Some("一个正经描述"));
+    }
+
+    /// 响应解析:坏 JSON / 空 items 都是可判别结果(错误 / 空清单),
+    /// 不得 panic。
+    #[test]
+    fn parse_search_response_坏json与空清单() {
+        assert!(parse_search_response("not json").is_err());
+        let empty = parse_search_response(r#"{"items": []}"#).unwrap();
+        assert!(empty.is_empty());
     }
 }
