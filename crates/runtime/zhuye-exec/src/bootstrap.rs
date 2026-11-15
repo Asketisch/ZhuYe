@@ -997,10 +997,14 @@ mod tests {
     {
         let _lock = HOME_MUTEX.lock().await;
         let orig = std::env::var("HOME").ok();
+        let orig_zhuye = std::env::var("ZHUYE_HOME").ok();
         // SAFETY: 已持锁串行化;测试 runtime 为 current_thread,
         // 无其他线程在本测试改写 HOME 期间读取。
+        // rollout 默认目录优先读 ZHUYE_HOME。只改 HOME 时,CI 若已设
+        // ZHUYE_HOME,resume 会读到另一个空目录,消息变成空列表。
         unsafe {
             std::env::set_var("HOME", home);
+            std::env::remove_var("ZHUYE_HOME");
         }
         f().await;
         // SAFETY: 同上,仍持锁。
@@ -1008,6 +1012,10 @@ mod tests {
             match orig {
                 Some(h) => std::env::set_var("HOME", h),
                 None => std::env::remove_var("HOME"),
+            }
+            match orig_zhuye {
+                Some(h) => std::env::set_var("ZHUYE_HOME", h),
+                None => std::env::remove_var("ZHUYE_HOME"),
             }
         }
     }
