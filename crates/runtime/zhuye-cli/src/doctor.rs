@@ -572,6 +572,93 @@ mod tests {
         assert!(s.contains("ollama=false"));
     }
 
+    /// v1.11 F6:`--dump-config` 凭据摘要脱敏 —— 只出 label / has_api_key
+    /// 布尔 / model,**任何 api_key 值都不得出现在整份 JSON 快照里**
+    /// (段级与凭据池条目双路径都验)。
+    #[test]
+    fn dump_effective_config_脱敏凭据只出布尔() {
+        use zhuye_config::schema::provider::CredentialConfig;
+        const SECRET: &str = "sk-ant-super-secret-doctor-test";
+        let cfg = ReflectConfig {
+            anthropic: Some(AnthropicSection {
+                api_key: Some("sk-ant-section-key".into()),
+                credentials: vec![
+                    CredentialConfig {
+                        label: "pool-a".into(),
+                        api_key: SECRET.into(),
+                        ..Default::default()
+                    },
+                    CredentialConfig {
+                        label: "pool-b".into(),
+                        api_key: String::new(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let dump = dump_effective_config(&cfg);
+        assert_eq!(dump["schema"], "zhuye-dump-config/1", "schema 标记固定");
+        let anthropic = &dump["providers"]["anthropic"];
+        assert_eq!(anthropic["has_api_key"], true, "段级 api_key 存在 → true");
+        let creds = anthropic["credentials"].as_array().unwrap();
+        assert_eq!(creds.len(), 2);
+        assert_eq!(creds[0]["label"], "pool-a");
+        assert_eq!(creds[0]["has_api_key"], true, "池条目有 key → true");
+        assert_eq!(creds[1]["label"], "pool-b");
+        assert_eq!(creds[1]["has_api_key"], false, "空 key 条目 → false");
+        // 脱敏不变量:整份序列化输出不含任何密钥值,凭据条目无 api_key 字段。
+        let raw = dump.to_string();
+        assert!(!raw.contains(SECRET), "密钥值泄漏:{raw}");
+        assert!(!raw.contains("sk-ant-section-key"), "段级密钥值泄漏:{raw}");
+        for c in creds {
+            assert!(
+                c.get("api_key").is_none(),
+                "凭据条目不得含 api_key 字段:{c}"
+            );
+        }
+    }
+
+    /// v1.11 F6 / 桌面#3:dump 的路由段反映 `[routing.main]` 的 primary /
+    /// fallbacks / weights 与 complexity 档位映射(未配置档位为 null)。
+    #[test]
+    fn dump_effective_config_路由与复杂度映射() {
+        use zhuye_config::schema::agent::{ComplexityRoutes, RoutingSection, SpecSlotConfig};
+        let cfg = ReflectConfig {
+            routing: Some(RoutingSection {
+                main: SpecSlotConfig {
+                    primary: Some("anthropic/claude-x".into()),
+                    fallbacks: vec!["deepseek/r1".into()],
+                    weights: vec![7, 3],
+                    complexity: Some(ComplexityRoutes {
+                        low: Some("openai/mini".into()),
+                        high: Some("anthropic/claude-x".into()),
+                        ..Default::default()
+                    }),
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let dump = dump_effective_config(&cfg);
+        let main = &dump["routing"]["main"];
+        assert_eq!(main["primary"], "anthropic/claude-x");
+        assert_eq!(main["fallbacks"][0], "deepseek/r1");
+        assert_eq!(main["weights"][0], 7);
+        let complexity = &main["complexity"];
+        assert_eq!(complexity["low"], "openai/mini");
+        assert_eq!(complexity["high"], "anthropic/claude-x");
+        assert_eq!(
+            complexity["medium"],
+            serde_json::Value::Null,
+            "未配置档位应为 null(回退 primary)"
+        );
+        // 无 routing 段时整体仍可 dump 且不 panic。
+        let empty = dump_effective_config(&ReflectConfig::default());
+        assert_eq!(empty["routing"]["main"]["primary"], serde_json::Value::Null);
+    }
+
     #[test]
     fn config_serializes_for_inspection() {
         let cfg = ReflectConfig::default();

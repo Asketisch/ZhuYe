@@ -618,6 +618,15 @@ fn agents_md_explicit_false_parses() {
     assert_eq!(cfg.active.agents_md, Some(false));
 }
 
+/// `[active] agents_md = true` 显式开启 → `Some(true)`(与缺省的默认开启
+/// 殊途同归,但三态解析必须完整覆盖 —— 显式写 true 不应被误读为 None)。
+#[test]
+fn agents_md_explicit_true_parses() {
+    let cfg: ReflectConfig =
+        toml::from_str("[active]\nprovider = \"anthropic\"\nagents_md = true\n").unwrap();
+    assert_eq!(cfg.active.agents_md, Some(true));
+}
+
 /// `[model]` 段解析 context_window + micro-USD 计价。
 #[test]
 fn model_section_parses_context_window_and_pricing() {

@@ -180,3 +180,217 @@ impl Hook for CrossSessionRecallHook {
         Ok(HookDecision::InjectMessage(SystemMessage::new(body)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造 UserPromptSubmit 事件(ctx 字段对本 hook 无意义,给占位值)。
+    fn prompt_event(text: &str) -> HookEvent {
+        HookEvent::UserPromptSubmit {
+            text: text.to_string(),
+            ctx: zhuye_hooks::event::HookContext {
+                session_id: zhuye_protocol::ThreadId::new(),
+                turn_id: zhuye_protocol::TurnId::new(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                permission_mode: zhuye_protocol::PermissionMode::Auto,
+            },
+        }
+    }
+
+    /// `read_capped`:正常文件 → `Source:` 来源标注 + 原文全文。
+    #[test]
+    fn read_capped_加来源标注且保留全文() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("AGENTS.md");
+        std::fs::write(&p, "规则甲\n规则乙\n").unwrap();
+        let out = read_capped(&p).unwrap();
+        assert!(
+            out.starts_with(&format!("Source: {}\n\n", p.display())),
+            "缺来源标注:{out:?}"
+        );
+        assert!(
+            out.contains("规则甲") && out.contains("规则乙"),
+            "原文丢失:{out:?}"
+        );
+    }
+
+    /// `read_capped`:空白文件 / 不存在的文件都返回 `None`(不注入空段)。
+    #[test]
+    fn read_capped_空白与缺失返回无值() {
+        let dir = tempfile::tempdir().unwrap();
+        let blank = dir.path().join("blank.md");
+        std::fs::write(&blank, "   \n\t\n").unwrap();
+        assert!(read_capped(&blank).is_none(), "空白文件应返回 None");
+        assert!(
+            read_capped(&dir.path().join("nope.md")).is_none(),
+            "缺失文件应返回 None"
+        );
+    }
+
+    /// `read_capped`:超过 32K 字符上限时截断并追加截断标记(标记必须
+    /// 指引用户用 read 工具取回完整内容)。
+    #[test]
+    fn read_capped_超长截断加标记() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.md");
+        // 超上限 10 个字符,便于断言「恰好截到上限」。
+        let over = AGENTS_MD_MAX_CHARS + 10;
+        std::fs::write(&p, "x".repeat(over)).unwrap();
+        let out = read_capped(&p).unwrap();
+        assert!(
+            out.contains("[AGENTS.md 超长已截断"),
+            "缺截断标记:{:?}",
+            &out[out.len() - 80..]
+        );
+        // 剥掉 `Source: <path>` 头(路径里可能含 'x')后再数正文截断长度。
+        let body = out.split_once("\n\n").expect("Source 头后必有空行").1;
+        assert_eq!(
+            body.matches('x').count(),
+            AGENTS_MD_MAX_CHARS,
+            "截断长度应为上限值"
+        );
+    }
+
+    /// 合并语义:用户级在前、项目级在后,`---` 分隔(项目级更具体应压轴)。
+    #[test]
+    fn read_agents_md_merged_用户级在前项目级在后() {
+        let ws = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(user.path().join("AGENTS.md"), "用户级总则").unwrap();
+        std::fs::write(ws.path().join("AGENTS.md"), "项目级细则").unwrap();
+        let merged = read_agents_md_merged(ws.path(), Some(user.path().to_path_buf()));
+        let u = merged.find("用户级总则").expect("用户级丢失");
+        let p = merged.find("项目级细则").expect("项目级丢失");
+        assert!(u < p, "用户级必须在前:{merged:?}");
+        assert!(merged.contains("\n\n---\n\n"), "缺分隔符:{merged:?}");
+        assert_eq!(merged.matches("Source:").count(), 2, "两个来源都要标注");
+    }
+
+    /// 仅一源时无分隔符;双缺失时返回空串(hook 层据此跳过注入)。
+    #[test]
+    fn read_agents_md_merged_仅一源与双缺失() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("AGENTS.md"), "只有项目级").unwrap();
+        let only_ws = read_agents_md_merged(ws.path(), None);
+        assert!(only_ws.contains("只有项目级"));
+        assert!(!only_ws.contains("---"), "单源不应有分隔符:{only_ws:?}");
+
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_agents_md_merged(empty.path(), None),
+            String::new(),
+            "双缺失应为空串"
+        );
+    }
+
+    /// `AgentsMdHook`:首轮注入(`## Project Instructions` 段 + 合并内容),
+    /// 同一实例第二轮直接放行 —— 每会话只注一次,不随轮次堆叠。
+    #[tokio::test]
+    async fn agents_md_hook_首轮注入次轮放行() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("AGENTS.md"), "只注一次的规则").unwrap();
+        let hook = AgentsMdHook::new(ws.path(), None);
+        let first = hook.handle(&prompt_event("第一轮")).await.unwrap();
+        match first {
+            HookDecision::InjectMessage(m) => {
+                assert!(
+                    m.content.contains("## Project Instructions"),
+                    "缺段头:{:?}",
+                    m.content
+                );
+                assert!(
+                    m.content.contains("只注一次的规则"),
+                    "缺正文:{:?}",
+                    m.content
+                );
+            }
+            other => panic!("首轮应注入,实际 {other:?}"),
+        }
+        let second = hook.handle(&prompt_event("第二轮")).await.unwrap();
+        assert!(
+            matches!(second, HookDecision::Allow),
+            "次轮必须放行,实际 {second:?}"
+        );
+    }
+
+    /// `AgentsMdHook`:无任何 AGENTS.md 时首轮也放行(不注入空段)。
+    #[tokio::test]
+    async fn agents_md_hook_无文件不注入() {
+        let ws = tempfile::tempdir().unwrap();
+        let hook = AgentsMdHook::new(ws.path(), None);
+        let d = hook.handle(&prompt_event("第一轮")).await.unwrap();
+        assert!(matches!(d, HookDecision::Allow), "无文件应放行:{d:?}");
+    }
+
+    /// `CrossSessionRecallHook` 三段语义(合并为一个用例:env 依赖的测试
+    /// 并发跑会互相清掉 `ZHUYE_HOME`,必须顺序执行):
+    /// 1. 命中时注入格式化笔记列表(序号 / 时间 / 来源会话 / 原文);
+    /// 2. 空查询直接放行;
+    /// 3. 当前会话自己的笔记被排除(`exclude_thread` —— 否则等于自言自语)。
+    /// 数据目录用 `ZHUYE_HOME` 指到临时目录隔离(测后恢复原值)。
+    #[tokio::test]
+    async fn cross_session_recall_hook_命中注入_空查询放行_排除自身() {
+        let home = tempfile::tempdir().unwrap();
+        let notes = home.path().join("session-notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(
+            notes.join("other-thread.jsonl"),
+            "{\"text\": \"数据库是 postgres 16\", \"created_at\": \"2026-01-02T03:04:05Z\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            notes.join("me.jsonl"),
+            "{\"text\": \"selfonly 独有笔记\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n",
+        )
+        .unwrap();
+        let prev = std::env::var("ZHUYE_HOME").ok();
+        // SAFETY: 单测内短临界区设置 env(本用例独占该变量,测后恢复)。
+        unsafe { std::env::set_var("ZHUYE_HOME", home.path()) };
+
+        let hook = CrossSessionRecallHook::new("current-thread");
+        // 空查询:不召回,直接放行。
+        let empty_q = hook.handle(&prompt_event("   ")).await.unwrap();
+        assert!(
+            matches!(empty_q, HookDecision::Allow),
+            "空查询应放行:{empty_q:?}"
+        );
+        // 相关查询(BM25 按空白分词,用 ASCII 关键词保证命中):注入且字段齐全。
+        let hit = hook
+            .handle(&prompt_event("postgres database"))
+            .await
+            .unwrap();
+        match hit {
+            HookDecision::InjectMessage(m) => {
+                assert!(
+                    m.content.contains("数据库是 postgres 16"),
+                    "缺原文:{:?}",
+                    m.content
+                );
+                assert!(
+                    m.content.contains("other-thread"),
+                    "缺来源会话:{:?}",
+                    m.content
+                );
+                assert!(m.content.contains("2026-01-02"), "缺时间:{:?}", m.content);
+                assert!(m.content.contains("1. "), "缺序号:{:?}", m.content);
+            }
+            other => panic!("命中应注入,实际 {other:?}"),
+        }
+
+        // 排除当前会话:关键词 "selfonly" 只在 "me" 自己的笔记里,hook 绑定
+        // "me" 时唯一候选被排除 → 零候选放行。
+        let self_hook = CrossSessionRecallHook::new("me");
+        let self_hit = self_hook.handle(&prompt_event("selfonly")).await.unwrap();
+        assert!(
+            matches!(self_hit, HookDecision::Allow),
+            "自身笔记应被排除:{self_hit:?}"
+        );
+
+        // SAFETY: 同上 —— 恢复原值,避免污染同进程其他测试。
+        unsafe { std::env::remove_var("ZHUYE_HOME") };
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("ZHUYE_HOME", p) };
+        }
+    }
+}
