@@ -123,7 +123,7 @@ pub fn consolidate_document(content: &str) -> (String, ConsolidateStats) {
             bodies.insert(norm.clone(), Vec::new());
             seen_lines.insert(norm.clone(), std::collections::HashSet::new());
             // 记录首次出现的展示标题(重建时用)。
-            display_titles.insert(norm.clone(), title.clone());
+            display_titles.insert(norm.clone(), title);
         } else {
             stats.merged += 1;
         }
