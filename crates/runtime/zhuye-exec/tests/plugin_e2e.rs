@@ -220,3 +220,179 @@ async fn run_plugin_expansion_scenario() -> anyhow::Result<()> {
 fn home_path() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").expect("HOME 已在测试内设置"))
 }
+
+// ============================================================================
+// 能力快照 + Claude Code 格式启用
+// ============================================================================
+
+/// 挂载后 runtime 留存能力快照 —— GUI 侧据此把插件带来的 MCP server /
+/// 技能 / agent 定义并入各自的列表视图(此前 register 消费后 loaded
+/// 即丢,GUI 列表看不见插件能力:「装了却看不到」)。
+#[tokio::test]
+async fn plugin_runtime_keeps_capability_snapshot() {
+    let _lock = HOME_MUTEX.lock().await;
+    let orig_home = std::env::var("HOME").ok();
+    let home = tempfile::tempdir().expect("tempdir");
+    // SAFETY: HOME_MUTEX 已串行化,本测试二进制内无并发读者。
+    unsafe {
+        std::env::set_var("HOME", home.path());
+    }
+    let result = run_capability_snapshot_scenario().await;
+    // SAFETY: 同上,结束时还原 HOME。
+    unsafe {
+        match orig_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+    result.expect("能力快照场景应成功");
+}
+
+async fn run_capability_snapshot_scenario() -> anyhow::Result<()> {
+    let plugins_root = home_path().join(".zhuye").join("plugins");
+    let mut manager = PluginManager::load(&plugins_root)?;
+    let (plugin_id, _entry) =
+        manager.install_local(DEMO_PLUGIN, &MarketplaceName::inline(), PluginScope::User)?;
+
+    let tools = Arc::new(ToolRegistry::default());
+    let hooks = Arc::new(HookEngine::new());
+    let (mcp_tx, _mcp_rx) = mpsc::channel::<zhuye_mcp::McpLifecycleEvent>(16);
+    let mcp = Arc::new(McpConnectionManager::new(mcp_tx));
+    let skills = Arc::new(SkillsCatalog::new());
+    let (model_registry, _client) = mock_registry_with_client(vec![MockReply::Text {
+        text: "收到".into(),
+    }]);
+    let factory = Arc::new(SubAgentFactory::new(
+        ThreadId::new(),
+        "mock/mock-1",
+        model_registry,
+        None,
+        tools.clone(),
+        CancellationToken::new(),
+        None,
+    ));
+    let plugin_runtime = bootstrap_plugins(
+        tools,
+        hooks,
+        mcp,
+        skills,
+        factory,
+        &["demo@inline".to_string()],
+        None,
+    )
+    .await;
+
+    let guard = plugin_runtime.lock().await;
+    let rt = guard.as_ref().expect("HOME 已隔离,PluginRuntime 应存在");
+    let caps = rt
+        .plugin_capabilities(&plugin_id)
+        .expect("已挂载插件应有能力快照");
+    // 示例插件带命令 / 技能 / agent / hook —— 快照逐类可见。
+    assert!(!caps.commands.is_empty(), "快照应含命令");
+    assert!(!caps.skills.is_empty(), "快照应含技能");
+    assert!(!caps.agents.is_empty(), "快照应含 agent 定义");
+    // 卸载后快照同步清除(GUI 列表不应再显示已卸载插件的能力)。
+    drop(guard);
+    reload_plugins(&plugin_runtime, &[]).await;
+    let guard = plugin_runtime.lock().await;
+    let rt = guard.as_ref().expect("runtime 仍在");
+    assert!(
+        rt.plugin_capabilities(&plugin_id).is_none(),
+        "卸载后能力快照应被清除"
+    );
+    Ok(())
+}
+
+/// Claude Code 格式插件(`<root>/.claude-plugin/plugin.json`,JSON manifest)
+/// 必须能**装上并启用** —— 桌面端「插件市场支持其他 agent 插件」主打
+/// 该格式。此前 manifest 解析只走 TOML、启用路径硬编码 `plugin.toml`,
+/// 结果是「装得上、启用不了」(能力全挂不上)。
+#[tokio::test]
+async fn claude_code_format_plugin_installs_and_enables() {
+    let _lock = HOME_MUTEX.lock().await;
+    let orig_home = std::env::var("HOME").ok();
+    let home = tempfile::tempdir().expect("tempdir");
+    // SAFETY: HOME_MUTEX 已串行化,本测试二进制内无并发读者。
+    unsafe {
+        std::env::set_var("HOME", home.path());
+    }
+    let result = run_claude_code_format_scenario().await;
+    // SAFETY: 同上,结束时还原 HOME。
+    unsafe {
+        match orig_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+    result.expect("Claude Code 格式插件场景应成功");
+}
+
+async fn run_claude_code_format_scenario() -> anyhow::Result<()> {
+    // 1. 构造 Claude Code 格式插件目录(JSON manifest + 命令目录)。
+    let src = tempfile::tempdir()?;
+    let root = src.path().join("cc-plugin");
+    std::fs::create_dir_all(root.join(".claude-plugin"))?;
+    std::fs::create_dir_all(root.join("commands"))?;
+    std::fs::write(
+        root.join(".claude-plugin").join("plugin.json"),
+        r#"{
+            "name": "cc-plugin",
+            "version": "1.0.0",
+            "description": "Claude Code 格式",
+            "commands": "./commands"
+        }"#,
+    )?;
+    std::fs::write(
+        root.join("commands/hello.md"),
+        "---\ndescription: greet\n---\n# hi\n",
+    )?;
+
+    // 2. 安装(安装侧已兼容 find_in_dir,读 JSON manifest)。
+    let plugins_root = home_path().join(".zhuye").join("plugins");
+    let mut manager = PluginManager::load(&plugins_root)?;
+    let (plugin_id, _entry) =
+        manager.install_local(&root, &MarketplaceName::inline(), PluginScope::User)?;
+    assert_eq!(plugin_id, PluginId::inline("cc-plugin").unwrap());
+
+    // 3. 挂载 —— 此前此处会因硬编码 `plugin.toml` 读不到 manifest 而失败。
+    let tools = Arc::new(ToolRegistry::default());
+    let hooks = Arc::new(HookEngine::new());
+    let (mcp_tx, _mcp_rx) = mpsc::channel::<zhuye_mcp::McpLifecycleEvent>(16);
+    let mcp = Arc::new(McpConnectionManager::new(mcp_tx));
+    let skills = Arc::new(SkillsCatalog::new());
+    let (model_registry, _client) = mock_registry_with_client(vec![MockReply::Text {
+        text: "收到".into(),
+    }]);
+    let factory = Arc::new(SubAgentFactory::new(
+        ThreadId::new(),
+        "mock/mock-1",
+        model_registry,
+        None,
+        tools.clone(),
+        CancellationToken::new(),
+        None,
+    ));
+    let plugin_runtime = bootstrap_plugins(
+        tools,
+        hooks,
+        mcp,
+        skills,
+        factory,
+        &["cc-plugin@inline".to_string()],
+        None,
+    )
+    .await;
+
+    // 4. 能力真的挂上了:命令注册表含该插件命令。
+    let guard = plugin_runtime.lock().await;
+    let rt = guard.as_ref().expect("HOME 已隔离,PluginRuntime 应存在");
+    assert!(
+        rt.commands().lookup("cc-plugin:hello").is_some(),
+        "Claude Code 格式插件的命令应挂上"
+    );
+    assert!(
+        rt.plugin_capabilities(&plugin_id).is_some(),
+        "Claude Code 格式插件应有能力快照"
+    );
+    Ok(())
+}

@@ -5,7 +5,7 @@
 //! - [`bootstrap_plugins`]:启动期构造 [`PluginRuntime`] 并同步 enabled 列表;
 //! - [`reload_plugins`]:config `[plugins]` 段变更时 diff 同步挂/卸。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use zhuye_hooks::HookEngine;
@@ -14,6 +14,7 @@ use zhuye_skills::SkillsCatalog;
 use zhuye_subagent::SubAgentFactory;
 use zhuye_tools::ToolRegistry;
 
+use crate::capabilities::LoadedPlugin;
 use crate::commands_registry::CommandRegistry;
 use crate::identifier::PluginId;
 use crate::loader::{LoaderRegistries, register, scan, unregister};
@@ -27,6 +28,13 @@ pub struct PluginRuntime {
     manager: PluginManager,
     registries: LoaderRegistries,
     enabled: HashSet<String>,
+    /// 已挂载插件的**能力快照**(按插件 id 索引)。
+    ///
+    /// 挂载时 `loader::register` 把能力注册进各 registry,但 `LoadedPlugin`
+    /// 本身随即被消费丢弃 —— GUI 侧于是**看不到插件带来的能力**(MCP
+    /// server / 技能 / agent 定义),用户只能「装了却用不了/看不见」。
+    /// 这里留存快照,供 GUI 把插件能力并入各自列表视图。
+    capabilities: HashMap<PluginId, LoadedPlugin>,
     /// 批次二十四(#5):`zhuye exec` 的 JSONL event sink;每次
     /// `enable_one` 成功后 emit `PluginLoaded`。`None` 时 silent(headless
     /// 重载或无 reload_tx 场景)。TUI 不走这条路径(它用
@@ -50,6 +58,7 @@ impl PluginRuntime {
             manager,
             registries,
             enabled: HashSet::new(),
+            capabilities: HashMap::new(),
             event_tx: None,
         })
     }
@@ -57,16 +66,22 @@ impl PluginRuntime {
     /// 按 `config.plugins.enabled_plugins` 同步挂载/卸载。
     pub async fn sync_enabled(&mut self, enabled_list: &[String]) {
         let new_set: HashSet<String> = enabled_list.iter().cloned().collect();
+        // 差集先收集成 Vec —— 直接在 `difference(&self.enabled)` 的借用
+        // 期间调 `enable_one(&mut self)` 会与不可变借用冲突。
+        let to_remove: Vec<String> = self.enabled.difference(&new_set).cloned().collect();
+        let to_enable: Vec<String> = new_set.difference(&self.enabled).cloned().collect();
 
-        for id in self.enabled.difference(&new_set) {
-            if let Ok(pid) = PluginId::parse_user_input(id)
-                && let Err(e) = unregister(&self.registries, &pid).await
-            {
-                tracing::warn!(plugin = %id, error = %e, "plugin unregister on reload failed");
+        for id in &to_remove {
+            if let Ok(pid) = PluginId::parse_user_input(id) {
+                if let Err(e) = unregister(&self.registries, &pid).await {
+                    tracing::warn!(plugin = %id, error = %e, "plugin unregister on reload failed");
+                }
+                // 快照同步清除 —— 卸载后 GUI 列表不应再显示该插件的能力。
+                self.capabilities.remove(&pid);
             }
         }
 
-        for id in new_set.difference(&self.enabled) {
+        for id in &to_enable {
             if let Err(e) = self.enable_one(id).await {
                 tracing::warn!(plugin = %id, error = %e, "plugin enable failed");
             }
@@ -80,6 +95,20 @@ impl PluginRuntime {
         Arc::clone(&self.registries.commands)
     }
 
+    /// 已挂载插件的**能力快照**(按插件 id 索引)。
+    ///
+    /// GUI 侧据此把插件带来的能力并入各自的列表视图(MCP server /
+    /// 技能 / agent 定义)—— 此前插件能力只进了运行时 registry,
+    /// 列表视图看不见,用户「装了却看不到」。
+    pub fn capabilities(&self) -> &HashMap<PluginId, LoadedPlugin> {
+        &self.capabilities
+    }
+
+    /// 单个插件的能力快照(未挂载 → `None`)。
+    pub fn plugin_capabilities(&self, id: &PluginId) -> Option<&LoadedPlugin> {
+        self.capabilities.get(id)
+    }
+
     /// 挂载用户级 slash 命令目录(B4):`<ws>/.zhuye/commands` 与
     /// `~/.zhuye/commands`。与 plugin 命令同表共存(裸名 vs 前缀名),
     /// 返回挂载的命令总数。
@@ -89,13 +118,23 @@ impl PluginRuntime {
             .sum()
     }
 
-    async fn enable_one(&self, id_str: &str) -> Result<(), String> {
+    async fn enable_one(&mut self, id_str: &str) -> Result<(), String> {
         let id = PluginId::parse_user_input(id_str).map_err(|e| e.to_string())?;
         let entry = self
             .manager
             .lookup_entry(&id)
             .ok_or_else(|| format!("plugin not installed: {id_str}"))?;
-        let manifest_path = entry.install_path.join("plugin.toml");
+        // manifest 定位必须与**安装**路径同款(`PluginManifest::find_in_dir`):
+        // 装 Claude Code 格式插件(`.claude-plugin/plugin.json`)时,安装
+        // 侧能读到 manifest,但此处若硬编码 `plugin.toml` 就会读不到 →
+        // 插件「装得上、启用不了」(能力全部挂不上)。此前无覆盖,现按
+        // 同一约定解析。
+        let manifest_path = PluginManifest::find_in_dir(&entry.install_path).ok_or_else(|| {
+            format!(
+                "未在 {} 下找到 plugin.toml 或 .claude-plugin/plugin.json",
+                entry.install_path.display()
+            )
+        })?;
         let manifest = PluginManifest::from_path(&manifest_path).map_err(|e| e.to_string())?;
         let (loaded, scan_errs) = scan(&id, &manifest, &entry.install_path);
         for e in &scan_errs {
@@ -124,6 +163,9 @@ impl PluginRuntime {
                 .join("; ");
             return Err(msg);
         }
+        // 留存能力快照 —— GUI 列表视图据此把插件带来的 MCP server /
+        // 技能 / agent 定义并入自己的视图(register 消费后 loaded 即丢)。
+        self.capabilities.insert(id.clone(), loaded);
         tracing::info!(plugin = %id_str, "plugin capabilities registered");
         // 批次二十四(#5):emit `PluginLoaded` 让 JSONL drainer / headless
         // 消费者看到 caps 计数。失败静默(reload_tx 关闭 = 下游已退出)。

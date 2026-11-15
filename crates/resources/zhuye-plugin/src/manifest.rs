@@ -304,7 +304,11 @@ pub struct PluginManifest {
     #[serde(default)]
     pub skills: SkillSpec,
 
-    #[serde(default)]
+    /// Claude Code 格式的插件 manifest 把 MCP 声明写成 `mcpServers`
+    /// (camelCase),ZhuYe 的规范字段名是 `mcp_servers` —— 别名让两者
+    /// 等价,否则插件带的 MCP server 声明被**静默丢弃**(读得懂 manifest
+    /// 却用不上能力)。
+    #[serde(default, alias = "mcpServers")]
     pub mcp_servers: McpServerSpec,
 
     /// v1.x C3:WASM 组件工具(多语言插件生态)。组件按 `wit/plugin.wit`
@@ -329,12 +333,29 @@ impl PluginManifest {
     }
 
     /// 从磁盘读 manifest。Phase A 用于 `install(local_path)` 路径。
+    ///
+    /// **按扩展名分派解析器**:`.json` → serde_json,其余(TOML)→ toml。
+    /// Claude Code 格式插件的 manifest 是
+    /// `<plugin_root>/.claude-plugin/plugin.json`(**JSON**),此前这里
+    /// 一律走 TOML 解析器 → 装得上但读不懂(能力全挂不上)。
     pub fn from_path(path: &std::path::Path) -> crate::errors::Result<Self> {
         let text =
             std::fs::read_to_string(path).map_err(|e| crate::errors::PluginError::ManifestIo {
                 path: path.to_path_buf(),
                 source: e,
             })?;
+        let is_json = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+        if is_json {
+            return serde_json::from_str(&text).map_err(|e| {
+                crate::errors::PluginError::ManifestParse {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                }
+            });
+        }
         toml::from_str(&text).map_err(|e| crate::errors::PluginError::ManifestParse {
             path: path.to_path_buf(),
             message: e.to_string(),

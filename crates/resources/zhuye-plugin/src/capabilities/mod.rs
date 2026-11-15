@@ -75,6 +75,9 @@ impl LoadedPlugin {
             && self.hooks.is_empty()
             && self.skills.is_empty()
             && self.mcp_servers.is_empty()
+            // v1.x C3:wasm 工具也是真能力 —— 漏算会让「只带 wasm 工具的
+            // 插件」被误判为纯元数据插件(整份能力面被忽略)。
+            && self.wasm_tools.is_empty()
     }
 }
 
