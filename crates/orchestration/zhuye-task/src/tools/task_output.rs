@@ -60,23 +60,28 @@ impl TaskOutputTool {
     }
 }
 
-/// 轮询文件出现,直到文件存在或超时。100ms 间隔。
+/// 轮询文件出现,直到「出现且非空」或超时。100ms 间隔。
+///
+/// 只认非空内容:Windows 上 `fs::write` 的 create→write 不是原子的,
+/// writer 刚建好文件还没写入时,轮询会抢先读到空串直接返回,block=true
+/// 等了个寂寞(CI Windows 实证)。空文件继续等;超时仍按契约返回空串。
 async fn wait_for_file(path: &PathBuf, timeout: Duration) -> Option<(String, bool)> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         match read_output_file(path).await {
-            Ok((s, truncated)) => return Some((s, truncated)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if tokio::time::Instant::now() >= deadline {
-                    return None;
-                }
-                sleep(Duration::from_millis(100)).await;
-            }
+            Ok((s, truncated)) if !s.is_empty() => return Some((s, truncated)),
+            // 文件存在但为空,或尚未出现:都继续等。
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
                 warn!(path = ?path, error = %e, "TaskOutput read error");
                 return None;
             }
         }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -263,6 +268,56 @@ mod tests {
         let tool = TaskOutputTool::new(m);
         let path_for_writer = path.clone();
         // 200ms 后另一个 task 写入
+        let writer = tokio::spawn(async move {
+            sleep(Duration::from_millis(200)).await;
+            tokio::fs::write(&path_for_writer, b"delayed")
+                .await
+                .unwrap();
+        });
+        let out = tool
+            .execute(
+                ToolContext::default(),
+                serde_json::json!({
+                    "taskId": t.id,
+                    "listId": "L",
+                    "block": true,
+                    "timeoutMs": 2000
+                }),
+            )
+            .await
+            .unwrap();
+        writer.await.unwrap();
+        match &out.content[0] {
+            zhuye_protocol::ContentBlock::Text { text } => assert_eq!(text, "delayed"),
+            _ => panic!("expected text"),
+        }
+    }
+
+    /// Windows 实证的竞态:writer 先 create 后 write,轮询在窗口里读到
+    /// 空文件就返回,block=true 拿到空串。空文件必须继续等,直到有内容。
+    #[tokio::test]
+    async fn block_true_skips_empty_file_and_returns_delayed_content() {
+        let dir = TempDir::new().unwrap();
+        let m = Arc::new(TaskManager::new(
+            Arc::new(FileTaskStore::new(dir.path())),
+            Arc::new(InMemoryTeamStore::new()),
+        ));
+        let t = m
+            .create_task(
+                &"L".into(),
+                "x".into(),
+                "".into(),
+                None,
+                None,
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        let path = t.output_path.as_ref().unwrap().clone();
+        let tool = TaskOutputTool::new(m);
+        // 先落一个空文件(模拟 create 已发生、write 未发生),200ms 后补内容。
+        tokio::fs::write(&path, b"").await.unwrap();
+        let path_for_writer = path.clone();
         let writer = tokio::spawn(async move {
             sleep(Duration::from_millis(200)).await;
             tokio::fs::write(&path_for_writer, b"delayed")
