@@ -1386,7 +1386,7 @@ mod tests {
                 turns: 2,
             });
             let label = drive_one(&mut loop_rx, &probe_state, next).await;
-            seen.push(label.clone());
+            seen.push(label);
             // 两个任务都 Done 即停。
             let all_done = q.list().iter().all(|t| t.status == QueueTaskStatus::Done);
             if all_done && seen.iter().filter(|s| *s == "exit_goal").count() >= 2 {
