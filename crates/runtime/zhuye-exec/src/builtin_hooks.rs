@@ -121,13 +121,24 @@ impl Hook for AgentsMdHook {
 pub struct CrossSessionRecallHook {
     /// 排除的当前会话 id(`session-notes/<thread>.jsonl` 文件名 stem)。
     current_thread: String,
+    /// 笔记根目录覆盖。`None` 走 [`zhuye_notes::resolve_notes_home`]
+    /// (读 `ZHUYE_HOME`);测试注入临时目录,避免与同进程其他改 env
+    /// 的用例互相踩掉数据根。
+    notes_home: Option<std::path::PathBuf>,
 }
 
 impl CrossSessionRecallHook {
     pub fn new(current_thread: impl Into<String>) -> Self {
         Self {
             current_thread: current_thread.into(),
+            notes_home: None,
         }
+    }
+
+    /// 指定笔记根(其下 `session-notes/*.jsonl`),不读进程环境变量。
+    pub fn with_notes_home(mut self, home: impl Into<std::path::PathBuf>) -> Self {
+        self.notes_home = Some(home.into());
+        self
     }
 }
 
@@ -153,7 +164,11 @@ impl Hook for CrossSessionRecallHook {
         if query.is_empty() {
             return Ok(HookDecision::Allow);
         }
-        let Some(home) = zhuye_notes::resolve_notes_home() else {
+        let Some(home) = self
+            .notes_home
+            .clone()
+            .or_else(zhuye_notes::resolve_notes_home)
+        else {
             return Ok(HookDecision::Allow);
         };
         let hits = zhuye_notes::recall_cross_session(
@@ -323,12 +338,12 @@ mod tests {
         assert!(matches!(d, HookDecision::Allow), "无文件应放行:{d:?}");
     }
 
-    /// `CrossSessionRecallHook` 三段语义(合并为一个用例:env 依赖的测试
-    /// 并发跑会互相清掉 `ZHUYE_HOME`,必须顺序执行):
+    /// `CrossSessionRecallHook` 三段语义:
     /// 1. 命中时注入格式化笔记列表(序号 / 时间 / 来源会话 / 原文);
     /// 2. 空查询直接放行;
     /// 3. 当前会话自己的笔记被排除(`exclude_thread` —— 否则等于自言自语)。
-    /// 数据目录用 `ZHUYE_HOME` 指到临时目录隔离(测后恢复原值)。
+    /// 笔记根经 `with_notes_home` 注入,不改 `ZHUYE_HOME`(该变量是进程级的,
+    /// 与同进程其他 crate 的 env 测试并发时会互相清掉,CI 上表现为「命中却 Allow」)。
     #[tokio::test]
     async fn cross_session_recall_hook_命中注入_空查询放行_排除自身() {
         let home = tempfile::tempdir().unwrap();
@@ -344,11 +359,8 @@ mod tests {
             "{\"text\": \"selfonly 独有笔记\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n",
         )
         .unwrap();
-        let prev = std::env::var("ZHUYE_HOME").ok();
-        // SAFETY: 单测内短临界区设置 env(本用例独占该变量,测后恢复)。
-        unsafe { std::env::set_var("ZHUYE_HOME", home.path()) };
 
-        let hook = CrossSessionRecallHook::new("current-thread");
+        let hook = CrossSessionRecallHook::new("current-thread").with_notes_home(home.path());
         // 空查询:不召回,直接放行。
         let empty_q = hook.handle(&prompt_event("   ")).await.unwrap();
         assert!(
@@ -380,17 +392,11 @@ mod tests {
 
         // 排除当前会话:关键词 "selfonly" 只在 "me" 自己的笔记里,hook 绑定
         // "me" 时唯一候选被排除 → 零候选放行。
-        let self_hook = CrossSessionRecallHook::new("me");
+        let self_hook = CrossSessionRecallHook::new("me").with_notes_home(home.path());
         let self_hit = self_hook.handle(&prompt_event("selfonly")).await.unwrap();
         assert!(
             matches!(self_hit, HookDecision::Allow),
             "自身笔记应被排除:{self_hit:?}"
         );
-
-        // SAFETY: 同上 —— 恢复原值,避免污染同进程其他测试。
-        unsafe { std::env::remove_var("ZHUYE_HOME") };
-        if let Some(p) = prev {
-            unsafe { std::env::set_var("ZHUYE_HOME", p) };
-        }
     }
 }
