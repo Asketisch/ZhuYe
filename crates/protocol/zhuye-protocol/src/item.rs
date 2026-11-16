@@ -306,8 +306,7 @@ pub struct ThreadSettingsOverrides {
     /// (可随配置热重载切换)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 本回合审批策略覆盖:`Prompt` 强制启用审批门,`Deny` 拒绝所有需审批的
-    /// 工具;`Auto` / `None` 跟随会话级审批配置。
+    /// 本回合审批策略覆盖，独立于会话规划模式；`Auto` / `None` 跟随会话配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<ApprovalPolicy>,
     /// 本回合 OS 沙箱覆盖:`OsSandbox` 强制启用,`WorkspaceOnly` / `FullAccess`
@@ -330,6 +329,10 @@ pub enum ApprovalPolicy {
     Auto,
     /// 强制启用审批门(即使会话级审批关闭),需审批的工具走审批流程。
     Prompt,
+    /// 自动批准一般工具调用，高风险操作仍需确认。
+    AutoApprove,
+    /// 自动批准工具调用，显式拒绝规则和规划模式约束仍然生效。
+    FullAccess,
     /// 拒绝所有需审批的工具调用:不弹审批、直接以拒绝结果返回模型。
     Deny,
 }

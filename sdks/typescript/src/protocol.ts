@@ -75,7 +75,7 @@ export interface ThreadSettings {
   /** @deprecated 服务端不读取此字段;请使用 set_permission_mode Op。 */
   permission_mode?: PermissionMode | null;
   model?: string | null;
-  approval_policy?: 'auto' | 'prompt' | 'deny' | null;
+  approval_policy?: 'auto' | 'prompt' | 'deny' | 'auto_approve' | 'full_access' | null;
   sandbox_policy?: 'workspace_only' | 'os_sandbox' | 'full_access' | null;
   max_tool_concurrency?: number | null;
 }

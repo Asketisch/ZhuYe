@@ -28,6 +28,7 @@ pub struct ApprovalGate {
     /// 本回合所有需要审批的工具一律直接拒绝(不弹 modal、不问 resolver)。
     /// gate 为回合级实例,天然限定作用域。
     pub(super) deny_all: std::sync::atomic::AtomicBool,
+    turn_policy: Option<zhuye_protocol::ApprovalPolicy>,
     pub(super) event_tx: mpsc::Sender<Event>,
     pub(super) sub_id: String,
     pub(super) waiters: ApprovalWaiters,
@@ -222,6 +223,7 @@ impl ApprovalGate {
     ) -> Self {
         Self {
             deny_all: std::sync::atomic::AtomicBool::new(false),
+            turn_policy: None,
             turn_cancel: None,
             event_tx,
             sub_id: sub_id.into(),
@@ -240,6 +242,12 @@ impl ApprovalGate {
             )),
             created_at: std::time::Instant::now(),
         }
+    }
+
+    /// 设置当前回合独立的审批策略，不改变规划模式。
+    pub fn with_turn_policy(mut self, policy: Option<zhuye_protocol::ApprovalPolicy>) -> Self {
+        self.turn_policy = policy;
+        self
     }
 
     /// v1.9 S6:设置审批 TTL(覆盖默认 300s)。gate 构造起算,本 turn
@@ -443,6 +451,18 @@ impl ApprovalGate {
             zhuye_permissions::RuleMatch::NoMatch => false,
         };
 
+        if self.turn_policy == Some(zhuye_protocol::ApprovalPolicy::FullAccess) {
+            return ReviewDecision::Approve;
+        }
+        if !force_modal {
+            match self.turn_policy {
+                Some(zhuye_protocol::ApprovalPolicy::AutoApprove) if risk != RiskLevel::High => {
+                    return ReviewDecision::Approve;
+                }
+                _ => {}
+            }
+        }
+
         // 2. 会话 `PermissionMode` 短路(AcceptEdits / Bubble / Deny)。
         // 显式 `RuleMatch::Ask` 规则优先,不覆盖。
         //
@@ -453,7 +473,11 @@ impl ApprovalGate {
         // "ApproveForSession 在 bash 上覆盖 Dangerous"两个后门:
         // 任何高危副作用(`sudo` / `rm -rf` / shell-installer 等)
         // 每次都必须显式人工确认。
-        if !force_modal {
+        if !force_modal
+            && self
+                .turn_policy
+                .is_none_or(|p| p == zhuye_protocol::ApprovalPolicy::Auto)
+        {
             if let Some(mode_ref) = &self.session_permission_mode {
                 let mode = *mode_ref.read();
                 if mode == PermissionMode::Deny {
@@ -478,7 +502,11 @@ impl ApprovalGate {
         // 3. P2 `yolo-classifier`:Auto 模式下(resolver 无规则 + mode 未自动批准),
         // 查启发式分类器。Allow 且置信度 >= 阈值 → 自动批准(免 modal);
         // Deny → 拒绝;Ask / 低置信 → 继续 modal。无分类器时维持原 modal 行为。
-        if !force_modal {
+        if !force_modal
+            && self
+                .turn_policy
+                .is_none_or(|p| p == zhuye_protocol::ApprovalPolicy::Auto)
+        {
             if let Some(classifier) = self.yolo_classifier.lock().clone() {
                 let args_str = serde_json::to_string(args).unwrap_or_default();
                 let class = classifier.classify(tool_name, &args_str);
@@ -574,6 +602,9 @@ impl ApprovalGate {
             return ReviewDecision::Deny {
                 reason: "approval_policy = deny(本回合拒绝所有需审批的工具)".into(),
             };
+        }
+        if self.turn_policy == Some(zhuye_protocol::ApprovalPolicy::FullAccess) {
+            return ReviewDecision::Approve;
         }
         let request_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel::<ReviewDecision>();
