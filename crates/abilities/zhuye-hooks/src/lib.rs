@@ -13,6 +13,8 @@ pub mod engine;
 pub mod event;
 pub mod file_read_state;
 pub mod hook;
+/// F07:LLM 审批评审器 + 不变地板 + 连续拒绝熔断。
+pub mod reviewer;
 pub mod shell;
 
 pub use abort::HookAbortSignal;
@@ -22,6 +24,10 @@ pub use engine::HookEngine;
 pub use event::{HookContext, HookEvent, HookEventKind, StopReason};
 pub use file_read_state::{DenyReason, FileReadStateTracker, ReadRecord, SharedFileReadState};
 pub use hook::{Hook, HookError};
+pub use reviewer::{
+    InvariantFloor, JudgeFn, ModelReviewer, ReviewOutcome, ReviewRequest, ReviewVerdict,
+    ReviewerConfig, ReviewerStats,
+};
 pub use shell::{DEFAULT_SHELL_HOOK_TIMEOUT, ShellHook, wildcard_match};
 
 // 再导出 PermissionMode,便于把其视作 hook 协议一部分的用户使用
