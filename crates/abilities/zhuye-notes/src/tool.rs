@@ -75,7 +75,7 @@ impl Tool for AddSessionNoteTool {
 
     async fn execute(
         &self,
-        _ctx: ToolContext,
+        ctx: ToolContext,
         args: serde_json::Value,
     ) -> Result<zhuye_protocol::ToolOutput, zhuye_protocol::ToolError> {
         let text = args
@@ -86,15 +86,22 @@ impl Tool for AddSessionNoteTool {
             })?
             .to_string();
 
-        let note = self.store.add(text).map_err(|e| match e {
-            crate::NoteError::Empty => zhuye_protocol::ToolError::InvalidArgs {
-                message: "text is empty after trim".into(),
-            },
-            crate::NoteError::TooLong(n) => zhuye_protocol::ToolError::InvalidArgs {
-                message: format!("text too long: {n} chars (max 4096)"),
-            },
-            other => zhuye_protocol::ToolError::Execution(other.to_string()),
-        })?;
+        // v1.11 M5a:写入时 stamp 归属 workspace(跨项目隔离的键;
+        // 与 `ToolContext.workspace` 共享同一把锁,worktree 热切换后
+        // 新笔记按当前 workspace 归属)。
+        let workspace = ctx.workspace.read().display().to_string();
+        let note = self
+            .store
+            .add_attributed(text, Some(workspace))
+            .map_err(|e| match e {
+                crate::NoteError::Empty => zhuye_protocol::ToolError::InvalidArgs {
+                    message: "text is empty after trim".into(),
+                },
+                crate::NoteError::TooLong(n) => zhuye_protocol::ToolError::InvalidArgs {
+                    message: format!("text too long: {n} chars (max 4096)"),
+                },
+                other => zhuye_protocol::ToolError::Execution(other.to_string()),
+            })?;
 
         let count = self.store.list().len();
         let summary = format!(

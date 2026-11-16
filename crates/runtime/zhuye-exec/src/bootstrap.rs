@@ -13,7 +13,7 @@ use zhuye_compact::{Compactor, LlmSummarizer, Summarizer, SummarizerError};
 use zhuye_llm::{ChatMessage, SharedModelRegistry};
 use zhuye_lsp::{LspConnectionManager, LspLifecycleEvent, LspTool};
 use zhuye_mcp::{McpConnectionManager, McpLifecycleEvent, McpServerConfig, McpToolAdapter};
-use zhuye_memory::{FileMemoryStore, InMemoryStore, MemoryStore};
+use zhuye_memory::MemoryStore;
 
 use crate::MemoryTool;
 use zhuye_prompt::PromptBuilder;
@@ -204,21 +204,21 @@ pub(crate) fn bootstrap_m4(
     // Memory:project + user 走文件,session 走内存。
     // v1.x:接线 `CompositeMemoryStore`(此前孤儿)—— Session scope 走内存
     // (进程退出即丢,对话历史已在 rollout JSONL),Project/User scope 走文件。
-    // 此前用纯 FileMemoryStore,Session scope 也落文件,与设计意图不符。
-    let file_store = Arc::new(FileMemoryStore::with_user_data_dir(
-        workspace,
-        &user_data_dir,
-    ));
-    let memory_arc: Arc<dyn MemoryStore> =
-        Arc::new(InMemoryStore::with_fallback(file_store.clone()));
-    let memory: Arc<dyn MemoryStore> = memory_arc;
+    // v1.11 M5a:`ZHUYE_MEMORY_BACKEND=sqlite` 切换 SQLite 条目版本库
+    // (FTS5 中文检索 + MEMORY.md 投影);默认保持 Markdown 旧路径,
+    // 两种模式共享同一检索路由(`MemoryStore::retrieve`)与编辑端口。
+    let memory_stack = zhuye_memory::bootstrap_stack(workspace, &user_data_dir);
+    let memory: Arc<dyn MemoryStore> = memory_stack.store.clone();
+    let file_store = memory_stack.file.clone();
 
     // v1.x:memory 读写工具 —— 写侧与 pre_loop 注入读侧共用同一个
     // FileMemoryStore(同一 resolve_path 口径);agent_type 取构造时的
     // 活跃 agent 名(不引入进程级全局,桌面端曾因此出现「GUI 写的记忆
     // agent 读不到」)。走 register_runtime_tool 应用 Runtime 源安全 floor。
+    // v1.11 M5a:条目写入经 `MemoryStack::editor` 路由(sqlite 模式 =
+    // SQLite 变更端口,禁止文件写旁路);topic 文件继续走文件 store。
     tools.register_runtime_tool(Arc::new(
-        MemoryTool::new(file_store, agent_name.to_string())
+        MemoryTool::with_editor(file_store, memory_stack.editor(), agent_name.to_string())
             .with_session(zhuye_rollout::path::default_base(), thread_id),
     ));
 
@@ -294,6 +294,19 @@ pub(crate) fn bootstrap_m4(
         "project" => Some(zhuye_memory::MemoryScope::Project),
         "user" => Some(zhuye_memory::MemoryScope::User),
         _ => None,
+    };
+    // v1.11 M5a:sqlite 后端下 compact 固化(append_memories 整文旁路)
+    // 尚未适配统一变更端口 —— 新模式禁用,不允许继续文件写旁路
+    // (plan §12 M5a 退出条件;可靠自动写入属 M5b 持久队列)。
+    let consolidation_scope = match (consolidation_scope, memory_stack.backend) {
+        (Some(_), zhuye_memory::MemoryBackend::Sqlite) => {
+            tracing::info!(
+                "sqlite 记忆后端:compact 固化未接入统一变更端口,新模式下禁用 \
+                 (自动写入将在 M5b 经持久队列提供)"
+            );
+            None
+        }
+        (scope, _) => scope,
     };
     let compactor_base = Compactor::new(compactor_cfg, summarizer);
     let compactor = match consolidation_scope {

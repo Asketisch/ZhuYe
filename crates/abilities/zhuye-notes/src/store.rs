@@ -32,18 +32,32 @@ pub const META_MESSAGE_BUDGET_BYTES: usize = 8 * 1024;
 ///
 /// `text` 是 LLM 主动追加的关键发现 / 用户偏好 / 中间结论;
 /// `created_at` 用于按时间排序 + 调试追溯。
+/// v1.11 M5a:`workspace` 记录归属(跨项目隔离的键);旧 JSONL 行
+/// 无此字段,反序列化为 `None` —— 归属确认前不参加跨项目召回。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionNote {
     pub text: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 impl SessionNote {
-    /// 构造并 stamp `created_at = now`。
+    /// 构造并 stamp `created_at = now`(无归属;旧路径等价)。
     pub fn new_now(text: String) -> Self {
         Self {
             text,
             created_at: chrono::Utc::now(),
+            workspace: None,
+        }
+    }
+
+    /// 构造并记录归属 workspace(v1.11 M5a 起的新写入路径)。
+    pub fn new_attributed(text: String, workspace: Option<String>) -> Self {
+        Self {
+            text,
+            created_at: chrono::Utc::now(),
+            workspace,
         }
     }
 }
@@ -55,6 +69,18 @@ impl SessionNote {
 pub trait NoteStore: Send + Sync + std::fmt::Debug {
     /// 追加一条 note。FIFO 满则弹出最早一条。空文本 / 超长返回错误。
     fn add(&self, text: String) -> Result<SessionNote, NoteError>;
+
+    /// v1.11 M5a:带归属追加(跨项目隔离的键)。默认实现丢弃归属参数
+    /// 退化为 [`Self::add`] —— 内存 store / 旧实现零改动;文件层覆写
+    /// 落盘归属字段。
+    fn add_attributed(
+        &self,
+        text: String,
+        workspace: Option<String>,
+    ) -> Result<SessionNote, NoteError> {
+        let _ = workspace;
+        self.add(text)
+    }
 
     /// 当前所有 note(按插入顺序,最新在末尾)。
     fn list(&self) -> Vec<SessionNote>;
@@ -123,6 +149,14 @@ impl InMemoryNoteStore {
 
 impl NoteStore for InMemoryNoteStore {
     fn add(&self, text: String) -> Result<SessionNote, NoteError> {
+        self.add_attributed(text, None)
+    }
+
+    fn add_attributed(
+        &self,
+        text: String,
+        workspace: Option<String>,
+    ) -> Result<SessionNote, NoteError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(NoteError::Empty);
@@ -130,7 +164,7 @@ impl NoteStore for InMemoryNoteStore {
         if trimmed.chars().count() > NOTE_MAX_CHARS {
             return Err(NoteError::TooLong(trimmed.chars().count()));
         }
-        let note = SessionNote::new_now(trimmed.to_string());
+        let note = SessionNote::new_attributed(trimmed.to_string(), workspace);
         let mut guard = self.inner.lock();
         while guard.len() >= self.cap {
             guard.pop_front();

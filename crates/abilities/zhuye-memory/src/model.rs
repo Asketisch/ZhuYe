@@ -56,6 +56,24 @@ pub enum MemoryError {
     /// value 里含 `## ` 标题,会污染条目边界。
     #[error("memory value cannot contain a level-two heading")]
     HeadingInValue,
+    /// v1.11 M5a:目标条目已被用户删除(tombstone),自动导入 / 延迟
+    /// 写入不得复活;显式工具写入经审批授权后可越过(留痕)。
+    #[error("memory entry `{key}` was deleted by user; explicit revival required")]
+    Tombstoned { key: String },
+    /// v1.11 M5a:库 revision 与调用方期望不一致(乐观事务冲突),
+    /// 重读后重新决策,不能套用旧结论。
+    #[error("memory revision changed: expected {expected}, actual {actual}")]
+    RevisionConflict { expected: u64, actual: u64 },
+    /// v1.11 M5a:目标条目不存在(需要存在条目的结构化操作)。
+    #[error("memory entry `{key}` not found")]
+    EntryNotFound { key: String },
+    /// v1.11 M5a:SQLite 后端错误(打开 / 事务 / 查询)。
+    #[error("memory sqlite error: {0}")]
+    Sqlite(String),
+    /// v1.11 M5a:操作在当前后端不可用,附迁移指引(如 sqlite 模式下
+    /// 的整文覆盖 save / 结构化文档的 replace_document)。
+    #[error("memory operation unsupported in this backend: {0}")]
+    Unsupported(String),
 }
 
 #[cfg(test)]

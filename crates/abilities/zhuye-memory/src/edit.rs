@@ -289,7 +289,8 @@ fn read_memory_file(path: &Path) -> Result<String, MemoryError> {
     }
 }
 
-fn validate_key(key: &str) -> Result<(), MemoryError> {
+/// 条目 key 校验(sqlite 编辑端口与文件路径共用同一约束)。
+pub(crate) fn validate_key(key: &str) -> Result<(), MemoryError> {
     if key.is_empty() || key.trim() != key || key.contains('\n') || key.contains('\r') {
         return Err(MemoryError::InvalidKey(key.to_string()));
     }

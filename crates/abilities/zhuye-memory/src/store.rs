@@ -83,6 +83,27 @@ pub trait MemoryStore: Send + Sync {
         let _ = (scope, agent_type, topic);
         Ok(String::new())
     }
+
+    /// v1.11 M5a:检索注入入口。默认实现走旧 BM25 分节路径 —— 所有
+    /// 既有实现(含用户自定义 store)零改动获得原行为;SQLite 后端
+    /// 覆写为 FTS5 中文检索(覆盖度门控 + 统一预算)。pre_loop 统一
+    /// 经此方法路由,新旧模式在同一调用点切换。
+    fn retrieve(
+        &self,
+        scopes: &[MemoryScope],
+        agent_type: &str,
+        query: &str,
+        budget: usize,
+    ) -> Result<String, MemoryError> {
+        crate::retrieval::retrieve_relevant(self, scopes, agent_type, query, budget)
+    }
+
+    /// v1.11 M5a:库 revision(单调写入代次;缓存键与乐观并发基准)。
+    /// 旧文件后端无 revision 概念,恒 0。
+    fn revision(&self, scope: MemoryScope, agent_type: &str) -> Result<u64, MemoryError> {
+        let _ = (scope, agent_type);
+        Ok(0)
+    }
 }
 
 /// v1.4 D2:把非空 scope 正文组合为注入文本(供 `load_combined` 与

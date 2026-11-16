@@ -304,14 +304,17 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         .unwrap_or_default();
     // 检索走 turn 级缓存:`AgentState` 每 turn 新建,turn 内查询固定,
     // 命中缓存即可省掉每次迭代的 MEMORY.md 读盘 + BM25 全量打分。
+    // v1.11 M5a:改经 `MemoryStore::retrieve` trait 路由 —— 默认实现
+    // 即旧 BM25 分节路径(自定义 store 行为不变),SQLite 后端覆写为
+    // FTS5 中文检索;新旧模式在同一调用点切换。
     let memory_text = match &state.memory_retrieval_cache {
         Some(cached) => cached.clone(),
         None => {
-            let text = match zhuye_memory::retrieve_relevant_arc(
-                &m4.memory,
+            let text = match m4.memory.retrieve(
                 &m4.active_agent_def.memory,
                 &m4.active_agent_def.name,
                 memory_query.trim(),
+                zhuye_memory::MAX_MEMORY_INJECT_CHARS,
             ) {
                 Ok(s) => zhuye_memory::truncate_for_injection(&s),
                 Err(e) => {

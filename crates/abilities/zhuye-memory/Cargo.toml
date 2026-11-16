@@ -14,6 +14,13 @@ serde              = { workspace = true }
 serde_json         = { workspace = true }
 thiserror          = { workspace = true }
 parking_lot        = { workspace = true }
+# v1.11 M5a:SQLite 条目版本库(FTS5 中文检索)。bundled 自带 C 源,
+# 复用 workspace 统一声明;本 crate 经 SDK facade 传递依赖,是
+# zhuye-import 之后第二个消费者(体积成本已知,换取零系统依赖)。
+rusqlite = { workspace = true }
+chrono   = { workspace = true }
+uuid     = { workspace = true }
+sha2     = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

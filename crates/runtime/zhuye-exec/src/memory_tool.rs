@@ -23,13 +23,18 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use zhuye_memory::{EntryWriteOptions, FileMemoryStore, MemoryScope, MemoryStore};
+use zhuye_memory::{EntryWriteOptions, FileMemoryStore, MemoryEditor, MemoryScope, MemoryStore};
 use zhuye_protocol::{MemoryOp, PermissionMode, ToolError, ToolOutput};
 use zhuye_tools::{Tool, ToolContext};
 
 /// 记忆读写工具。list / read / write / remove 四个 action。
 pub struct MemoryTool {
+    /// topic 文件投影与旧路径条目编辑的文件 store(两种后端都保留:
+    /// topic wiki 第一版继续走文件)。
     store: Arc<FileMemoryStore>,
+    /// v1.11 M5a:条目编辑端口 —— 新模式路由 SQLite 变更端口,旧模式
+    /// 即 `store` 本身。所有 write / remove / consolidate 经此唯一链。
+    editor: Arc<dyn MemoryEditor>,
     agent_type: String,
     /// 审计记录定位:`(rollout base, thread id)`。构造时注入 ——
     /// `ToolContext.session_id` 在 exec / serve 未注入 `with_session_id`
@@ -40,10 +45,27 @@ pub struct MemoryTool {
 
 impl MemoryTool {
     /// `store` 与 bootstrap 注入 pre_loop 的同一个文件 store(共享路径口径);
-    /// `agent_type` 为构造时确定的活跃 agent 名。
+    /// `agent_type` 为构造时确定的活跃 agent 名。旧模式便捷构造:编辑器
+    /// 即文件 store。
     pub fn new(store: Arc<FileMemoryStore>, agent_type: impl Into<String>) -> Self {
         Self {
+            editor: store.clone(),
             store,
+            agent_type: agent_type.into(),
+            session: None,
+        }
+    }
+
+    /// v1.11 M5a:显式注入编辑端口(sqlite 模式装配用)。`store` 仍用于
+    /// topic 文件与 `read` 投影(sqlite 模式下 MEMORY.md 是活跃条目投影)。
+    pub fn with_editor(
+        store: Arc<FileMemoryStore>,
+        editor: Arc<dyn MemoryEditor>,
+        agent_type: impl Into<String>,
+    ) -> Self {
+        Self {
+            store,
+            editor,
             agent_type: agent_type.into(),
             session: None,
         }
@@ -246,8 +268,9 @@ impl Tool for MemoryTool {
         }
         let text = match action {
             "list" => {
+                // v1.11 M5a:条目列表经编辑端口(sqlite 模式 = 活跃条目)。
                 let entries = self
-                    .store
+                    .editor
                     .list_entries(scope, agent)
                     .map_err(Self::map_err)?;
                 if entries.is_empty() {
@@ -314,8 +337,8 @@ impl Tool for MemoryTool {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     let opts = Self::write_opts(&args, replace_document)?;
-                    self.store
-                        .add_entry(scope, agent, key, value, &opts)
+                    self.editor
+                        .write_entry(scope, agent, key, value, &opts)
                         .map_err(Self::map_err)?;
                     self.record_write(&ctx, key, value.chars().count(), 1);
                     format!(
@@ -338,8 +361,8 @@ impl Tool for MemoryTool {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     let opts = Self::write_opts(&args, replace_document)?;
-                    self.store
-                        .remove_entry(scope, agent, key, &opts)
+                    self.editor
+                        .delete_entry(scope, agent, key, &opts)
                         .map_err(Self::map_err)?;
                     self.record_write(&ctx, key, 0, 0);
                     format!("memory entry `{key}` removed ({scope} scope)")
@@ -368,10 +391,12 @@ impl Tool for MemoryTool {
                 }
             }
             "consolidate" => {
-                // 手动整理(去重 / 合并 / 清空条目)。
+                // 手动整理(去重 / 合并 / 清空条目)。sqlite 后端下写入
+                // 路径已保证标题唯一,确定性整理无事可做 —— 如实报告
+                // 零合并(语义合并属 M5b 决策端口)。
                 let stats = self
-                    .store
-                    .consolidate(scope, agent)
+                    .editor
+                    .consolidate_entries(scope, agent)
                     .map_err(Self::map_err)?;
                 match stats {
                     None => format!("(no MEMORY.md in {scope} scope; nothing to consolidate)"),
