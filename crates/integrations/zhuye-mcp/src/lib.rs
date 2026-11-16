@@ -37,6 +37,8 @@ pub mod prompts;
 pub mod protocol_version;
 pub mod registry;
 pub mod resources;
+/// F30:自暴露 MCP server(工具清单 + 安全边界 + server card)。
+pub mod server_mode;
 pub mod tool;
 pub mod transport;
 
