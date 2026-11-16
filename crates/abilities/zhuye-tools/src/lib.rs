@@ -21,6 +21,8 @@ pub mod checkpoint_tool;
 /// F21:Code Mode 批量工具调用计划(受限计划,非任意代码执行)。
 pub mod code_mode;
 pub mod loop_guard;
+/// F37:Office 文档格式识别 + 提取计划 + 结构化内容。
+pub mod office;
 pub mod plan_approval;
 pub mod queue;
 pub mod registry;
