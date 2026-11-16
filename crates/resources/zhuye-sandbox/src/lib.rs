@@ -12,3 +12,12 @@ pub use os_sandbox::{
     OsSandbox, OsSandboxStatus, OsSandboxStubStatus, detect_backend, probe_landlock_exec,
 };
 pub use untrusted::{CommandOrigin, GateDecision, UntrustedGate};
+
+/// F25:CoW 隔离后端(平台选择 + 差异契约 + 合回策略)。
+pub mod cow;
+/// F23:网络出口管控(域名白名单 / 默认全禁 / 子域匹配)。
+pub mod egress;
+pub use cow::{
+    ChangeKind, ChangeSet, CowBackend, CowWorkspace, FileChange, MergeStrategy, diff_hashes,
+};
+pub use egress::{EgressDecision, EgressPolicy, host_of};
