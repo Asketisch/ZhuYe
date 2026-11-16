@@ -16,6 +16,8 @@ pub mod builtin_tools;
 pub mod builtins;
 pub mod checkpoint;
 pub mod checkpoint_tool;
+/// F21:Code Mode 批量工具调用计划(受限计划,非任意代码执行)。
+pub mod code_mode;
 pub mod loop_guard;
 pub mod plan_approval;
 pub mod queue;
