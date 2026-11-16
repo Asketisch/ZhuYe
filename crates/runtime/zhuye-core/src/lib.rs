@@ -15,6 +15,8 @@ pub mod config;
 pub mod eval;
 pub mod graph;
 pub mod poisoned;
+/// F11:派发 ReasonCode 稳定枚举 + 工作记忆连续性通知。
+pub mod reason_code;
 pub mod resume;
 pub mod side_channel;
 pub mod steering_queue;

@@ -135,6 +135,10 @@ pub struct PoisonVerdict {
     pub class: PoisonClass,
     /// 人可读原因(直接进 Error 事件 message)。
     pub reason: String,
+    /// F11:本次退役时**未迁移**的工作记忆类型。检测器本身不持有这些状态
+    /// (它们属于会话级槽位),默认空 = 「宿主应自行尽力迁移」;调用方
+    /// 可在构造后按实际迁移结果填充,再由 `ContinuityNotice` 生成文案。
+    pub lost_memory: Vec<crate::reason_code::MemoryKind>,
 }
 
 /// 会话级中毒检测器。一个会话(submission_loop)一个实例。
@@ -253,7 +257,13 @@ impl PoisonDetector {
 
     fn retire(&mut self, class: PoisonClass, reason: String) -> PoisonVerdict {
         self.retired = true;
-        PoisonVerdict { class, reason }
+        PoisonVerdict {
+            class,
+            reason,
+            // F11:检测器不知道各槽位的实际迁移情况,默认空 = 调用方按
+            // 现实填充(空列表在文案上表示「均已迁移」)。
+            lost_memory: Vec::new(),
+        }
     }
 
     /// 是否已退役。
