@@ -14,6 +14,8 @@ pub mod background_tasks;
 pub mod config;
 pub mod eval;
 pub mod graph;
+/// F63/F64/F65:引擎杂项(dry-run / 截止时间 / 通知栈 / ADR / 人话错误)。
+pub mod misc;
 pub mod poisoned;
 /// F11:派发 ReasonCode 稳定枚举 + 工作记忆连续性通知。
 pub mod reason_code;
