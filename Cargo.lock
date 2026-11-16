@@ -7793,6 +7793,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zhuye-eval"
+version = "0.1.14"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "zhuye-exec"
 version = "0.1.14"
 dependencies = [
