@@ -156,7 +156,7 @@ impl GroundedFact {
         if valid.is_empty() {
             return 0.0;
         }
-        let best = valid
+        valid
             .iter()
             .map(|e| match e.source {
                 EvidenceSource::UserStated => 1.0,
@@ -164,8 +164,7 @@ impl GroundedFact {
                 EvidenceSource::Session => 0.7,
                 EvidenceSource::Url => 0.6,
             })
-            .fold(0.0f64, f64::max);
-        best
+            .fold(0.0f64, f64::max)
     }
 }
 

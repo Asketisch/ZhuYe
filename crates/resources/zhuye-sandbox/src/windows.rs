@@ -294,15 +294,20 @@ mod tests {
 
     #[test]
     fn network_switch_adds_and_removes_capability() {
-        let mut cfg = WindowsSandboxConfig::default();
-        cfg.allow_network = true;
+        let on = WindowsSandboxConfig {
+            allow_network: true,
+            ..Default::default()
+        };
         assert!(
-            cfg.effective_capabilities()
+            on.effective_capabilities()
                 .contains(&AppContainerCapability::InternetClient)
         );
-        cfg.allow_network = false;
+        let off = WindowsSandboxConfig {
+            allow_network: false,
+            ..Default::default()
+        };
         assert!(
-            !cfg.effective_capabilities()
+            !off.effective_capabilities()
                 .contains(&AppContainerCapability::InternetClient)
         );
     }

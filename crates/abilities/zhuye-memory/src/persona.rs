@@ -276,7 +276,7 @@ impl Persona {
             }
         }
         if !self.soul.trim().is_empty() {
-            out.push_str("\n");
+            out.push('\n');
             out.push_str(self.soul.trim());
             out.push('\n');
         }

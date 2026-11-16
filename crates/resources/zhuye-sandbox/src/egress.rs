@@ -218,7 +218,7 @@ mod tests {
     fn allowlist_subdomain_match() {
         let p = allowlist(&["github.com"]);
         assert!(p.check("api.github.com").allowed);
-        assert!(p.check("raw.githubusercontent.com").allowed == false);
+        assert!(!p.check("raw.githubusercontent.com").allowed);
     }
 
     #[test]
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn end_to_end_url_check() {
         let p = allowlist(&["github.com", "crates.io"]);
-        let check = |url: &str| host_of(url).map(|h| p.check(&h).allowed).unwrap_or(false);
+        let check = |url: &str| host_of(url).is_some_and(|h| p.check(&h).allowed);
         assert!(check("https://api.github.com/repos"));
         assert!(check("https://crates.io/api/v1"));
         assert!(!check("https://evil.example/steal"));

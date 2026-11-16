@@ -266,7 +266,7 @@ fn unescape(pat: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
-                Some('d') => out.push_str("0"),
+                Some('d') => out.push('0'),
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
                 Some(other) => out.push(other),

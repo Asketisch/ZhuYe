@@ -344,10 +344,10 @@ pub fn injection_budget(
     let mut weights: Vec<(MemoryLayer, f64)> = MemoryLayer::ALL
         .iter()
         .map(|&l| {
-            let w = policies
-                .get(&l)
-                .map(|p| p.injection_weight)
-                .unwrap_or_else(|| LayerPolicy::defaults(l).injection_weight);
+            let w = policies.get(&l).map_or_else(
+                || LayerPolicy::defaults(l).injection_weight,
+                |p| p.injection_weight,
+            );
             (l, w.max(0.0))
         })
         .collect();
