@@ -146,7 +146,7 @@ impl IdeBridge {
 /// 端侧推理运行时。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OnnxRuntime {
+pub enum InferenceRuntime {
     /// ONNX Runtime。
     OnnxRuntime,
     /// LiteRT(TFLite 后继)。
@@ -155,12 +155,12 @@ pub enum OnnxRuntime {
     LlamaCpp,
 }
 
-impl OnnxRuntime {
+impl InferenceRuntime {
     pub fn as_str(self) -> &'static str {
         match self {
-            OnnxRuntime::OnnxRuntime => "onnxruntime",
-            OnnxRuntime::LiteRt => "litert",
-            OnnxRuntime::LlamaCpp => "llama_cpp",
+            InferenceRuntime::OnnxRuntime => "onnxruntime",
+            InferenceRuntime::LiteRt => "litert",
+            InferenceRuntime::LlamaCpp => "llama_cpp",
         }
     }
 }
@@ -201,7 +201,7 @@ impl Quantization {
 pub struct OnnxProviderSpec {
     /// 模型 id。
     pub id: String,
-    pub runtime: OnnxRuntime,
+    pub runtime: InferenceRuntime,
     pub quantization: Quantization,
     /// 文件字节数(未量化基准)。
     pub base_bytes: u64,
@@ -407,8 +407,7 @@ impl MediaProviderRegistry {
     pub fn providers_for(&self, kind: MediaKind) -> &[String] {
         self.providers
             .get(kind.as_str())
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[][..], Vec::as_slice)
     }
 
     /// 是否支持某类型。
@@ -483,7 +482,7 @@ mod tests {
     fn onnx_actual_bytes() {
         let spec = OnnxProviderSpec {
             id: "m".into(),
-            runtime: OnnxRuntime::OnnxRuntime,
+            runtime: InferenceRuntime::OnnxRuntime,
             quantization: Quantization::Int8,
             base_bytes: 1_000_000,
             sha256: "abc".into(),
@@ -496,7 +495,7 @@ mod tests {
     fn onnx_ready_requires_install_and_hash() {
         let mut spec = OnnxProviderSpec {
             id: "m".into(),
-            runtime: OnnxRuntime::LiteRt,
+            runtime: InferenceRuntime::LiteRt,
             quantization: Quantization::Fp16,
             base_bytes: 100,
             sha256: "abc".into(),

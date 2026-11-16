@@ -286,14 +286,15 @@ fn strip_test_suffix(path: &str) -> String {
     if lower.contains("/tests/") {
         return path.replace("/tests/", "/");
     }
-    for suffix in ["_test.rs", ".test.ts", ".spec.ts", "_test.py"] {
+    // 去掉测试后缀并统一成源文件扩展名。
+    for (suffix, source_ext) in [
+        ("_test.rs", ".rs"),
+        (".test.ts", ".ts"),
+        (".spec.ts", ".ts"),
+        ("_test.py", ".py"),
+    ] {
         if let Some(stripped) = path.strip_suffix(suffix) {
-            return format!(
-                "{stripped}{}",
-                &suffix[suffix.find('.').or(Some(0)).unwrap()..]
-                    .replace(".test", ".rs")
-                    .replace(".spec", ".rs")
-            );
+            return format!("{stripped}{source_ext}");
         }
     }
     path.to_string()

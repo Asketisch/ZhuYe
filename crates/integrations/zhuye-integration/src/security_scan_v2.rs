@@ -358,7 +358,7 @@ impl ConsensusVote {
 }
 
 /// 就绪度评分(F60 置信度门)。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReadinessScore {
     /// 各项得分(0.0–1.0)。
     pub criteria: BTreeMap<String, f64>,
