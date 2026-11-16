@@ -19,6 +19,9 @@ pub mod cow;
 pub mod egress;
 /// F24:Windows 沙箱策略层(AppContainer / Job Object / ACL / 进程树)。
 pub mod windows;
+/// F24:Windows FFI 执行层(spawn / job / kill / ACL 的 Win32 落地;
+/// 非 Windows 提供_UNSUPPORTED stub,调用方回退平台原生后端)。
+pub mod windows_ffi;
 pub use cow::{
     ChangeKind, ChangeSet, CowBackend, CowWorkspace, FileChange, MergeStrategy, diff_hashes,
 };
@@ -26,4 +29,8 @@ pub use egress::{EgressDecision, EgressPolicy, host_of};
 pub use windows::{
     AppContainerCapability, JobLimits, KillPlan, WindowsSandbox, WindowsSandboxConfig,
     WindowsSandboxError, WindowsSandboxPlan,
+};
+pub use windows_ffi::{
+    SpawnError, Spawned, build_command_line, build_env_block, enumerate_process_tree, kill_tree,
+    spawn_sandboxed,
 };
