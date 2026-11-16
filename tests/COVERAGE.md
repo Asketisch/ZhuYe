@@ -104,6 +104,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | v1.11 基建#11:显式完全托管模式(`exec/serve --full-auto`/`--yolo`,Bubble 启动 + 初始模式通告 + Prompt 工具 bubble 自动批准) | ✔(5 条,见 `test_full_auto.py`:启动通告 / 别名等效 / ZHUYE_APPROVALS=1 下 write 免阻塞自动批准 / 默认不发通告 / 与 --plan-mode 互斥) | ✅(clap 互斥由用例 5 直接驱动) | —(复用既有 PermissionModeChanged / PermissionBubble 事件,无新变体) | ✅(zhuye-exec headless `initial_permission_mode` 纯函数 1 例:三分支与 full_auto>plan_mode 优先级;zhuye-core `with_initial_permission_mode` Bubble 例;submission_loop 通告分支由功能层覆盖) | — |
 | v1.11 基建#6:队列支持多 goal(`queue add_goal` + driver 探针驱动目标模式执行) | ✔(2 条,见 `test_goal_queue.py`:单 goal EnterGoalMode→met→ExitGoalMode→done 字段级 / 两 goal 严格串行 started_at 先后) | —(工具参数面) | —(无新 Op/EventMsg 变体;复用 EnterGoalMode/ExitGoalMode) | ✅(zhuye-stream goal watcher 4 例:跑到底 / 双 goal 串行 / 无探针拒绝 / 失败结清;zhuye-exec queue_tool add_goal 3 例:roundtrip 字段透传 / 参数校验 / Prompt 权限;zhuye-goal outcome 记忆) | — |
 | v1.11 基建#8:deepagents 式记忆(topic 多文件 wiki / consolidate 去重 / 跨会话笔记召回 / 后台自动整理) | ✔(5 条,见 `test_memory_v11.py`:topic 工具全链路含落盘路径 / consolidate 合并统计 / 跨会话召回含原文 / 零相关不注入 / env 节流后台整理) | —(工具参数面) | —(无新 Op/EventMsg 变体;召回经既有 system-reminder 通道) | ✅(zhuye-memory topics 5 例 + consolidate 7 例;zhuye-notes recall 6 例;memory_tool topic/consolidate 4 例;MetaKind 新变体;zhuye-exec headless 节流 env 解析 1 例:缺省 / 0 关闭 / 非法回退 / 上限钳制 / 空白容忍) | — |
+| v1.11 M5a:SQLite 记忆后端(`ZHUYE_MEMORY_BACKEND=sqlite`:条目版本库 / FTS5 中文检索 / MEMORY.md 投影 / 墓碑防复活 / notes workspace 归属) | ✔(3 条,见 `test_memory_v11.py`:sqlite 中文检索与投影含跨进程 system 注入 / 删除后投影不复活含 list 存活面 / sqlite 模式跨会话笔记归属召回含 workspace 字段落盘) | —(工具参数面:memory 工具 schema 未变,行为经环境变量切换) | —(无新 Op/EventMsg 变体;MemoryAccess 审计复用既有 record) | ✅(zhuye-memory sqlite 模块 24 例:schema 幂等与 meta / change 端口生命周期·墓碑·CAS·重名 / retrieve 中文·单字·门控·时间窗·墓碑过滤·预算装箱·MATCH 表达式 / project 首次导入幂等·外部编辑·墓碑拦截·投影导出 / store 读写删复活·乐观锁·作用域隔离·trait 路由;bm25 CJK 分词 6 例:纯中文 bigram / 混合不跨类 / 全半角折叠 / 标点分隔 / 中文查询命中 / 旧用例不回归;zhuye-notes 归属 1 例:scoped 召回过滤与旧口径并存) | —(默认关闭,`ZHUYE_MEMORY_BACKEND=sqlite` 显式启用;后端切换不改协议) |
 | v1.11 基建#13:GitHub topic 插件发现(`marketplace discover --topic`,默认 zhuye-plugin) | ✔(2 条,见 `test_plugin_discover.py`:参数面字段级 / 网络解析链路条件跑) | ✅(clap 参数面由用例 1 直接驱动) | —(纯 CLI 展示面,无 Op/EventMsg) | ✅(zhuye-plugin discover 4 例:空 topic 拒绝 / URL 构造与 limit 钳制 0→1·超限→100 / 响应全字段解析与空白描述过滤·topics 缺省 / 坏 JSON 与空清单;非 2xx 错误映射为网络路径,由条件网络用例覆盖) | — |
 | v1.11 桌面#3:复杂度分级路由(`[routing.main.complexity]` effort 档位→模型映射,model_call 自动选模型) | ✔(2 条,见 `test_complexity_routing.py`:low 档命中映射模型 / 未配置档位回退 primary / 无映射模型不变) | —(config 参数面,由 zhuye-config 单测承担) | —(无新 Op/EventMsg 变体;复用 SetEffort) | ✅(zhuye-config 复杂度解析 2 例:非空档位提取 / 空白丢弃;zhuye-core `effort_model_route` 查表 1 例:命中 / 未配置 / 空表 / Clone 共享 RwLock 热重载可见;ReasoningEffortMirror 增 Hash derive) | — |
 | v1.11 F6:组合透明性(`zhuye doctor --dump-config` 生效配置 JSON 快照,密钥脱敏) | ✔(2 条,见 `test_dump_config.py`:空配置结构 + 密钥值不出现在整份 JSON / anthropic 段生效反映 provider·model_spec·凭据 label·has_api_key;runner 门禁下的 env 隔离口径见用例内注释) | ✅(doctor 子命令参数面) | —(CLI 只读诊断面,无 Op/EventMsg) | ✅(zhuye-cli doctor 2 例:凭据脱敏只出布尔·条目无 api_key 字段·段级与池双路径 / 路由与 complexity 档位映射·无 routing 段不 panic) | — |
@@ -731,7 +732,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_agents_md.py` | 4 条(v1.11 基建#9:AGENTS.md 默认读取) |
 | `functional/test_full_auto.py` | 5 条(v1.11 基建#11:显式完全托管模式) |
 | `functional/test_goal_queue.py` | 2 条(v1.11 基建#6:队列多 goal) |
-| `functional/test_memory_v11.py` | 5 条(v1.11 基建#8:deepagents 式记忆) |
+| `functional/test_memory_v11.py` | 8 条(v1.11 基建#8:deepagents 式记忆 + M5a SQLite 后端) |
 | `functional/test_plugin_discover.py` | 2 条(v1.11 基建#13:GitHub topic 插件发现;网络用例 ZHUYE_FUNCTIONAL_NETWORK=1 才跑) |
 | `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:复杂度分级路由) |
 | `functional/test_v110.py` | 12 条(V 组) |
@@ -757,7 +758,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_agents_md.py` | 4 条(v1.11 基建#9:默认注入 / 用户级+项目级顺序 / 显式关闭 / 无文件不注入) |
 | `functional/test_full_auto.py` | 5 条(v1.11 基建#11:启动通告 / yolo 别名 / bubble 自动批准 / 默认不通告 / plan 互斥) |
 | `functional/test_goal_queue.py` | 2 条(v1.11 基建#6:单 goal 字段级全链 / 多 goal 严格串行) |
-| `functional/test_memory_v11.py` | 5 条(v1.11 基建#8:topic 全链路 / consolidate / 跨会话召回 / 零相关 / 后台节流) |
+| `functional/test_memory_v11.py` | 8 条(v1.11 基建#8:topic 全链路 / consolidate / 跨会话召回 / 零相关 / 后台节流;M5a:sqlite 中文检索与投影 / 删除不复活 / 笔记归属召回) |
 | `functional/test_plugin_discover.py` | 2 条(v1.11 基建#13:参数面 / 真网络条件跳) |
 | `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:档位命中映射 / 回退 primary) |
 | `functional/test_dump_config.py` | 2 条(v1.11 F6:结构与脱敏 / 生效配置反映;env 隔离见用例内注释) |

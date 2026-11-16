@@ -14,18 +14,24 @@
 //! 注入 memory 的字符上限为
 //! [`MAX_MEMORY_INJECT_CHARS`](8000,与 Zhuye 一致)。
 
+pub mod backend;
 pub mod consolidate;
 pub mod edit;
+pub mod editor;
 pub mod model;
 pub mod retrieval;
 pub mod scope;
+pub mod sqlite;
 pub mod store;
 pub mod topics;
 
+pub use backend::{MemoryBackend, MemoryStack, backend_from_env, bootstrap_stack};
 pub use consolidate::{ConsolidateStats, Consolidator, consolidate_document};
 pub use edit::{EntryWriteOptions, MemoryEntry, WHOLE_DOCUMENT_KEY, migrate_legacy_agent_dir};
+pub use editor::MemoryEditor;
 pub use model::{MemoryError, MemoryScope};
 pub use retrieval::{MemorySection, retrieve_relevant, retrieve_relevant_arc, split_sections};
 pub use scope::{MAX_MEMORY_INJECT_CHARS, resolve_path};
+pub use sqlite::{ChangeAction, ChangeReport, EntryKind, MemoryChange, SqliteMemoryStore};
 pub use store::{FileMemoryStore, InMemoryStore, MemoryStore, truncate_for_injection};
 pub use topics::validate_topic_name;
