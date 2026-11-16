@@ -52,7 +52,7 @@ impl DryRunPlan {
         DryRunPlan::default()
     }
 
-    pub fn add(mut self, action: PlannedAction) -> DryRunPlan {
+    pub fn push(mut self, action: PlannedAction) -> DryRunPlan {
         self.actions.push(action);
         self
     }
@@ -526,13 +526,13 @@ mod tests {
     #[test]
     fn dry_run_renders_and_flags_denied() {
         let plan = DryRunPlan::new()
-            .add(PlannedAction {
+            .push(PlannedAction {
                 kind: "write".into(),
                 target: "src/lib.rs".into(),
                 would_be_denied: false,
                 note: String::new(),
             })
-            .add(PlannedAction {
+            .push(PlannedAction {
                 kind: "delete".into(),
                 target: "~/.ssh".into(),
                 would_be_denied: true,

@@ -133,10 +133,13 @@ impl Artifact {
 }
 
 /// 产物存储(内容寻址)。
+/// 内容哈希回调(注入,避免本 crate 引加密依赖)。
+pub type HashFn = Box<dyn Fn(&str) -> String + Send + Sync>;
+
 pub struct ArtifactStore {
     artifacts: BTreeMap<String, Artifact>,
     /// 内容哈希函数(注入,避免引加密依赖)。
-    hash_fn: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
+    hash_fn: Option<HashFn>,
     /// 单产物最大字节(超限拒绝,防内存爆炸)。
     max_bytes: usize,
 }
