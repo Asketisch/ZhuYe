@@ -17,6 +17,8 @@
 //! [`strategy::Compactor`] 将上述三者串联:估算 token,先执行
 //! microcompact,再升级到 smart_prune,最后调用 LLM 摘要。
 
+/// F26:上下文治理(可搜索溢出句柄 + 输出预算自适应 + 缓存友好度)。
+pub mod context_gov;
 pub mod microcompact;
 pub mod smart_prune;
 pub mod strategy;
@@ -24,6 +26,9 @@ pub mod summarizer;
 pub mod tokens;
 pub mod tool_pair;
 
+pub use context_gov::{
+    CacheFriendly, SpillHandle, SpillStore, adaptive_output_cap, cache_friendly, stable_prefix_len,
+};
 pub use microcompact::{
     CompactReport, KEEP_RECENT_DEFAULT, MICROCOMPACT_TRIGGER_RATIO, MicrocompactConfig,
     PRESERVE_TOOL_NAMES, TRUNCATABLE_TOOL_NAMES, microcompact,
