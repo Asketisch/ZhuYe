@@ -31,6 +31,8 @@ pub mod sandbox;
 pub mod sanitize;
 pub mod spec;
 pub mod tool;
+/// F38:搜索后端 failover + SSRF 加固 + 代理配置 + URL 参数脱敏。
+pub mod web_guard;
 pub mod worktree;
 
 pub use approval::{
