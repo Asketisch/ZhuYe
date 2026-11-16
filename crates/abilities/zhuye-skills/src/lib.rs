@@ -36,10 +36,16 @@ pub mod scanner;
 pub mod tool;
 
 pub use bundled::{bundled_skills, merge_bundled};
+/// F27:技能供应链安全(锁文件 / 完整性校验 / 安装前扫描)。
+pub mod supply_chain;
 pub use catalog::{ALWAYS_ON_TOOLS, SkillsCatalog, render_catalog};
 pub use discovery::{relativize, skill_matches_path, skills_for_path};
 pub use loader::{parse_skill_file, parse_skill_str};
 pub use marketplace::{install_from_github, normalize_repo};
 pub use model::{SkillError, SkillMeta};
 pub use scanner::scan_skills_dirs;
+pub use supply_chain::{
+    LockMismatch, LockedSkill, ScanFinding, ScanReport, ScanSeverity, SkillsLock, scan_skill,
+    verify_integrity,
+};
 pub use tool::{LoadSkillTool, ReadSkillResourceTool};
