@@ -21,6 +21,8 @@
 //!   引擎补读 `total_duration`/`eval_duration` 填 latency。
 
 pub mod activity;
+/// F51/F52/F54/F57:渲染契约 + 桌面体验 + 观测 + 更新常驻。
+pub mod desktop_contracts;
 pub mod langfuse;
 pub mod model;
 pub mod sink;
