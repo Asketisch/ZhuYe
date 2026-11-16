@@ -26,6 +26,8 @@ pub mod quota;
 pub mod reasoning_effort;
 pub mod registry;
 pub mod request;
+/// F43:动态选模(回合分类 + 迟滞 + 角色绑定 + 能力槽位)。
+pub mod routing;
 /// F44/F55:USD 预算账本(reservation 语义)+ 成本归因。
 pub mod spend;
 
