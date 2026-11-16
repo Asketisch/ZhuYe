@@ -29,6 +29,8 @@ pub mod matcher;
 pub mod policy;
 pub mod resolver;
 pub mod rules;
+/// F12:live policy 热切换 / 一次性提权票据 / 子代理只读降级。
+pub mod safety;
 pub mod store;
 pub mod yolo;
 
@@ -39,6 +41,7 @@ pub use policy::{
 };
 pub use resolver::{PermissionResolver, StorePermissionResolver};
 pub use rules::{PermissionAction, PermissionRule, RuleMatch, evaluate};
+pub use safety::{EscalationTickets, LivePolicy, SubagentReadonly};
 pub use store::{
     ChainedPermissionStore, FilePermissionStore, InMemoryPermissionStore, PermissionStore,
     PermissionsError,
