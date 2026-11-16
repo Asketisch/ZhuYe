@@ -36,6 +36,8 @@ pub mod scanner;
 pub mod tool;
 
 pub use bundled::{bundled_skills, merge_bundled};
+/// F58:技能长尾(锁文件统一 + CLI 帮助生成 + 输出合同 + 价值度量 + 技能链)。
+pub mod longtail;
 /// F27:技能供应链安全(锁文件 / 完整性校验 / 安装前扫描)。
 pub mod supply_chain;
 pub use catalog::{ALWAYS_ON_TOOLS, SkillsCatalog, render_catalog};
