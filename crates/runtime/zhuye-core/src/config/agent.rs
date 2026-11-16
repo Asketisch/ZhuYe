@@ -205,10 +205,12 @@ pub struct AgentConfig {
     pub side_channel_driver: Option<crate::side_channel::SideChannelDriver>,
     /// v1.x:输入侧提示注入检测(prompt injection guard)。`Some` 时
     /// 工具输出在进入模型上下文前被扫描:`Block` 替换为 guard 错误,
-    /// `Review` 在 metadata 标注。默认 `None`(关闭,opt-in);
-    /// headless 按 `[prompt_guard] enabled = true` / `ZHUYE_PROMPT_GUARD=1`
-    /// 注入。
+    /// `Review` 在 metadata 标注。F01 起默认开启;headless 按
+    /// `[prompt_guard] enabled = false` / `ZHUYE_PROMPT_GUARD=0` 关闭。
     pub prompt_guard: Option<Arc<zhuye_sanitize::prompt_guard::PromptGuard>>,
+    /// F01:guard 裁决统计(定义侧在 `ToolRegistry`、输出侧在
+    /// `ToolExecutionQueue`,共享同一实例)。`None` = guard 未启用。
+    pub guard_stats: Option<Arc<zhuye_sanitize::guard_stats::GuardStats>>,
     pub sandbox_default: Option<bool>,
     /// v1.x:`[sandbox].writable_dirs` 透传(workspace 之外额外可写目录)。
     pub sandbox_writable: Vec<PathBuf>,
@@ -263,6 +265,7 @@ impl AgentConfig {
             subagent_status: None,
             side_channel_driver: None,
             prompt_guard: None,
+            guard_stats: None,
             sandbox_default: None,
             sandbox_writable: Vec::new(),
             sandbox_network: None,

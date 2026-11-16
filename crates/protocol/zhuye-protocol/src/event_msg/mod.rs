@@ -37,7 +37,8 @@ pub use compaction::{
     ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, StreamErrorEvent, TriedCredential,
 };
 pub use config::{
-    ConfigReloadedEvent, ExtensionsRescannedEvent, PromptListEvent, PromptSwitchedEvent,
+    ConfigReloadedEvent, ExtensionsRescannedEvent, GuardStatsEvent, PromptListEvent,
+    PromptSwitchedEvent,
 };
 pub use lsp::{LspServerFailedEvent, LspServerStartedEvent};
 pub use mcp::{
@@ -258,6 +259,9 @@ pub enum EventMsg {
     PromptSwitched(PromptSwitchedEvent),
     /// v1.x:`Op::RescanExtensions` 的应答:扩展目录已重扫。
     ExtensionsRescanned(ExtensionsRescannedEvent),
+    /// F01:`Op::QueryGuardStats` 的应答:prompt_guard 裁决统计快照。
+    /// UI 的 `/status` 安全段 / Desktop 设置安全段据此展示。
+    GuardStats(GuardStatsEvent),
 }
 
 impl EventMsg {
@@ -314,6 +318,7 @@ impl EventMsg {
             EventMsg::PromptList(_) => "prompt_list",
             EventMsg::PromptSwitched(_) => "prompt_switched",
             EventMsg::ExtensionsRescanned(_) => "extensions_rescanned",
+            EventMsg::GuardStats(_) => "guard_stats",
         }
     }
 }

@@ -630,6 +630,10 @@ impl SubAgentFactory {
             cfg.sandbox_writable = parent.sandbox_writable.clone();
             cfg.sandbox_network = parent.sandbox_network;
             cfg.tool_env = parent.tool_env.clone();
+            // F01:子代理继承父会话注入 guard 与裁决统计(子会话工具输出
+            // 同样是注入面;统计共享同一实例,父 /status 可见全量计数)。
+            cfg.prompt_guard = parent.prompt_guard.clone();
+            cfg.guard_stats = parent.guard_stats.clone();
         }
 
         // v1.x 功能 6:child M4 构造。即便没有 recorder,也构造一份 m4

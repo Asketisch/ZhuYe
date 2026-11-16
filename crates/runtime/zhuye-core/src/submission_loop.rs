@@ -17,11 +17,11 @@ use zhuye_hooks::{HookContext, HookEngine, HookEvent};
 use zhuye_llm::{ChatMessage, SharedModelRegistry, SharedQuotaTracker};
 use zhuye_protocol::{
     AbortReason, ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, Event, EventMsg,
-    ExtensionsRescannedEvent, MessageRole, PermissionMode, PermissionModeChangedEvent,
-    PlanApprovedEvent, PlanId, PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent,
-    ReasoningEffortMirror, RolloutRecord, RolloutRecorder, SessionConfiguredEvent, Submission,
-    TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnId, TurnStartedEvent, TurnStatus,
-    UserInputItem,
+    ExtensionsRescannedEvent, GuardStatsEvent, MessageRole, PermissionMode,
+    PermissionModeChangedEvent, PlanApprovedEvent, PlanId, PlanReadyEvent, PlanRejectedEvent,
+    PlanRequestEvent, ReasoningEffortMirror, RolloutRecord, RolloutRecorder,
+    SessionConfiguredEvent, Submission, TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent,
+    TurnId, TurnStartedEvent, TurnStatus, UserInputItem,
 };
 use zhuye_tools::{
     ApprovalGate, ApprovalWaiters, AskUserInputWaiters, AskUserQuestionWaiters, PlanApprovalGate,
@@ -162,7 +162,9 @@ pub async fn submission_loop(
     session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
     cfg: AgentConfig,
     registry: SharedModelRegistry,
-    _tools: Arc<ToolRegistry>,
+    // F01:`Op::QueryGuardStats` 从这里取裁决统计快照(此前未用,
+    // 下划线前缀转正)。
+    tools: Arc<ToolRegistry>,
     tools_queue: Arc<ToolExecutionQueue>,
     background_tasks: Arc<BackgroundTaskQueue>,
 ) {
@@ -1662,6 +1664,27 @@ pub async fn submission_loop(
                     EventMsg::ExtensionsRescanned(ExtensionsRescannedEvent {
                         skills: skills_count,
                         commands: false,
+                    }),
+                );
+                let _ = turn_tx.send(ev.clone()).await;
+                fan_out_session(&session_subs, &ev);
+            }
+            // F01:`Op::QueryGuardStats` 的引擎端 —— prompt_guard 裁决统计
+            // 快照。统计实例挂在 ToolRegistry(定义侧)与 ToolExecutionQueue
+            // (输出侧)共享句柄上;guard 未启用时快照为 None,应答
+            // `enabled = false` + 全零。不开 turn,应答双路送达同上。
+            zhuye_protocol::Op::QueryGuardStats => {
+                let ev = Event::new(
+                    sub.id.clone(),
+                    EventMsg::GuardStats(match tools.guard_stats_snapshot() {
+                        Some(s) => GuardStatsEvent {
+                            enabled: true,
+                            definitions_blocked: s.definitions_blocked,
+                            definitions_reviewed: s.definitions_reviewed,
+                            outputs_blocked: s.outputs_blocked,
+                            outputs_reviewed: s.outputs_reviewed,
+                        },
+                        None => GuardStatsEvent::default(),
                     }),
                 );
                 let _ = turn_tx.send(ev.clone()).await;

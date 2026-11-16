@@ -609,9 +609,11 @@ pub struct SanitizeSection {
     pub extra_patterns: Option<Vec<String>>,
 }
 
-/// v1.x:输入侧提示注入检测(`[prompt_guard]`)。默认关闭(opt-in);
-/// 开启后工具输出进入模型上下文前被扫描:`Block` 裁决拦截输出,
-/// `Review` 在 metadata 标注。env `ZHUYE_PROMPT_GUARD=1` 可压开。
+/// v1.x:输入侧提示注入检测(`[prompt_guard]`)。F01 起**默认开启**;
+/// 工具输出进入模型上下文前被扫描(`Block` 裁决拦截输出,`Review`
+/// 在 metadata 标注),外部工具(MCP/plugin/runtime)注册时扫描
+/// name+description,`Block` 拒绝注册。`enabled = false` 显式关闭;
+/// env `ZHUYE_PROMPT_GUARD=1/0` 压开/压关(优先于 config)。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PromptGuardSection {
     pub enabled: Option<bool>,

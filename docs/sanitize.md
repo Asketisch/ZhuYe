@@ -69,24 +69,35 @@ env;credential 支持 env 引用而非明文落 config。两层叠加 —— 来
 ## 5. 提示注入检测(config.toml `[prompt_guard]`)
 
 与上面的**输出侧**密钥脱敏互补,`zhuye-sanitize::prompt_guard` 在**不可信
-文本进入模型上下文之前**做注入扫描。运行时接线点:工具输出
-(`ToolExecutionQueue::execute_single`,脱敏之后、PostToolUse 之前)。
+文本进入模型上下文之前**做注入扫描。**F01 起默认开启**(此前为 opt-in)。
+两个运行时接线点:
+
+- **工具输出**(`ToolExecutionQueue::execute_single`,脱敏之后、
+  PostToolUse 之前);
+- **工具定义**(`ToolRegistry::register_with_source_floor` /
+  `register_if_absent_with_floor`,外部源 MCP / plugin / runtime 工具
+  注册期扫描 name+description;builtin 描述是编译期固定内容,不经此扫描)。
 
 ```toml
 [prompt_guard]
-enabled = true      # 默认 false(opt-in);env ZHUYE_PROMPT_GUARD=1 可压开
+enabled = false     # 默认 true(F01 起默认开启);显式关闭用 false
+# env ZHUYE_PROMPT_GUARD=1/0 压开/压关,优先于 config
 ```
 
 三档裁决(任一 block 命中 ⇒ Block;否则任一 review 命中 ⇒ Review):
 
 - **Block** —— 典型注入指令("忽略之前所有指令"、窃取 system prompt、
-  外传凭据):整条工具输出替换为 guard 错误(规则码 + SHA-256 指纹),
-  原文不进入模型上下文,`tool_call_end` 标记 `is_error=true`。
-- **Review** —— 可疑但不确凿(角色接管话术、不可见字符):正文原样
-  保留,`metadata.prompt_guard` 标注 `verdict="review"` + 规则码 + 指纹,
-  供审计与上层裁决。
+  外传凭据):
+  - 工具输出:整条替换为 guard 错误(规则码 + SHA-256 指纹),原文不
+    进入模型上下文,`tool_call_end` 标记 `is_error=true`;
+  - 工具定义:**拒绝注册**(fail-closed,注入话术不进入模型 schema)。
+- **Review** —— 可疑但不确凿(角色接管话术、不可见字符):正文/定义
+  原样保留,工具输出在 `metadata.prompt_guard` 标注 `verdict="review"` +
+  规则码 + 指纹,供审计与上层裁决;工具定义放行注册但计数标注。
 - **Allow** —— 未命中,输出不变。
 
 明确**不适用**于用户亲手敲的直接指令(那是权限层的事);`UserPromptSubmit`
 hook 与本层互不替代。指纹算法与 audit 日志 / rollout 一致
 (SHA-256 小写 hex),支持"哪条输入触发了哪次拦截"的跨层关联。
+两侧裁决计数进 `zhuye_sanitize::guard_stats::GuardStats`(定义侧在
+registry、输出侧在 queue,共享同一实例),CLI `/status` 安全段展示。

@@ -185,8 +185,12 @@ pub struct HeadlessCommon {
     pub registry: Arc<ModelRegistry>,
     pub hook_engine: Arc<zhuye_hooks::HookEngine>,
     pub sanitizer: Arc<Sanitizer>,
-    /// v1.x:prompt injection guard(`[prompt_guard]` / env opt-in;None = 关闭)。
+    /// v1.x:prompt injection guard(F01 起默认开启;`[prompt_guard]
+    /// enabled = false` / env `ZHUYE_PROMPT_GUARD=0` 关闭,None = 关闭)。
     pub prompt_guard: Option<Arc<zhuye_sanitize::prompt_guard::PromptGuard>>,
+    /// F01:guard 裁决统计(定义侧已挂 `tools`,输出侧经 AgentConfig
+    /// 进 queue;两处共享同一实例)。guard 关闭时为 `None`。
+    pub guard_stats: Option<Arc<zhuye_sanitize::guard_stats::GuardStats>>,
     pub tools: Arc<ToolRegistry>,
     pub task_manager: Arc<zhuye_task::TaskManager>,
     pub cancel: CancellationToken,
@@ -261,18 +265,33 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     // `[sanitize]` 段接到 queue 的脱敏 pass;失败 → warn + fallback 默认。
     let sanitizer = build_sanitizer(initial_cfg.sanitize.as_ref());
 
-    // v1.x:`[prompt_guard]` / `ZHUYE_PROMPT_GUARD=1` 接输入侧提示注入
-    // 检测。默认关闭(opt-in);开启后工具输出进模型上下文前被扫描。
-    let prompt_guard_enabled = initial_cfg
-        .prompt_guard
-        .as_ref()
-        .and_then(|s| s.enabled)
-        .unwrap_or(false)
-        || std::env::var("ZHUYE_PROMPT_GUARD").ok().as_deref() == Some("1");
+    // F01:`[prompt_guard]` 由 opt-in 转默认开启。优先级:
+    // env `ZHUYE_PROMPT_GUARD`(1/true 压开,0/false 压关)>
+    // `[prompt_guard] enabled` > 默认开启。开启后:
+    // - 工具输出进模型上下文前被扫描(Block 拦截 / Review 标注);
+    // - 外部工具(MCP/plugin/runtime)注册时扫描定义,Block 拒绝注册。
+    let prompt_guard_env = std::env::var("ZHUYE_PROMPT_GUARD")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase());
+    let prompt_guard_enabled = match prompt_guard_env.as_deref() {
+        Some("1") | Some("true") | Some("yes") => true,
+        Some("0") | Some("false") | Some("no") => false,
+        _ => initial_cfg
+            .prompt_guard
+            .as_ref()
+            .and_then(|s| s.enabled)
+            .unwrap_or(true),
+    };
     let prompt_guard = prompt_guard_enabled.then(|| {
-        tracing::info!("[prompt_guard] enabled: 工具输出将在进入模型上下文前扫描");
+        tracing::info!(
+            "[prompt_guard] enabled (F01 起默认开启,置 [prompt_guard] enabled=false 或 \
+             ZHUYE_PROMPT_GUARD=0 可关闭):工具输出与外部工具定义将做注入扫描"
+        );
         Arc::new(zhuye_sanitize::prompt_guard::PromptGuard::new())
     });
+    // F01:裁决统计(定义侧挂 registry,输出侧经 AgentConfig 进 queue)。
+    let guard_stats =
+        prompt_guard_enabled.then(|| Arc::new(zhuye_sanitize::guard_stats::GuardStats::new()));
 
     // 从 `~/.zhuye/config.toml [hooks]` 段构建 HookEngine(含 builtin +
     // 插件 hook),AgentThread 与 TaskManager 共享同一份。
@@ -345,6 +364,11 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     // 2. 工具注册表(builtin 全量注册 —— 单一事实源
     // `register_builtin_tools`,与 lib facade 共用,勿在此内联追加)。
     let tools = Arc::new(ToolRegistry::default());
+    // F01:guard 接到注册表 —— 后续 MCP / plugin / runtime 工具注册时
+    // 扫描定义(Block 拒绝 / Review 标注);builtin 不经此扫描。
+    // 必须在 `register_builtin_tools` 之后、任何外部源注册之前挂好
+    // (builtin 直通不扫描,先后顺序无行为差,但统计实例要就位)。
+    tools.set_prompt_guard(prompt_guard.clone(), guard_stats.clone());
     let ask_uq_max = initial_cfg
         .ask_user_question
         .as_ref()
@@ -426,6 +450,7 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         hook_engine,
         sanitizer,
         prompt_guard,
+        guard_stats,
         tools,
         task_manager,
         cancel,
@@ -781,6 +806,7 @@ pub async fn bootstrap_normal(
         hook_engine,
         sanitizer,
         prompt_guard,
+        guard_stats,
         tools,
         task_manager,
         cancel,
@@ -906,6 +932,7 @@ pub async fn bootstrap_normal(
     // v1.x:prompt injection guard 注入(None = 关闭;子代理 factory
     // 自行读同一 config,这里只接主会话与 resume 路径)。
     cfg.prompt_guard = prompt_guard.clone();
+    cfg.guard_stats = guard_stats.clone();
     // 侧通道复用主会话策略,避免独立执行绕过权限规则。
     let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
         zhuye_core::side_channel::SideChannelRegistry::new(),
@@ -1148,6 +1175,7 @@ pub async fn bootstrap_resumed(
         hook_engine,
         sanitizer,
         prompt_guard,
+        guard_stats,
         tools,
         task_manager: _task_manager,
         cancel,
@@ -1221,6 +1249,7 @@ pub async fn bootstrap_resumed(
     let mut cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
     // v1.x:prompt injection guard 注入(resume 路径与新会话一致)。
     cfg.prompt_guard = prompt_guard.clone();
+    cfg.guard_stats = guard_stats.clone();
     factory.set_parent_config(cfg.clone());
     let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
         zhuye_core::side_channel::SideChannelRegistry::new(),
