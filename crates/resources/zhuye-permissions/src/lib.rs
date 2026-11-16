@@ -27,6 +27,8 @@
 
 pub mod matcher;
 pub mod policy;
+/// F04:命令只读语义分类(子命令/flag 粒度 + OPAQUE 包装器)。
+pub mod readonly;
 pub mod resolver;
 pub mod rules;
 /// F12:live policy 热切换 / 一次性提权票据 / 子代理只读降级。
@@ -39,6 +41,7 @@ pub use policy::{
     Decision, DecisionReason, PolicyConfig, PolicyEngine, Precedence, RiskLabel,
     UnspecifiedDefault, is_control_plane_tool,
 };
+pub use readonly::{AccessKind, classify_access};
 pub use resolver::{PermissionResolver, StorePermissionResolver};
 pub use rules::{PermissionAction, PermissionRule, RuleMatch, evaluate};
 pub use safety::{EscalationTickets, LivePolicy, SubagentReadonly};
