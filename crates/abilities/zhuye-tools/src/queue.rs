@@ -628,6 +628,22 @@ impl ToolExecutionQueue {
                 || bash_must_approve
                 || policy_decision == Some(zhuye_permissions::RuleMatch::Ask)
             {
+                // F06:会话级「拒绝且不再问」—— 命中即直接拒绝,不弹审批。
+                // 放在 gate 调用之前:用户既然说过别再问,就不该再看到弹窗。
+                if let Some(reason) = gate_ref.session_deny_reason(&call.name) {
+                    return ToolResult {
+                        call_id: call.id,
+                        content: vec![ContentBlock::text(format!(
+                            "Approval denied (remembered for this session): {reason}"
+                        ))],
+                        is_error: true,
+                        elapsed_ms: 0,
+                        metadata: serde_json::json!({
+                            "approval": "denied_for_session",
+                            "tool": call.name,
+                        }),
+                    };
+                }
                 let decision = if let Some(reason) = hook_ask_reason.clone() {
                     // Hook 级别的审批 —— 通过 `ApprovalKind::Hook` 渲染。
                     gate_ref
@@ -656,6 +672,22 @@ impl ToolExecutionQueue {
                             is_error: true,
                             elapsed_ms: 0,
                             metadata: serde_json::json!({"approval": "denied"}),
+                        };
+                    }
+                    // F06:拒绝且不再问 —— 记进会话级拒绝表,本次同样拒绝。
+                    ReviewDecision::RejectForSession { reason } => {
+                        gate_ref.deny_for_session(call.name.clone(), reason.clone());
+                        return ToolResult {
+                            call_id: call.id,
+                            content: vec![ContentBlock::text(format!(
+                                "Approval denied (will not ask again this session): {reason}"
+                            ))],
+                            is_error: true,
+                            elapsed_ms: 0,
+                            metadata: serde_json::json!({
+                                "approval": "denied_for_session",
+                                "tool": call.name,
+                            }),
                         };
                     }
                 }
