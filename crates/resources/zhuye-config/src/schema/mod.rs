@@ -607,6 +607,9 @@ pub struct SanitizeSection {
     pub marker: Option<String>,
     pub disable_default_patterns: Option<bool>,
     pub extra_patterns: Option<Vec<String>>,
+    /// F03:PII 脱敏档位 —— `"off"` / `"observe"`(默认,只统计)/
+    /// `"enforce"`(改写正文)。覆盖手机号 / 身份证 / 邮箱 / 银行卡 / IPv4。
+    pub pii: Option<String>,
 }
 
 /// v1.x:输入侧提示注入检测(`[prompt_guard]`)。F01 起**默认开启**;

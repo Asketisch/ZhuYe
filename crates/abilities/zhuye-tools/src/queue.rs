@@ -25,7 +25,7 @@ use zhuye_protocol::{
 use crate::approval::ApprovalGate;
 use crate::builtins::bash::{BashCommandClass, classify_command};
 use crate::registry::ToolRegistry;
-use crate::sanitize::{Sanitizer, sanitize_output, sanitize_text};
+use crate::sanitize::{Sanitizer, sanitize_output, sanitize_output_pii, sanitize_text};
 use crate::tool::ToolContext;
 use zhuye_sanitize::prompt_guard::PromptGuard;
 
@@ -745,6 +745,27 @@ impl ToolExecutionQueue {
                 // `Err(_)` 分支(行 434-486)时跳过 sanitize —— 那里合成
                 // 的错误模板文本不含真实工具数据。
                 sanitize_output(&mut output, &self.sanitizer);
+                // F03:PII 脱敏在密钥脱敏之后(避免 KEY_ASSIGN 吞掉邮箱等)。
+                // Observe 档只统计并把命中数写进 metadata;Enforce 档同时改写
+                // 正文。`Off` 直接短路径返回全零报告。
+                let pii_report = sanitize_output_pii(&mut output, &self.sanitizer);
+                if !pii_report.is_clean() {
+                    let pii_meta = serde_json::json!({
+                        "total": pii_report.total,
+                        "hits": pii_report.hits.iter()
+                            .map(|(code, n)| serde_json::json!({"code": code, "count": n}))
+                            .collect::<Vec<_>>(),
+                        "mode": format!("{:?}", self.sanitizer.pii_mode()).to_lowercase(),
+                    });
+                    match output.metadata.as_object_mut() {
+                        Some(obj) => {
+                            obj.insert("pii".into(), pii_meta);
+                        }
+                        None => {
+                            output.metadata = serde_json::json!({ "pii": pii_meta });
+                        }
+                    }
+                }
                 // v1.x:输入侧提示注入检测(在脱敏后、PostToolUse 前)。
                 // `Block` → 整条输出替换为 guard 错误(注入指令不进模型
                 // 上下文,PostToolUse 也只见替换后版本);`Review` → 正文

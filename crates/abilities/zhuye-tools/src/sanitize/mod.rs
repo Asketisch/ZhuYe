@@ -57,6 +57,11 @@ use zhuye_protocol::{ContentBlock, ToolOutput};
 /// 例如 marker 含 `[` / `]` 或其他在 pattern 值字符类中被排除的字符。
 pub const DEFAULT_MARKER: &str = "[REDACTED]";
 
+/// F03:PII 脱敏规则库(手机号 / 身份证 / 邮箱 / 银行卡 / IP)。
+pub mod pii;
+/// F03:provenance 分类与跨条 taint 追踪。
+pub mod provenance;
+
 /// 工具输出脱敏器。内部状态用 [`Arc`] 共享,克隆廉价。
 ///
 /// 通过 [`Sanitizer::with_defaults`] / [`Sanitizer::from_config`] /
@@ -74,16 +79,23 @@ struct SanitizerInner {
     /// 用户是否提供 `extra_patterns`。short-circuit 启发式只看默认 pattern
     /// 的 trigger 字面量;若有 extras,保守起见不走 short-circuit。
     has_extras: bool,
+    /// F03:PII 处理档位(默认 `Observe`,只统计不改写)。
+    pii_mode: pii::PiiMode,
 }
 
 impl Sanitizer {
     /// 用全部 10 个默认 pattern + 默认 marker 构造。`enabled = true`。
+    ///
+    /// F03:PII 默认 `Observe` —— 只统计命中,不改正文。理由与 provenance
+    /// 同:`Enforce` 会改写用户看得见的输出,默认开启容易误伤(代码里的
+    /// 长数字、日志里的 IP)。用户可经 `[sanitize] pii` 显式提到 `enforce`。
     pub fn with_defaults() -> Self {
         Self {
             inner: Arc::new(SanitizerInner {
                 patterns: default_patterns(),
                 marker: DEFAULT_MARKER.to_string(),
                 has_extras: false,
+                pii_mode: pii::PiiMode::Observe,
             }),
         }
     }
@@ -95,6 +107,31 @@ impl Sanitizer {
                 patterns: Vec::new(),
                 marker: DEFAULT_MARKER.to_string(),
                 has_extras: false,
+                pii_mode: pii::PiiMode::Off,
+            }),
+        }
+    }
+
+    /// F03:当前 PII 档位。
+    pub fn pii_mode(&self) -> pii::PiiMode {
+        self.inner.pii_mode
+    }
+
+    /// F03:构造一份仅改 PII 档位的副本(其余配置不变)。bootstrap 按
+    /// `[sanitize] pii` 覆盖默认 `Observe`。
+    pub fn with_pii_mode(self, mode: pii::PiiMode) -> Self {
+        Self {
+            inner: Arc::new(SanitizerInner {
+                // CompiledPattern 不可 Clone(regex 未实现),这里重建同一组
+                // pattern —— 构造代价只在 bootstrap 一次,可接受。
+                patterns: if self.inner.patterns.is_empty() {
+                    Vec::new()
+                } else {
+                    default_patterns()
+                },
+                marker: self.inner.marker.clone(),
+                has_extras: self.inner.has_extras,
+                pii_mode: mode,
             }),
         }
     }
@@ -139,6 +176,12 @@ impl Sanitizer {
                 patterns,
                 marker,
                 has_extras: cfg.extra_patterns.as_ref().is_some_and(|v| !v.is_empty()),
+                // F03:`[sanitize] pii` 未配置时默认 Observe。
+                pii_mode: cfg
+                    .pii
+                    .as_deref()
+                    .and_then(pii::PiiMode::parse)
+                    .unwrap_or(pii::PiiMode::Observe),
             }),
         })
     }
@@ -172,6 +215,8 @@ pub struct SanitizeConfig {
     pub disable_default_patterns: Option<bool>,
     /// 用户补充的额外 pattern。整段匹配被替换为 marker,无 capture group 语义。
     pub extra_patterns: Option<Vec<String>>,
+    /// F03:PII 处理档位(`"off"` / `"observe"` / `"enforce"`)。缺省 `observe`。
+    pub pii: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -429,6 +474,66 @@ pub fn sanitize_text<'a>(text: &'a str, sanitizer: &Sanitizer) -> std::borrow::C
             .into_owned();
     }
     std::borrow::Cow::Owned(out)
+}
+
+/// F03:对单段文本按当前 PII 档位处理,返回 `(文本, 报告)`。
+///
+/// 在密钥脱敏**之后**调用(见模块文档的顺序约定):
+/// - `Off` → 原样返回;
+/// - `Observe` → 只统计,正文不变;
+/// - `Enforce` → 替换为 marker。
+pub fn sanitize_pii<'a>(
+    text: &'a str,
+    sanitizer: &Sanitizer,
+) -> (std::borrow::Cow<'a, str>, pii::PiiReport) {
+    let mode = sanitizer.pii_mode();
+    if !mode.scans() {
+        return (std::borrow::Cow::Borrowed(text), pii::PiiReport::default());
+    }
+    let (out, report) = pii::apply_pii(text, mode, &sanitizer.inner.marker);
+    if mode.rewrites() && out != text {
+        (std::borrow::Cow::Owned(out), report)
+    } else {
+        // Observe(或未命中)时保持 Borrowed,零分配。
+        (std::borrow::Cow::Borrowed(text), report)
+    }
+}
+
+/// F03:对整个 [`ToolOutput`] 做 PII 处理,返回合并报告(Observe 档用于
+/// 上报"这次输出含多少 PII")。`Enforce` 档同时改写正文。
+pub fn sanitize_output_pii(output: &mut ToolOutput, sanitizer: &Sanitizer) -> pii::PiiReport {
+    let mut total = pii::PiiReport::default();
+    let mode = sanitizer.pii_mode();
+    if !mode.scans() {
+        return total;
+    }
+    for block in output.content.iter_mut() {
+        match block {
+            ContentBlock::Text { text } => {
+                let (out, rep) = sanitize_pii(text, sanitizer);
+                if let std::borrow::Cow::Owned(s) = out {
+                    *text = s;
+                }
+                total.hits.extend(rep.hits);
+                total.total += rep.total;
+            }
+            ContentBlock::Diff { unified_diff } => {
+                let (out, rep) = sanitize_pii(unified_diff, sanitizer);
+                if let std::borrow::Cow::Owned(s) = out {
+                    *unified_diff = s;
+                }
+                total.hits.extend(rep.hits);
+                total.total += rep.total;
+            }
+            ContentBlock::ToolResult { output, .. } => {
+                let rep = sanitize_output_pii(output, sanitizer);
+                total.hits.extend(rep.hits);
+                total.total += rep.total;
+            }
+            ContentBlock::Image { .. } | ContentBlock::ToolUse { .. } => {}
+        }
+    }
+    total
 }
 
 /// 对单个 [`ContentBlock`] 做脱敏。`ToolUse` 与 `Image` 不动,`Text` / `Diff` /
