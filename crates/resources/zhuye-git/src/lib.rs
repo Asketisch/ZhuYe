@@ -21,7 +21,13 @@
 pub mod branch;
 pub mod checkpoint;
 pub mod directives;
+/// F46:PR 全链路(状态机 + CI 反馈 + 提交拆分 + 冲突计划 + worktree 生命周期)。
+pub mod pr_flow;
 pub mod runner;
+pub use pr_flow::{
+    CheckResult, CiReport, CommitGroup, ConflictPlan, ConflictStrategy, FileChange, PrError,
+    PrMachine, PrState, WorktreeHook, WorktreeLifecycle, split_commits,
+};
 
 pub use branch::{
     GitBranchDiffStats, StatusLineGitSummary, StatusLinePullRequest, current_branch_name,
