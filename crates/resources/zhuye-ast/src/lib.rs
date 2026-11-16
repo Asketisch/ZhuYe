@@ -37,6 +37,8 @@
 
 pub mod action;
 pub mod edit;
+/// F14:代码知识图谱(定义/引用/导入 + 影响面分析 + 增量索引)。
+pub mod graph;
 pub mod grid;
 pub mod matcher;
 /// F13:跨文件符号重命名计划 + 语法预验证。
@@ -45,6 +47,7 @@ pub mod tool;
 
 pub use action::AstAction;
 pub use edit::{apply_rename, apply_replace};
+pub use graph::{CodeGraph, FileIndex, GraphStats, ImpactReport, ImportEdge, SymbolDef, SymbolRef};
 pub use grid::{AstError, LanguageGrid, LanguageId, LanguageSpec};
 pub use matcher::{CompiledPattern, Hit, search_in_tree, search_kind, search_regex, search_text};
 pub use refactor::{FileRenameOutcome, RenamePlan, rename_across_files, validate_syntax};
