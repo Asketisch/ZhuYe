@@ -33,6 +33,9 @@ pub struct ApprovalGate {
     pub(super) waiters: ApprovalWaiters,
     /// 用户在整个会话生命周期内已批准的工具。
     pub(super) session_allow: Arc<Mutex<HashSet<String>>>,
+    /// F06:用户「拒绝且不再问」的工具 → 拒绝原因。会话级,与
+    /// `session_allow` 对称;命中即直接拒绝,不再弹审批。
+    pub(super) session_deny: Arc<Mutex<HashMap<String, String>>>,
     /// S5a:可选的 permission resolver,`ask_tool` 入口先查规则短路
     /// Allow / Deny。`None` 时退回原 modal-only 行为(向后兼容)。
     pub(super) permission_resolver: Option<Arc<dyn zhuye_permissions::PermissionResolver>>,
@@ -227,6 +230,9 @@ impl ApprovalGate {
             sub_id: sub_id.into(),
             waiters,
             session_allow,
+            // F06:会话级拒绝表。`with_state` 是唯一构造点;跨 turn 共享语义
+            // 由调用方改用 `with_session_deny` 注入同一 Arc(见下)。
+            session_deny: Arc::new(Mutex::new(HashMap::new())),
             permission_resolver,
             question_waiters: question_waiters
                 .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
@@ -357,6 +363,32 @@ impl ApprovalGate {
 
     pub fn allow_for_session(&self, tool_name: impl Into<String>) {
         self.session_allow.lock().insert(tool_name.into());
+    }
+
+    /// F06:该工具是否已被「拒绝且不再问」记住。
+    pub fn is_session_denied(&self, tool_name: &str) -> bool {
+        self.session_deny.lock().contains_key(tool_name)
+    }
+
+    /// F06:记住「拒绝且不再问」,返回该工具未来调用应复用的拒绝原因。
+    ///
+    /// 与 [`allow_for_session`](Self::allow_for_session) 对称:一个永久
+    /// 放行、一个永久拒绝,都是 fail-closed 语义的一部分。
+    pub fn deny_for_session(&self, tool_name: impl Into<String>, reason: impl Into<String>) {
+        self.session_deny
+            .lock()
+            .insert(tool_name.into(), reason.into());
+    }
+
+    /// F06:已记忆的会话级拒绝原因(供 queue 直接合成错误结果)。
+    pub fn session_deny_reason(&self, tool_name: &str) -> Option<String> {
+        self.session_deny.lock().get(tool_name).cloned()
+    }
+
+    /// F06:会话级拒绝表句柄(与 `session_allow_handle` 同款,供
+    /// `submission_loop` / UI 查询与清空)。
+    pub fn session_deny_handle(&self) -> Arc<Mutex<HashMap<String, String>>> {
+        self.session_deny.clone()
     }
 
     /// 完成一个待处理的审批请求。`submission_loop` 在收到 `Op::ToolApproval`

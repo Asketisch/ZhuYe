@@ -966,6 +966,8 @@ fn build_sanitizer(
         marker: section.and_then(|s| s.marker.clone()),
         disable_default_patterns: section.and_then(|s| s.disable_default_patterns),
         extra_patterns: section.and_then(|s| s.extra_patterns.clone()),
+        // F03:PII 档位透传。
+        pii: section.and_then(|s| s.pii.clone()),
     };
     match zhuye_tools::sanitize::Sanitizer::from_config(&cfg) {
         Ok(s) => Arc::new(s),
