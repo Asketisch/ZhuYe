@@ -49,6 +49,7 @@
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 
+pub mod guard_stats;
 pub mod prompt_guard;
 
 /// 默认脱敏 marker。与 `zhuye_tools::sanitize::DEFAULT_MARKER` 对齐。

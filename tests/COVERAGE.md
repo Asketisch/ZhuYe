@@ -213,10 +213,32 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 - **T38** ask_user 非法参数 / request_human_input 无审批门均优雅报错,
   headless 下 turn 正常收尾。
 - **T39** prompt injection guard 运行时接线(`[prompt_guard] enabled`,
-  env 可压开):默认关闭对照(注入短语原样通过);开启后 Block 裁决把
-  echo 输出整体替换为 guard 错误(`metadata.prompt_guard.verdict="block"`
-  + 规则码 + 指纹,原文不回流);Review 裁决正文保留、metadata 标注
-  `verdict="review"` 与规则码;Allow 输出与 metadata 完全不变。
+  env 可压开):显式关闭对照(`enabled = false` 注入短语原样通过);开启后
+  Block 裁决把 echo 输出整体替换为 guard 错误(`metadata.prompt_guard.
+  verdict="block"` + 规则码 + 指纹,原文不回流);Review 裁决正文保留、
+  metadata 标注 `verdict="review"` 与规则码;Allow 输出与 metadata 完全
+  不变。**F01 起默认开启的行为由 F01 组承担**(默认翻转后本条对照段
+  改为显式关闭)。
+
+### F01 组 prompt_guard 默认开启与工具定义扫描(`test_prompt_guard_default.py`)
+- **F01a** 默认(无 `[prompt_guard]` 配置)注入输出被 Block 拦截
+  (`verdict="block"` + `PI_OVERRIDE_DIRECT` + 64 位 hex 指纹,原文不回流)。
+- **F01b** 默认开启下 Review 标注(正文保留 + `PI_ROLE_TAKEOVER`)与
+  Allow 完全不动(metadata 无 `prompt_guard` 键)。
+- **F01c** 注入语料回归:block 族 6 样本(override / exfil system prompt /
+  secrecy×2 / credential exfil)逐条命中预期规则码;review 族 3 样本
+  (角色接管×2 + 零宽字符)逐条标注不拦截。
+- **F01d** 边界:`ZHUYE_PROMPT_GUARD=0` 压关放行;`[prompt_guard]
+  enabled = false` 显式关放行;`config=false + env=1` 时 env 胜仍拦截
+  (优先级序 env > config > 默认开启)。
+- **F01e** 失败路径:同回合 Block 后续工具照常执行(guard 不毒化队列)、
+  `turn_complete` 正常到达。
+- **F01f** 权限交互:`ZHUYE_APPROVALS=1` 下 MCP 工具审批照走,批准后
+  输出仍被 guard 拦截(权限与 guard 两层独立)。
+- **F01g** 工具定义扫描:恶意 description 的 MCP 工具(自建 evil stdio
+  server)默认拒绝注册(调用报 `tool not found`,server 正常启动
+  `tool_count=1` 排除未起好假阳性);`ZHUYE_PROMPT_GUARD=0` 时可注册
+  可调用。
 
 ### SK 组 技能面(`test_skills.py`)
 - **SK1** 默认配置(不写 `[active] bundled_skills`)→ 内置 skill 不在
@@ -721,6 +743,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 |---|---|
 | `functional/test_serve.py` | 39 条(D、S、A 组) |
 | `functional/test_tools.py` | 30 条(T 组) |
+| `functional/test_prompt_guard_default.py` | 10 条(F01 组:prompt_guard 默认开启 / 注入语料回归 / 工具定义扫描) |
 | `functional/test_skills.py` | 4 条(SK1–SK4) |
 | `functional/test_recovery.py` | 12 条(R6 + X6) |
 | `functional/test_persistence.py` | 19 条(P 组) |
