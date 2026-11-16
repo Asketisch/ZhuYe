@@ -10,6 +10,8 @@ pub mod gateway;
 pub mod issues;
 pub mod notifications;
 pub mod security_scan;
+/// F60:全库安全扫描(matcher→triage→revalidate→SARIF)+ 共识投票 + 就绪度。
+pub mod security_scan_v2;
 /// F41:本地语音回路(模型目录 + 流式分帧 + barge-in + 状态机)。
 pub mod voice;
 
