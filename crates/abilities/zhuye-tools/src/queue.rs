@@ -519,6 +519,48 @@ impl ToolExecutionQueue {
         if let Some(new_args) = resolved.modified_args {
             effective_args = new_args;
         }
+        // F22:参数自动修复(在 hook 改写之后、权限判定之前)。
+        //
+        // 只做无损修正(字符串数字 → 数字、标量 → 单元素数组、拆多余
+        // 的 {"args":...} 包装、补默认值)。每次 `InvalidArgs` 都是一次
+        // 往返重试,修好比报错便宜。修复记录进 metadata 供诊断。
+        {
+            let schema = tool.parameters_schema();
+            let repaired = crate::arg_repair::repair_args(&effective_args, &schema);
+            let with_defaults = crate::arg_repair::apply_defaults(&repaired.args, &schema);
+            let mut notes = repaired.notes;
+            notes.extend(with_defaults.notes);
+            if !notes.is_empty() {
+                effective_args = with_defaults.args;
+                tracing::debug!(
+                    tool = %call.name,
+                    notes = ?notes,
+                    "arg_repair: 参数已无损修正"
+                );
+                ctx.metadata = match ctx.metadata.as_object_mut() {
+                    Some(obj) => {
+                        obj.insert(
+                            "arg_repair".into(),
+                            serde_json::json!(
+                                notes
+                                    .iter()
+                                    .map(
+                                        |n| serde_json::json!({"path": n.path, "change": n.change})
+                                    )
+                                    .collect::<Vec<_>>()
+                            ),
+                        );
+                        ctx.metadata.clone()
+                    }
+                    None => serde_json::json!({
+                        "arg_repair": notes
+                            .iter()
+                            .map(|n| serde_json::json!({"path": n.path, "change": n.change}))
+                            .collect::<Vec<_>>()
+                    }),
+                };
+            }
+        }
         if !resolved.injected.is_empty() {
             // 把 reminder 追加到 metadata,模型下一次调用时能看到
             // (M3 v0:暂存到 metadata;M4 可能会迁到独立的 system-reminder 通道)。
