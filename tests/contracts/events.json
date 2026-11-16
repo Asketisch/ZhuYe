@@ -329,6 +329,14 @@
       "type": "extensions_rescanned",
       "skills": 5,
       "commands": true
+    },
+    "guard_stats": {
+      "type": "guard_stats",
+      "enabled": true,
+      "definitions_blocked": 1,
+      "definitions_reviewed": 2,
+      "outputs_blocked": 3,
+      "outputs_reviewed": 4
     }
   }
 }

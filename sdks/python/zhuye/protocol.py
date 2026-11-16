@@ -178,6 +178,12 @@ class RescanExtensionsOp(TypedDict):
     commands: bool
 
 
+class QueryGuardStatsOp(TypedDict):
+    """F01:查询 prompt_guard 裁决统计(应答 guard_stats 事件)。"""
+
+    type: Literal["query_guard_stats"]
+
+
 class _SteerOpOptionalFields(TypedDict, total=False):
     # 缺省 attachment:以 <system-reminder> 包裹注入,不冒充直接指令
     priority: Literal["now", "attachment"]
@@ -558,6 +564,17 @@ class ExtensionsRescanned(_ExtensionsRescannedOptionalFields):
     type: Literal["extensions_rescanned"]
 
 
+class GuardStats(TypedDict):
+    """F01:`query_guard_stats` 的应答 —— prompt_guard 裁决统计快照。"""
+
+    type: Literal["guard_stats"]
+    enabled: bool
+    definitions_blocked: int
+    definitions_reviewed: int
+    outputs_blocked: int
+    outputs_reviewed: int
+
+
 class CollabStarted(TypedDict):
     type: Literal["collab_started"]
     discussion_id: str
@@ -728,6 +745,7 @@ EventMsg = Union[
     StreamError,
     ConfigReloaded,
     ExtensionsRescanned,
+    GuardStats,
     CollabStarted,
     CollabMessage,
     CollabFinished,

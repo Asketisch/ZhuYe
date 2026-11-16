@@ -3,7 +3,7 @@
 use anyhow::{Context, anyhow};
 use zhuye_config::{
     AnthropicSection, CompactSection, HooksSection, ModelSection, OllamaSection, OpenAISection,
-    ReflectConfig, default_config_path, load_default,
+    PromptGuardSection, ReflectConfig, default_config_path, load_default,
 };
 
 use crate::login;
@@ -111,6 +111,8 @@ fn allowed_keys() -> Vec<&'static str> {
         "ollama.timeout_secs",
         "compact.trigger_tokens",
         "hooks.enabled",
+        // F01:prompt_guard 开关(默认开启;false 显式关闭)。
+        "prompt_guard.enabled",
         // v1.10 功能3/功能4:模型级上下文窗口 + 思考强度默认档。
         "model.context_window",
         "model.reasoning_effort",
@@ -179,6 +181,14 @@ fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), Stri
                 ..cfg.hooks.clone()
             };
         }
+        // F01:prompt_guard 开关。布尔值宽松解析(true/false/1/0),
+        // 坏值即时报错(与 reasoning_effort 同款交互反馈原则)。
+        "prompt_guard.enabled" => {
+            let enabled = parse_bool(value, key)?;
+            cfg.prompt_guard = Some(PromptGuardSection {
+                enabled: Some(enabled),
+            });
+        }
         _ => return Err(format!("unknown key '{key}'")),
     }
     Ok(())
@@ -205,6 +215,8 @@ fn apply_unset(cfg: &mut ReflectConfig, key: &str) -> Result<(), String> {
         "ollama.timeout_secs" => ollama_mut(cfg).timeout_secs = None,
         "compact.trigger_tokens" => cfg.compact = CompactSection::default(),
         "hooks.enabled" => cfg.hooks.enabled = None,
+        // F01:回退到「配置未表态」= 默认开启(区别于显式 false)。
+        "prompt_guard.enabled" => cfg.prompt_guard = None,
         "model.context_window" => {
             if let Some(m) = cfg.model.as_mut() {
                 m.context_window = None;
@@ -292,6 +304,12 @@ fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
             .enabled
             .clone()
             .map_or_else(|| Default::default(), |v| v.join(",")),
+        // F01:未配置显示默认开启语义。
+        "prompt_guard.enabled" => cfg
+            .prompt_guard
+            .as_ref()
+            .and_then(|s| s.enabled)
+            .map_or_else(|| "true".into(), |v| v.to_string()),
         _ => return "(unknown)".into(),
     };
     if v.is_empty() { "<unset>".into() } else { v }
@@ -367,6 +385,17 @@ fn parse_i64(s: &str, key: &str) -> Result<i64, String> {
     s.parse().map_err(|e| format!("invalid i64 for {key}: {e}"))
 }
 
+/// F01:`prompt_guard.enabled` 的宽松布尔解析(true/false/1/0/yes/no)。
+fn parse_bool(s: &str, key: &str) -> Result<bool, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => Err(format!(
+            "invalid bool '{s}' for {key} (expected true|false|1|0|yes|no)"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +469,28 @@ model = "claude-3-5-sonnet-latest"
         );
         apply_unset(&mut cfg, "hooks.enabled").unwrap();
         assert!(cfg.hooks.enabled.is_none());
+    }
+
+    /// F01:`prompt_guard.enabled` set(宽松布尔)/ unset(回未表态)/
+    /// 坏值拒绝 / current_value_of 未配置显示默认 true。
+    #[test]
+    fn set_prompt_guard_enabled_roundtrip() {
+        let mut cfg = ReflectConfig::default();
+        assert_eq!(current_value_of(&cfg, "prompt_guard.enabled"), "true");
+        apply_set(&mut cfg, "prompt_guard.enabled", "false").unwrap();
+        assert_eq!(
+            cfg.prompt_guard.as_ref().and_then(|s| s.enabled),
+            Some(false)
+        );
+        apply_set(&mut cfg, "prompt_guard.enabled", "1").unwrap();
+        assert_eq!(
+            cfg.prompt_guard.as_ref().and_then(|s| s.enabled),
+            Some(true)
+        );
+        assert!(apply_set(&mut cfg, "prompt_guard.enabled", "maybe").is_err());
+        apply_unset(&mut cfg, "prompt_guard.enabled").unwrap();
+        assert!(cfg.prompt_guard.is_none());
+        assert_eq!(current_value_of(&cfg, "prompt_guard.enabled"), "true");
     }
 
     /// current_value_of 对未配置项返回 `<unset>`。

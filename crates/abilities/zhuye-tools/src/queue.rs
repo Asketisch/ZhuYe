@@ -153,9 +153,12 @@ pub struct ToolExecutionQueue {
     /// v1.x:输入侧提示注入检测(prompt injection guard)。`Some` 时对
     /// 成功工具输出的文本做扫描:`Block` 裁决把输出替换为 guard 错误
     /// (注入内容不进模型上下文),`Review` 只在 metadata 标注不改正文。
-    /// `None`(默认)= 不扫描。由 bootstrap 按 `[prompt_guard]` 配置 /
-    /// `ZHUYE_PROMPT_GUARD=1` 注入。
+    /// `None`(默认)= 不扫描。由 bootstrap 按 `[prompt_guard]` 配置
+    /// (F01 起默认开启)/ `ZHUYE_PROMPT_GUARD` 注入。
     prompt_guard: Option<Arc<PromptGuard>>,
+    /// F01:guard 裁决统计(输出侧)。与 `ToolRegistry`(定义侧)
+    /// 共享同一实例,由 bootstrap 一并注入;`None` = guard 未启用。
+    guard_stats: Option<Arc<zhuye_sanitize::guard_stats::GuardStats>>,
     /// 会话级 `permission_mode` 的共享句柄(同 `ApprovalGate` 持有的那份)。
     ///
     /// **为什么需要这个**:`base_ctx.permission_mode` 是值类型快照,在
@@ -192,6 +195,7 @@ impl ToolExecutionQueue {
             max_concurrency: std::sync::Mutex::new(max),
             sanitizer: Arc::new(Sanitizer::with_defaults()),
             prompt_guard: None,
+            guard_stats: None,
             session_permission_mode: None,
             permission_resolver: None,
         }
@@ -223,8 +227,16 @@ impl ToolExecutionQueue {
     /// v1.x:注入 prompt injection guard(`None` = 关闭)。与
     /// `set_session_permission_mode` 同款"构造后注入"模式,避免
     /// `AgentThread::new` 签名继续膨胀。
-    pub fn set_prompt_guard(&mut self, guard: Option<Arc<PromptGuard>>) {
+    ///
+    /// F01:统计实例与 guard 一并注入(与 `ToolRegistry` 共享),
+    /// `/status` 经 registry 侧快照读取两侧合并计数。
+    pub fn set_prompt_guard(
+        &mut self,
+        guard: Option<Arc<PromptGuard>>,
+        stats: Option<Arc<zhuye_sanitize::guard_stats::GuardStats>>,
+    ) {
         self.prompt_guard = guard;
+        self.guard_stats = stats;
     }
 
     pub fn hook_engine(&self) -> &Arc<HookEngine> {
@@ -758,6 +770,9 @@ impl ToolExecutionQueue {
                                 fingerprint = %report.fingerprint_sha256,
                                 "prompt_guard: tool output flagged for review"
                             );
+                            if let Some(stats) = self.guard_stats.as_ref() {
+                                stats.record_output_reviewed();
+                            }
                             let guard_meta = serde_json::json!({
                                 "verdict": "review",
                                 "codes": report.findings.iter().map(|f| f.code.clone()).collect::<Vec<_>>(),
@@ -779,6 +794,9 @@ impl ToolExecutionQueue {
                                 .iter()
                                 .map(|f| f.code.clone())
                                 .collect::<Vec<_>>();
+                            if let Some(stats) = self.guard_stats.as_ref() {
+                                stats.record_output_blocked();
+                            }
                             tracing::warn!(
                                 tool = %call.name,
                                 codes = ?codes,

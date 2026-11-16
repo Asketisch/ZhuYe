@@ -575,7 +575,9 @@ fn build_guard_queue(tool: Arc<dyn Tool>) -> ToolExecutionQueue {
     reg.register(tool);
     let engine = Arc::new(HookEngine::new());
     let mut q = ToolExecutionQueue::with_defaults(reg, engine, make_ctx());
-    q.set_prompt_guard(Some(Arc::new(PromptGuard::new())));
+    // F01:set_prompt_guard 现要求同时传统计实例(None = 不计数,
+    // 扫描行为不变)。
+    q.set_prompt_guard(Some(Arc::new(PromptGuard::new())), None);
     q
 }
 

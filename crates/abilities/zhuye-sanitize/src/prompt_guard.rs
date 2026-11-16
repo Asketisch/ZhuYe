@@ -129,6 +129,10 @@ pub struct ToolDefinitionScan {
     pub tool_name: String,
     pub verdict: Verdict,
     pub findings: Vec<GuardFinding>,
+    /// description 原始字节的 SHA-256 指纹(F01:工具定义侧指纹上报,
+    /// 与工具输出侧 `metadata.prompt_guard.fingerprint_sha256` 同算法,
+    /// 审计层可跨面关联"哪个工具定义触发了哪次拦截")。
+    pub fingerprint_sha256: String,
 }
 
 /// 单条检测规则(可由调用方追加自定义规则)。
@@ -427,6 +431,7 @@ impl PromptGuard {
             tool_name: tool_name.to_string(),
             verdict,
             findings,
+            fingerprint_sha256: report.fingerprint_sha256,
         }
     }
 }
