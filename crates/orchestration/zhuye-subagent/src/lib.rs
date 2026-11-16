@@ -13,6 +13,8 @@
 
 pub mod data_transfer;
 pub mod error;
+/// F28:外部 agent 编排(能力协商 + 审批桥 + 会话五态)。
+pub mod external;
 pub mod factory;
 pub mod loader;
 pub mod spec;
@@ -21,6 +23,10 @@ pub mod worker_registry;
 
 pub use data_transfer::{DataTransferConfig, ResultExtractor};
 pub use error::SubAgentError;
+pub use external::{
+    Capability, CapabilitySet, ExternalApprovalRequest, MediatorDecision, MediatorPolicy,
+    PermissionMediator, SessionMachine, SessionState, TransitionError,
+};
 pub use factory::{SpawnedChild, SubAgentFactory};
 pub use loader::{
     LoadError, load_subagents_dir, merge_by_priority, parse_subagent_md, parse_subagent_str,
