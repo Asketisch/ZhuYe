@@ -284,6 +284,15 @@ impl Tool for BashTool {
                 }
                 return PermissionMode::Prompt;
             }
+            // F04 安全补丁:重定向(`>` / `>>` / `<>`)写文件 —— 即使基础
+            // 命令是纯读(`echo x > f`),也是写操作。检测到重定向符号
+            // 一律走审批(naive_argv 不解析 shell 语义,这里按 token 判)。
+            if argv
+                .iter()
+                .any(|t| t == ">" || t == ">>" || t == "<>" || t == "&>")
+            {
+                return PermissionMode::Prompt;
+            }
             if !zhuye_permissions::classify_access(&argv).is_auto_allow() {
                 return PermissionMode::Prompt;
             }
