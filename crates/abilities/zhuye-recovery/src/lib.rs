@@ -24,6 +24,11 @@
 pub mod active_files;
 pub mod render;
 pub mod subagent;
+/// F47:时间旅行(三粒度 checkpoint + 文件联动还原 + 恢复配方)。
+pub mod timetravel;
+pub use timetravel::{
+    CheckpointKind, CheckpointMeta, CheckpointStore, RecoveryRecipe, RewindPlan, plan_rewind,
+};
 
 pub use active_files::{
     ACTIVE_FILES_MAX_FILES, ACTIVE_FILES_PER_FILE_TOKEN_CAP, ACTIVE_FILES_TOKEN_BUDGET,
