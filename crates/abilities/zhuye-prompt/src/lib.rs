@@ -18,6 +18,8 @@ pub mod library;
 /// F69:Composer mention 解析(@file / #issue / !PR)+ picker 候选 + 上下文装配。
 pub mod mentions;
 pub mod resources;
+/// F53:提示词工程(条件注入 + 就近优先 + 版本实验)。
+pub mod rules;
 pub mod template;
 
 pub use builder::{
