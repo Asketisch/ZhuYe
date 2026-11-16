@@ -69,6 +69,22 @@ fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
+/// F04:把单个命令段切成 argv(简单空白切分)。
+///
+/// **保守**:命令里出现引号 / 反引号 / `$(` 时直接返回空 vec —— 那意味着
+/// 需要真正的 shell 解析才能确定 argv,而"解析差异 = 绕过"是这类判定的
+/// 经典坑。空 vec 让调用方回落 `Prompt`(要审批),不会误放行。
+fn naive_argv(segment: &str) -> Vec<String> {
+    if segment.contains(['\'', '"', '`']) || segment.contains("$(") {
+        return Vec::new();
+    }
+    segment
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// v1.7:从 stdout 字节中定位并解析 sentinel 行。
 ///
 /// 返回 `(解析结果, 剥除 sentinel 后的输出)`。解析结果:
@@ -233,7 +249,46 @@ impl Tool for BashTool {
     fn required_permission(&self) -> PermissionMode {
         // M6:bash 会改变外部状态;除非用户把它加入 session 白名单,否则
         // queue 会走 `ApprovalGate`。
+        //
+        // F04:这只是**门禁底噪** —— 逐条命令的读写语义由 `action_permission`
+        // 按 argv 判定,纯读命令可自动放行(见下),不改这里。
         PermissionMode::Prompt
+    }
+
+    /// F04:按命令的实际读写语义决定本条调用的权限。
+    ///
+    /// `git status` / `git config --get` / `gh pr view` 这类纯读命令
+    /// 自动放行(除非用户显式配了 Deny 规则 —— 那条链路在权限引擎里,
+    /// 优先级高于此处);写命令与判不准的情况维持 `Prompt`(走审批)。
+    ///
+    /// **保守原则**:`Opaque`(`sh -c` / `eval` / `xargs`)与 `Unknown`
+    /// 一律回落到 `Prompt` —— 绝不因为"外层看着像读"放行内层。
+    fn action_permission(&self, args: &Value) -> PermissionMode {
+        // 命令归一化与所有安全判定点共用同一入口(引号/转义差异 = 绕过的
+        // 经典来源,这里不另起一套解析)。
+        let Some(cmd) = crate::bash_command::resolve_bash_command(args) else {
+            return PermissionMode::Prompt;
+        };
+        // 分段(`a && b` / `a | b` / `a ; b`):任一段不是纯读 → 整条要审批。
+        let segments = crate::bash_command::split_shell_segments(cmd);
+        if segments.is_empty() {
+            return PermissionMode::Prompt;
+        }
+        for seg in segments {
+            let argv = naive_argv(seg);
+            if argv.is_empty() {
+                // 空白段(分隔符残留)跳过;非空但无法切 argv(含引号/替换)
+                // 意味着不能静态判定 → 保守走审批。
+                if seg.trim().is_empty() {
+                    continue;
+                }
+                return PermissionMode::Prompt;
+            }
+            if !zhuye_permissions::classify_access(&argv).is_auto_allow() {
+                return PermissionMode::Prompt;
+            }
+        }
+        PermissionMode::Auto
     }
 
     async fn execute(&self, ctx: ToolContext, args: Value) -> Result<ToolOutput, ToolError> {

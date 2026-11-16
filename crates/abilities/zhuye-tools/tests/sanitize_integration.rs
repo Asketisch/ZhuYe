@@ -768,3 +768,51 @@ async fn pii_off_is_noop() {
         .collect::<String>();
     assert_eq!(text, "13812345678");
 }
+
+// ── F04:只读命令自动放行(权限语义)──────────────────────────────
+
+/// 纯读命令 → `action_permission` 返回 Auto(不弹审批)。
+#[test]
+fn readonly_commands_auto_allowed() {
+    let bash = zhuye_tools::builtins::bash::BashTool::new();
+    for cmd in [
+        "git status",
+        "git config --get user.name",
+        "ls -la",
+        "grep -rn TODO src/",
+        "gh pr view 42",
+        "cat README.md",
+    ] {
+        assert_eq!(
+            bash.action_permission(&serde_json::json!({ "cmd": cmd })),
+            zhuye_protocol::PermissionMode::Auto,
+            "{cmd} 应自动放行"
+        );
+    }
+}
+
+/// 写命令 / 不透明命令 → 仍需审批(Prompt)。
+#[test]
+fn write_and_opaque_commands_require_approval() {
+    let bash = zhuye_tools::builtins::bash::BashTool::new();
+    for cmd in [
+        "git commit -m x",
+        "git config user.name Alice",
+        "rm -rf target",
+        "sh -c 'ls'",
+        "eval x",
+        "npm install",
+        "sort -o out.txt in.txt",
+        "find . -delete",
+        // 混合链:任一段写 → 整条审批
+        "git status && git commit -m x",
+        // 含引号 → argv 不可静态确定 → 审批
+        "git log --grep='foo bar'",
+    ] {
+        assert_eq!(
+            bash.action_permission(&serde_json::json!({ "cmd": cmd })),
+            zhuye_protocol::PermissionMode::Prompt,
+            "{cmd} 应需审批"
+        );
+    }
+}
