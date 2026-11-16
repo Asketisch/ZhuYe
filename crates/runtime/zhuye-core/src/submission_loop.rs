@@ -873,14 +873,26 @@ pub async fn submission_loop(
                                     class = verdict.class.code(),
                                     "poison detector: session retired"
                                 );
+                                // F11:带稳定 ReasonCode 与四类工作记忆
+                                // 连续性通知 —— 宿主据此提示用户「哪些状态
+                                // 丢了 / 是否已迁移」,而不是静默换新会话。
+                                let notice = crate::reason_code::ContinuityNotice::new(
+                                    crate::reason_code::ReasonCode::SessionPoisoned,
+                                    verdict.lost_memory.clone(),
+                                );
                                 let _ = turn_tx_clone
                                     .send(Event::new(
                                         sub_id_clone.clone(),
                                         EventMsg::Error(ErrorEvent {
-                                            code: "session_poisoned".into(),
+                                            code: crate::reason_code::ReasonCode::SessionPoisoned
+                                                .as_str()
+                                                .to_string(),
                                             message: verdict.reason.clone(),
                                             details: Some(serde_json::json!({
+                                                "reason_code": crate::reason_code::ReasonCode::SessionPoisoned.as_str(),
                                                 "poison_class": verdict.class.code(),
+                                                "lost_memory": notice.lost.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
+                                                "continuity_notice": notice.message,
                                                 "advice": "retire this session: start a fresh session and carry over notes/memory, not conversation history",
                                             })),
                                         }),
