@@ -816,3 +816,48 @@ fn write_and_opaque_commands_require_approval() {
         );
     }
 }
+
+// ── F06:审批加固(拒绝且不再问)──────────────────────────────────
+
+/// `RejectForSession` 写入会话级拒绝表;后续同名调用直接拒绝、不弹审批。
+#[tokio::test]
+async fn reject_for_session_blocks_subsequent_calls() {
+    use zhuye_protocol::ReviewDecision;
+    use zhuye_tools::approval::ApprovalGate;
+
+    let gate = Arc::new(ApprovalGate::with_session_allow(
+        // 事件通道:本用例不发审批请求(预置拒绝表),通道可丢弃读端。
+        {
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            tx
+        },
+        "sub-f06",
+        Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
+    ));
+
+    // 预置「拒绝且不再问」。
+    gate.deny_for_session("dangerous_tool", "user said never");
+    assert!(gate.is_session_denied("dangerous_tool"));
+    assert_eq!(
+        gate.session_deny_reason("dangerous_tool").as_deref(),
+        Some("user said never")
+    );
+
+    // 未记录的工具不受影响。
+    assert!(!gate.is_session_denied("other_tool"));
+    assert!(gate.session_deny_reason("other_tool").is_none());
+
+    // `RejectForSession` 决策本身可序列化(wire 契约)。
+    let json = serde_json::to_string(&ReviewDecision::RejectForSession {
+        reason: "never".into(),
+    })
+    .expect("serialize");
+    assert!(json.contains("reject_for_session"), "{json}");
+    let back: ReviewDecision = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(
+        back,
+        ReviewDecision::RejectForSession {
+            reason: "never".into()
+        }
+    );
+}

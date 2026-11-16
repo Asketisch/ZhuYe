@@ -277,6 +277,15 @@ pub enum ReviewDecision {
     },
     /// 批准并在本会话内放行该工具:后续同名调用免审批(`High` 风险调用除外)。
     ApproveForSession,
+    /// F06:拒绝本次**并记住** —— 本会话内同名调用不再弹审批、直接拒绝。
+    ///
+    /// 与 `Deny` 的区别:`Deny` 只管这一次,下次还会问;`RejectForSession`
+    /// 是「别再问我了」,对应审批弹窗的 `[N]ever` 键。这是一个拒绝出口
+    /// 而非放行 —— 安全语义仍是 fail-closed。
+    RejectForSession {
+        /// 拒绝原因;会话内后续同名调用复用该原因反馈给模型。
+        reason: String,
+    },
 }
 
 /// v1.x Plan mode 审批选择(对齐业界通用的三选项体验)。
