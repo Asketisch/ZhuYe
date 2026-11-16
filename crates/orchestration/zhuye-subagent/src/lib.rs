@@ -16,6 +16,8 @@ pub mod error;
 /// F28:外部 agent 编排(能力协商 + 审批桥 + 会话五态)。
 pub mod external;
 pub mod factory;
+/// F34:子代理治理(作业账本 + 心跳 + AIMD 并发 + 深度守卫 + 分型)。
+pub mod governance;
 pub mod loader;
 pub mod spec;
 pub mod tools;
@@ -28,6 +30,10 @@ pub use external::{
     PermissionMediator, SessionMachine, SessionState, TransitionError,
 };
 pub use factory::{SpawnedChild, SubAgentFactory};
+pub use governance::{
+    AgentKind, AimdController, DepthError, DepthGuard, HeartbeatMonitor, JobLedger, JobRecord,
+    JobStatus, LedgerError,
+};
 pub use loader::{
     LoadError, load_subagents_dir, merge_by_priority, parse_subagent_md, parse_subagent_str,
 };
