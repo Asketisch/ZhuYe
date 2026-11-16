@@ -48,7 +48,16 @@ pub use team_preset::{
 };
 
 pub use dag::levels_from_topo;
+/// F33:Durable execution(run 级 journal + 断点续跑 + checkpoint)。
+pub mod durable;
+/// F32:动态工作流控制流(条件边 / 循环 / 并行竞速 / 节点策略)。
+pub mod flow;
+pub use durable::{Checkpoint, JournalRecord, RecoveryAction, RecoveryPlan, RunJournal};
 pub use error::PipelineError;
+pub use flow::{
+    EdgeCondition, FlowEdge, FlowError, FlowNode, FlowSpec, LoopSpec, NodeErrorPolicy, NodePolicy,
+    ParallelSpec, validate_flow, worst_case_iterations,
+};
 pub use graph::DiGraph;
 pub use nodes::{
     PRESET_EXECUTOR_NAME, PRESET_PLANNER_NAME, PRESET_PRD_NAME, PRESET_VERIFIER_NAME,
