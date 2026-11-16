@@ -17,7 +17,13 @@ pub use untrusted::{CommandOrigin, GateDecision, UntrustedGate};
 pub mod cow;
 /// F23:网络出口管控(域名白名单 / 默认全禁 / 子域匹配)。
 pub mod egress;
+/// F24:Windows 沙箱策略层(AppContainer / Job Object / ACL / 进程树)。
+pub mod windows;
 pub use cow::{
     ChangeKind, ChangeSet, CowBackend, CowWorkspace, FileChange, MergeStrategy, diff_hashes,
 };
 pub use egress::{EgressDecision, EgressPolicy, host_of};
+pub use windows::{
+    AppContainerCapability, JobLimits, KillPlan, WindowsSandbox, WindowsSandboxConfig,
+    WindowsSandboxError, WindowsSandboxPlan,
+};
