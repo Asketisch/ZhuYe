@@ -52,6 +52,25 @@ pub struct ExtensionsRescannedEvent {
     pub commands: bool,
 }
 
+/// F01:`Op::QueryGuardStats` 的应答 —— prompt_guard 裁决统计快照。
+/// UI(`/status` 安全段 / Desktop 设置)据此展示「guard 开没开、拦了
+/// 多少」。`enabled = false` 时四计数恒 0(guard 未接线就没有计数源)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GuardStatsEvent {
+    /// prompt_guard 是否启用(F01 起默认开启;`[prompt_guard]
+    /// enabled = false` / `ZHUYE_PROMPT_GUARD=0` 关闭)。
+    pub enabled: bool,
+    /// 工具定义(外部源 MCP/plugin/runtime 注册期)扫描 Block、
+    /// 拒绝注册的累计次数。
+    pub definitions_blocked: u64,
+    /// 工具定义扫描 Review、放行注册但标注的累计次数。
+    pub definitions_reviewed: u64,
+    /// 工具输出扫描 Block、内容被替换拦截的累计次数。
+    pub outputs_blocked: u64,
+    /// 工具输出扫描 Review、metadata 标注的累计次数。
+    pub outputs_reviewed: u64,
+}
+
 /// `SystemTime` 的 serde 适配 —— 序列化为 UNIX 秒数,跨进程持久化稳定。
 pub(super) mod systemtime_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

@@ -200,6 +200,13 @@ pub enum Op {
         commands: bool,
     },
 
+    /// F01:查询 prompt_guard 裁决统计。不开 turn —— 应答
+    /// `EventMsg::GuardStats` 经 per-submission 通道 + 会话扇出双路
+    /// 送达,与 `RescanExtensions` 同款。统计含定义侧(外部工具注册
+    /// 扫描)与输出侧(工具输出扫描)合并计数;guard 未启用时
+    /// `enabled = false` 且计数恒 0。
+    QueryGuardStats,
+
     /// v1.3 SDK:客户端(serve 模式)注册跨语言自定义工具。
     ///
     /// 工具的**实现留在客户端进程**(Python / TS 函数):core 侧为每个
@@ -324,6 +331,7 @@ impl Op {
             Op::ExitGoalMode => "exit_goal_mode",
             Op::PromptCommand { .. } => "prompt_command",
             Op::RescanExtensions { .. } => "rescan_extensions",
+            Op::QueryGuardStats => "query_guard_stats",
             Op::RegisterTools { .. } => "register_tools",
             Op::ToolExecutionResponse { .. } => "tool_execution_response",
             Op::Steer { .. } => "steer",
