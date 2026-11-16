@@ -26,6 +26,8 @@ pub mod quota;
 pub mod reasoning_effort;
 pub mod registry;
 pub mod request;
+/// F44/F55:USD 预算账本(reservation 语义)+ 成本归因。
+pub mod spend;
 
 pub use capabilities::{Capabilities, ProviderKind};
 pub use client::ModelClient;
