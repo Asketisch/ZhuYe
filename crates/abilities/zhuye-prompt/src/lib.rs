@@ -15,6 +15,8 @@
 pub mod builder;
 pub mod caching;
 pub mod library;
+/// F69:Composer mention 解析(@file / #issue / !PR)+ picker 候选 + 上下文装配。
+pub mod mentions;
 pub mod resources;
 pub mod template;
 
