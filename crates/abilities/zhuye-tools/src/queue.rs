@@ -594,6 +594,21 @@ impl ToolExecutionQueue {
         // `tool.action_permission(&effective_args)`,默认 fallback 到
         // `tool.required_permission()`。
         if let Some(gate_ref) = gate {
+            // F04 优先级修正:`ApprovalPolicy::Deny`(deny_all)是会话级
+            // 硬拒绝,必须压过「只读自动放行」。否则 `echo x` 这类纯读命令
+            // 会绕过 deny-all 策略直接执行 —— 这是 F04 引入的回归。
+            if gate_ref.is_deny_all() {
+                return ToolResult {
+                    call_id: call.id,
+                    content: vec![ContentBlock::text(format!(
+                        "denied by policy for {} (approval_policy = deny)",
+                        call.name
+                    ))],
+                    is_error: true,
+                    elapsed_ms: 0,
+                    metadata: serde_json::json!({"approval": "denied", "policy": "deny_all"}),
+                };
+            }
             let effective_perm = tool.action_permission(&effective_args);
             // 0.3:必须用共享的别名解析,不能只读 `args["cmd"]` —— 否则模型
             // 发 `{"command": "rm -rf /"}` 时 bash_class 为 None,

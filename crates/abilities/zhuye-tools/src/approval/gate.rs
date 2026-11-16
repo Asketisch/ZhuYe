@@ -320,6 +320,14 @@ impl ApprovalGate {
         self.deny_all.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// F04:当前是否处于 deny-all(`approval_policy = deny` 会话级硬拒绝)。
+    ///
+    /// 暴露给 queue:只读命令的自动放行(`action_permission` → `Auto`)
+    /// **必须**让位于 deny-all —— 否则纯读命令会绕过会话级拒绝策略。
+    pub fn is_deny_all(&self) -> bool {
+        self.deny_all.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// P2 `yolo-classifier`:注入 Auto 模式启发式审批分类器 + 可选置信度阈值。
     /// `threshold` < 0 时维持当前值。
     pub fn set_yolo_classifier(

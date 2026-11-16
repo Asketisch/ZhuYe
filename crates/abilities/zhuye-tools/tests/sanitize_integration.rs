@@ -861,3 +861,24 @@ async fn reject_for_session_blocks_subsequent_calls() {
         }
     );
 }
+
+/// F04 回归:`ApprovalPolicy::Deny`(deny_all)必须压过「只读自动放行」。
+///
+/// 曾出现:纯读命令(`echo x`)经 `action_permission → Auto` 跳过 gate,
+/// 连带绕过会话级 deny-all —— 安全策略被只读优化架空。本用例锁住
+/// `gate.is_deny_all()` 的优先级。
+#[test]
+fn deny_all_is_visible_to_queue_before_readonly_fastpath() {
+    use zhuye_tools::approval::ApprovalGate;
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let gate = ApprovalGate::with_session_allow(
+        tx,
+        "sub-deny",
+        Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
+    );
+    assert!(!gate.is_deny_all(), "默认不 deny-all");
+    gate.set_deny_all(true);
+    assert!(gate.is_deny_all(), "设置后 queue 必须能看到");
+    gate.set_deny_all(false);
+    assert!(!gate.is_deny_all());
+}
