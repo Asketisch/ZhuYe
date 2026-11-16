@@ -882,3 +882,27 @@ fn deny_all_is_visible_to_queue_before_readonly_fastpath() {
     gate.set_deny_all(false);
     assert!(!gate.is_deny_all());
 }
+
+/// F04 安全补丁:重定向写文件必须走审批 —— `echo x > f` 虽然基础命令
+/// 是纯读,但重定向使其成为写操作。此前会被 readonly fastpath 误放行。
+#[test]
+fn redirect_to_file_requires_approval() {
+    let bash = zhuye_tools::builtins::bash::BashTool::new();
+    for cmd in [
+        "echo x > /tmp/f",
+        "echo x >> /tmp/f",
+        "cat a > b",
+        "ls > listing.txt",
+    ] {
+        assert_eq!(
+            bash.action_permission(&serde_json::json!({ "cmd": cmd })),
+            zhuye_protocol::PermissionMode::Prompt,
+            "{cmd} 含重定向,应需审批"
+        );
+    }
+    // 无重定向的纯读仍自动放行。
+    assert_eq!(
+        bash.action_permission(&serde_json::json!({ "cmd": "echo hi" })),
+        zhuye_protocol::PermissionMode::Auto
+    );
+}
