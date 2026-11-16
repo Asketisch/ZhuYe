@@ -2,6 +2,8 @@
 //! 按并发安全性切分的 `ToolExecutionQueue`。
 
 pub mod approval;
+/// F22:工具参数自动修复 + Sequential Thinking + 类型化返回。
+pub mod arg_repair;
 pub mod human_input;
 // 0.3:bash 命令参数别名解析下沉到 zhuye-protocol(与 ToolError 同一
 // 理由:zhuye-tools → zhuye-hooks 是单向依赖,而该规范化函数被两边
