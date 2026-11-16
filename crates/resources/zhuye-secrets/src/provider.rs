@@ -91,18 +91,19 @@ pub trait SecretProvider: Send + Sync {
 /// 加密文件 provider —— 委托给 `zhuye-secrets` 的加密存储。
 ///
 /// 这里用闭包注入读写,避免本模块反向依赖加密实现(也便于测试)。
+/// 三个回调类型抽成别名,避免 clippy `type_complexity`。
+pub type GetFn = Box<dyn Fn(&str) -> Result<Option<String>, ProviderError> + Send + Sync>;
+pub type SetFn = Box<dyn Fn(&str, &str) -> Result<(), ProviderError> + Send + Sync>;
+pub type DelFn = Box<dyn Fn(&str) -> Result<(), ProviderError> + Send + Sync>;
+
 pub struct FileProvider {
-    get_fn: Box<dyn Fn(&str) -> Result<Option<String>, ProviderError> + Send + Sync>,
-    set_fn: Box<dyn Fn(&str, &str) -> Result<(), ProviderError> + Send + Sync>,
-    del_fn: Box<dyn Fn(&str) -> Result<(), ProviderError> + Send + Sync>,
+    get_fn: GetFn,
+    set_fn: SetFn,
+    del_fn: DelFn,
 }
 
 impl FileProvider {
-    pub fn new(
-        get_fn: Box<dyn Fn(&str) -> Result<Option<String>, ProviderError> + Send + Sync>,
-        set_fn: Box<dyn Fn(&str, &str) -> Result<(), ProviderError> + Send + Sync>,
-        del_fn: Box<dyn Fn(&str) -> Result<(), ProviderError> + Send + Sync>,
-    ) -> FileProvider {
+    pub fn new(get_fn: GetFn, set_fn: SetFn, del_fn: DelFn) -> FileProvider {
         FileProvider {
             get_fn,
             set_fn,
@@ -506,7 +507,6 @@ mod tests {
     fn map_provider(data: Arc<Mutex<HashMap<String, String>>>) -> FileProvider {
         let d1 = data.clone();
         let d2 = data.clone();
-        let d3 = data.clone();
         FileProvider::new(
             Box::new(move |k| Ok(d1.lock().unwrap().get(k).cloned())),
             Box::new(move |k, v| {
@@ -514,7 +514,7 @@ mod tests {
                 Ok(())
             }),
             Box::new(move |k| {
-                d3.lock().unwrap().remove(k);
+                data.lock().unwrap().remove(k);
                 Ok(())
             }),
         )
@@ -606,8 +606,8 @@ mod tests {
         let scrubbed = scrub_env(env);
         assert_eq!(scrubbed.get("PATH"), Some(&"/usr/bin".to_string()));
         assert_eq!(scrubbed.get("HOME"), Some(&"/root".to_string()));
-        assert!(scrubbed.get("OPENAI_API_KEY").is_none(), "凭据必须被抹");
-        assert!(scrubbed.get("GITHUB_TOKEN").is_none(), "凭据必须被抹");
+        assert!(!scrubbed.contains_key("OPENAI_API_KEY"), "凭据必须被抹");
+        assert!(!scrubbed.contains_key("GITHUB_TOKEN"), "凭据必须被抹");
     }
 
     #[test]
