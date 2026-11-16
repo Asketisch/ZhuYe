@@ -179,7 +179,7 @@ impl SessionIndex {
             .values()
             .filter(|e| e.workspace == workspace)
             .collect();
-        out.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+        out.sort_by_key(|e| std::cmp::Reverse(e.last_active_at));
         out
     }
 

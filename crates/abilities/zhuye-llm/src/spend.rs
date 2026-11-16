@@ -359,8 +359,7 @@ impl CostAttribution {
         self.rows
             .iter()
             .find(|(k, _)| k == attribution)
-            .map(|(_, v)| v / self.total_usd)
-            .unwrap_or(0.0)
+            .map_or(0.0, |(_, v)| v / self.total_usd)
     }
 
     /// 是否为空。
