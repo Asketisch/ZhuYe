@@ -45,6 +45,10 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// F09:决策级审计(decision + reasoning + 被否决 alternatives)。
+pub mod decision;
+pub use decision::{DecisionAudit, RejectedAlternative};
+
 /// 审计事件类别。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
