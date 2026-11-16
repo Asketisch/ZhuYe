@@ -10,6 +10,8 @@ pub mod gateway;
 pub mod issues;
 pub mod notifications;
 pub mod security_scan;
+/// F41:本地语音回路(模型目录 + 流式分帧 + barge-in + 状态机)。
+pub mod voice;
 
 pub use gateway::{
     EdgeGuardResult, EdgeVerdict, GatewayConfig, GatewayError, InboundProtocol, KeyTable,
@@ -21,3 +23,7 @@ pub use issues::{
 };
 pub use notifications::{NotificationChannel, NotificationPayload, WebhookNotifier};
 pub use security_scan::{SecurityScanReport, run_cargo_audit};
+pub use voice::{
+    AudioFrame, FrameAssembler, VoiceError, VoiceModelCatalog, VoiceModelKind, VoiceModelSpec,
+    VoiceSession, VoiceState,
+};
