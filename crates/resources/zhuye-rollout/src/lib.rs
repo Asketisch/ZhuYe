@@ -27,6 +27,9 @@ pub mod path;
 pub mod reader;
 pub mod redact;
 pub mod search;
+/// F48:会话索引 + 血缘 + 变更捕获。
+pub mod session_store;
+pub use session_store::{ChangeEvent, ChangeLog, Lineage, SessionEntry, SessionIndex};
 pub mod types;
 pub mod writer;
 
