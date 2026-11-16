@@ -33,6 +33,8 @@
 
 #![allow(clippy::module_name_repetitions)] // 多个模块都暴露 *Config/*Error 等命名
 
+/// F15:LSP 主动查询扩展 + DAP 调试协议形状。
+pub mod active;
 pub mod client;
 pub mod config;
 pub mod diagnostics;
