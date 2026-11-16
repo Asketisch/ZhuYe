@@ -380,8 +380,7 @@ pub fn worst_case_iterations(spec: &FlowSpec) -> u64 {
         let iterations = node
             .loop_spec
             .as_ref()
-            .map(|s| u64::from(s.max_iterations()))
-            .unwrap_or(1);
+            .map_or(1, |s| u64::from(s.max_iterations()));
         total = total.saturating_add(iterations);
     }
     total
@@ -397,7 +396,6 @@ mod tests {
             .add_node(FlowNode::new("b", "agent"))
             .add_edge(FlowEdge::new("a", "b"))
             .entry("a")
-            .clone()
     }
 
     trait WithEntry {

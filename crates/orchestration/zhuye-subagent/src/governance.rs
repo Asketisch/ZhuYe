@@ -425,7 +425,7 @@ impl DepthGuard {
 
     /// 能否从 `parent_depth` 再派一层。
     pub fn can_spawn(&self, parent_depth: u32) -> bool {
-        parent_depth + 1 <= self.max_depth
+        parent_depth < self.max_depth
     }
 
     /// 校验派生(返回子代理应有的深度)。

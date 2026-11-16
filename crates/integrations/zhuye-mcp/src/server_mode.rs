@@ -160,8 +160,7 @@ impl ServerConfig {
         let host = self
             .bind
             .rsplit_once(':')
-            .map(|(h, _)| h)
-            .unwrap_or(&self.bind);
+            .map_or(self.bind.as_str(), |(h, _)| h);
         let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]";
         if !is_loopback {
             return Err(ServerError::NonLoopbackBind(self.bind.clone()));
