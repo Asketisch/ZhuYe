@@ -34,6 +34,11 @@ pub mod error;
 pub mod manager;
 pub mod model;
 pub mod squad;
+/// F56:任务依赖图 + 重复检测 + 项目容器。
+pub mod task_graph;
+pub use task_graph::{
+    DuplicateDetector, ProjectBundle, TaskGraph, TaskGraphError, TaskNode, TaskState,
+};
 pub mod store;
 pub mod team;
 pub mod team_store;
