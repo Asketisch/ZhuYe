@@ -31,6 +31,8 @@
 pub mod config;
 pub mod content;
 pub mod manager;
+/// F29:MCP OAuth / elicitation / sampling / 资源订阅协议层。
+pub mod oauth;
 pub mod prompts;
 pub mod protocol_version;
 pub mod registry;
