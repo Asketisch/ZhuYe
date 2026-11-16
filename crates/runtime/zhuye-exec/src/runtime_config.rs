@@ -223,6 +223,8 @@ pub(crate) fn build_sanitizer(section: Option<&zhuye_config::SanitizeSection>) -
         marker: section.and_then(|s| s.marker.clone()),
         disable_default_patterns: section.and_then(|s| s.disable_default_patterns),
         extra_patterns: section.and_then(|s| s.extra_patterns.clone()),
+        // F03:PII 档位透传(缺省由 from_config 落 Observe)。
+        pii: section.and_then(|s| s.pii.clone()),
     };
     match Sanitizer::from_config(&cfg) {
         Ok(s) => Arc::new(s),
