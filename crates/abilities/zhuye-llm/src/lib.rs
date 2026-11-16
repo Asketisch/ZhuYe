@@ -12,6 +12,8 @@
 //! `HashMap<name, CredentialPool>` 池化结构,旧 `register` / `get` /
 //! `resolve` / `list` API 保留(部分 `#[deprecated]`)。
 
+/// F31:OAuth 登录(device flow)+ 账号池(会话亲和 + 配额排名)。
+pub mod accounts;
 pub mod capabilities;
 pub mod client;
 pub mod cooldown;
