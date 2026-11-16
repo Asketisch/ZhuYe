@@ -7,6 +7,8 @@
 /// F45:本地 LLM 网关(三协议入站 + 虚拟密钥 + 边缘守护)。
 pub mod gateway;
 /// F36:工单驱动(归一 + 认领策略 + 依赖排序 + 站会报告)。
+/// F66/F67/F68:IDE 桥 + 端侧 ONNX 推理 + 多模态生成。
+pub mod ide_and_local;
 pub mod issues;
 pub mod notifications;
 pub mod security_scan;

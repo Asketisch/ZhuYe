@@ -36,6 +36,8 @@ pub mod adapters;
 pub mod config_import;
 pub mod convert;
 pub mod error;
+/// F62:会话导入长尾(跨 harness 归一 + 精确锚点 + 加密 + Gist)。
+pub mod longtail;
 pub mod mcp_server;
 pub mod model;
 pub mod write;
