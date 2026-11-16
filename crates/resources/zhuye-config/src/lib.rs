@@ -63,11 +63,11 @@ pub use schema::{
     LspFilePattern, LspServerEntry, LspServersSection, McpServerEntry, McpServersSection,
     McpTransport, ModelDiscoverySection, ModelSection, NotificationChannel, NotificationsSection,
     OllamaSection, OpenAISection, PermissionsSection, PlanCompletionSection,
-    PostgresSessionSection, QuotaConfig, QuotaSource, ReadBeforeEditSection, ReflectConfig,
-    ResolvedAskUserQuestion, RoutingSection, SandboxSection, SanitizeSection, SearchBudgetSection,
-    SpecSlotConfig, SseRedisSection, SubagentSpecConfig, TelemetrySection, TestRunnerSection,
-    TokenBudgetSection, TuiNotificationsSection, VerificationSection, VoiceSection,
-    WebSearchSection, parse_permission_entry,
+    PostgresSessionSection, PromptGuardSection, QuotaConfig, QuotaSource, ReadBeforeEditSection,
+    ReflectConfig, ResolvedAskUserQuestion, RoutingSection, SandboxSection, SanitizeSection,
+    SearchBudgetSection, SpecSlotConfig, SseRedisSection, SubagentSpecConfig, TelemetrySection,
+    TestRunnerSection, TokenBudgetSection, TuiNotificationsSection, VerificationSection,
+    VoiceSection, WebSearchSection, parse_permission_entry,
 };
 pub use watch::{ConfigWatcher, WatcherHandle};
 
