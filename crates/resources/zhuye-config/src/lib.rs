@@ -56,6 +56,9 @@ pub use paths::{
     data_dir, data_path, data_path_or_relative, project_data_dir, project_data_path,
     resolve_data_dir,
 };
+/// F70:feature flag 注册表(阶段 + env/config 覆盖 + 锁定)。
+pub mod flags;
+pub use flags::{FlagDecl, FlagRegistry, FlagState, ReleaseStage};
 pub use schema::{
     ACP_DEFAULT_BIND, AcpSection, ActiveSection, AnalyticsSection, AnthropicSection,
     AskUserQuestionSection, BridgeSection, CompactSection, ContextWindowsSection,
