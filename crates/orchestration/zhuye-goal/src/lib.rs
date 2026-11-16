@@ -17,10 +17,16 @@
 //! - [`verifier`] —— LLM 自校验 + 命令校验。
 //! - [`controller`] —— 每轮编排核心(`on_turn_end`)。
 
+/// F35:长程自治(Ralph 循环 + 多目标账本 + 舰队看门狗 + ship gate)。
+pub mod autonomy;
 pub mod controller;
 pub mod state;
 pub mod verifier;
 
+pub use autonomy::{
+    FleetHealth, FleetWatchdog, GoalLedger, Iteration, RalphConfig, RalphLoop, RalphStatus,
+    ShipCheck, ShipGate,
+};
 pub use controller::{GoalController, TurnResult, continuation_to_items};
 pub use state::{
     BLOCKED_THRESHOLD, DEFAULT_TOKEN_BUDGET, GoalState, GoalStatus, GoalTurnRecord, GoalVerdict,
