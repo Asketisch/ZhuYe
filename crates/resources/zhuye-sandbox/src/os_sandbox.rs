@@ -50,6 +50,9 @@ pub enum OsSandboxStatus {
     Landlock,
     /// 已启用但当前平台无可用 backend(降级 = 不沙箱)。
     NoBackend,
+    /// 已启用且 backend 为 Windows Job Object(+ AppContainer,F24)。
+    /// Job Object 在任意 Windows 上可用,无需特权。
+    WindowsJobObject,
 }
 
 /// 检测当前平台可用的沙箱 backend。
@@ -71,7 +74,13 @@ pub fn detect_backend() -> OsSandboxStatus {
     {
         OsSandboxStatus::Landlock
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        // F24:Job Object 在任意 Windows 可用(无需特权);
+        // AppContainer profile 由 spawn 路径按 plan 创建。
+        OsSandboxStatus::WindowsJobObject
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         OsSandboxStatus::NoBackend
     }
@@ -260,6 +269,12 @@ impl OsSandbox {
                     self.strict
                 )
             }
+            OsSandboxStatus::WindowsJobObject => {
+                format!(
+                    "os-sandbox: Windows Job Object 已启用(进程树 kill-on-close;AppContainer 由 spawn 路径应用);{net};{sensitive};strict={}",
+                    self.strict
+                )
+            }
             OsSandboxStatus::NoBackend => {
                 if self.strict {
                     format!(
@@ -318,6 +333,9 @@ impl OsSandbox {
                 }
                 Ok(())
             }
+            // F24:Windows Job Object 无需内核探测(任意 Windows 可用);
+            // AppContainer profile 失败时 spawn 路径已降级并 warn。
+            OsSandboxStatus::WindowsJobObject => Ok(()),
             OsSandboxStatus::NoBackend => Err(format!(
                 "OS sandbox 后端不可用(平台:{});严格模式下拒绝裸执行。\
                  在 macOS 需 /usr/bin/sandbox-exec;在 Linux 需 Landlock 内核支持(>= 5.13)。\
