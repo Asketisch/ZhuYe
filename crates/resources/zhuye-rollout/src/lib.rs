@@ -21,6 +21,8 @@
 //! 调用后 best-effort 追加一条 `TokenCount` 记录,让 CLI
 //! `zhuye session ls/show` 跨进程可见累计。
 
+/// F42:GenUI 产物(内容寻址 + 可见性 + 沙箱渲染策略)。
+pub mod artifacts;
 pub mod export;
 pub mod index;
 pub mod path;
@@ -29,6 +31,9 @@ pub mod redact;
 pub mod search;
 /// F48:会话索引 + 血缘 + 变更捕获。
 pub mod session_store;
+pub use artifacts::{
+    Artifact, ArtifactError, ArtifactKind, ArtifactStore, ArtifactVisibility, RenderPolicy,
+};
 pub use session_store::{ChangeEvent, ChangeLog, Lineage, SessionEntry, SessionIndex};
 pub mod types;
 pub mod writer;
