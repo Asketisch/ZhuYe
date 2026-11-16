@@ -17,8 +17,14 @@
 //! MCP 工具天然 `Prompt` 权限下限(`FloorEnforcingTool`),截屏 / 键鼠
 //! 输入都走宿主审批,不会被静默放行。
 
+/// F39/F40:a11y 树元素寻址 + 快照绑定 + 动作后验 + 浏览器安全约束。
+pub mod a11y;
 pub mod backend;
 pub mod types;
 
+pub use a11y::{
+    A11yElement, A11ySnapshot, BrowserSecurity, ElementRole, SnapshotBinding, SnapshotDiff,
+    StaleRefError, UiAction, VerifyExpectation, VerifyResult, diff_snapshots, verify_action,
+};
 pub use backend::{RealComputerBackend, computer_backend};
 pub use types::{BackendCapability, ComputerUseAction, MediaError};
