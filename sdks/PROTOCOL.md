@@ -84,6 +84,7 @@ zhuye serve [--resume <uuid> | -c | -r <N>] [--agent <name>] [--plan-mode] ...
 | `tool_execution_response` | `call_id`, `output` | **serve-local**,远程工具执行回执 |
 | `shutdown` | — | 优雅退出(见 §6) |
 | `rescan_extensions` | `skills: bool`, `commands: bool` | **v1.x 新增(additive)**:运行时重扫扩展目录(skills 按启动目录序替换文件型技能,插件注入与内置包不受影响);不开 turn,应答 `extensions_rescanned` 后 `submission_closed` 收尾。`commands` 位当前恒回 `false`(命令正文实时读盘) |
+| `query_guard_stats` | — | **F01 新增(additive)**:查询 prompt_guard 裁决统计(定义侧拦截/标注 + 输出侧拦截/标注四计数)。不开 turn,应答 `guard_stats` 后 `submission_closed` 收尾;guard 未启用时 `enabled=false` 且计数恒 0 |
 
 `thread_settings` 支持 `model`、`approval_policy`(`auto` / `prompt` / `deny`)、
 `sandbox_policy`(`workspace_only` / `os_sandbox` / `full_access`)和
@@ -131,6 +132,7 @@ SDK 关心的核心变体(完整列表见 `event_msg/mod.rs`):
 | `shutdown_complete` | — | 会话收尾完成(终态,见 §6) |
 | `submission_closed` | — | 该 submission 的 per-turn 通道已排空(终态,见下) |
 | `extensions_rescanned` | `skills: usize`, `commands: bool` | **v1.x 新增(additive)**:`rescan_extensions` 的应答 —— skills 目录重扫后的条目总数;`commands` 当前恒 `false`。事件经 per-turn 通道 + 会话扇出双路送达(客户端按 submission id 去重) |
+| `guard_stats` | `enabled`, `definitions_blocked`, `definitions_reviewed`, `outputs_blocked`, `outputs_reviewed` | **F01 新增(additive)**:`query_guard_stats` 的应答 —— prompt_guard 裁决统计快照(会话累计)。双路送达同上 |
 
 OpenAI 兼容流、Responses 与 Anthropic 的并行工具参数可能交错到达。
 首个工具的参数增量实时转发,其余工具的参数在该次模型输出结束时按调用顺序转发,

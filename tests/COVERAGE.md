@@ -239,6 +239,9 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
   server)默认拒绝注册(调用报 `tool not found`,server 正常启动
   `tool_count=1` 排除未起好假阳性);`ZHUYE_PROMPT_GUARD=0` 时可注册
   可调用。
+- **F01h** `Op::QueryGuardStats`:不开 turn 应答 `guard_stats` 事件
+  (enabled=true + 拦截后 `outputs_blocked=1`)+ `submission_closed`
+  收尾;guard 关闭时 `enabled=false` 且计数全零。
 
 ### SK 组 技能面(`test_skills.py`)
 - **SK1** 默认配置(不写 `[active] bundled_skills`)→ 内置 skill 不在
@@ -743,7 +746,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 |---|---|
 | `functional/test_serve.py` | 39 条(D、S、A 组) |
 | `functional/test_tools.py` | 30 条(T 组) |
-| `functional/test_prompt_guard_default.py` | 10 条(F01 组:prompt_guard 默认开启 / 注入语料回归 / 工具定义扫描) |
+| `functional/test_prompt_guard_default.py` | 12 条(F01 组:prompt_guard 默认开启 / 注入语料回归 / 工具定义扫描 / guard_stats 查询) |
 | `functional/test_skills.py` | 4 条(SK1–SK4) |
 | `functional/test_recovery.py` | 12 条(R6 + X6) |
 | `functional/test_persistence.py` | 19 条(P 组) |

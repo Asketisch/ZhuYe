@@ -223,6 +223,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 | 目标 | `enter_goal_mode` / `exit_goal_mode` | goal + 可选 verify_command / token_budget |
 | 工具 | `register_tools` / `tool_execution_response` | 通常用 `registerTool()` 封装,不必手写 |
 | 扩展 | `rescan_extensions` | **v1.x 新增**:运行时重扫 skills 目录(`.zhuye/skills`,workspace + 用户级;插件注入不受影响);回 `extensions_rescanned`(skills 计数,commands 恒 false) |
+| 安全 | `query_guard_stats` | **F01 新增**:查询 prompt_guard 裁决统计(定义侧/输出侧的 block 与 review 四计数);回 `guard_stats` |
 
 示例:切计划模式、带 thread_settings 提交
 

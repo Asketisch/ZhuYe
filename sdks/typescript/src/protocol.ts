@@ -50,6 +50,8 @@ export type Op =
     }
   /** v1.x:运行时重扫扩展目录(skills 已接线;commands 位回执恒 false)。 */
   | { type: 'rescan_extensions'; skills: boolean; commands: boolean }
+  /** F01:查询 prompt_guard 裁决统计(应答 guard_stats)。 */
+  | { type: 'query_guard_stats' }
   /** v1.4 A2:回合中途转向 —— 不打断在飞 turn,下一个安全点注入。 */
   | { type: 'steer'; priority?: 'now' | 'attachment'; items: UserInputItem[] }
   /** v1.4 C1:查询子代理状态快照(应答 subagent_status)。 */
@@ -175,6 +177,7 @@ export type EventMsg =
   | StreamError
   | ConfigReloaded
   | ExtensionsRescanned
+  | GuardStats
   | CollabStarted
   | CollabMessage
   | CollabFinished
@@ -406,6 +409,16 @@ export interface ExtensionsRescanned {
   type: 'extensions_rescanned';
   skills?: number;
   commands?: boolean;
+}
+
+/** F01:`query_guard_stats` 的应答 —— prompt_guard 裁决统计快照。 */
+export interface GuardStats {
+  type: 'guard_stats';
+  enabled: boolean;
+  definitions_blocked: number;
+  definitions_reviewed: number;
+  outputs_blocked: number;
+  outputs_reviewed: number;
 }
 
 export interface CollabStarted {

@@ -221,6 +221,7 @@ event = agent.next_global_event(timeout_secs=5)   # 阻塞读一条;超时抛 qu
 | side-channel | `start_side_channel` / `cancel_side_channel` / `query_side_channels` | 用户驱动的并发 agent:start(`agent`+`prompt`)/ cancel(`id`)/ query(可选 `id`,回 `side_channel_status`) |
 | 工具 | `register_tools` / `tool_execution_response` | 通常用 `register_tool()` 封装,不必手写 |
 | 扩展 | `rescan_extensions` | **v1.x 新增**:运行时重扫 skills 目录(`.zhuye/skills`,workspace + 用户级;插件注入不受影响);回 `extensions_rescanned`(skills 计数,commands 恒 false) |
+| 安全 | `query_guard_stats` | **F01 新增**:查询 prompt_guard 裁决统计(定义侧/输出侧的 block 与 review 四计数);回 `guard_stats` |
 
 示例:切计划模式、带 thread_settings 提交
 
