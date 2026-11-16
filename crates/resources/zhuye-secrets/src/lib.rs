@@ -49,6 +49,9 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use typenum::U12;
 
+/// F08:可插拔凭据 provider(文件 / 系统钥匙串 CLI / env)+ 子进程 env 脱敏。
+pub mod provider;
+
 /// 存储格式版本(AAD 绑定,防跨版本混用密文)。
 const FORMAT_VERSION: u64 = 1;
 /// machine key 字节数(AES-256)。
