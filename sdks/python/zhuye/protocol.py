@@ -36,7 +36,7 @@ class ThreadSettings(TypedDict, total=False):
     effort: Literal["low", "medium", "high", "max", "ultra"] | None
     permission_mode: str | None
     model: str | None
-    approval_policy: Literal["auto", "prompt", "deny"] | None
+    approval_policy: Literal["auto", "prompt", "deny", "auto_approve", "full_access"] | None
     sandbox_policy: Literal["workspace_only", "os_sandbox", "full_access"] | None
     max_tool_concurrency: int | None
 

@@ -356,6 +356,45 @@ def test_A1b_回合审批策略阻止工具副作用(serve_session, mock_script,
     assert "turn_complete" in msg_types(events)
 
 
+@pytest.mark.parametrize("policy", ["auto_approve", "full_access"])
+def test_A1c_规划模式与独立审批策略(serve_session, mock_script, policy) -> None:
+    """规划模式下的只读命令可与独立的自动审批策略同时生效。"""
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "bash", "args": {"cmd": "pwd"}}),
+        '{"type":"text","text":"已处理"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        session.submit({"type": "set_permission_mode", "mode": "plan"})
+        events = session.submit({
+            "type": "user_input",
+            "items": [{"type": "text", "text": "检查当前目录"}],
+            "thread_settings": {"approval_policy": policy},
+        }, timeout=DRAIN_TIMEOUT)
+    tool = first_event(events, "tool_call_end")
+    assert tool is not None and tool["msg"]["is_error"] is False, tool
+    assert first_event(events, "approval_request") is None
+    assert first_event(events, "turn_complete") is not None
+
+
+def test_A1d_完全访问不绕过规划模式(serve_session, mock_script, sandbox) -> None:
+    """完全访问只改变审批，规划模式仍阻止写操作。"""
+    marker = sandbox.cwd / "plan-write-must-not-exist"
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "bash", "args": {"cmd": f"touch {shlex.quote(str(marker))}"}}),
+        '{"type":"text","text":"已处理"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        session.submit({"type": "set_permission_mode", "mode": "plan"})
+        events = session.submit({
+            "type": "user_input",
+            "items": [{"type": "text", "text": "检查写入限制"}],
+            "thread_settings": {"approval_policy": "full_access"},
+        }, timeout=DRAIN_TIMEOUT)
+    tool = first_event(events, "tool_call_end")
+    assert tool is not None and tool["msg"]["is_error"] is True, tool
+    assert not marker.exists()
+
+
 def test_A2_set_effort_静默(serve_session, mock_script) -> None:
     """set_effort 只写槽,不产任何 turn 事件(仅收尾标记)。"""
     require_binary()

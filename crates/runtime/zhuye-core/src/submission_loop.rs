@@ -622,6 +622,10 @@ pub async fn submission_loop(
                         tracing::info!("thread_settings: approval deny-all for this turn");
                         true
                     }
+                    Some(
+                        zhuye_protocol::ApprovalPolicy::AutoApprove
+                        | zhuye_protocol::ApprovalPolicy::FullAccess,
+                    ) => true,
                     Some(zhuye_protocol::ApprovalPolicy::Auto) | None => approval_enabled,
                 };
                 // v1.x:Op 未指定 sandbox_policy 时回退到配置表态
@@ -701,7 +705,8 @@ pub async fn submission_loop(
                         // 于是「agent 正在等审批时按中断」**不解除等待**,
                         // 回合永远停在审批门上(既没有 turn_aborted 也没有
                         // turn_complete)。gate 是每回合构造的,挂回合令牌安全。
-                        .with_turn_cancel(turn_cancel.clone());
+                        .with_turn_cancel(turn_cancel.clone())
+                        .with_turn_policy(thread_settings.approval_policy);
                         // P2 `yolo-classifier`:把 cfg 的启发式分类器注入 gate。
                         if cfg.yolo_classifier.is_some() {
                             g.set_yolo_classifier(

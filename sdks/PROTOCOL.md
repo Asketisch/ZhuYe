@@ -85,7 +85,7 @@ zhuye serve [--resume <uuid> | -c | -r <N>] [--agent <name>] [--plan-mode] ...
 | `shutdown` | — | 优雅退出(见 §6) |
 | `rescan_extensions` | `skills: bool`, `commands: bool` | **v1.x 新增(additive)**:运行时重扫扩展目录(skills 按启动目录序替换文件型技能,插件注入与内置包不受影响);不开 turn,应答 `extensions_rescanned` 后 `submission_closed` 收尾。`commands` 位当前恒回 `false`(命令正文实时读盘) |
 
-`thread_settings` 支持 `model`、`approval_policy`(`auto` / `prompt` / `deny`)、
+`thread_settings` 支持 `model`、`approval_policy`(`auto` / `prompt` / `deny` / `auto_approve` / `full_access`)、
 `sandbox_policy`(`workspace_only` / `os_sandbox` / `full_access`)和
 `max_tool_concurrency`。旧 SDK 类型中的 `effort` 与 `permission_mode` 不被该
 对象读取,应分别通过 `set_effort`、`set_permission_mode` 提交。
