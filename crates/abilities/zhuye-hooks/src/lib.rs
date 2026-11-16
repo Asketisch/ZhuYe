@@ -11,6 +11,8 @@ pub mod config;
 pub mod decision;
 pub mod engine;
 pub mod event;
+/// F61:hook 体系扩展(新钩点 + HTTP/prompt-judge 形态 + exit 2 兼容)。
+pub mod extended;
 pub mod file_read_state;
 pub mod hook;
 /// F07:LLM 审批评审器 + 不变地板 + 连续拒绝熔断。
@@ -22,6 +24,10 @@ pub use bash_classify::{BashCommandClass, classify_command};
 pub use decision::{HookDecision, ResolvedDecision, SystemMessage};
 pub use engine::HookEngine;
 pub use event::{HookContext, HookEvent, HookEventKind, StopReason};
+pub use extended::{
+    HookDecl, HookForm, HookKind, HookRegistry, HookVerdict, parse_judge_output,
+    render_judge_prompt,
+};
 pub use file_read_state::{DenyReason, FileReadStateTracker, ReadRecord, SharedFileReadState};
 pub use hook::{Hook, HookError};
 pub use reviewer::{
