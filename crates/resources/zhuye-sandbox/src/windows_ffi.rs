@@ -657,6 +657,10 @@ mod tests {
     };
     use super::*;
     use std::collections::BTreeMap;
+    // 真机集成测试直接调 Win32 API:CloseHandle 只在本模块的 `imp` 里导入,
+    // `use super::*` 取不到子模块的导入项,须显式引入(仅 Windows)。
+    #[cfg(windows)]
+    use windows_sys::Win32::Foundation::CloseHandle;
 
     fn plan() -> WindowsSandboxPlan {
         WindowsSandbox::new(WindowsSandboxConfig::default()).plan()
