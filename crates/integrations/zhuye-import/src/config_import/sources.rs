@@ -132,12 +132,11 @@ fn mcp_entry(
         obj.get("env")
             .or_else(|| obj.get("environment"))
             .and_then(Value::as_object)
-            .map(|m| {
+            .map_or(HashMap::new(), |m| {
                 m.iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
-            .unwrap_or_default()
     };
     let headers = |obj: &serde_json::Map<String, Value>| -> HashMap<String, String> {
         obj.get("headers")

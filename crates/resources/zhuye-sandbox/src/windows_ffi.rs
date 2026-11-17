@@ -259,7 +259,9 @@ mod imp {
         let cmdline = super::build_command_line(command, args);
         let mut cmd_wide = to_wide(&cmdline);
         let exe_wide = to_wide(command);
-        let env_block = super::build_env_block(&BTreeMap::new()); // 空 = 继承
+        // 空 = 继承;当前 CreateProcess 对 env 传 NULL,本块留作 env
+        // 接线参数待用(下划线前缀消除 unused 告警)。
+        let _env_block = super::build_env_block(&BTreeMap::new());
         let mut siex: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         siex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
 
@@ -488,7 +490,8 @@ mod imp {
                 sids.len() as u32,
                 &mut profile_psid,
             );
-            unsafe { LocalFree(profile_psid as *mut core::ffi::c_void) };
+            // 外层 unsafe 块已覆盖,内层包装属冗余(unused_unsafe)。
+            LocalFree(profile_psid as *mut core::ffi::c_void);
             if hr != 0 {
                 return Err(format!("CreateAppContainerProfile hr=0x{hr:x}"));
             }
@@ -503,8 +506,7 @@ mod imp {
                 ));
             }
             // 取回 SID 字节(标准 SID 最大 68 字节;越界由内核布局保证不发生)。
-            let bytes =
-                unsafe { std::slice::from_raw_parts(container_psid as *const u8, 68) }.to_vec();
+            let bytes = std::slice::from_raw_parts(container_psid as *const u8, 68).to_vec();
             // capability 转换出的 PSID 为 LocalAlloc 分配 —— 逐一释放。
             for sid in &sids {
                 LocalFree(sid.Sid);
@@ -555,7 +557,7 @@ mod imp {
             let mut new_dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
             let hr = SetEntriesInAclW(1, &ea, old_dacl, &mut new_dacl);
             if hr != 0 {
-                unsafe { LocalFree(old_dacl as *mut core::ffi::c_void) };
+                LocalFree(old_dacl as *mut core::ffi::c_void);
                 return Err(format!("SetEntriesInAclW hr=0x{hr:x}"));
             }
             // ④ 应用
@@ -568,10 +570,8 @@ mod imp {
                 new_dacl,
                 std::ptr::null_mut(),
             );
-            unsafe {
-                LocalFree(new_dacl as *mut core::ffi::c_void);
-                LocalFree(old_dacl as *mut core::ffi::c_void);
-            }
+            LocalFree(new_dacl as *mut core::ffi::c_void);
+            LocalFree(old_dacl as *mut core::ffi::c_void);
             if hr != 0 {
                 return Err(format!("SetNamedSecurityInfoW hr=0x{hr:x}"));
             }

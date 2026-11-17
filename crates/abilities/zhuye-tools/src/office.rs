@@ -61,11 +61,12 @@ impl DocumentKind {
 
     /// 按扩展名判定。
     pub fn from_extension(path: &Path) -> DocumentKind {
+        // map_or 而非 map+unwrap_or_default:新版 clippy 的 map_unwrap_or
+        // 提级为默认告警,CI 以 -D warnings 拒收。
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .unwrap_or_default();
+            .map_or(String::new(), |e| e.to_ascii_lowercase());
         match ext.as_str() {
             "docx" | "doc" | "odt" | "rtf" => DocumentKind::Word,
             "xlsx" | "xls" | "csv" | "tsv" | "ods" => DocumentKind::Excel,
