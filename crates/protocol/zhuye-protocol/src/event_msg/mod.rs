@@ -373,6 +373,7 @@ mod tests {
             is_error: false,
             elapsed_ms: 42,
             child_id: None,
+            args: None,
         });
         let j = serde_json::to_string(&msg).unwrap();
         let back: EventMsg = serde_json::from_str(&j).unwrap();

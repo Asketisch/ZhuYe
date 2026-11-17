@@ -669,6 +669,13 @@ fn memory_consolidate_interval_secs() -> u64 {
 /// `Consolidator` 幂等纯函数(无变化不写盘);interval / 触发全部留在
 /// 本层,保证引擎循环稳定。`secs == 0` 显式关闭。
 fn spawn_memory_consolidation_task(workspace: &std::path::Path, agent_name: &str) {
+    // v1.11 M5a:sqlite 记忆后端下禁用后台文件整理 —— 它直接改写
+    // MEMORY.md,会绕过条目版本库(投影以 DB 为准,下次对账还会把
+    // 整理结果当外部编辑导回来);条目唯一性由 sqlite 写入路径保证。
+    if zhuye_memory::backend_from_env() == zhuye_memory::MemoryBackend::Sqlite {
+        tracing::info!("sqlite 记忆后端:后台文件整理任务禁用(条目唯一性由写入路径保证)");
+        return;
+    }
     let secs = memory_consolidate_interval_secs();
     if secs == 0 {
         return;
@@ -1019,9 +1026,15 @@ pub async fn bootstrap_normal(
             Some(user_data_dir),
         ));
     }
-    thread.register_hook(crate::builtin_hooks::CrossSessionRecallHook::new(
-        thread_id.to_string(),
-    ));
+    // v1.11 M5a:sqlite 记忆后端时限定召回归属 workspace(旧无归属
+    // 笔记不参加跨项目召回);旧后端保持无过滤口径。
+    let recall_hook = crate::builtin_hooks::CrossSessionRecallHook::new(thread_id.to_string());
+    let recall_hook = if zhuye_memory::backend_from_env() == zhuye_memory::MemoryBackend::Sqlite {
+        recall_hook.with_workspace_filter(workspace.display().to_string())
+    } else {
+        recall_hook
+    };
+    thread.register_hook(recall_hook);
     let rbe_section = initial_cfg.hooks.read_before_edit.as_ref();
     let (_rbe_state, rbe_hook) = build_read_before_edit(
         rbe_section.and_then(|s| s.enabled),
@@ -1339,9 +1352,16 @@ pub async fn bootstrap_resumed(
                 Some(user_data_dir),
             ));
         }
-        thread.register_hook(crate::builtin_hooks::CrossSessionRecallHook::new(
-            thread_id.to_string(),
-        ));
+        // v1.11 M5a:sqlite 记忆后端时限定召回归属 workspace(旧无归属
+        // 笔记不参加跨项目召回);旧后端保持无过滤口径。
+        let recall_hook = crate::builtin_hooks::CrossSessionRecallHook::new(thread_id.to_string());
+        let recall_hook = if zhuye_memory::backend_from_env() == zhuye_memory::MemoryBackend::Sqlite
+        {
+            recall_hook.with_workspace_filter(workspace.display().to_string())
+        } else {
+            recall_hook
+        };
+        thread.register_hook(recall_hook);
         let rbe_section = initial_cfg.hooks.read_before_edit.as_ref();
         let (_rbe_state, rbe_hook) = build_read_before_edit(
             rbe_section.and_then(|s| s.enabled),

@@ -42,6 +42,7 @@ anthropic 段同样支持免 key 本地网关（`api_key = ""` + 显式 `base_ur
 | `ZHUYE_MODEL` | 覆盖模型规格，`=mock` 供离线运行 |
 | `ZHUYE_HOME` | 数据目录，默认 `~/.zhuye` |
 | `ZHUYE_BIN` | SDK 去哪找 `zhuye` 二进制 |
+| `ZHUYE_MEMORY_BACKEND` | 记忆后端：默认 `markdown`（MEMORY.md 文件 + BM25 分节检索）；`=sqlite` 启用条目版本库（`memory.db` + FTS5 中文检索，MEMORY.md 退化为可编辑投影；首次打开自动幂等导入既有内容）。sqlite 模式下 compact 固化与后台文件整理暂禁用（自动写入待 M5b 经持久队列提供），新笔记带 workspace 归属、旧无归属笔记不再参加跨项目召回 |
 | `RUST_LOG` | 日志过滤，默认 `warn,zhuye=info` |
 
 其余环境变量散落在各 crate 里，源码里搜 `ZHUYE_` 前缀即可。

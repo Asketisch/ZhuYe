@@ -21,7 +21,7 @@ use zhuye_agent_def::AgentDefinition;
 use zhuye_compact::{Compactor, LlmSummarizer, Summarizer};
 use zhuye_core::config::{M4Deps, compactor_config_from_env_and_toml, default_m4_deps};
 use zhuye_llm::RoutingPolicy;
-use zhuye_memory::{FileMemoryStore, InMemoryStore, MemoryStore};
+use zhuye_memory::MemoryStore;
 use zhuye_notes::NoteStore;
 use zhuye_prompt::PromptBuilder;
 use zhuye_protocol::{RolloutRecorder, ThreadId};
@@ -112,11 +112,10 @@ pub fn build_default_m4_with_prompts(
     let skills_catalog = Arc::new(skills_catalog);
 
     // ── Memory:CompositeMemoryStore(Session 内存 + Project/User 文件) ──
-    let file_store = Arc::new(FileMemoryStore::with_user_data_dir(
-        workspace,
-        &user_data_dir,
-    ));
-    let memory: Arc<dyn MemoryStore> = Arc::new(InMemoryStore::with_fallback(file_store));
+    // v1.11 M5a:`ZHUYE_MEMORY_BACKEND=sqlite` 时切换 SQLite 条目版本库
+    // (FTS5 中文检索 + MEMORY.md 投影);库门面与 exec 共用同一装配口径。
+    let memory_stack = zhuye_memory::bootstrap_stack(workspace, &user_data_dir);
+    let memory: Arc<dyn MemoryStore> = memory_stack.store.clone();
 
     // ── Session notes(落盘失败 → 内存 fallback) ──────────────
     let note_store: Arc<dyn NoteStore> = match build_note_store(thread_id) {

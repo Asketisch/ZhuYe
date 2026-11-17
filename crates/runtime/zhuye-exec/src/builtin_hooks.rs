@@ -125,6 +125,10 @@ pub struct CrossSessionRecallHook {
     /// (读 `ZHUYE_HOME`);测试注入临时目录,避免与同进程其他改 env
     /// 的用例互相踩掉数据根。
     notes_home: Option<std::path::PathBuf>,
+    /// v1.11 M5a:workspace 归属过滤(sqlite 记忆后端时由 bootstrap
+    /// 注入)。`Some(w)` 只召回同归属笔记,旧无归属笔记不参加跨项目
+    /// 召回;`None` = 旧口径(不过滤)。
+    workspace_filter: Option<String>,
 }
 
 impl CrossSessionRecallHook {
@@ -132,12 +136,19 @@ impl CrossSessionRecallHook {
         Self {
             current_thread: current_thread.into(),
             notes_home: None,
+            workspace_filter: None,
         }
     }
 
     /// 指定笔记根(其下 `session-notes/*.jsonl`),不读进程环境变量。
     pub fn with_notes_home(mut self, home: impl Into<std::path::PathBuf>) -> Self {
         self.notes_home = Some(home.into());
+        self
+    }
+
+    /// v1.11 M5a:限定召回归属 workspace(sqlite 记忆后端装配用)。
+    pub fn with_workspace_filter(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace_filter = Some(workspace.into());
         self
     }
 }
@@ -171,11 +182,12 @@ impl Hook for CrossSessionRecallHook {
         else {
             return Ok(HookDecision::Allow);
         };
-        let hits = zhuye_notes::recall_cross_session(
+        let hits = zhuye_notes::recall_cross_session_scoped(
             &home,
             &self.current_thread,
             query,
             zhuye_notes::RECALL_LIMIT,
+            self.workspace_filter.as_deref(),
         );
         if hits.is_empty() {
             return Ok(HookDecision::Allow);

@@ -215,6 +215,13 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                     is_error: r.is_error,
                     elapsed_ms: r.elapsed_ms,
                     child_id: None,
+                    // begin.args 恒为 null(参数由落盘历史持有),GUI 实时流
+                    // 只听 begin+end —— end 补带完整参数供工具卡摘要展示。
+                    args: if args.is_null() {
+                        None
+                    } else {
+                        Some(args.clone())
+                    },
                 }),
             ))
             .await;
@@ -456,14 +463,16 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                 }
             }
         }
-        // `memory` 工具的 write / remove 在 turn 内改写了 MEMORY.md:失效
-        // pre_loop 的 turn 级检索缓存,让下一次 ToolExec → PreLoop 回环
-        // 重新检索 —— 否则新写入的条目直到 turn 结束都进不了 system
-        // prompt(缓存引入前的行为是每次迭代重新读盘,写后立即可见)。
+        // `memory` 工具的 write / remove / consolidate 在 turn 内改写了
+        // 记忆(MEMORY.md 或 SQLite 库):失效 pre_loop 的 turn 级检索
+        // 缓存,让下一次 ToolExec → PreLoop 回环重新检索 —— 否则新写入
+        // 的条目直到 turn 结束都进不了 system prompt(缓存引入前的行为
+        // 是每次迭代重新读盘,写后立即可见)。v1.11 M5a:补 consolidate
+        // (确定性整理同样改写正文,不能沿用旧缓存)。
         if tool_name_for_history == "memory"
             && matches!(
                 tool_output.metadata.get("action").and_then(|v| v.as_str()),
-                Some("write") | Some("remove")
+                Some("write") | Some("remove") | Some("consolidate")
             )
         {
             state.memory_retrieval_cache = None;

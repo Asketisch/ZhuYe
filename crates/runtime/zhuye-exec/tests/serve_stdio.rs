@@ -398,3 +398,101 @@ async fn mock_client_在_registry_中可解析() {
     }
     assert!(saw_stop);
 }
+
+/// end 事件必须补带完整参数:`tool_call_begin.args` 恒为 null、整包
+/// 形态 provider(如 mock)不发 args delta,GUI 实时流只听 begin+end,
+/// end 不带参数工具卡摘要就永远只能显示工具名(实机实证)。
+#[tokio::test]
+async fn tool_call_end_carries_parsed_args() {
+    // echo 是内置工具:注册进工具表,调用会真正执行到 end。
+    let dir = std::env::temp_dir().join(format!("zhuye-serve-args-{}", std::process::id()));
+    let registry = mock_registry(vec![
+        MockReply::ToolCall {
+            name: "echo".into(),
+            args: serde_json::json!({"message": "args-end-to-end"}),
+        },
+        MockReply::Text {
+            text: "工具调用结束".into(),
+        },
+    ]);
+    // 内置注册函数要求 ast_tool 占位;测试只需一个最简 echo —— 自定义
+    // 实现 Tool trait,回显 message 参数。
+    let tools = Arc::new(ToolRegistry::default());
+    tools.register(Arc::new(TestEchoTool));
+    let thread = Arc::new(AgentThread::new(
+        AgentConfig::new("mock/mock-1", dir),
+        registry,
+        tools,
+        None,
+        None,
+    ));
+    let (mut w, mut rx, _handle) = start_serve(thread).await;
+    send_sub(&mut w, &Submission::user_input("调用 echo")).await;
+    let mut saw_begin = false;
+    let end = loop {
+        let ev = tokio::time::timeout(WAIT, rx.recv())
+            .await
+            .expect("等待事件超时")
+            .expect("事件通道提前关闭");
+        match &ev.msg {
+            EventMsg::ToolCallBegin(b) => {
+                saw_begin = true;
+                // 整包形态(mock):begin 直接携带完整参数,GUI 工具卡
+                // 立即可见「执行什么参数」,不必等 end。
+                assert_eq!(
+                    b.args["message"], "args-end-to-end",
+                    "整包形态 begin.args 应携带完整参数,实际 {:?}",
+                    b.args
+                );
+            }
+            EventMsg::ToolCallEnd(e) => break e.clone(),
+            _ => {}
+        }
+    };
+    assert!(saw_begin, "应先收到 tool_call_begin");
+    let args = end
+        .args
+        .as_ref()
+        .unwrap_or_else(|| panic!("end 事件未携带 args"));
+    assert_eq!(args["message"], "args-end-to-end");
+}
+
+/// 测试用最小 echo 工具:回显 `message` 参数,验证 end 事件参数回带。
+struct TestEchoTool;
+
+#[async_trait::async_trait]
+impl zhuye_tools::Tool for TestEchoTool {
+    fn name(&self) -> &str {
+        "echo"
+    }
+
+    fn description(&self) -> &str {
+        "回显 message 参数(测试专用)"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "message": { "type": "string" } },
+            "required": ["message"]
+        })
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _ctx: zhuye_tools::ToolContext,
+        args: serde_json::Value,
+    ) -> Result<zhuye_protocol::ToolOutput, zhuye_tools::ToolError> {
+        let text = args["message"].as_str().unwrap_or_default().to_string();
+        Ok(zhuye_protocol::ToolOutput {
+            content: vec![zhuye_protocol::ContentBlock::Text { text }],
+            is_error: false,
+            metadata: serde_json::Value::Null,
+            elapsed_ms: 0,
+        })
+    }
+}

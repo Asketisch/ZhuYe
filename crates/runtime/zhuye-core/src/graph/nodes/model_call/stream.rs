@@ -190,12 +190,21 @@ pub async fn process_stream_events(
                         )).await;
                     }
                     Some(Ok(ChatEvent::ToolUseStart { id, name, input_json })) => {
+                        // 整包形态(如 mock provider)的 ToolUseStart.input_json
+                        // 已携带完整参数且不再发 delta —— begin 直接带解析后的
+                        // 参数,GUI 工具卡立即展示「读哪个文件 / 执行哪条命令」;
+                        // 流式形态保持 null,参数由 args delta 渐进补充。
+                        let begin_args = if input_json.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::from_str(&input_json).unwrap_or(serde_json::Value::Null)
+                        };
                         let _ = ctx.event_tx.send(Event::new(
                             ctx.sub_id.clone(),
                             EventMsg::ToolCallBegin(ToolCallBeginEvent {
                                 call_id: id.clone(),
                                 tool_name: name.clone(),
-                                args: serde_json::Value::Null,
+                                args: begin_args,
                                 child_id: None,
                             }),
                         )).await;

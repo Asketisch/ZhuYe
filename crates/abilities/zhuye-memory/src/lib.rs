@@ -14,8 +14,10 @@
 //! 注入 memory 的字符上限为
 //! [`MAX_MEMORY_INJECT_CHARS`](8000,与 Zhuye 一致)。
 
+pub mod backend;
 pub mod consolidate;
 pub mod edit;
+pub mod editor;
 /// F18:技能自进化(候选队列 + review 门 + 错误-解法缓存 + 备份)。
 pub mod evolution;
 /// F16:BM25 + 向量 RRF 混合检索(无 embedding 时自动降级)。
@@ -29,11 +31,14 @@ pub mod model;
 pub mod persona;
 pub mod retrieval;
 pub mod scope;
+pub mod sqlite;
 pub mod store;
 pub mod topics;
 
+pub use backend::{MemoryBackend, MemoryStack, backend_from_env, bootstrap_stack};
 pub use consolidate::{ConsolidateStats, Consolidator, consolidate_document};
 pub use edit::{EntryWriteOptions, MemoryEntry, WHOLE_DOCUMENT_KEY, migrate_legacy_agent_dir};
+pub use editor::MemoryEditor;
 pub use evolution::{
     CachedSolution, CandidateQueue, CandidateStatus, ErrorSolutionCache, EvolutionError,
     SkillCandidate, SkillWriteBackup, prepare_write, restore_from_backup,
@@ -55,5 +60,6 @@ pub use persona::{
 };
 pub use retrieval::{MemorySection, retrieve_relevant, retrieve_relevant_arc, split_sections};
 pub use scope::{MAX_MEMORY_INJECT_CHARS, resolve_path};
+pub use sqlite::{ChangeAction, ChangeReport, EntryKind, MemoryChange, SqliteMemoryStore};
 pub use store::{FileMemoryStore, InMemoryStore, MemoryStore, truncate_for_injection};
 pub use topics::validate_topic_name;
