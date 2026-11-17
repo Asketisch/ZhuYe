@@ -33,7 +33,8 @@
 | `agent.fault` / `agent.fuzz` | 故障注入与模糊测试 | 只读存储、磁盘满、跨实例锁竞争、确定性变异与万级多重变异映射 |
 | `agent.soak` | 高负载长稳 | env 锁压测 + 长会话压缩/重启映射 |
 | `agent.performance` | 冷启动、首事件、RSS 基线 | 映射 bench |
-| `agent.eval` | 真实模型协议与任务质量 | 条件项 |
+| `agent.eval` | 真实模型协议与终态演练 | 条件项 |
+| `agent.quality` | 固定任务集、真实模型及基线/候选版本比较 | 显式启用的观察项 |
 
 `CASE_INDEX` 保留 A 系列编号,允许按单个规划用例选择所属任务。新增能力时,
 能力断言优先落在 `tests/functional/`,SDK 只测语言绑定差异。

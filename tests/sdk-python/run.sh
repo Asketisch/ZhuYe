@@ -22,12 +22,15 @@ require_binary
 cd "$ROOT"
 
 RC=0
+JUNIT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zhuye-sdk-junit.XXXXXX")"
+trap 'rm -rf "$JUNIT_DIR"' EXIT
 
 echo "── Python SDK 绑定层:真二进制端到端(pytest)──"
 if require_cmd python3 && python3 -m pytest --version >/dev/null 2>&1; then
     if HOME="$(mktemp -d)" ZHUYE_BIN="$ZHUYE_BIN" \
         PYTHONPATH="$ROOT/sdks/python" \
-        python3 -m pytest "$HERE/test_sdk_real_bin.py" -v --tb=short; then
+        python3 -m pytest "$HERE/test_sdk_real_bin.py" -v --tb=short --junitxml="$JUNIT_DIR/binding.xml" && \
+        python3 "$ROOT/tests/check_junit.py" "$JUNIT_DIR/binding.xml"; then
         echo "  [ok]   SDK 绑定层全绿"
     else
         echo "  [FAIL] SDK 绑定层存在失败"
@@ -43,7 +46,8 @@ echo "── Python SDK:协议单测(Node mock serve)──"
 if require_cmd python3 node && python3 -m pytest --version >/dev/null 2>&1; then
     if HOME="$(mktemp -d)" ZHUYE_BIN="$ZHUYE_BIN" \
         PYTHONPATH="$ROOT/sdks/python" \
-        python3 -m pytest "$ROOT/sdks/python/tests" -v --tb=short; then
+        python3 -m pytest "$ROOT/sdks/python/tests" -v --tb=short --junitxml="$JUNIT_DIR/unit.xml" && \
+        python3 "$ROOT/tests/check_junit.py" "$JUNIT_DIR/unit.xml"; then
         echo "  [ok]   协议单测全绿"
     else
         echo "  [FAIL] 协议单测存在失败"

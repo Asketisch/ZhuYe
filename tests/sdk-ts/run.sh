@@ -22,6 +22,8 @@ require_binary
 cd "$ROOT"
 
 RC=0
+TAP_FILE="$(mktemp "${TMPDIR:-/tmp}/zhuye-sdk-tap.XXXXXX")"
+trap 'rm -f "$TAP_FILE"' EXIT
 
 echo "── TS SDK 绑定层:真二进制端到端(node --test)──"
 if require_cmd node; then
@@ -30,8 +32,18 @@ if require_cmd node; then
         echo "  [FAIL] dist 构建失败"
         exit 1
     }
-    if HOME="$(mktemp -d)" ZHUYE_BIN="$ZHUYE_BIN" \
-        node --test "$HERE/real-bin.test.mjs"; then
+    NODE_RC=0
+    HOME="$(mktemp -d)" ZHUYE_BIN="$ZHUYE_BIN" \
+        node --test --test-reporter=tap "$HERE/real-bin.test.mjs" >"$TAP_FILE" 2>&1 || NODE_RC=$?
+    cat "$TAP_FILE"
+    if [ "$NODE_RC" -eq 0 ] && python3 - "$TAP_FILE" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+match = re.search(r'^# pass (\d+)$', text, re.M)
+if not match or int(match.group(1)) < 1:
+    sys.exit("Node 测试没有执行任何通过的用例")
+PY
+    then
         echo "  [ok]   SDK 绑定层全绿"
     else
         echo "  [FAIL] SDK 绑定层存在失败"

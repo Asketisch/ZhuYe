@@ -141,6 +141,29 @@ python3 tests/runner.py run --suite smoke --dry-run
 python3 tests/runner.py run --suite release --artifact <产物路径>
 ```
 
+发布产物目录须在同一层包含当前平台可执行的 `zhuye`、Python SDK wheel
+(`zhuye-*.whl`)、原生绑定 wheel (`zhuye_py-*.whl`)及 npm 包(`*.tgz`),
+各一份。`--suite release --artifact <目录> --no-build` 会在临时环境安装
+这三份包,使用该二进制运行双 SDK 绑定和原生绑定测试,并核对版本;缺失或
+损坏的产物使任务失败。报告记录各文件的绝对路径、大小及 SHA-256。
+产物验证不下载依赖;执行环境需提供 Python、pip、pytest、Node 与 npm。
+
+设置 `ZHUYE_TEST_ARTIFACTS` 时,功能测试失败会写入每用例的脱敏配置、
+逐会话 stderr、双向 wire、rollout 与版本标识;CI 失败时上传此目录。
+
+固定任务质量评测使用 OpenAI 兼容接口的真实模型,默认不发起网络请求。设定
+`ZHUYE_EVAL=1`、`ZHUYE_EVAL_BASELINE`、`ZHUYE_EVAL_CANDIDATE`、
+`ZHUYE_EVAL_MODEL`、`ZHUYE_EVAL_BASE_URL`、`ZHUYE_EVAL_API_KEY`,运行
+`python3 tests/runner.py run --task agent.quality`。每版本默认各跑 12 个
+合成任务三次,比较客观成功次数、工具调用、token 和耗时;`report.json`
+与逐次事件轨迹写入 `target/eval-quality`。真实模型结果仅作观察,上游
+故障单列基础设施错误;无需模型评分,确定性回复断言使用 `zhuye-eval`。
+可直接调用 `tests/eval/run.py --help` 配置输出目录及 token 单价。
+`ZHUYE_EVAL_MODEL` 填接口接受的模型 ID(不含 `openai/` 路由前缀)。
+代码修复任务的外部验证器在系统沙箱中执行模型生成的代码,禁用网络并
+隐藏宿主 HOME;需要 macOS `sandbox-exec` 或 Linux `bubblewrap` 与可用的
+用户命名空间。沙箱不可用时评测记录基础设施错误,不会降级为裸运行。
+
 - 结果语义:`pass / fail / skip(条件不适用) / infra_error / timeout / pending(未覆盖)`;
   skip 不计通过;pending 与基础设施错误使退出码为 2,失败为 1。
 - 报告:`.test-runner/report.json`(JSON)+ `junit.xml`(JUnit)+ 人类摘要;

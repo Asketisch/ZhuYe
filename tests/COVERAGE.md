@@ -8,10 +8,10 @@
 
 | 层 | 位置 | 测谁 | 依赖 SDK? | 规模 |
 |---|---|---|---|---|
-| **能力覆盖层**(主) | `tests/functional/` | **Rust 代码在真产物上的行为**(原始 JSONL wire)与测试设施自检 | ❌ | 330 条(pytest 实测,含设施自检) |
+| **能力覆盖层**(主) | `tests/functional/` | **Rust 代码在真产物上的行为**(原始 JSONL wire)与测试设施自检 | ❌ | 381 条(pytest 收集,含设施自检) |
 | CLI 参数面 | `tests/rust/*.sh`、能力层 | 18 个子命令的参数矩阵与输出契约 | ❌ | 128+ 断言 + C10–C19(四份 bash 深度套件已全部迁入能力层) |
 | SDK 绑定层 | `tests/sdk-python/`、`tests/sdk-ts/` | 两个**客户端自己**的行为 | ✅ | Python 19 条 / TS 19 条 |
-| SDK 单测 | `sdks/*/tests/` | SDK 纯逻辑(mock serve),随包发布 | ✅ | Python 27 / TS 39 条 |
+| SDK 单测 | `sdks/*/tests/` | SDK 纯逻辑(mock serve),随包发布 | ✅ | Python 28 / TS 40 条 |
 | 原生 Python 绑定 | `tests/native-python/` | 安装实际构建的 PyO3 wheel,验证 Python 接口 | ✅ | 2 条 |
 | crate 单测 | `crates/**/tests/` | 内部单元与集成 | — | 既有 |
 | **实模型演练层**(可选) | `tests/live/` | **真实模型**下的引擎行为(协议形状) | ❌ | 10 条 |
@@ -34,8 +34,9 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 能力域 | 能力覆盖层 | CLI 参数面 | SDK 绑定层 | crate 单测 | 实模型层 |
 |---|---|---|---|---|---|
 | 基础通信(握手/单轮/多轮/事件流/终态/工具参数增量/整段消息) | D1–D5、D9–D10、D13 | cli_core | K1–K2、K5 | ✅(build/build_async 对齐断言) | L1–L4 |
-| EventMsg 全变体线格式 | —(逐场景事件断言见能力层) | — | — | ✅(`tests/contracts/events.json` 50 变体 + 源码奇偶 + serde roundtrip) | — |
+| EventMsg 全变体线格式 | —(逐场景事件断言见能力层) | — | 双 SDK 共用最小及可选字段样本,验证透传和未知字段 | ✅(`tests/contracts/events.json` 50 变体 + 完整字段样本 + serde roundtrip) | — |
 | 协议信封与 Op 随机往返 | — | — | — | ✅(proptest:Op / Submission / Event serde) | — |
+| 真实任务效果与版本比较 | 本地网关驱动真进程的评分设施自检 | — | — | ✅(zhuye-eval 评分器) | `agent.quality`:12 个合成任务、默认三次重复、客观产物验收及失败轨迹;需显式启用 |
 | 协议事件变异回归(截断 / 字节替换 / 判别子破坏 / 多种子多重变异) | — | — | — | ✅(`event_mutation_fuzz`,默认 1 万次可配置) | — |
 | Rollout 只读目录写失败 | — | — | — | ✅(返回错误、已有会话文件字节不变) | — |
 | Rollout 磁盘满写失败 | — | — | — | ✅(`/dev/full` 真实 ENOSPC,返回错误且不 panic) | — |
@@ -62,12 +63,14 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 技能面(内置包开关 / 文件 skill 激活) | SK1–SK4、O12(exec 路径) | —(integrations 已迁能力层) | — | ✅ | — |
 | 远程工具(注册/往返/失败/超时/MCP 图片) | T3–T4、T21、T23、X4 | —(serve_ops 已迁能力层) | K3、K8、K13(双 SDK 图片) | ✅ | — |
 | 审批交互(approve / deny / bubble / shell 规则) | T5–T7、O14(bubble) | —(integrations 已迁能力层) | — | ✅ | — |
+| 审批与中断交错 | 固定种子重排批准、拒绝和中断;验证单一终态、迟到审批及文件副作用 | — | — | 等待器释放 | — |
 | 子代理审批转发 | 子代理 `write` 的请求进入父提交;批准后落盘、拒绝后无副作用 | — | — | ✅(会话共享 waiter / session allow) | — |
 | 子代理人工输入转发 | 子代理自由文本与结构化提问进入父提交,标准 response Op 能唤醒工具并继续 | — | — | ✅(共享 question/input waiter) | — |
 | 子代理权限与沙箱继承 | 父级 `write` 拒绝规则在子代理生效,不弹审批且无文件副作用 | — | — | ✅(父配置安全字段继承) | — |
 | 子代理文件系统边界 | 父级放行 `write` 时,工作区外仍拒绝且无副作用,工作区内写入成功 | — | — | ✅(父配置安全字段继承) | — |
 | 会话状态 Op(22 Op)+ Activity 审计落盘和轮转 | A1–A17、A25–A29(A1b 验证拒绝副作用，A1c 验证规划模式与独立审批策略) | —(serve_ops 已迁能力层) | K4、K9;双 SDK 回合设置类型检查 | ✅(activity 7 例) | — |
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R6 | cli_core(exec --resume) | — | ✅ | P2 |
+| 工具在途崩溃后恢复 | 本地网关与真进程:已落盘历史可见、恢复后工具调用和回执配对、下一轮成功 | — | — | — | — |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
 | 持久化(rollout / 截断 / 索引 / 标题 / 导出 / cron store / cron 触发 / autopilot) | P1–P15、C13(session 生命周期) | — | — | ✅ | P1–P2 |
 | 循环守卫参数预览脱敏与停滞阻断(库调用方注入) | —(CLI 未暴露配置) | — | — | ✅(提醒、阻断、进展后再次停滞及零长度窗口) | — |
@@ -763,7 +766,9 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:复杂度分级路由) |
 | `functional/test_v110.py` | 12 条(V 组) |
 | `functional/test_scenarios.py` | 7 条(并行工具及恢复、限流切换、修改审批、中断及迟到回执) |
-| `functional/test_long_session.py` | 1 条(摘要压缩、持久化和重启后增量摘要) |
+| `functional/test_long_session.py` | 2 条(摘要压缩、正常关闭或崩溃后增量恢复) |
+| `functional/test_crash_recovery_history.py` | 3 条(工具在途、工具结束及 rewind 后崩溃恢复) |
+| `functional/test_approval_sequences.py` | 3 条(固定种子的审批和中断交错) |
 | `functional/test_multiagent_scenarios.py` | 4 条(响应头前或部分回复后中断、定向取消及后续回合) |
 | `functional/test_subagent_failure.py` | 3 条(失败传播、部分回复与重启恢复、临时故障恢复) |
 | `functional/test_subagent_context.py` | 4 条(默认隔离、尾部截取、工具配对与长历史) |
@@ -780,7 +785,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_stream_failure.py` | 21 条(三种 provider 的断流、截断、流内错误和恢复) |
 | `functional/test_invalid_tool_arguments.py` | 3 条(损坏 JSON 不执行宿主工具,同批有效工具继续) |
 | `functional/test_runner.py` | 7 条(测试入口自检) |
-| `functional/test_wire_harness.py` | 6 条(非法输出、提前断线和终态缓冲自检) |
+| `functional/test_wire_harness.py` | 8 条(隔离、会话日志、非法输出、提前断线和终态缓冲自检) |
 | `functional/test_agents_md.py` | 4 条(v1.11 基建#9:默认注入 / 用户级+项目级顺序 / 显式关闭 / 无文件不注入) |
 | `functional/test_full_auto.py` | 5 条(v1.11 基建#11:启动通告 / yolo 别名 / bubble 自动批准 / 默认不通告 / plan 互斥) |
 | `functional/test_goal_queue.py` | 2 条(v1.11 基建#6:单 goal 字段级全链 / 多 goal 严格串行) |
@@ -789,7 +794,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:档位命中映射 / 回退 primary) |
 | `functional/test_dump_config.py` | 2 条(v1.11 F6:结构与脱敏 / 生效配置反映;env 隔离见用例内注释) |
 | `functional/test_spill_readback.py` | 2 条(v1.11 F5:大输出溢出落盘 workspace / read 工具读回) |
-| **能力覆盖层合计** | **330 条**(pytest `--collect-only` 实测,含设施自检;含早期未逐文件登记的漂移) |
+| **能力覆盖层合计** | **381 条**(pytest `--collect-only` 实测,含设施自检;含早期未逐文件登记的漂移) |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
 | `live/test_live_persistence.py` | 3 条(P1–P2、X1) |
