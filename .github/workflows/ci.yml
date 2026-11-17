@@ -29,7 +29,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest -v tests.test_runner
+      - run: pip install pytest
+      - run: python -m unittest -v tests.test_runner tests.test_bench tests.test_diagnostics tests.test_eval_quality
+      - run: python tests/update_coverage_count.py --check
 
 
   # F12(gap-report §6):框架 CI 此前全 ubuntu —— Windows/macOS 上的原生

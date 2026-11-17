@@ -41,6 +41,13 @@ TASKS: dict[str, dict] = {
         "note": "A-S10:版本一致性 + 双包构建检查(不发布)",
         "uses_artifact": True,
     },
+    "agent.release.artifact": {
+        "coverage": "conditional",
+        "command": ["python3", "tests/release_artifacts.py"],
+        "uses_artifact": True,
+        "timeout_s": 3600,
+        "note": "安装并验证指定的二进制、双 SDK 包及原生 wheel",
+    },
 
     # ---- Runtime 单元与组件(PLAN §2.2,A-U01~A-U20) ----
     "agent.unit.engine": {
@@ -86,9 +93,9 @@ TASKS: dict[str, dict] = {
     # ---- 工具、权限与真实副作用(PLAN §2.5,A-I01~A-I22) ----
     "agent.integration.tools": {
         # 能力覆盖层断言到字段级,工具/审批统一走该入口
-        "command": ["tests/run_all.sh", "functional"],
-        "note": "A-I01~A-I22:能力覆盖层 + Rust 参数面 + 双 SDK 绑定层",
-        "timeout_s": 5400,
+        "command": ["tests/run_all.sh", "functional-layer"],
+        "note": "A-I01~A-I22:能力覆盖层;参数面与 SDK 由独立任务承担",
+        "timeout_s": 3600,
     },
     "agent.integration.approval": {
         # 审批用例在能力覆盖层内,独立任务便于定向执行
@@ -198,6 +205,12 @@ TASKS: dict[str, dict] = {
         "note": "A-Q17~A-Q19:实模型演练层(需 ZHUYE_LIVE=1 与真实凭据)",
         "enabled": False,
     },
+    "agent.quality": {
+        "coverage": "conditional",
+        "command": ["tests/eval/run_quality.sh"],
+        "timeout_s": 86400,
+        "note": "固定真实模型的任务质量、资源消耗和版本比较",
+    },
     "agent.e2e": {
         "command": ["scripts/e2e.sh"],
         "note": "13 步端到端冒烟:构建 + examples + headless + test + clippy",
@@ -234,11 +247,11 @@ SUITES: dict[str, list[str]] = {
     "nightly": [
         "agent.integration.orchestration", "agent.integration.provider",
         "agent.fault", "agent.fault.lock", "agent.fuzz", "agent.performance",
-        "agent.soak", "agent.eval",
+        "agent.soak", "agent.eval", "agent.quality",
     ],
     # 发布候选:最终产物与版本矩阵
     "release": [
-        "agent.docs", "agent.release", "sdk.binding", "sdk.binding.ts",
+        "agent.docs", "agent.release", "agent.release.artifact", "sdk.binding", "sdk.binding.ts",
         "sdk.native-python", "agent.e2e",
     ],
 }

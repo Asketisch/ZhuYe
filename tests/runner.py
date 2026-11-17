@@ -35,13 +35,16 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -216,9 +219,9 @@ def _builtin_shared_harness() -> tuple[str, str]:
 
     # 报告目录可写性(B11 证据完整性的前置)。
     try:
-        probe = ROOT / ".runner-probe"
-        probe.write_text("probe", encoding="utf-8")
-        probe.unlink()
+        with tempfile.TemporaryFile(dir=ROOT, mode="w", encoding="utf-8") as probe:
+            probe.write("probe")
+            probe.flush()
         notes.append("仓库目录可写")
     except OSError as e:
         problems.append(f"仓库目录不可写:{e}")
@@ -239,7 +242,12 @@ def run_task(task_id: str, args: argparse.Namespace) -> TaskResult:
     if coverage == "pending":
         return TaskResult(task_id, "pending",
                           task.get("note", "任务已登记,尚无实现映射(未覆盖)"))
-    if coverage == "conditional" and not task.get("enabled", False):
+    enabled = task.get("enabled", False) or (
+        task_id == "agent.eval" and os.environ.get("ZHUYE_LIVE") == "1"
+    ) or (task_id == "agent.release.artifact" and bool(getattr(args, "artifact", None))) or (
+        task_id == "agent.quality" and os.environ.get("ZHUYE_EVAL") == "1"
+    )
+    if coverage == "conditional" and not enabled:
         return TaskResult(task_id, "skip",
                           f"条件能力未启用:{task.get('note', '')}")
 
@@ -256,6 +264,13 @@ def run_task(task_id: str, args: argparse.Namespace) -> TaskResult:
         cmd = task.get("command")
         return TaskResult(task_id, "skip",
                           f"[dry-run] {cmd or '(内置任务)'}")
+
+    if task_id == "agent.quality":
+        required = ("ZHUYE_EVAL_BASELINE", "ZHUYE_EVAL_CANDIDATE", "ZHUYE_EVAL_MODEL",
+                    "ZHUYE_EVAL_BASE_URL", "ZHUYE_EVAL_API_KEY")
+        missing = [name for name in required if not os.environ.get(name)]
+        if missing:
+            return TaskResult(task_id, "infra_error", f"实模型评测配置缺失:{', '.join(missing)}")
 
     start = time.monotonic()
     log_dir = Path(args.report_dir)
@@ -313,9 +328,23 @@ def run_task(task_id: str, args: argparse.Namespace) -> TaskResult:
         result.command, result.log_path = cmd, str(log_path)
         result.duration_s = time.monotonic() - start
         if rc == 0:
+            if len(cmd) >= 2 and Path(cmd[0]).name == "cargo" and cmd[1] == "test":
+                output = log_path.read_text(encoding="utf-8", errors="replace")
+                totals = re.findall(r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed;", output)
+                if not totals or not any(int(passed) + int(failed) for passed, failed in totals):
+                    result.status = "infra_error"
+                    result.detail = "Cargo 测试未执行任何用例或缺少结果报告"
+                    return result
+            if task_id in ("sdk.python.unit", "sdk.ts.unit"):
+                output = log_path.read_text(encoding="utf-8", errors="replace")
+                output = re.sub(r"\x1b\[[0-9;]*m", "", output)
+                if not any(int(count) > 0 for count in re.findall(r"\b(\d+) passed\b", output)):
+                    result.status = "infra_error"
+                    result.detail = "SDK 单测未执行任何用例或缺少结果报告"
+                    return result
             result.detail = task.get("note", "通过")
         else:
-            result.status = "fail"
+            result.status = "infra_error" if task_id == "agent.quality" and rc == 2 else "fail"
             result.detail = f"退出码 {rc}(详见 {log_path.name})"
     except FileNotFoundError as e:
         result.status, result.detail = "infra_error", f"依赖缺失:{e}"
@@ -453,6 +482,9 @@ def cmd_list(_: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if args.no_build and not args.artifact:
+        print("错误:--no-build 需要通过 --artifact 指定完整产物目录", file=sys.stderr)
+        return 2
     try:
         validate_registry()
     except RuntimeError as e:
@@ -464,7 +496,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"错误:{err}", file=sys.stderr)
         return 3
 
+    if args.artifact:
+        if args.suite != "release" and args.task != "agent.release.artifact":
+            print("错误:--artifact 只能用于 release 选集或 agent.release.artifact", file=sys.stderr)
+            return 3
+        root = Path(args.artifact).resolve()
+        if not root.is_dir():
+            print(f"错误:产物目录不存在:{root}", file=sys.stderr)
+            return 2
+        args.artifact = str(root)
+        task_ids = (["agent.docs", "agent.release.artifact"] if args.suite else ["agent.release.artifact"])
+
     env = environment_info()
+    if args.artifact:
+        env["artifacts"] = [{"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                             "size": p.stat().st_size} for p in sorted(Path(args.artifact).rglob("*")) if p.is_file()]
     print(f"被测身份:HEAD {env['git_head']}"
           f"(工作树{'干净' if not env['worktree_dirty'] else '有变更'})")
     print(f"环境:{env['os']}/{env['arch']}  Python {env['python']}\n")
@@ -476,9 +522,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     results: list[TaskResult] = []
     start = time.monotonic()
+    completed_commands: dict[tuple, TaskResult] = {}
     for tid in sequence:
         print(f"▶ {tid} ...", flush=True)
-        r = run_task(tid, args)
+        task = reg.TASKS[tid]
+        key = (tuple(task.get("command", ())), tuple(sorted(task.get("env", {}).items())))
+        if key[0] and key in completed_commands and task.get("coverage", "mapped") == "mapped":
+            previous = completed_commands[key]
+            r = TaskResult(tid, previous.status, f"复用 {previous.task_id}: {previous.detail}",
+                           previous.duration_s, previous.command, previous.log_path, previous.seed)
+        else:
+            r = run_task(tid, args)
+            if key[0] and task.get("coverage", "mapped") == "mapped":
+                completed_commands[key] = r
         results.append(r)
         mark = {"pass": "通过", "fail": "失败", "skip": "跳过",
                 "timeout": "超时", "infra_error": "基础设施错误",

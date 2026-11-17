@@ -48,8 +48,21 @@ if require_cmd python3 && python3 -m pytest --version >/dev/null 2>&1; then
         echo "  [FAIL] 能力测试需要 git" >&2
         exit 1
     fi
-    if HOME="$(mktemp -d)" ZHUYE_BIN="$ZHUYE_BIN" \
-        python3 -m pytest "$HERE" -v --tb=short; then
+    JUNIT_FILE="$(mktemp "${TMPDIR:-/tmp}/zhuye-junit.XXXXXX")"
+    trap 'rm -f "$JUNIT_FILE"' EXIT
+    TEST_RC=0
+    HOME="$(mktemp -d)" ZHUYE_BIN="$ZHUYE_BIN" \
+        python3 -m pytest "$HERE" -v --tb=short --junitxml="$JUNIT_FILE" || TEST_RC=$?
+    if [ -n "${ZHUYE_TEST_ARTIFACTS:-}" ]; then
+        mkdir -p "$ZHUYE_TEST_ARTIFACTS"
+        python3 - "$HERE" "$JUNIT_FILE" "$ZHUYE_TEST_ARTIFACTS/functional-junit.xml" <<'PY'
+import pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from conftest import _redact
+pathlib.Path(sys.argv[3]).write_text(_redact(pathlib.Path(sys.argv[2]).read_text()), encoding="utf-8")
+PY
+    fi
+    if [ "$TEST_RC" -eq 0 ] && python3 "$HERE/../check_junit.py" "$JUNIT_FILE"; then
         echo "  [ok]   能力覆盖层全绿"
     else
         echo "  [FAIL] 能力覆盖层存在失败"
