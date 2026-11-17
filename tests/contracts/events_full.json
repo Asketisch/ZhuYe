@@ -1,0 +1,24 @@
+{
+  "tool_call_begin": {
+    "type": "tool_call_begin", "call_id": "c1", "tool_name": "read",
+    "args": {"path": "notes.txt"}, "child_id": "child-1"
+  },
+  "tool_call_end": {
+    "type": "tool_call_end", "call_id": "c1",
+    "output": {"content": [{"type": "text", "text": "示例"}], "is_error": false, "metadata": null, "elapsed_ms": 42},
+    "is_error": false, "elapsed_ms": 42, "child_id": "child-1", "args": {"path": "notes.txt"}
+  },
+  "token_count": {
+    "type": "token_count", "input_tokens": 500, "output_tokens": 120,
+    "cached_tokens": 50, "cache_write_tokens": 10, "total_tokens": 620,
+    "provider": "openai", "credential_label": "work", "model": "openai/gpt-4o", "cost_usd": 0.02
+  },
+  "subagent_progress": {"type":"subagent_progress", "child_id":"child-1", "role":"explorer", "kind":"tool_begin", "text":"read", "call_id":"call-1"},
+  "subagent_status": {"type":"subagent_status", "children":[{"child_id":"child-1", "role":"explorer", "state":"completed", "started_at":"2026-01-01T00:00:00Z", "finished_at":"2026-01-01T00:01:00Z", "iteration":2, "current_tool":"read", "total_tokens":300, "last_event":"完成"}]},
+  "routing": {"type":"routing", "kind":"switched", "role":"main", "from_credential":"work", "to_credential":"backup", "reason":"rate_limited", "cooldown_until_ms":100},
+  "collab_message": {"type":"collab_message", "id":"discussion-1", "from":"agent-1", "kind":"utterance", "content":"建议", "round":1,
+    "token_usage":{"input_tokens":12,"output_tokens":4,"cached_tokens":0,"cache_write_tokens":0,"total_tokens":16}},
+  "error": {"type": "error", "code": "example", "message": "诊断", "details": {"field": "value"}},
+  "stream_error": {"type": "stream_error", "code": "RATE_LIMITED", "message": "限流", "retry_in_ms": 100,
+    "provider": "openai", "credential_label": "work", "tried": [{"label": "work", "outcome": "rate_limited"}]}
+}

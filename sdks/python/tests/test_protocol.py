@@ -8,6 +8,7 @@ shutdown)。
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import queue
 import shutil
 import subprocess
@@ -19,6 +20,40 @@ from typing import Any
 import pytest
 
 from zhuye import ZhuyeAgent, ZhuyeAgentOptions, ToolOutput, ContentBlock
+
+
+def test_共享事件样本与未知字段完整透传() -> None:
+    """公共样本从真实 SDK 读循环进入全局事件队列,字段和值保持不变。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 不可用")
+    samples = json.loads((Path(__file__).resolve().parents[3] / "tests/contracts/events.json").read_text())["events"]
+    events = [dict(value, future_field={"version": 2}) for key, value in samples.items()
+              if key != "tool_execution_request"]
+    full = json.loads((Path(__file__).resolve().parents[3] / "tests/contracts/events_full.json").read_text())
+    events.extend(full.values())
+    events.append({"type": "future_event", "payload": {"version": 2}})
+    script = r"""
+const corpus = JSON.parse(process.argv[1]);
+console.log(JSON.stringify({id:'',msg:{type:'session_configured'}}));
+const rl = require('node:readline').createInterface({input:process.stdin});
+rl.on('line', line => {
+  const sub = JSON.parse(line);
+  if (sub.op.type === 'shutdown') { process.exit(0); return; }
+  for (const msg of corpus) console.log(JSON.stringify({id:'',msg}));
+  console.log(JSON.stringify({id:sub.id,msg:{type:'submission_closed'}}));
+});
+"""
+    proc = subprocess.Popen([node, "-e", script, json.dumps(events)], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    agent = ZhuyeAgent.from_popen(proc, handshake_timeout_secs=10)
+    try:
+        assert agent.next_global_event(timeout_secs=5)["msg"]["type"] == "session_configured"
+        list(agent.submit_op({"type": "inject_corpus"}))  # type: ignore[arg-type]
+        actual = [agent.next_global_event(timeout_secs=5)["msg"] for _ in events]
+        assert actual == events
+    finally:
+        agent.close()
 
 
 MOCK_SERVE_JS = r"""

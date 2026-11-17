@@ -13,6 +13,7 @@
 
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Readable, Writable, PassThrough } from 'node:stream';
+import { readFileSync } from 'node:fs';
 
 import { describe, expect, it, beforeEach, afterEach, expectTypeOf } from 'vitest';
 
@@ -25,6 +26,30 @@ import {
 } from '../src/index.js';
 
 import type { TurnComplete, AbortReason, PlanApprovalChoice, ReviewDecision, ToolCallOutputDelta, ThreadSettings } from '../src/index.js';
+
+it('共享事件样本与未知字段完整透传', async () => {
+  const samples = JSON.parse(readFileSync(new URL('../../../tests/contracts/events.json', import.meta.url), 'utf8')).events;
+  const events = Object.entries(samples)
+    .filter(([key]) => key !== 'tool_execution_request')
+    .map(([, value]) => ({ ...(value as object), future_field: { version: 2 } }));
+  const full = JSON.parse(readFileSync(new URL('../../../tests/contracts/events_full.json', import.meta.url), 'utf8'));
+  events.push(...Object.values(full) as never[]);
+  events.push({ type: 'future_event', payload: { version: 2 } } as never);
+  const stdout = new PassThrough();
+  const stdin = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  const agent = await ZhuyeAgent.fromStdio(stdin, stdout);
+  stdout.write(JSON.stringify({ id: '', msg: { type: 'session_configured' } }) + '\n');
+  try {
+    await agent.nextGlobalEvent({ timeoutMs: 5000 });
+    for (const msg of events) stdout.write(JSON.stringify({ id: '', msg }) + '\n');
+    for (const msg of events) {
+      expect((await agent.nextGlobalEvent({ timeoutMs: 5000 }))?.msg).toEqual(msg);
+    }
+  } finally {
+    stdout.end();
+    await agent.close();
+  }
+});
 
 it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
   'prompt 拒绝无效超时值 %s',

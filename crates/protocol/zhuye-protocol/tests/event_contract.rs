@@ -111,6 +111,11 @@ fn every_event_sample_round_trips_through_serde() {
                 if actual != Some(expected.as_str()) {
                     failures.push(format!("{expected}:roundtrip 后 type 变成 {actual:?}"));
                 }
+                for (key, value) in sample.as_object().expect("事件样本必须是对象") {
+                    if wire.get(key) != Some(value) {
+                        failures.push(format!("{expected}.{key}:roundtrip 字段值发生变化"));
+                    }
+                }
             }
             Err(error) => failures.push(format!("{expected}:{error};样本={sample}")),
         }
@@ -142,4 +147,19 @@ fn event_serde_contract_detector_is_strict() {
         serde_json::from_value::<EventMsg>(sample.clone()).is_err(),
         "缺失必填字段的事件样本必须被拒绝"
     );
+}
+
+#[test]
+fn populated_event_fields_round_trip_without_loss() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tests/contracts/events_full.json");
+    let samples: serde_json::Map<String, Value> =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("读取完整事件样本"))
+            .expect("解析完整事件样本");
+    assert!(!samples.is_empty());
+    for (name, sample) in samples {
+        let event: EventMsg = serde_json::from_value(sample.clone()).expect("反序列化完整事件");
+        let actual = serde_json::to_value(event).expect("序列化完整事件");
+        assert_eq!(actual, sample, "事件 {name} 的完整字段发生变化");
+    }
 }
