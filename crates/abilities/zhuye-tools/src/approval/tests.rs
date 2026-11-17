@@ -963,7 +963,9 @@ async fn yolo_classifier_auto_approves_readonly_in_auto_mode() {
     assert!(rx.try_recv().is_err(), "高置信 Allow 不应 emit event");
 }
 
-/// 启发式对 Write 默认 Ask(置信 0.5 < 阈值 0.8)→ 落 modal。
+/// 启发式对未知工具默认 Ask(置信 0.5 < 阈值 0.8)→ 落 modal。
+/// 用非编辑类工具(WebSearch):默认档(Auto)会自动批准编辑类工具,
+/// 用编辑类工具名测不到分类器路径。
 #[tokio::test]
 async fn yolo_classifier_low_confidence_falls_through_to_modal() {
     let (gate, _rx) =
@@ -974,7 +976,7 @@ async fn yolo_classifier_low_confidence_falls_through_to_modal() {
     let cancel_c = cancel.clone();
     let ask = tokio::spawn(async move {
         g.ask_tool(
-            "Write",
+            "WebSearch",
             &serde_json::json!({}),
             RiskLevel::Medium,
             &cancel_c,

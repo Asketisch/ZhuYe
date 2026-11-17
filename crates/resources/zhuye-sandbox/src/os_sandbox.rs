@@ -1155,12 +1155,15 @@ mod tests {
 
     #[test]
     fn enforce_or_fail_strict_with_backend_returns_ok() {
-        // macOS / Linux 上 strict + 有 backend → Ok,BashTool 走 sandbox 路径。
+        // macOS / Linux / Windows(F24 Job Object)上 strict + 有 backend →
+        // Ok,BashTool 走 sandbox 路径。
         let mut s = OsSandbox::enabled(Vec::new());
         s.strict = true;
         if matches!(
             s.status(),
-            OsSandboxStatus::Seatbelt | OsSandboxStatus::Landlock
+            OsSandboxStatus::Seatbelt
+                | OsSandboxStatus::Landlock
+                | OsSandboxStatus::WindowsJobObject
         ) {
             assert!(s.enforce_or_fail().is_ok());
         } else {
@@ -1372,9 +1375,13 @@ mod tests {
     #[test]
     fn detect_backend_returns_valid_variant() {
         let b = detect_backend();
+        // F24 起 Windows 具备 Job Object 后端,合法变体随之扩充。
         assert!(matches!(
             b,
-            OsSandboxStatus::Seatbelt | OsSandboxStatus::Landlock | OsSandboxStatus::NoBackend
+            OsSandboxStatus::Seatbelt
+                | OsSandboxStatus::Landlock
+                | OsSandboxStatus::WindowsJobObject
+                | OsSandboxStatus::NoBackend
         ));
     }
 }

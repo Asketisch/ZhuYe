@@ -147,25 +147,33 @@ pub struct FileRange {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
-    /// 工具直接运行,无需提示(只读工具的默认值)。
+    /// 默认模式:自动批准文件编辑类工具(`write`/`edit`/`delete` 等),
+    /// 其余工具按权限规则放行、高危仍确认(对齐主流 harness 的
+    /// default/auto 档;Claude Code 2026-08 起 auto 档即为默认)。
     #[default]
     Auto,
-    /// 工具需经用户审批才能运行(有副作用工具的默认值)。
+    /// Ask 模式:每个工具调用前询问(经 approval modal)。
     Prompt,
-    /// 工具被禁止运行。
+    /// **已弃用**(仅保留线/rollout 兼容):会话级拒绝。
+    /// 拒绝语义改走权限规则(Deny action)或回合级
+    /// `ApprovalPolicy::Deny`(fail-closed),不再作为工作模式提供。
     Deny,
     /// Plan mode(v1.x):用户主动进入只读规划阶段,
     /// 任何不在白名单内的工具(包括 bash/edit/write)都会被
     /// `PlanModeGate` hook blanket-deny。
     Plan,
-    /// 自动批准文件编辑类工具(`write` / `edit` / `delete`),其余
-    /// `Prompt` 工具仍走 approval modal(编辑类工具自动批准)。
+    /// **已弃用**(仅保留线/rollout 兼容):自动批准文件编辑。
+    /// 该语义已并入默认档 [`PermissionMode::Auto`]
+    /// (见 [`PermissionMode::auto_approves_tool`]),独立档不再提供。
     AcceptEdits,
-    /// 非阻塞 bubble 通知 + 自动批准:emit `PermissionBubble` 事件供
-    /// TUI 展示,不弹 blocking modal。
+    /// **已弃用**(仅保留线/rollout 兼容):非阻塞 bubble 通知 + 自动
+    /// 批准。免打扰语义改走回合级 `ApprovalPolicy::AutoApprove` /
+    /// `FullAccess`;非阻塞通知属 UX 偏好,不配独立工作模式。
     Bubble,
-    /// 危险:静默跳过所有工具审批,不弹 modal、不发 bubble。
-    /// `ask_user_question` 等主动索取人类输入的工具(那些仍会弹出)。
+    /// **已弃用**(仅保留线/rollout 兼容):静默跳过所有审批。
+    /// v1.3 安全基线起 `SetPermissionMode(Bypass)` 入口即降级为
+    /// `Prompt`;「全放行」语义由 `ApprovalPolicy::FullAccess` 承接。
+    /// `ask_user_question` 等主动索取人类输入的工具仍会弹出。
     Bypass,
 }
 
@@ -183,35 +191,40 @@ impl PermissionMode {
         }
     }
 
-    /// TUI `/mode` / Tab / Shift+Tab 的循环顺序。
-    /// `default → accept edits → plan → bypass permissions`。
-    /// 循环 = `Auto→AcceptEdits→Plan→Bypass→Auto`。
-    /// `Prompt | Deny | Bubble` 不进默认循环:从它们循环会落到 `Auto`
-    /// (三者仍经 `/mode <name>` 直达,见 `slash::parse_mode`)。
+    /// TUI `/mode` / Tab / Shift+Tab 的循环顺序(三段工作模式)。
+    /// 循环 = `Auto(默认)→Prompt(Ask)→Plan→Auto`,与 Codex 的
+    /// Read Only / Auto / Full Access 三预设同构(Yolo 在审批策略轴)。
+    /// 弃用档(`AcceptEdits`/`Deny`/`Bubble`/`Bypass`)不进循环:
+    /// 从它们循环落到 `Auto`;直达仍经 `/mode <name>` 兼容。
     pub fn next_in_ui_cycle(self) -> Self {
         match self {
-            PermissionMode::Auto => PermissionMode::AcceptEdits,
-            PermissionMode::AcceptEdits => PermissionMode::Plan,
+            PermissionMode::Auto => PermissionMode::Prompt,
+            PermissionMode::Prompt => PermissionMode::Plan,
             PermissionMode::Plan => PermissionMode::Auto,
-            PermissionMode::Bypass => PermissionMode::Auto,
-            PermissionMode::Prompt | PermissionMode::Deny | PermissionMode::Bubble => {
-                PermissionMode::Auto
-            }
+            PermissionMode::AcceptEdits
+            | PermissionMode::Deny
+            | PermissionMode::Bubble
+            | PermissionMode::Bypass => PermissionMode::Auto,
         }
     }
 
     /// 是否应在 `ApprovalGate::ask_tool` 中自动批准(不弹 modal)。
+    ///
+    /// 默认档(`Auto`)自动批准文件编辑类工具 —— 与弃用档
+    /// `AcceptEdits` 行为一致(语义已并入);高危工具由 gate 的
+    /// `risk != High` 前置条件兜底,仍强制 modal。
     pub fn auto_approves_tool(&self, tool_name: &str) -> bool {
         match self {
             PermissionMode::Bubble => true,
             PermissionMode::Bypass => false,
-            PermissionMode::AcceptEdits => is_edit_tool_name(tool_name),
-            _ => false,
+            PermissionMode::Auto | PermissionMode::AcceptEdits => is_edit_tool_name(tool_name),
+            PermissionMode::Prompt | PermissionMode::Deny | PermissionMode::Plan => false,
         }
     }
 }
 
-/// 文件编辑类工具名 —— `AcceptEdits` 模式短路用。
+/// 文件编辑类工具名 —— 默认档(`Auto`)与弃用档 `AcceptEdits` 的
+/// 自动批准短路用。
 ///
 /// review 修复:补上实际注册名 `delete_file` / `notebook_edit`
 /// (此前只匹配 `delete` / `Delete`,永不命中)。
@@ -700,33 +713,30 @@ mod tests {
 
     #[test]
     fn permission_mode_ui_cycle_is_three_step() {
-        // v1.4: Auto → AcceptEdits → Plan → Auto (Bypass 已移除)
+        // 三段工作模式:Auto(默认)→ Prompt(Ask)→ Plan → Auto。
+        // 弃用档(AcceptEdits/Deny/Bubble/Bypass)不进循环。
         assert_eq!(
             PermissionMode::Auto.next_in_ui_cycle(),
-            PermissionMode::AcceptEdits
+            PermissionMode::Prompt
         );
         assert_eq!(
-            PermissionMode::AcceptEdits.next_in_ui_cycle(),
+            PermissionMode::Prompt.next_in_ui_cycle(),
             PermissionMode::Plan
         );
         assert_eq!(
             PermissionMode::Plan.next_in_ui_cycle(),
             PermissionMode::Auto
         );
-        // Bypass 不在循环内，从 Bypass 会回到 Auto
-        assert_eq!(
-            PermissionMode::Bypass.next_in_ui_cycle(),
-            PermissionMode::Auto
-        );
     }
 
     #[test]
     fn permission_mode_ui_cycle_non_default_falls_to_auto() {
-        // Prompt / Deny / Bubble 不进默认循环,从它们循环会落到 Auto。
+        // 弃用档不进默认循环,从它们循环会落到 Auto。
         for m in [
-            PermissionMode::Prompt,
+            PermissionMode::AcceptEdits,
             PermissionMode::Deny,
             PermissionMode::Bubble,
+            PermissionMode::Bypass,
         ] {
             assert_eq!(m.next_in_ui_cycle(), PermissionMode::Auto, "from {m:?}");
         }
@@ -741,6 +751,31 @@ mod tests {
                 "Bypass should NOT auto-approve {tool}"
             );
         }
+    }
+
+    #[test]
+    fn default_mode_auto_approves_edit_tools() {
+        // 默认档(Auto)自动批准文件编辑类工具;非编辑类(bash 等)不自动批准。
+        // AcceptEdits 语义已并入默认档,行为保持一致(弃用档兼容)。
+        for tool in ["write", "Edit", "delete", "delete_file", "notebook_edit"] {
+            assert!(
+                PermissionMode::Auto.auto_approves_tool(tool),
+                "Auto should auto-approve edit tool {tool}"
+            );
+            assert!(
+                PermissionMode::AcceptEdits.auto_approves_tool(tool),
+                "AcceptEdits should auto-approve edit tool {tool}"
+            );
+        }
+        for tool in ["bash", "read", "web_search", "custom"] {
+            assert!(
+                !PermissionMode::Auto.auto_approves_tool(tool),
+                "Auto should NOT auto-approve non-edit tool {tool}"
+            );
+        }
+        // Ask / Plan 档不自动批准任何工具(Plan 的只读约束在 PlanModeGate)。
+        assert!(!PermissionMode::Prompt.auto_approves_tool("write"));
+        assert!(!PermissionMode::Plan.auto_approves_tool("read"));
     }
 
     #[test]

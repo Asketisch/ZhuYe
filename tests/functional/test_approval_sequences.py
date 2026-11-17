@@ -22,6 +22,9 @@ def test_审批与中断交错只产生单一终态(seed, sandbox, serve_session
     script.append('{"type":"text","text":"后续回合成功"}')
     env = sandbox.mock_env(mock_script(script), ZHUYE_APPROVALS="1")
     with serve_session(env=env) as session:
+        # 默认档(Auto)如今自动批准文件编辑(write);本用例验证的是
+        # 审批/中断交错链路,先切 Ask(prompt)钉住"每工具询问"语义。
+        session.submit({"type": "set_permission_mode", "mode": "prompt"})
         for index, action in enumerate(actions):
             target = sandbox.cwd / f"out-{index}.txt"
             turn = session.send({"type": "user_input", "items": [{"type": "text", "text": f"执行任务 {index}"}]})
