@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import pytest
 from wire import first_event, msg_types, rollout_files, rollout_thread_id
 
 
-def test_摘要压缩后跨进程恢复并增量摘要(sandbox, serve_session) -> None:
+@pytest.mark.parametrize("kill_after_compaction", [False, True], ids=["正常关闭", "压缩后崩溃"])
+def test_摘要压缩后跨进程恢复并增量摘要(sandbox, serve_session, kill_after_compaction) -> None:
     requests: list[dict] = []
     summaries: list[dict] = []
 
@@ -71,6 +74,17 @@ def test_摘要压缩后跨进程恢复并增量摘要(sandbox, serve_session) -
             next_compacted = first_event(third, "context_compacted")
             assert next_compacted is not None and next_compacted["msg"]["strategy"] == "ll_m_summarize", third
             assert first_event(third, "turn_complete")["msg"]["status"] == "success", msg_types(third)
+            if kill_after_compaction:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]
+                    if sum(r.get("type") == "compaction" for r in records) >= 2:
+                        break
+                    time.sleep(.05)
+                else:
+                    raise AssertionError("压缩记录未持久化")
+                session.kill()
+                session._proc.wait(timeout=5)
 
         tid = rollout_thread_id(sandbox.home)
         records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]

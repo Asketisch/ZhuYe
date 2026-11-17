@@ -1185,7 +1185,9 @@ def test_A28_shutdown_op_优雅退出(serve_session, mock_script) -> None:
     script = mock_script(['{"type":"text","text":"bye"}'])
     with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
         s.submit({"type": "user_input", "items": [{"type": "text", "text": "一轮"}]})
-        evs = s.submit({"type": "shutdown"})
+        shutdown_id = s.send({"type": "shutdown"})
+        s.collect(shutdown_id)
+    evs = [event for event in s.all_events() if event.get("id") == shutdown_id]
     types = msg_types(evs)
     assert "shutdown_complete" in types, types
     assert "submission_closed" in types, types

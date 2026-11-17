@@ -1131,7 +1131,7 @@ async fn bubble_mode_still_auto_approves_medium_risk_tool() {
 /// 也没有 `turn_complete`)。
 #[tokio::test]
 async fn turn_cancel_short_circuits_approval_wait() {
-    let (gate, _rx) = make_gate();
+    let (gate, mut rx) = make_gate();
     let session_cancel = CancellationToken::new(); // 会话级:不取消
     let turn_cancel = CancellationToken::new(); // 回合级:被中断
 
@@ -1143,8 +1143,12 @@ async fn turn_cancel_short_circuits_approval_wait() {
             .await
     });
 
-    // 给 asker 一点时间完成注册。
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // 等待审批请求,确保 waiter 已注册后再取消。
+    let event = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("审批请求超时")
+        .expect("审批通道关闭");
+    assert!(matches!(event.msg, EventMsg::ApprovalRequest(_)));
     // 只取消回合令牌 —— 会话令牌不动。
     turn_cancel.cancel();
 
@@ -1302,12 +1306,11 @@ async fn abort_safe_lease_cleans_waiter_on_future_drop() {
         .await
         .unwrap()
         .unwrap();
-    // 给注册一点余量。
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // 收到请求意味着 waiter 已注册。
     assert_eq!(gate.waiters().lock().len(), 1);
     // abort:future 直接 drop,没有 select 分支执行。
     asker.abort();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(asker.await.expect_err("中断应取消任务").is_cancelled());
     assert!(
         gate.waiters().lock().is_empty(),
         "abort 后租约必须清理 waiter 条目"
