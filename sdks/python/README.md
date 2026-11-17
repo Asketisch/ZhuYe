@@ -236,6 +236,8 @@ evs = list(agent.submit_op({
 }))
 ```
 
+审批策略 `approval_policy` 支持 `prompt`（请求批准）、`auto_approve`（一般操作自动批准，高风险仍询问）与 `full_access`（自动批准工具调用）；它与 Plan 模式独立，显式拒绝规则仍然生效。
+
 `thread_settings` 里的旧字段 `effort`、`permission_mode` 保留类型兼容,
 但服务端不读取;请分别使用 `set_effort` 和 `set_permission_mode` Op。
 

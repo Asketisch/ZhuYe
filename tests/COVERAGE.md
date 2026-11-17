@@ -66,7 +66,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 子代理人工输入转发 | 子代理自由文本与结构化提问进入父提交,标准 response Op 能唤醒工具并继续 | — | — | ✅(共享 question/input waiter) | — |
 | 子代理权限与沙箱继承 | 父级 `write` 拒绝规则在子代理生效,不弹审批且无文件副作用 | — | — | ✅(父配置安全字段继承) | — |
 | 子代理文件系统边界 | 父级放行 `write` 时,工作区外仍拒绝且无副作用,工作区内写入成功 | — | — | ✅(父配置安全字段继承) | — |
-| 会话状态 Op(22 Op)+ Activity 审计落盘和轮转 | A1–A17、A25–A29(A1b 断言回合审批策略阻止副作用) | —(serve_ops 已迁能力层) | K4、K9;双 SDK 回合设置类型检查 | ✅(activity 7 例) | — |
+| 会话状态 Op(22 Op)+ Activity 审计落盘和轮转 | A1–A17、A25–A29(A1b 验证拒绝副作用，A1c 验证规划模式与独立审批策略) | —(serve_ops 已迁能力层) | K4、K9;双 SDK 回合设置类型检查 | ✅(activity 7 例) | — |
 | 重连与恢复(resume / -c / -r / 崩溃 / EOF) | R1–R6 | cli_core(exec --resume) | — | ✅ | P2 |
 | 容错与失败恢复 | X1–X6 | — | K7 | ✅ | X1 |
 | 持久化(rollout / 截断 / 索引 / 标题 / 导出 / cron store / cron 触发 / autopilot) | P1–P15、C13(session 生命周期) | — | — | ✅ | P1–P2 |

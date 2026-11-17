@@ -20,7 +20,7 @@ export type ToolDeltaCheck = Assert<Equal<ToolCallOutputDelta,
   { type: 'tool_call_output_delta'; call_id: string; delta: string; is_stderr: boolean }
 >>;
 export type ApprovalPolicyCheck = Assert<Equal<
-  ThreadSettings['approval_policy'], 'auto' | 'prompt' | 'deny' | null | undefined
+  ThreadSettings['approval_policy'], 'auto' | 'prompt' | 'deny' | 'auto_approve' | 'full_access' | null | undefined
 >>;
 export type SandboxPolicyCheck = Assert<Equal<
   ThreadSettings['sandbox_policy'], 'workspace_only' | 'os_sandbox' | 'full_access' | null | undefined
