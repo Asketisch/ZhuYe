@@ -1352,3 +1352,73 @@ async fn full_event_queue_does_not_prevent_approval_expiry() {
     assert!(matches!(decision, ReviewDecision::Deny { .. }));
     assert!(gate.waiters().lock().is_empty());
 }
+
+#[tokio::test]
+async fn turn_policy_is_independent_of_plan_mode() {
+    use zhuye_protocol::ApprovalPolicy;
+    let cancel = CancellationToken::new();
+    for policy in [ApprovalPolicy::AutoApprove, ApprovalPolicy::FullAccess] {
+        let (gate, mut events) = make_gate();
+        let gate = gate.with_turn_policy(Some(policy));
+        let decision = gate
+            .ask_tool(
+                "bash",
+                &serde_json::json!({"cmd":"echo ok"}),
+                RiskLevel::Medium,
+                &cancel,
+            )
+            .await;
+        assert_eq!(decision, ReviewDecision::Approve);
+        assert!(events.try_recv().is_err());
+    }
+    let (gate, mut events) = make_gate();
+    let gate = gate.with_turn_policy(Some(ApprovalPolicy::AutoApprove));
+    let task = tokio::spawn(async move {
+        gate.ask_tool(
+            "bash",
+            &serde_json::json!({"cmd":"danger"}),
+            RiskLevel::High,
+            &CancellationToken::new(),
+        )
+        .await
+    });
+    let event = timeout(Duration::from_secs(1), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(event.msg, EventMsg::ApprovalRequest(_)));
+    task.abort();
+
+    let (gate, mut events) = make_gate();
+    let gate = gate.with_turn_policy(Some(ApprovalPolicy::FullAccess));
+    let decision = gate
+        .ask_tool(
+            "bash",
+            &serde_json::json!({"cmd":"danger"}),
+            RiskLevel::High,
+            &cancel,
+        )
+        .await;
+    assert_eq!(decision, ReviewDecision::Approve);
+    assert!(events.try_recv().is_err());
+    let decision = gate
+        .ask_tool_with_policy(
+            "bash",
+            &serde_json::json!({"cmd":"danger"}),
+            RiskLevel::High,
+            &cancel,
+            Some(zhuye_permissions::RuleMatch::Ask),
+        )
+        .await;
+    assert_eq!(decision, ReviewDecision::Approve);
+    let decision = gate
+        .ask_tool_with_policy(
+            "bash",
+            &serde_json::json!({"cmd":"danger"}),
+            RiskLevel::High,
+            &cancel,
+            Some(zhuye_permissions::RuleMatch::Deny),
+        )
+        .await;
+    assert!(matches!(decision, ReviewDecision::Deny { .. }));
+}

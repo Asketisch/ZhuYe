@@ -479,7 +479,7 @@ def test_wire_type_annotations() -> None:
     settings = get_type_hints(protocol.ThreadSettings)
     approval = get_args(settings["approval_policy"])[0]
     sandbox = get_args(settings["sandbox_policy"])[0]
-    assert set(get_args(approval)) == {"auto", "prompt", "deny"}
+    assert set(get_args(approval)) == {"auto", "prompt", "deny", "auto_approve", "full_access"}
     assert set(get_args(sandbox)) == {"workspace_only", "os_sandbox", "full_access"}
     assert set(get_args(settings["max_tool_concurrency"])) == {int, type(None)}
     # v1.10 功能4:思考强度阶梯扩到 max / ultra(变体级 additive,旧值不变)。
