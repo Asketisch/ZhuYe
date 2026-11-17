@@ -204,3 +204,157 @@ def test_后台自动整理_周期触发(serve_session, mock_script, sandbox) ->
                 break
             time.sleep(0.3)
         assert merged, f"后台整理未生效:{memory_md.read_text() if memory_md.exists() else '(missing)'}"
+
+
+# ── v1.11 M5a:SQLite 条目版本库(ZHUYE_MEMORY_BACKEND=sqlite)──────────
+
+
+def _write_project_memory_agent(sandbox) -> None:
+    """默认 agent 定义启用 project 记忆作用域(默认 `memory: []` 不注入)。"""
+    agents_dir = sandbox.cwd / ".zhuye" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "default.md").write_text(
+        "---\n"
+        "name: default\n"
+        "description: 启用项目记忆的测试 agent\n"
+        "memory: [project]\n"
+        "---\n"
+        "测试 agent。\n"
+    )
+
+
+def test_sqlite后端_中文检索与投影(serve_session, mock_script, sandbox) -> None:
+    """`ZHUYE_MEMORY_BACKEND=sqlite`:中文条目经 memory 工具写入 →
+    `memory.db` 条目库 + MEMORY.md 投影落盘;**新会话**(新 thread、
+    新进程)以中文查询,request_echo 的 system 块含命中条目 ——
+    中文词法召回 + 写后跨会话可见(字段级)。"""
+    require_binary()
+    _write_project_memory_agent(sandbox)
+    script = mock_script(
+        [
+            '{"type":"tool_call","name":"memory","args":{"action":"write","key":"数据库","value":"项目使用 postgres 16,连接池 pgbouncer"}}',
+            '{"type":"text","text":"{\\"echo\\":\\"done\\"}"}',
+        ]
+    )
+    with serve_session(
+        env={
+            "ZHUYE_MODEL": "mock",
+            "ZHUYE_MOCK_SCRIPT": str(script),
+            "ZHUYE_MEMORY_BACKEND": "sqlite",
+        }
+    ) as s:
+        evs = s.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "记住数据库配置"}]}
+        )
+    ends = [
+        e["msg"]
+        for e in evs
+        if e.get("msg", {}).get("type") == "tool_call_end" and not e["msg"].get("is_error")
+    ]
+    assert ends, f"memory write 应成功:{msg_types(evs)}"
+    assert "数据库" in _tool_text(ends[0]), _tool_text(ends[0])
+    memory_dir = sandbox.cwd / ".zhuye" / "agent-memory" / "default"
+    assert (memory_dir / "memory.db").exists(), f"SQLite 条目库应落盘:{memory_dir}"
+    projection = (memory_dir / "MEMORY.md").read_text()
+    assert "## 数据库" in projection, f"投影应含条目标题:{projection!r}"
+    assert "postgres 16" in projection, f"投影应含条目正文:{projection!r}"
+
+    # 新会话(跨进程)中文查询:system 块注入命中条目。
+    script_b = mock_script(['{"type":"request_echo"}'])
+    with serve_session(
+        env={
+            "ZHUYE_MODEL": "mock",
+            "ZHUYE_MOCK_SCRIPT": str(script_b),
+            "ZHUYE_MEMORY_BACKEND": "sqlite",
+        }
+    ) as b:
+        evs = b.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "数据库连接池怎么配"}]}
+        )
+    payload = _echo_payload(evs)
+    system = "\n".join(payload.get("system", []))
+    assert "postgres 16" in system, f"中文查询应召回条目进 system:{system[:800]}"
+
+
+def test_sqlite后端_删除后投影不复活(serve_session, mock_script, sandbox) -> None:
+    """sqlite 后端:remove → MEMORY.md 投影同步移除;list 只剩存活条目。"""
+    require_binary()
+    _write_project_memory_agent(sandbox)
+    script = mock_script(
+        [
+            '{"type":"tool_call","name":"memory","args":{"action":"write","key":"部署","value":"github actions"}}',
+            '{"type":"tool_call","name":"memory","args":{"action":"write","key":"数据库","value":"postgres 16"}}',
+            '{"type":"tool_call","name":"memory","args":{"action":"remove","key":"部署"}}',
+            '{"type":"tool_call","name":"memory","args":{"action":"list"}}',
+            '{"type":"text","text":"{\\"echo\\":\\"done\\"}"}',
+        ]
+    )
+    with serve_session(
+        env={
+            "ZHUYE_MODEL": "mock",
+            "ZHUYE_MOCK_SCRIPT": str(script),
+            "ZHUYE_MEMORY_BACKEND": "sqlite",
+        }
+    ) as s:
+        evs = s.submit({"type": "user_input", "items": [{"type": "text", "text": "写两条删一条"}]})
+    ends = [
+        e["msg"]
+        for e in evs
+        if e.get("msg", {}).get("type") == "tool_call_end" and not e["msg"].get("is_error")
+    ]
+    assert len(ends) >= 4, f"write×2 / remove / list 应成功:{msg_types(evs)}"
+    assert "removed" in _tool_text(ends[2]), _tool_text(ends[2])
+    listing = _tool_text(ends[3])
+    assert "数据库" in listing, f"存活条目应在列表:{listing}"
+    assert "部署" not in listing, f"已删条目不得出现在列表:{listing}"
+    projection = (
+        sandbox.cwd / ".zhuye" / "agent-memory" / "default" / "MEMORY.md"
+    ).read_text()
+    assert "github actions" not in projection, f"投影应移除已删条目:{projection!r}"
+    assert "postgres 16" in projection, f"存活条目保留:{projection!r}"
+
+
+def test_sqlite后端_跨会话笔记归属召回(serve_session, mock_script, sandbox) -> None:
+    """sqlite 后端下跨会话笔记召回仍工作:新笔记带 workspace 归属,
+    同 workspace 的新会话召回命中(归属标注与过滤口径一致;旧无归属
+    笔记不参加跨项目召回由单测覆盖)。"""
+    require_binary()
+    script_a = mock_script(
+        [
+            '{"type":"tool_call","name":"add_session_note","args":{"text":"staging deploy needs ZHUYE_TOKEN env var"}}',
+            '{"type":"text","text":"noted"}',
+        ]
+    )
+    with serve_session(
+        env={
+            "ZHUYE_MODEL": "mock",
+            "ZHUYE_MOCK_SCRIPT": str(script_a),
+            "ZHUYE_MEMORY_BACKEND": "sqlite",
+        }
+    ) as a:
+        a.submit({"type": "user_input", "items": [{"type": "text", "text": "记一下部署要点"}]})
+    notes_dir = sandbox.home / ".zhuye" / "session-notes"
+    jsonls = list(notes_dir.glob("*.jsonl"))
+    assert jsonls, f"会话 A 笔记未落盘:{notes_dir}"
+    # 归属字段落盘(字段级断言)。
+    assert any('"workspace"' in p.read_text() for p in jsonls), "新笔记应带 workspace 归属"
+
+    script_b = mock_script(['{"type":"request_echo"}'])
+    with serve_session(
+        env={
+            "ZHUYE_MODEL": "mock",
+            "ZHUYE_MOCK_SCRIPT": str(script_b),
+            "ZHUYE_MEMORY_BACKEND": "sqlite",
+        }
+    ) as b:
+        evs = b.submit(
+            {"type": "user_input", "items": [{"type": "text", "text": "staging deploy 需要什么"}]}
+        )
+    payload = _echo_payload(evs)
+    joined = "\n".join(
+        m.get("text", "")
+        for m in payload.get("messages", [])
+        if m.get("role") == "user"
+    )
+    assert "来自其他会话的相关笔记" in joined, f"同 workspace 召回应命中:{joined[:600]}"
+    assert "ZHUYE_TOKEN" in joined, f"召回应含笔记原文:{joined[:600]}"

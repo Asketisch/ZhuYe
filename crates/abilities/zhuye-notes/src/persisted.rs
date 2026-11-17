@@ -115,9 +115,10 @@ impl FileBackedNoteStore {
             }
         }
         // 把窗口内容按时间顺序注入 RAM(最新在末尾)。
+        // v1.11 M5a:保留归属 workspace(重开不丢归属,scoped 召回可用)。
         // Review 2026-06-30 P1-2:单行校验失败也 warn + skip,不再 `?` 传播。
         for n in &window {
-            if let Err(e) = inner.add(n.text.clone()) {
+            if let Err(e) = inner.add_attributed(n.text.clone(), n.workspace.clone()) {
                 tracing::warn!(
                     path = %path.display(),
                     error = %e,
@@ -132,12 +133,22 @@ impl FileBackedNoteStore {
 
 impl NoteStore for FileBackedNoteStore {
     fn add(&self, text: String) -> Result<SessionNote, NoteError> {
+        self.add_attributed(text, None)
+    }
+
+    /// v1.11 M5a:带归属追加 —— RAM 层 stamp workspace 后同 JSONL
+    /// 落盘(旧文件反序列化 workspace = None,兼容)。
+    fn add_attributed(
+        &self,
+        text: String,
+        workspace: Option<String>,
+    ) -> Result<SessionNote, NoteError> {
         // 先调 RAM 层 —— 拿到 note(含 created_at),再追加到 JSONL。
         // 这样 if-then-fail 的语义:RAM 已写但 disk 写失败时,RAM 仍
         // 有 note,下一轮仍可见(只丢持久化)。回滚 RAM 需要双锁,
         // 不值得 —— note 数据本身允许丢(对照 `MemoryStore` 的
         // `save` 也是 best-effort)。
-        let note = self.inner.add(text)?;
+        let note = self.inner.add_attributed(text, workspace)?;
         if let Err(e) = append_line(&self.path, &note) {
             tracing::warn!(
                 path = %self.path.display(),

@@ -76,8 +76,11 @@ pub fn split_sections(scope: MemoryScope, body: &str) -> Vec<MemorySection> {
 ///
 /// 返回已格式化的注入文本(scope 分节头沿用 `load_combined` 的形态,
 /// 单 scope 时不加头)。
-pub fn retrieve_relevant(
-    store: &dyn MemoryStore,
+///
+/// 泛型 `?Sized`:供 [`MemoryStore::retrieve`] 默认实现以 `&Self`
+/// 调用(trait 默认方法里 `&Self` 无法强转 `&dyn MemoryStore`)。
+pub fn retrieve_relevant<T: MemoryStore + ?Sized>(
+    store: &T,
     scopes: &[MemoryScope],
     agent_type: &str,
     query: &str,

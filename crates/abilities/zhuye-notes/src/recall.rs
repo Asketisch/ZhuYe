@@ -30,6 +30,9 @@ struct NoteLine {
     text: String,
     #[serde(default)]
     created_at: Option<String>,
+    /// v1.11 M5a:归属 workspace;旧 JSONL 行无此字段 → `None`。
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 /// 扫描目录上限(按修改时间取最近 N 个文件,其余忽略)。
@@ -41,11 +44,28 @@ pub const RECALL_LIMIT: usize = 5;
 /// 会话**(排除 `exclude_thread`)的笔记,按 `query` BM25 相关度取
 /// top-`k`。`query` 为空时按「文件越新优先、文件内越靠后(越新)优先」
 /// 取最近笔记。
+///
+/// v1.11 M5a:无归属过滤(旧口径,兼容既有调用方)。带 workspace
+/// 隔离的召回见 [`recall_cross_session_scoped`]。
 pub fn recall_cross_session(
     notes_home: &Path,
     exclude_thread: &str,
     query: &str,
     k: usize,
+) -> Vec<RecalledNote> {
+    recall_cross_session_scoped(notes_home, exclude_thread, query, k, None)
+}
+
+/// v1.11 M5a:带 workspace 归属过滤的跨会话召回。`workspace_filter`
+/// 为 `Some(w)` 时只召回归属 `w` 的笔记 —— **旧无归属笔记(无
+/// workspace 字段)不参加跨项目召回**(归属确认前不猜);`None`
+/// 退化为不过滤的旧口径。
+pub fn recall_cross_session_scoped(
+    notes_home: &Path,
+    exclude_thread: &str,
+    query: &str,
+    k: usize,
+    workspace_filter: Option<&str>,
 ) -> Vec<RecalledNote> {
     let dir = notes_home.join("session-notes");
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -70,7 +90,8 @@ pub fn recall_cross_session(
     files.sort_by_key(|(mtime, _, _)| std::cmp::Reverse(*mtime));
     files.truncate(MAX_SCAN_FILES);
 
-    // 逐文件解析(单文件上限 200 条,防超长 JSONL)。
+    // 逐文件解析(单文件上限 200 条,防超长 JSONL)。归属过滤在候选
+    // 收集阶段生效:scoped 模式下旧无归属笔记直接出局。
     let mut candidates: Vec<(String, NoteLine)> = Vec::new();
     for (_mtime, path, stem) in &files {
         let Ok(content) = std::fs::read_to_string(path) else {
@@ -83,6 +104,10 @@ pub fn recall_cross_session(
             }
             if let Ok(note) = serde_json::from_str::<NoteLine>(line)
                 && !note.text.trim().is_empty()
+                && match workspace_filter {
+                    Some(w) => note.workspace.as_deref() == Some(w),
+                    None => true,
+                }
             {
                 candidates.push((stem.clone(), note));
                 count += 1;
@@ -222,5 +247,37 @@ mod tests {
         std::fs::write(dir.join("t.jsonl"), lines.join("\n")).unwrap();
         let hits = recall_cross_session(home.path(), "x", "postgres", 3);
         assert_eq!(hits.len(), 3);
+    }
+
+    /// v1.11 M5a:workspace 归属过滤 —— scoped 只召回同归属笔记,
+    /// 旧无归属笔记不参加跨项目召回;旧口径(无过滤)不受影响。
+    #[test]
+    fn scoped_recall_filters_by_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("session-notes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.jsonl"),
+            "{\"text\":\"数据库是 postgres 16\",\"created_at\":\"2026-01-01T00:00:00Z\",\"workspace\":\"/ws-a\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("old.jsonl"),
+            "{\"text\":\"postgres 旧笔记(无归属)\",\"created_at\":\"2026-01-01T00:00:00Z\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.jsonl"),
+            "{\"text\":\"postgres 别的项目\",\"created_at\":\"2026-01-01T00:00:00Z\",\"workspace\":\"/ws-b\"}\n",
+        )
+        .unwrap();
+
+        let scoped = recall_cross_session_scoped(home.path(), "x", "postgres", 5, Some("/ws-a"));
+        assert_eq!(scoped.len(), 1, "只召回同 workspace 笔记:{scoped:?}");
+        assert!(scoped[0].text.contains("postgres 16"));
+
+        // 旧无归属笔记在 scoped 模式出局,但旧口径(无过滤)全部可见。
+        let legacy = recall_cross_session(home.path(), "x", "postgres", 5);
+        assert_eq!(legacy.len(), 3);
     }
 }
