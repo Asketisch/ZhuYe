@@ -51,3 +51,40 @@ def test_审批与中断交错只产生单一终态(seed, sandbox, serve_session
         assert first_event(final, "turn_complete")["msg"]["status"] == "success", (seed, actions, final)
         assert "后续回合成功" == "".join(event["msg"].get("delta", "") for event in final
                                        if event["msg"]["type"] == "agent_message_delta")
+
+
+@pytest.mark.parametrize("mode,expect", [("prompt", "ask"), ("deny", "deny"), ("auto", "run")])
+def test_工作模式对只读bash的闸门语义(mode, expect, sandbox, serve_session, mock_script):
+    """三段工作模式 × F04 只读捷径的边界(回归:`printf hi` 曾在 Ask/Deny 下静默执行)。
+
+    - Ask(prompt):承诺每次调用前询问 → 只读 bash 也必须弹 approval_request;
+    - Deny:禁止所有工具执行 → 只读 bash 直接被拒(不弹窗、不执行);
+    - 默认(auto):只读捷径正常放行(无审批事件、命令执行)。
+    """
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "bash",
+                    "args": {"command": "printf readonly-marker"}}),
+        '{"type":"text","text":"完成"}',
+    ])
+    env = sandbox.mock_env(script, ZHUYE_APPROVALS="1")
+    with serve_session(env=env) as session:
+        session.submit({"type": "set_permission_mode", "mode": mode})
+        turn = session.send({"type": "user_input", "items": [{"type": "text", "text": "跑"}]})
+        if expect == "ask":
+            request = session.wait_event(turn, "approval_request", timeout=15)["msg"]
+            assert request["kind"]["tool_name"] == "bash", request
+            session.send({"type": "tool_approval", "id": request["request_id"],
+                          "decision": "approve"})
+            events = session.collect(turn, timeout=15)
+            assert first_event(events, "turn_complete")["msg"]["status"] == "success", events
+        else:
+            events = session.collect(turn, timeout=15)
+            if expect == "deny":
+                end = first_event(events, "tool_call_end")
+                assert end is not None and end["msg"]["is_error"] is True, events
+                assert "deny" in json.dumps(end["msg"]["output"]).lower(), end
+            else:
+                end = first_event(events, "tool_call_end")
+                assert end is not None and end["msg"]["is_error"] is False, events
+                assert "readonly-marker" in json.dumps(end["msg"]["output"]), end
+                assert first_event(events, "approval_request") is None, events
