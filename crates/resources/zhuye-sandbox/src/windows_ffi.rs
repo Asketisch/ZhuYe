@@ -778,9 +778,7 @@ mod tests {
     #[ignore = "Windows 真机集成测试:--ignored 显式运行"]
     fn real_spawn_and_kill_in_job() {
         use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-        use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, WaitForSingleObject,
-        };
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
         let mut plan = plan();
         plan.job.memory_limit_mb = Some(256);
         let spawned = spawn_sandboxed(&plan, "cmd.exe", &["/c".into(), "echo ok".into()])
@@ -859,8 +857,8 @@ mod tests {
         plan.job.memory_limit_mb = Some(128);
         // spawn_sandboxed 当前对 env 传 NULL(继承)——本测试作为启用
         // 注入后的验收标准保留。
-        let spawned = spawn_sandboxed(&plan, "cmd.exe", &["/c".into(), "exit".into()])
-            .expect("spawn");
+        let spawned =
+            spawn_sandboxed(&plan, "cmd.exe", &["/c".into(), "exit".into()]).expect("spawn");
         unsafe {
             let h = OpenProcess(PROCESS_QUERY_INFORMATION, 0, spawned.pid);
             assert!(!h.is_null());
