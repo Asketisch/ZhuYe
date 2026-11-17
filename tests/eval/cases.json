@@ -1,0 +1,14 @@
+[
+  {"name":"repair-add","kind":"repair","operation":"add","inputs":[[3,5],[-2,4],[0,0]]},
+  {"name":"repair-subtract","kind":"repair","operation":"subtract","inputs":[[9,2],[-3,-4],[0,8]]},
+  {"name":"repair-multiply","kind":"repair","operation":"multiply","inputs":[[3,7],[-2,5],[0,8]]},
+  {"name":"repair-maximum","kind":"repair","operation":"maximum","inputs":[[4,9],[-3,-7],[0,0]]},
+  {"name":"resume-orion","kind":"resume","code":"ORION","color":"blue","priority":2},
+  {"name":"resume-lyra","kind":"resume","code":"LYRA","color":"green","priority":4},
+  {"name":"resume-vega","kind":"resume","code":"VEGA","color":"amber","priority":7},
+  {"name":"resume-sirius","kind":"resume","code":"SIRIUS","color":"violet","priority":9},
+  {"name":"merge-one","kind":"merge","values":[5,8,13],"label":"alpha"},
+  {"name":"merge-two","kind":"merge","values":[-2,6,4],"label":"beta"},
+  {"name":"merge-three","kind":"merge","values":[9,0,3],"label":"gamma"},
+  {"name":"merge-four","kind":"merge","values":[11,7,-5],"label":"delta"}
+]
