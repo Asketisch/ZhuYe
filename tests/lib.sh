@@ -108,6 +108,15 @@ run_with_timeout() {
 #   语义,不验 hook 计时,统一在配置里显式关闭。config.toml 必须存在,
 #   否则 ConfigWatcher 报错直接退出。
 make_isolated_env() {
+    # 清除会改变产品行为的宿主配置;测试可在调用后显式设置。
+    local name
+    for name in ${!ZHUYE_@}; do
+        case "$name" in
+            ZHUYE_BIN|ZHUYE_KEEP|ZHUYE_SKIP_WORKSPACE|ZHUYE_ENV_STRESS_RUNS) ;;
+            *) unset "$name" ;;
+        esac
+    done
+    unset OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY OLLAMA_API_KEY OLLAMA_HOST BRAVE_API_KEY
     ISO_HOME="$(mktemp -d "${TMPDIR:-/tmp}/zhuye-test-home.XXXXXX")"
     ISO_CWD="$(mktemp -d "${TMPDIR:-/tmp}/zhuye-test-cwd.XXXXXX")"
     mkdir -p "$ISO_HOME/.zhuye"
@@ -117,6 +126,7 @@ make_isolated_env() {
 enabled = []
 EOF
     export HOME="$ISO_HOME"
+    export ZHUYE_HOME="$ISO_HOME/.zhuye"
     cd "$ISO_CWD" || exit 1
 }
 

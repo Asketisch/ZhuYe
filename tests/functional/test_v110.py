@@ -582,11 +582,11 @@ def test_V12_wasm插件_工具与hook字段级(sandbox, mock_script) -> None:
     #    wasm hook(此前 hooks.json 的 `wasm` 字段在解析层被静默丢弃,
     #    整条 wasm hook 链路从未生效)。stderr(tracing 日志)应出现注册行。
     stderr_text = ""
-    stderr_file = sandbox.cwd / "serve.stderr"
+    stderr_file = s.stderr_path
     if stderr_file.exists():
         stderr_text = stderr_file.read_text(errors="replace")
     assert "wasm hook registered" in stderr_text, (
-        f"loader 应注册 wasm hook(查 stderr serve.stderr):{stderr_text[-2000:]}"
+        f"loader 应注册 wasm hook(查 stderr):{stderr_text[-2000:]}"
     )
     # 同名工具占用防护是注册期校验:demo_echo 未与内置工具同名,正常注册
     # (不触发);此处断言注册日志出现 wasm tool registered 佐证工具挂载。

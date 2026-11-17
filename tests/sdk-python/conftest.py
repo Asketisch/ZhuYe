@@ -31,7 +31,7 @@ DRAIN_TIMEOUT = 30.0
 
 
 @pytest.fixture()
-def env_home() -> Iterator[Path]:
+def env_home(monkeypatch) -> Iterator[Path]:
     """隔离 HOME:预写关闭全部内置 hook 的最小 config.toml。
 
     exec/serve 默认启用 VerificationHook(Stop 时跑 `cargo test`)等重 hook,
@@ -45,7 +45,11 @@ def env_home() -> Iterator[Path]:
         "# 测试用最小配置:关闭全部内置 hook\n[hooks]\nenabled = []\n"
     )
     old_home = os.environ.get("HOME")
+    for key in list(os.environ):
+        if key.startswith(("ZHUYE_", "OPENAI_", "ANTHROPIC_", "GEMINI_", "OLLAMA_", "BRAVE_")):
+            monkeypatch.delenv(key)
     os.environ["HOME"] = str(home)
+    monkeypatch.setenv("ZHUYE_HOME", str(zhuye_dir))
     yield home
     for var in (
         "ZHUYE_MODEL",

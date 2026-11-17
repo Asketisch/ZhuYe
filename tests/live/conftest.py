@@ -93,8 +93,7 @@ def fetch_free_models(base_url: str, api_key: str) -> list[dict]:
         f"base_url = \"{base_url}\"\n"
         "model = \"free\"\n"
     )
-    env = dict(os.environ)
-    env["HOME"] = str(home)
+    env = Sandbox(home=home, cwd=home).env()
     proc = subprocess.run(
         [str(ZHUYE_BIN), "models", "list", "--free-only", "--json"],
         env=env,
@@ -279,19 +278,17 @@ def pytest_runtest_makereport(item, call):
 
 @pytest.fixture(autouse=True)
 def _live_diagnostics(request, live_sandbox):
-    """用例失败时打印配置与 serve stderr —— 排障的第一手材料。"""
+    """用例失败时打印配置路径与脱敏后的 serve stderr。"""
     yield
     rep = getattr(request.node, "rep_call", None)
     if rep is not None and rep.failed:
         cfg = live_sandbox.home / ".zhuye/config.toml"
         print("\n──── 实模型层失败诊断 ────")
         print(f"[config] {cfg}")
-        try:
-            print(cfg.read_text())
-        except Exception:  # noqa: BLE001 - 诊断尽力而为
-            pass
-        stderr = live_sandbox.cwd / "serve.stderr"
-        if stderr.exists():
+        for stderr in sorted(live_sandbox.cwd.glob("serve-*.stderr")):
             print("[serve stderr] 末尾 30 行:")
-            print("\n".join(stderr.read_text().splitlines()[-30:]))
+            lines = stderr.read_text(errors="replace")
+            if DEFAULT_API_KEY:
+                lines = lines.replace(DEFAULT_API_KEY, "[已隐藏]")
+            print("\n".join(lines.splitlines()[-30:]))
         print("─────────────────────────")

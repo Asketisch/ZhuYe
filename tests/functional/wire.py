@@ -13,14 +13,11 @@ sys.path 顺序解析到错误的那一份。
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Callable, Iterator
-
-
 import json
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -56,9 +53,11 @@ class Sandbox:
     cwd: Path
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        """派生子进程 env:HOME 指向隔离目录,其余继承当前进程。"""
-        env = dict(os.environ)
+        """清理宿主业务配置后派生隔离环境,显式参数可覆盖默认值。"""
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(("ZHUYE_", "OPENAI_", "ANTHROPIC_", "GEMINI_", "OLLAMA_", "BRAVE_"))}
         env["HOME"] = str(self.home)
+        env["ZHUYE_HOME"] = str(self.home / ".zhuye")
         if extra:
             env.update(extra)
         return env
@@ -97,7 +96,10 @@ class ServeSession:
         self.sandbox = sandbox
         self.args = list(args or [])
         self.timeout = timeout
-        self.stderr_path = sandbox.cwd / "serve.stderr"
+        stderr_file = tempfile.NamedTemporaryFile(prefix="serve-", suffix=".stderr", dir=sandbox.cwd, delete=False)
+        self.stderr_path = Path(stderr_file.name)
+        self.transcript_path = self.stderr_path.with_suffix(".jsonl")
+        self._transcript_lock = threading.Lock()
         self._events: list[dict[str, Any]] = []
         self._by_sub: dict[str, list[dict[str, Any]]] = {}
         self._globals: list[dict[str, Any]] = []
@@ -107,16 +109,19 @@ class ServeSession:
         self._stdout_error: str | None = None
         self._stdout_eof = False
         cmd = [str(ZHUYE_BIN), "serve", *self.args]
-        self._proc = subprocess.Popen(
-            cmd,
-            cwd=str(sandbox.cwd),
-            env=sandbox.env(env),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=self.stderr_path.open("wb"),
-            text=True,
-            bufsize=1,
-        )
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                cwd=str(sandbox.cwd),
+                env=sandbox.env(env),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                text=True,
+                bufsize=1,
+            )
+        finally:
+            stderr_file.close()
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
 
@@ -125,6 +130,7 @@ class ServeSession:
     def _read_loop(self) -> None:
         assert self._proc.stdout is not None
         for raw in self._proc.stdout:
+            self._record_wire("stdout", raw.rstrip("\n"))
             line = raw.strip()
             if not line:
                 continue
@@ -170,6 +176,13 @@ class ServeSession:
                 raise RuntimeError("serve stdin 已关闭")
             self._proc.stdin.write(line if line.endswith("\n") else line + "\n")
             self._proc.stdin.flush()
+            self._record_wire("stdin", line.rstrip("\n"))
+
+    def _record_wire(self, direction: str, line: str) -> None:
+        """为每个会话记录独立的输入输出,供失败诊断使用。"""
+        record = json.dumps({"direction": direction, "line": line}, ensure_ascii=False)
+        with self._transcript_lock, self.transcript_path.open("a", encoding="utf-8") as stream:
+            stream.write(record + "\n")
 
     def send(self, op: dict[str, Any], sub_id: str | None = None) -> str:
         """发一条 submission,立即返回其 id(不等待)。"""
@@ -336,6 +349,9 @@ class ServeSession:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
                 self._proc.wait()
+        self._reader.join(timeout=5)
+        if not self._reader.is_alive() and self._proc.stdout is not None:
+            self._proc.stdout.close()
         return self._proc.returncode
 
     def __enter__(self) -> "ServeSession":
@@ -344,6 +360,8 @@ class ServeSession:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
         self._reader.join(timeout=5)
+        if not self._reader.is_alive() and self._proc.stdout is not None and not self._proc.stdout.closed:
+            self._proc.stdout.close()
         if exc_type is None and self._stdout_error is not None:
             raise AssertionError(self._stdout_error)
 
