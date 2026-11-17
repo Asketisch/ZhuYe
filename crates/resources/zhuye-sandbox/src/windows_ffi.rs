@@ -653,8 +653,12 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::super::windows::{
-        AppContainerCapability, JobLimits, WindowsSandbox, WindowsSandboxConfig,
+        AppContainerCapability, WindowsSandbox, WindowsSandboxConfig,
     };
+    // JobLimits 仅被 `#[cfg(not(windows))]` 用例使用;Windows 编译该
+    // 导入为 unused(-D warnings 拒收),按平台门控分开导入。
+    #[cfg(not(windows))]
+    use super::super::windows::JobLimits;
     use super::*;
     use std::collections::BTreeMap;
     // 真机集成测试直接调 Win32 API:CloseHandle 只在本模块的 `imp` 里导入,
