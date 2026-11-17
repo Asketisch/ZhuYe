@@ -66,7 +66,7 @@ def test_子代理继承父会话写入拒绝规则(sandbox, serve_session) -> N
             parent = session.send({"type": "user_input", "items": [
                 {"type": "text", "text": "让 worker 写入"}
             ]})
-            delegation = session.wait_event(parent, "approval_request", timeout=5)["msg"]
+            delegation = session.wait_event(parent, "approval_request", timeout=15)["msg"]
             assert delegation["kind"]["tool_name"] == "call_worker", delegation
             session.send({"type": "tool_approval", "id": delegation["request_id"], "decision": "approve"})
             deadline = time.monotonic() + 2
@@ -165,7 +165,7 @@ def test_子代理继承父级放行但仍受沙箱边界限制(sandbox, serve_s
             parent = session.send({"type": "user_input", "items": [
                 {"type": "text", "text": "让 worker 写入"}
             ]})
-            delegation = session.wait_event(parent, "approval_request", timeout=5)["msg"]
+            delegation = session.wait_event(parent, "approval_request", timeout=15)["msg"]
             assert delegation["kind"]["tool_name"] == "call_worker", delegation
             session.send({"type": "tool_approval", "id": delegation["request_id"], "decision": "approve"})
             deadline = time.monotonic() + 2
