@@ -499,8 +499,9 @@ mod imp {
                 sids.len() as u32,
                 &mut profile_psid,
             );
-            // 外层 unsafe 块已覆盖,内层包装属冗余(unused_unsafe)。
-            LocalFree(profile_psid as *mut core::ffi::c_void);
+            // 外层 unsafe 块已覆盖,内层包装属冗余(unused_unsafe);
+            // PSID 本就是 *mut c_void,恒等转换会被新 clippy 拒收。
+            LocalFree(profile_psid);
             if hr != 0 {
                 return Err(format!("CreateAppContainerProfile hr=0x{hr:x}"));
             }
