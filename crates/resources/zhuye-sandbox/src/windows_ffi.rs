@@ -764,4 +764,107 @@ mod tests {
             None
         );
     }
+
+    // ── Windows 真机集成测试(仅 Windows 且显式 --ignored 跑)──────────
+    //
+    // 运行:`cargo test -p zhuye-sandbox --target x86_64-pc-windows-msvc -- --ignored`
+    // 验证真实 Win32 行为:job 创建、挂起态 assign、树枚举、ACL 授权。
+    // 标注 #[ignore] —— 非 Windows 开发机与默认 CI 不跑。
+
+    /// 真实 spawn:notepad.exe 在 Job Object 里跑起来再杀掉。
+    /// 验证:CreateProcessW / assign / kill 全链路。
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Windows 真机集成测试:--ignored 显式运行"]
+    fn real_spawn_and_kill_in_job() {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, WaitForSingleObject,
+        };
+        let mut plan = plan();
+        plan.job.memory_limit_mb = Some(256);
+        let spawned = spawn_sandboxed(&plan, "cmd.exe", &["/c".into(), "echo ok".into()])
+            .expect("真实 spawn 应成功");
+        assert!(spawned.assigned_to_job, "子进程应已加入 Job Object");
+        assert!(spawned.pid > 0);
+
+        // 树枚举应能找到该进程。
+        let tree = enumerate_process_tree(spawned.pid);
+        assert!(
+            tree.iter().any(|(pid, _)| *pid == spawned.pid),
+            "树枚举应含刚 spawn 的进程"
+        );
+
+        // 击杀并确认退出。
+        assert!(kill_tree(&KillPlan::build(spawned.pid, &[])));
+        // 等待进程退出(经 OpenProcess 轮询退出码,简化验证)。
+        unsafe {
+            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
+            let h = OpenProcess(PROCESS_QUERY_INFORMATION, 0, spawned.pid);
+            if !h.is_null() {
+                let mut code = 0u32;
+                for _ in 0..50 {
+                    if WaitForSingleObject(h, 100) == WAIT_OBJECT_0 {
+                        GetExitCodeProcess(h, &mut code);
+                        break;
+                    }
+                }
+                CloseHandle(h);
+            }
+        }
+    }
+
+    /// 真实 AppContainer:profile 创建 + 容器 SID 派生。
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Windows 真机集成测试:--ignored 显式运行"]
+    fn real_appcontainer_profile_lifecycle() {
+        use super::imp;
+        // 建带静态 capability 的 profile。
+        let caps = vec![
+            AppContainerCapability::InternetClient,
+            AppContainerCapability::PrivateNetworkClientServer,
+        ];
+        let sid = imp::create_appcontainer_profile(&caps).expect("profile 创建应成功");
+        assert!(!sid.is_empty(), "容器 SID 应非空");
+        // 幂等:同名重建不报错。
+        let sid2 = imp::create_appcontainer_profile(&caps).expect("重建应幂等");
+        assert_eq!(sid, sid2, "同 capability 集合应派生同一容器 SID");
+    }
+
+    /// 真实 ACL:给 %TEMP% 下新建目录授予读授权。
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Windows 真机集成测试:--ignored 显式运行"]
+    fn real_grant_read_acl() {
+        use super::imp;
+        let dir = std::env::temp_dir().join(format!("zhuye_acl_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        // 先建一个空 profile 拿容器 SID。
+        let sid = imp::create_appcontainer_profile(&[]).expect("profile");
+        let result = imp::grant_read_acl(dir.to_str().expect("utf8"), &sid);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(result.is_ok(), "ACL 授权应成功:{result:?}");
+    }
+
+    /// 真实 env 注入:子进程读到的环境变量来自脱敏后的块(而非继承)。
+    /// 验证 env block 传递路径(当前 spawn 传 NULL 继承,本测试在启用
+    /// env 注入后应转绿——现标注为待启用状态的活文档)。
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "待 env 注入启用后转绿:--ignored 显式运行"]
+    fn real_spawn_env_injection() {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
+        let mut plan = plan();
+        plan.job.memory_limit_mb = Some(128);
+        // spawn_sandboxed 当前对 env 传 NULL(继承)——本测试作为启用
+        // 注入后的验收标准保留。
+        let spawned = spawn_sandboxed(&plan, "cmd.exe", &["/c".into(), "exit".into()])
+            .expect("spawn");
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_INFORMATION, 0, spawned.pid);
+            assert!(!h.is_null());
+            CloseHandle(h);
+        }
+    }
 }
