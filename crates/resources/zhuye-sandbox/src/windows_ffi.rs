@@ -456,7 +456,11 @@ mod imp {
     /// ② CreateAppContainerProfile 注册(幂等,同名重建不报错);
     /// ③ DeriveAppContainerSidFromAppContainerName 取容器 SID。
     /// 返回容器 SID 字节(供 attribute 注入与 ACL 授权)。
-    fn create_appcontainer_profile(
+    ///
+    /// 必须 `pub`:Windows 侧集成测试(profile 幂等性 / ACL 授权)直接
+    /// 调用 `imp::create_appcontainer_profile`;私有会让 `cargo test` 以
+    /// E0603 编译失败(macOS 编译不到该分支,本地不可见)。
+    pub fn create_appcontainer_profile(
         capabilities: &[super::super::windows::AppContainerCapability],
     ) -> Result<Vec<u8>, String> {
         // 全函数体 unsafe 包裹(FFI 调用序列;输入均为本模块构造的可信
