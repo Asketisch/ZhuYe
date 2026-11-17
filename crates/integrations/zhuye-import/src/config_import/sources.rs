@@ -141,12 +141,11 @@ fn mcp_entry(
     let headers = |obj: &serde_json::Map<String, Value>| -> HashMap<String, String> {
         obj.get("headers")
             .and_then(Value::as_object)
-            .map(|m| {
+            .map_or(HashMap::new(), |m| {
                 m.iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
-            .unwrap_or_default()
     };
     let transport = if let Some(url) = s_of(obj.get("httpUrl")).or_else(|| s_of(obj.get("url"))) {
         let is_sse =
@@ -160,13 +159,12 @@ fn mcp_entry(
         let args = obj
             .get("args")
             .and_then(Value::as_array)
-            .map(|a| {
+            .map_or(Vec::new(), |a| {
                 a.iter()
                     .filter_map(Value::as_str)
                     .map(str::to_string)
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            });
         ImportedMcpTransport::Stdio {
             command,
             args: cmd_args.unwrap_or(args),

@@ -163,19 +163,18 @@ impl CodeGraph {
 
     /// 查符号定义。
     pub fn find_definitions(&self, name: &str) -> Vec<SymbolDef> {
-        self.defs_by_name
-            .get(name)
-            .map(|set| {
-                set.iter()
-                    .map(|(path, line, kind)| SymbolDef {
-                        name: name.to_string(),
-                        path: path.clone(),
-                        line: *line,
-                        kind: kind.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        // map_or 而非 map+unwrap_or_default:新版 clippy 的 map_unwrap_or
+        // 已提级为默认告警,CI(-D warnings)拒收。
+        self.defs_by_name.get(name).map_or(Vec::new(), |set| {
+            set.iter()
+                .map(|(path, line, kind)| SymbolDef {
+                    name: name.to_string(),
+                    path: path.clone(),
+                    line: *line,
+                    kind: kind.clone(),
+                })
+                .collect()
+        })
     }
 
     /// 查引用了 `name` 的所有位置。
@@ -228,10 +227,9 @@ impl CodeGraph {
 
     /// 某个文件 import 的模块。
     pub fn imports_of(&self, path: &Path) -> Vec<String> {
-        self.files
-            .get(path)
-            .map(|f| f.imports.iter().map(|i| i.module.clone()).collect())
-            .unwrap_or_default()
+        self.files.get(path).map_or(Vec::new(), |f| {
+            f.imports.iter().map(|i| i.module.clone()).collect()
+        })
     }
 
     /// 被 `module` 导入的文件(反向导入边)。
