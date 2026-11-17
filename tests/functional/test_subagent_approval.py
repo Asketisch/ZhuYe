@@ -67,6 +67,10 @@ def test_子代理写入审批经父会话执行(sandbox, serve_session, approve
         }
         target = sandbox.cwd / "child-output.txt"
         with serve_session(env=env) as session:
+            # 默认档(Auto)如今自动批准文件编辑(write);本用例验证的是
+            # 审批链路,先切到 Ask(prompt)模式钉住"每工具询问"语义。
+            # 同一提交队列顺序处理,先于 user_input 生效。
+            session.submit({"type": "set_permission_mode", "mode": "prompt"})
             parent = session.send({"type": "user_input", "items": [
                 {"type": "text", "text": "让 worker 写入文件"}
             ]})

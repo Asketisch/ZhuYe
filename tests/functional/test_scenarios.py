@@ -277,6 +277,8 @@ def test_读取文件审批修改并执行验证(sandbox, serve_session, decisio
         }
         approvals = []
         with serve_session(env=env) as session:
+            # 默认档(Auto)如今自动批准文件编辑;本用例验证审批链路,先切 Ask(prompt)。
+            session.submit({"type": "set_permission_mode", "mode": "prompt"})
             submission = session.send({"type": "user_input", "items": [
                 {"type": "text", "text": "更新 artifact.txt 并验证结果"}
             ]})
@@ -388,6 +390,8 @@ def test_中断待审批写入后迟到批准无副作用(sandbox, serve_session
     ])
     env = sandbox.mock_env(script, ZHUYE_HOME=str(sandbox.home / ".zhuye"), ZHUYE_APPROVALS="1")
     with serve_session(env=env) as session:
+        # 默认档(Auto)如今自动批准文件编辑;本用例验证审批链路,先切 Ask(prompt)。
+        session.submit({"type": "set_permission_mode", "mode": "prompt"})
         first_id = session.send({"type": "user_input", "items": [{"type": "text", "text": "创建文件"}]})
         approval = session.wait_event(first_id, "approval_request", timeout=10)["msg"]
         assert approval["kind"]["tool_name"] == "write", approval
