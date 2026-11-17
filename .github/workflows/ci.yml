@@ -178,6 +178,16 @@ jobs:
       - run: npm ci
         working-directory: sdks/typescript
       - run: ./tests/run_all.sh functional
+        env:
+          ZHUYE_TEST_ARTIFACTS: ${{ github.workspace }}/target/test-failures
+      - name: Upload functional failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-failure-evidence
+          path: target/test-failures/
+          if-no-files-found: ignore
+          retention-days: 7
 
   nightly-quality:
     name: nightly quality
