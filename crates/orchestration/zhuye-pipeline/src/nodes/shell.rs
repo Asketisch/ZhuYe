@@ -199,24 +199,16 @@ mod tests {
         ))
     }
 
-    /// Windows 上没有 OS 沙箱后端(macOS 需 /usr/bin/sandbox-exec;Linux 需
-    /// Landlock 内核支持),流水线节点命令属于不可信来源,按 fail-closed
-    /// 规则**根本不会执行** —— 该平台上「命令真的跑起来」不是可达状态。
+    /// F24 之前的 Windows 没有 OS 沙箱后端,不可信命令按 fail-closed 规则
+    /// 根本不执行,当时本助手函数断言「节点 Failed + 无沙箱后端」。
     ///
-    /// 所以这里不跳过用例,而是断言该平台真实语义:节点 Failed,原因说明
-    /// 无沙箱后端。其余平台继续断言原本的退出码 / 输出语义。
-    fn assert_untrusted_rejected_on_windows(out: &NodeOutcome) -> bool {
-        if !cfg!(windows) {
-            return false;
-        }
-        let NodeStatus::Failed(reason) = &out.status else {
-            panic!("Windows 上不可信命令应被闸门拒绝,得到: {:?}", out.status);
-        };
-        assert!(
-            reason.contains("无沙箱后端"),
-            "拒绝原因应说明无沙箱后端,得到: {reason}"
-        );
-        true
+    /// F24 起 Windows 具备 Job Object(+ AppContainer)沙箱后端,不可信
+    /// 命令会被**沙箱执行** —— 与 macOS / Linux 语义一致,三平台统一走
+    /// 原本的退出码 / 输出断言,不再需要平台特判。函数保留为空实现以
+    /// 稳定调用点形状;若未来某 Windows 环境探测不到后端,fail-closed
+    /// 语义回归时在此恢复平台分支。
+    fn assert_untrusted_rejected_on_windows(_out: &NodeOutcome) -> bool {
+        false
     }
 
     /// 成功命令:exit 0 → Success,stdout 进 outputs。
