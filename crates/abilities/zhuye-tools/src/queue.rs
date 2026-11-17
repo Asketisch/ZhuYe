@@ -670,8 +670,18 @@ impl ToolExecutionQueue {
             let plan_safe_bash = ctx.permission_mode == PermissionMode::Plan
                 && call.name == "bash"
                 && bash_class == Some(BashCommandClass::Safe);
-            let tool_requires_prompt =
-                matches!(effective_perm, PermissionMode::Prompt) && !plan_safe_bash;
+            // 三段工作模式语义:Ask(prompt)承诺「每次调用工具前询问」,
+            // Deny 承诺「禁止所有工具执行」—— 二者都必须压过 F04 的
+            // 只读 bash 自动放行(否则 `printf hi` 在 Ask 模式静默执行、
+            // 在 Deny 模式照跑,两份承诺同时被击穿)。只读捷径仅在默认
+            // (auto)与弃用档下生效。
+            let mode_forces_gate = matches!(
+                ctx.permission_mode,
+                PermissionMode::Prompt | PermissionMode::Deny
+            );
+            let tool_requires_prompt = (matches!(effective_perm, PermissionMode::Prompt)
+                || mode_forces_gate)
+                && !plan_safe_bash;
             let risk = tool_risk_level(&call.name, &effective_args);
             // v1.3 safety baseline (plan §五):the previous "Auto + classify Safe ⇒
             // skip ApprovalGate" 的后门已**删除**。现在每次 bash 调用都
