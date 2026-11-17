@@ -8,6 +8,28 @@ import pytest
 import wire
 
 
+def test_沙箱隔离宿主数据目录(sandbox, monkeypatch) -> None:
+    monkeypatch.setenv("ZHUYE_HOME", "/宿主数据目录")
+    monkeypatch.setenv("ZHUYE_MOCK_SCRIPT", "/宿主脚本")
+    monkeypatch.setenv("OPENAI_API_KEY", "宿主凭据")
+    assert sandbox.env()["ZHUYE_HOME"] == str(sandbox.home / ".zhuye")
+    assert "ZHUYE_MOCK_SCRIPT" not in sandbox.env()
+    assert "OPENAI_API_KEY" not in sandbox.env()
+    assert sandbox.env({"ZHUYE_HOME": "显式覆盖"})["ZHUYE_HOME"] == "显式覆盖"
+
+
+def test_多会话日志互不覆盖(sandbox, monkeypatch) -> None:
+    first = _session_with_stdout(sandbox, monkeypatch, [])
+    first.stderr_path.write_text("第一会话")
+    second = _session_with_stdout(sandbox, monkeypatch, [])
+    try:
+        assert first.stderr_path != second.stderr_path
+        assert first.stderr_path.read_text() == "第一会话"
+    finally:
+        first.close()
+        second.close()
+
+
 def _session_with_stdout(sandbox, monkeypatch, lines):
     binary = sandbox.cwd / "fake-serve"
     binary.write_text("#!/usr/bin/env python3\nimport sys\n" + "".join(

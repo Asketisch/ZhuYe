@@ -33,9 +33,8 @@ import assert from 'node:assert/strict';
 
 // 直接 import 构建产物 dist(与 scripts/sdk_smoke.sh 同路径约定),
 // 避免 vitest 配置;run.sh 会先确保 dist 已构建。
-const { ZhuyeAgent } = await import(
-  new URL('../../sdks/typescript/dist/index.js', import.meta.url).href
-);
+const { ZhuyeAgent } = await import(process.env.ZHUYE_SDK_ENTRY ??
+  new URL('../../sdks/typescript/dist/index.js', import.meta.url).href);
 
 const ROOT = new URL('../../', import.meta.url).pathname;
 const ZHUYE_BIN = process.env.ZHUYE_BIN ?? join(ROOT, 'target/release/zhuye');
@@ -47,7 +46,13 @@ writeFileSync(
   join(home, '.zhuye', 'config.toml'),
   '# 测试用最小配置:关闭全部内置 hook\n[hooks]\nenabled = []\n'
 );
+for (const key of Object.keys(process.env)) {
+  if (/^(ZHUYE_|OPENAI_|ANTHROPIC_|GEMINI_|OLLAMA_|BRAVE_)/.test(key) && key !== 'ZHUYE_SDK_ENTRY') {
+    delete process.env[key];
+  }
+}
 process.env.HOME = home;
+process.env.ZHUYE_HOME = join(home, '.zhuye');
 
 /** 构造指向真二进制 + mock provider 的 spawn 选项;写临时 mock 脚本。 */
 function makeOptions(scriptLines) {
@@ -315,6 +320,7 @@ describe('TS SDK 绑定层 × 真二进制', () => {
       '{"type":"text","text":"done"}',
     ]);
     opts.env.HOME = isolatedHome;
+    opts.env.ZHUYE_HOME = join(isolatedHome, '.zhuye');
     opts.env.ZHUYE_APPROVALS = '1';
     const agent = await ZhuyeAgent.spawn(opts);
     try {
