@@ -231,10 +231,11 @@ impl Lineage {
 
     /// 直接子会话(排序)。
     pub fn children_of(&self, parent: &str) -> Vec<&str> {
+        // map_or 而非 map+unwrap_or_default:新版 clippy 的
+        // map_unwrap_or 已提级为默认告警,CI 以 -D warnings 拒收。
         self.children
             .get(parent)
-            .map(|set| set.iter().map(String::as_str).collect())
-            .unwrap_or_default()
+            .map_or(Vec::new(), |set| set.iter().map(String::as_str).collect())
     }
 
     /// 追溯完整祖先链(从近到远)。
