@@ -207,7 +207,12 @@ mod imp {
     ///
     /// 自定义 capability(如 workspaceReadWrite)无静态 SID —— 文件访问
     /// 改由 ACL 授权表达([`super::grant_read_acl`]),此处不列出。
-    fn static_capability_sid(
+    ///
+    /// 必须 `pub`:同名跨平台测试 `static_capability_sid_table_matches_docs`
+    /// 在 Windows 上走本函数(非 Windows 侧对应实现即 `pub`);此处私有会让
+    /// Windows 的 `cargo test` 直接以 E0603 编译失败(macOS 编译不到该分支,
+    /// 本地不可见)。
+    pub fn static_capability_sid(
         cap: &super::super::windows::AppContainerCapability,
     ) -> Option<&'static str> {
         use super::super::windows::AppContainerCapability as C;
