@@ -9,14 +9,40 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable, Iterator
+import json
+import hashlib
+import html
+import os
+import re
+import shlex
+import subprocess
 
 import pytest
 
 from wire import DRAIN_TIMEOUT, ZHUYE_BIN, Sandbox, ServeSession
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """保存测试结果,供沙箱清理时判断是否收集证据。"""
+    outcome = yield
+    report = outcome.get_result()
+    setattr(item, f"rep_{report.when}", report)
+
+
+def _redact(text: str) -> str:
+    """遮盖环境中已知凭据和常见配置字段。"""
+    secrets = [v for k, v in os.environ.items()
+               if len(v) >= 6 and any(part in k.upper() for part in ("TOKEN", "SECRET", "PASSWORD", "API_KEY"))]
+    for value in secrets:
+        for encoded in (value, html.escape(value, quote=True), json.dumps(value, ensure_ascii=False)[1:-1]):
+            text = text.replace(encoded, "[已隐藏]")
+    return re.sub(r'(?i)((?:api[_-]?key|authorization|password|secret|token)\\?["\']?\s*[:=]\s*\\?["\'])(.*?)(?=\\?["\']|\n)',
+                  r'\1[已隐藏]', text)
+
+
 @pytest.fixture()
-def sandbox(tmp_path: Path) -> Iterator[Sandbox]:
+def sandbox(tmp_path: Path, request) -> Iterator[Sandbox]:
     """每个用例一份隔离 HOME + cwd。
 
     HOME 里预写 `~/.zhuye/config.toml`(`[hooks] enabled = []`):serve/CLI
@@ -32,6 +58,38 @@ def sandbox(tmp_path: Path) -> Iterator[Sandbox]:
         "# 测试用最小配置:关闭全部内置 hook\n[hooks]\nenabled = []\n"
     )
     yield Sandbox(home=home, cwd=cwd)
+    report = getattr(request.node, "rep_call", None)
+    destination = os.environ.get("ZHUYE_TEST_ARTIFACTS")
+    if destination and report is not None and report.failed:
+        name = re.sub(r"[^\w.-]+", "_", request.node.nodeid)[:160]
+        target = Path(destination) / name
+        target.mkdir(parents=True, exist_ok=True)
+        for path in tmp_path.rglob("*"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            # 诊断包仅收集文本及 rollout,跳过任意二进制或大文件。
+            if path.stat().st_size > 5_000_000 or path.suffix not in {".jsonl", ".stderr", ".toml"}:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (UnicodeError, OSError):
+                continue
+            output = target / path.relative_to(tmp_path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(_redact(content), encoding="utf-8")
+        identity = {"test": request.node.nodeid, "binary": str(ZHUYE_BIN),
+                    "seed": os.environ.get("RUNNER_SEED"),
+                    "reproduce": f"ZHUYE_BIN={shlex.quote(str(ZHUYE_BIN))} python3 -m pytest {shlex.quote(request.node.nodeid)} -v",
+                    "revision": subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
+                                               capture_output=True, text=True, check=False).stdout.strip()}
+        try:
+            identity["binary_sha256"] = hashlib.sha256(ZHUYE_BIN.read_bytes()).hexdigest()
+            version = subprocess.run([str(ZHUYE_BIN), "--version"], capture_output=True, text=True, timeout=10, check=False)
+            identity["binary_version"] = _redact(version.stdout.strip()) if version.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            identity["binary_sha256"] = None
+            identity["binary_version"] = None
+        (target / "identity.json").write_text(json.dumps(identity, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 @pytest.fixture()
