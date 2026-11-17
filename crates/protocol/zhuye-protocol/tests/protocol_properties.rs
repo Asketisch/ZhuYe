@@ -1,7 +1,6 @@
 //! 协议属性测试:随机输入下 `Op` / `Submission` / `Event` 的 wire 往返。
 
 use proptest::prelude::*;
-use serde_json::Value;
 use zhuye_protocol::{
     Event, EventMsg, Op, ReviewDecision, Submission, ThreadSettingsOverrides, UserInputItem,
 };
@@ -44,19 +43,15 @@ fn arb_op() -> impl Strategy<Value = Op> {
     ]
 }
 
-fn wire_type(value: &Value) -> Option<&str> {
-    value.get("type").and_then(Value::as_str)
-}
-
 proptest! {
-    /// 任意受支持 Op 经 JSON 往返后判别子与关键 wire 名称保持。
+    /// 任意受支持 Op 经 JSON 往返后完整 wire 值保持。
     #[test]
-    fn op_json_roundtrip_preserves_discriminant(op in arb_op()) {
+    fn op_json_roundtrip_preserves_fields(op in arb_op()) {
         let wire = serde_json::to_value(&op).expect("Op 序列化失败");
         let decoded: Op = serde_json::from_value(wire.clone()).expect("Op 反序列化失败");
         prop_assert_eq!(decoded.discriminant(), op.discriminant());
         let reencoded = serde_json::to_value(&decoded).expect("Op 二次序列化失败");
-        prop_assert_eq!(wire_type(&wire), wire_type(&reencoded));
+        prop_assert_eq!(wire, reencoded);
     }
 
     /// Submission 外层信封在任意 id / Op 文本下完整往返。
