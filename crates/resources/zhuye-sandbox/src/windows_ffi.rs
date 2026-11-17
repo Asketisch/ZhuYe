@@ -584,13 +584,18 @@ mod imp {
     }
 
     unsafe fn alloc_heap(size: usize) -> *mut core::ffi::c_void {
-        let heap = GetProcessHeap();
-        HeapAlloc(heap, HEAP_ZERO_MEMORY, size)
+        // edition 2024:unsafe fn 体内的 FFI 调用仍需显式 unsafe 块。
+        unsafe {
+            let heap = GetProcessHeap();
+            HeapAlloc(heap, HEAP_ZERO_MEMORY, size)
+        }
     }
 
     unsafe fn free_heap(ptr: *mut core::ffi::c_void) {
-        let heap = GetProcessHeap();
-        HeapFree(heap, 0, ptr);
+        unsafe {
+            let heap = GetProcessHeap();
+            HeapFree(heap, 0, ptr);
+        }
     }
 }
 
