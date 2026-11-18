@@ -395,3 +395,312 @@ async fn exit_plan_mode_outside_plan_mode_skips_approval() {
         "Auto 模式下的 ExitPlanMode 不应派发 PlanReady 审批"
     );
 }
+
+/// `read` 的无副作用替身:Plan 白名单内的纯读工具,循环烧迭代预算用。
+struct ReadStub;
+
+#[async_trait]
+impl Tool for ReadStub {
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "stub read"
+    }
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+    async fn execute(&self, _ctx: ToolContext, _args: Value) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            content: vec![zhuye_protocol::ContentBlock::text("ok")],
+            is_error: false,
+            metadata: Value::Null,
+            elapsed_ms: 0,
+        })
+    }
+}
+
+fn read_tool_batch(msg_id: &str, tool_call_id: &str) -> Vec<ChatEvent> {
+    vec![
+        ChatEvent::MessageStart {
+            id: msg_id.into(),
+            model: "stub-1".into(),
+        },
+        ChatEvent::ToolUseStart {
+            id: tool_call_id.into(),
+            name: "read".into(),
+            input_json: String::new(),
+        },
+        ChatEvent::ToolUseDelta("{}".into()),
+        ChatEvent::MessageStop,
+    ]
+}
+
+fn tool_names(req: &zhuye_llm::ChatRequest) -> Vec<&str> {
+    req.tools
+        .iter()
+        .map(|t| match t {
+            zhuye_llm::ToolSpec::Function { name, .. } => name.as_str(),
+        })
+        .collect()
+}
+
+/// v1.x:force_final_answer 在 Plan 模式保留 ExitPlanMode。max_iterations
+/// 触顶的强制收口轮此前清空全部工具 —— 调研耗尽预算的 plan 永远无法经
+/// PlanReady 提交,只能纯文本收尾。收口轮的 request.tools 必须仍含
+/// ExitPlanMode;非 Plan 模式保持清空(收口语义不变)。
+#[tokio::test]
+async fn force_final_answer_keeps_exit_plan_mode_in_plan_mode() {
+    let registry = Arc::new(ModelRegistry::new());
+    let stub = Arc::new(RecordingStub::new(vec![
+        read_tool_batch("m1", "tc1"),
+        read_tool_batch("m2", "tc2"),
+        read_tool_batch("m3", "tc3"),
+    ]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let cfg = AgentConfig::new("stub/m1", Path::new("."))
+        .with_initial_permission_mode(PermissionMode::Plan)
+        .with_max_iterations(3);
+    let tools = Arc::new(ToolRegistry::default());
+    tools.register(Arc::new(ReadStub));
+    tools.register(Arc::new(ExitPlanModeStub));
+    let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
+
+    let mut handle = thread
+        .submit(user_sub("sub-ff", "research then plan"))
+        .await;
+    while let Some(ev) = timeout(Duration::from_secs(5), handle.next())
+        .await
+        .expect("event arrives within 5s")
+    {
+        if matches!(ev.msg, EventMsg::TurnComplete(_)) {
+            break;
+        }
+    }
+    let reqs = stub.requests();
+    assert!(
+        reqs.len() >= 4,
+        "3 轮工具 + 1 轮强制收口,至少 4 次调用;got {}",
+        reqs.len()
+    );
+    let final_tools = tool_names(&reqs[3]);
+    assert_eq!(
+        final_tools,
+        vec!["ExitPlanMode"],
+        "Plan 模式收口轮必须保留 ExitPlanMode(唯一的计划提交出口),got {final_tools:?}"
+    );
+}
+
+/// 对照:非 Plan 模式的收口轮仍清空全部工具(既有语义不变)。
+#[tokio::test]
+async fn force_final_answer_clears_tools_outside_plan_mode() {
+    let registry = Arc::new(ModelRegistry::new());
+    let stub = Arc::new(RecordingStub::new(vec![
+        read_tool_batch("m1", "tc1"),
+        read_tool_batch("m2", "tc2"),
+        read_tool_batch("m3", "tc3"),
+    ]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let cfg = AgentConfig::new("stub/m1", Path::new(".")).with_max_iterations(3);
+    let tools = Arc::new(ToolRegistry::default());
+    tools.register(Arc::new(ReadStub));
+    tools.register(Arc::new(ExitPlanModeStub));
+    let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
+
+    let mut handle = thread.submit(user_sub("sub-ff2", "just loop")).await;
+    while let Some(ev) = timeout(Duration::from_secs(5), handle.next())
+        .await
+        .expect("event arrives within 5s")
+    {
+        if matches!(ev.msg, EventMsg::TurnComplete(_)) {
+            break;
+        }
+    }
+    let reqs = stub.requests();
+    assert!(reqs.len() >= 4, "got {}", reqs.len());
+    let final_tools = tool_names(&reqs[3]);
+    assert!(
+        final_tools.is_empty(),
+        "非 Plan 模式收口轮应清空工具,got {final_tools:?}"
+    );
+}
+
+fn op_sub(submission_id: &str, op: Op) -> Submission {
+    Submission {
+        id: submission_id.into(),
+        op,
+        workspace: None,
+        client_user_message_id: None,
+        trace: None,
+        source_command: None,
+    }
+}
+
+/// v1.x:用户手动切模式(`Op::SetPermissionMode`)必须清空在途 plan 审批
+/// waiter —— 此前 blocking 等待只听会话级取消,切模式后 turn 悬挂在
+/// 审批上不收尾;且迟到的 PlanApproval 会二次翻转模式覆盖用户设置。
+#[tokio::test]
+async fn set_permission_mode_cancels_pending_plan_approval() {
+    let registry = Arc::new(ModelRegistry::new());
+    let stub = Arc::new(RecordingStub::new(vec![exit_plan_mode_batch("m1", "tc1")]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let cfg = AgentConfig::new("stub/m1", Path::new("."))
+        .with_initial_permission_mode(PermissionMode::Plan)
+        .with_approvals(true);
+    let tools = Arc::new(ToolRegistry::default());
+    tools.register(Arc::new(ExitPlanModeStub));
+    let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
+
+    // 模式事件走 session 广播(回合开始时 turn 通道已从 turn_subs 摘除)。
+    let mut session_rx = thread.subscribe_session();
+    let mut handle = thread.submit(user_sub("sub-sw", "plan something")).await;
+    let mut completed = false;
+    while let Some(ev) = timeout(Duration::from_secs(5), handle.next())
+        .await
+        .expect("event arrives within 5s (turn 不得悬挂在审批等待上)")
+    {
+        match ev.msg {
+            EventMsg::PlanReady(_) => {
+                // 审批弹窗待决时用户直接切走模式(不经审批)。
+                let t = thread.clone();
+                tokio::spawn(async move {
+                    t.submit(op_sub(
+                        "sub-setmode",
+                        Op::SetPermissionMode {
+                            mode: PermissionMode::Auto,
+                        },
+                    ))
+                    .await;
+                });
+            }
+            EventMsg::TurnComplete(_) => {
+                completed = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(completed, "切模式后 turn 必须正常收尾(不悬挂)");
+    // 回合通道收尾后,再排空 session 广播里的模式事件(至多等 1s)。
+    let mut mode_changes: Vec<(PermissionMode, PermissionMode)> = Vec::new();
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while mode_changes.len() < 2 && std::time::Instant::now() < drain_deadline {
+        let Ok(Some(ev)) = timeout(Duration::from_millis(200), session_rx.recv()).await else {
+            continue;
+        };
+        if let EventMsg::PermissionModeChanged(m) = ev.msg {
+            mode_changes.push((m.from, m.to));
+        }
+    }
+    // 恰好两次模式事件:会话头初始通告(auto→plan)+ 手动切换(plan→auto);
+    // 若迟到审批仍能翻转模式会出现第三次。
+    assert_eq!(
+        mode_changes,
+        vec![
+            (PermissionMode::Auto, PermissionMode::Plan),
+            (PermissionMode::Plan, PermissionMode::Auto),
+        ],
+        "模式轨迹应为 auto→plan(初始通告)→auto(手动切换),got {mode_changes:?}"
+    );
+}
+
+/// v1.x:`Op::Shutdown` 清空 plan gate waiters + 会话令牌级联 —— 审批
+/// 待决时关闭会话,turn 必须在限时内解除(handle 关闭、ShutdownComplete
+/// 到达),不得悬挂。
+#[tokio::test]
+async fn shutdown_clears_pending_plan_approval() {
+    let registry = Arc::new(ModelRegistry::new());
+    let stub = Arc::new(RecordingStub::new(vec![exit_plan_mode_batch("m1", "tc1")]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let cfg = AgentConfig::new("stub/m1", Path::new("."))
+        .with_initial_permission_mode(PermissionMode::Plan)
+        .with_approvals(true);
+    let tools = Arc::new(ToolRegistry::default());
+    tools.register(Arc::new(ExitPlanModeStub));
+    let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
+
+    // blocking 派发的 PlanReady 只进 turn 通道(无 session 扇出),从 turn
+    // 通道触发;ShutdownComplete 走 session 广播 + Op 自己的通道,从
+    // session 通道断言。
+    let mut session_rx = thread.subscribe_session();
+    let mut handle = thread.submit(user_sub("sub-sd", "plan something")).await;
+    let mut turn_ended = false;
+    while let Some(ev) = timeout(Duration::from_secs(5), handle.next())
+        .await
+        .expect("event arrives within 5s (shutdown 不得悬挂在审批等待上)")
+    {
+        match ev.msg {
+            EventMsg::PlanReady(_) => {
+                let t = thread.clone();
+                tokio::spawn(async move {
+                    t.submit(op_sub("sub-shutdown", Op::Shutdown)).await;
+                });
+            }
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => {
+                turn_ended = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(turn_ended, "Shutdown 后 turn 必须收尾(不悬挂在审批等待上)");
+    // session 广播里排空找 ShutdownComplete(至多 2s)。
+    let mut saw_shutdown = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        let Ok(Some(ev)) = timeout(Duration::from_millis(200), session_rx.recv()).await else {
+            if session_rx.is_closed() {
+                break;
+            }
+            continue;
+        };
+        if matches!(ev.msg, EventMsg::ShutdownComplete) {
+            saw_shutdown = true;
+            break;
+        }
+    }
+
+    assert!(
+        saw_shutdown,
+        "必须收到 ShutdownComplete 且事件流正常关闭(不悬挂)"
+    );
+}

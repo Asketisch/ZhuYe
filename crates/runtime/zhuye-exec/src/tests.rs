@@ -705,3 +705,22 @@ fn plan_autoreply_maps_plan_events_to_choices() {
         .is_none()
     );
 }
+
+// ── v1.x:--full-auto × --plan-mode 互斥 ────────────────────────────────
+
+/// 组合给出会静默击穿「--plan-mode 只读」(Bubble 覆盖 Plan,PlanModeGate
+/// 只在 Plan 模式生效)—— 必须显式报错。
+#[tokio::test]
+async fn full_auto_and_plan_mode_are_mutually_exclusive() {
+    let args = crate::ExecArgs {
+        full_auto: true,
+        plan_mode: true,
+        prompt: Some("x".into()),
+        ..Default::default()
+    };
+    let err = crate::async_main(args).await.expect_err("互斥组合必须报错");
+    assert!(
+        err.to_string().contains("互斥"),
+        "错误信息应说明互斥,实得: {err}"
+    );
+}
