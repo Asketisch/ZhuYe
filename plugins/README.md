@@ -1,6 +1,6 @@
 # plugins/ —— 烛夜插件统一存放目录
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 仓库自带的全部插件集中在此,便于管理、审阅与分发。每个子目录是一个
 完整插件(以 `plugin.toml` 清单为入口),可直接安装:

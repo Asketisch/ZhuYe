@@ -1,6 +1,6 @@
 # 架构详解
 
-<p align="center">  <b>中文</b> · [English](architecture.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="architecture.en.md">English</a>  </p>
 
 > 本文是烛夜(ZhuYe)的架构参考:框架边界与入口、workspace 六层分层、协议与
 > 会话生命周期、一轮执行的状态转移、节点上下文与能力装配、关键设计决策。

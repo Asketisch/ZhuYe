@@ -1,6 +1,6 @@
 # ZhuYe Plugin Development Guide (for the community)
 
-<p align="center">  [中文](plugin-dev-guide.md) · **English**  </p>
+<p align="center">  <a href="plugin-dev-guide.md">中文</a> · <b>English</b>  </p>
 
 > This guide is for **every developer who wants to build plugins for
 > ZhuYe**; familiarity with ZhuYe internals is not required. Start from

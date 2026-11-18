@@ -1,6 +1,6 @@
 # Configuration & Environment
 
-<p align="center">  [中文](configuration.md) · **English**  </p>
+<p align="center">  <a href="configuration.md">中文</a> · <b>English</b>  </p>
 
 > Configuration files, hot reload, and environment variables. Field
 > definitions for the full config schema live in

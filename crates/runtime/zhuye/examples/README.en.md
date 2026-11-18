@@ -1,6 +1,6 @@
 # ZhuYe Examples
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 The `zhuye` crate provides 6 runnable examples demonstrating the
 public library facade. All examples are based on the

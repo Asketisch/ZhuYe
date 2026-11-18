@@ -1,6 +1,6 @@
 # 能力总览
 
-<p align="center">  <b>中文</b> · [English](features.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="features.en.md">English</a>  </p>
 
 > 本文是烛夜(ZhuYe)的能力说明与已知边界,按「默认启用 / 需配置 / 需插件」
 > 逐条标注。快速上手见根目录 [README](../README.md);引擎内部怎么搭见

@@ -1,6 +1,6 @@
 # 工具与 Hooks 设计规范
 
-<p align="center">  <b>中文</b> · [English](tools-and-hooks.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="tools-and-hooks.en.md">English</a>  </p>
 
 > 本文是 `zhuye-tools` / `zhuye-hooks` 两个 crate 的设计契约文档,
 > 源码 doc-comment 以 `§N.M` 形式引用本文章节。行为以代码为准,本文

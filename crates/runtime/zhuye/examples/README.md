@@ -1,6 +1,6 @@
 # ZhuYe Examples
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 `zhuye` crate 提供 6 个可运行示例,演示公共库门面。所有示例都基于
 `Zhuye::builder()` + 事件流 API。

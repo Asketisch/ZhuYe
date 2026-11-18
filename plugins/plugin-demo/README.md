@@ -1,6 +1,6 @@
 # 烛夜示例插件:`demo`
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 capability 各配一个最小可运行样例的演示插件(五类目录声明 + WASM 组件,
 样例源码见 `wasm/rust/`,构建见 `scripts/build_plugin_demo_wasm.sh`):

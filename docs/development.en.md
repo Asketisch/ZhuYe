@@ -1,6 +1,6 @@
 # Development Guide
 
-<p align="center">  [中文](development.md) · **English**  </p>
+<p align="center">  <a href="development.md">中文</a> · <b>English</b>  </p>
 
 > Building, checking, testing, and end-to-end gates. Project conventions
 > (layering, comment rules, capability-coverage checklist) are in

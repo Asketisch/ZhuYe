@@ -1,6 +1,6 @@
 # 输出脱敏(Sanitize)
 
-<p align="center">  <b>中文</b> · [English](sanitize.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="sanitize.en.md">English</a>  </p>
 
 > 实现见 `zhuye-tools/src/sanitize/mod.rs` 与
 > `zhuye-sanitize`(独立 pattern 库);配置 schema 见

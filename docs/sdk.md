@@ -1,6 +1,6 @@
 # SDK 接入指南(Python / TypeScript)
 
-<p align="center">  <b>中文</b> · [English](sdk.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="sdk.en.md">English</a>  </p>
 
 > 脚本项目不需要写 Rust 也能完整驱动本框架:`zhuye serve` 提供常驻
 > stdio JSONL 会话(一个进程 = 一个常驻 AgentThread,多轮共享内存状态,

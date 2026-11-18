@@ -1,6 +1,6 @@
 # 烛夜插件市场(Marketplace)
 
-<p align="center">  <b>中文</b> · [English](plugin-marketplace.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="plugin-marketplace.en.md">English</a>  </p>
 
 > marketplace 是一个**插件集合**:一个 JSON manifest 列出多个插件条目,
 > 每个条目告诉用户去哪儿拉。发布侧格式与使用侧流程都在本文。

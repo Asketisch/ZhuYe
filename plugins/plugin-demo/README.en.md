@@ -1,6 +1,6 @@
 # The ZhuYe sample plugin: `demo`
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 A demo plugin with one minimal runnable sample for each capability
 (five directory-declared types + a WASM component; sample source in

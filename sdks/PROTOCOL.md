@@ -1,6 +1,6 @@
 # ZhuYe Serve Wire Protocol(v0 + SDK 扩展)
 
-<p align="center">  <b>中文</b> · [English](PROTOCOL.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="PROTOCOL.en.md">English</a>  </p>
 
 `zhuye serve` 是常驻 stdio JSONL 会话服务:一个进程 = 一个常驻 AgentThread,
 多轮对话共享内存状态。Python / TypeScript SDK 都构建在该协议之上 —— 本文档

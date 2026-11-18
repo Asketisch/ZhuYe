@@ -1,6 +1,6 @@
 # Output Sanitization
 
-<p align="center">  [中文](sanitize.md) · **English**  </p>
+<p align="center">  <a href="sanitize.md">中文</a> · <b>English</b>  </p>
 
 > Implementation in `zhuye-tools/src/sanitize/mod.rs` and
 > `zhuye-sanitize` (standalone pattern library); config schema in

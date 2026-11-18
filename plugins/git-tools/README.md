@@ -1,6 +1,6 @@
 # git-tools —— git 工作流插件
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 复用框架 `zhuye-git` 能力族(分支/PR 探测 + tag 化 checkpoint)。
 

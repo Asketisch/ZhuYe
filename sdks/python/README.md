@@ -1,6 +1,6 @@
 # zhuye (Python SDK)
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 让 Python 项目直接驱动 [ZhuYe Agent](https://github.com/Asketisch/ZhuYe) 的官方 SDK。
 底层 spawn `zhuye serve` 子进程、走 JSONL stdio 协议:**安装即用**(平台 wheel

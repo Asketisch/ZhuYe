@@ -1,6 +1,6 @@
 # zhuye (TypeScript SDK)
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 让 Node.js / TypeScript 项目直接驱动 [ZhuYe Agent](https://github.com/Asketisch/ZhuYe)
 的官方 SDK,API 与 [Python 版](../python/README.md)同构。底层 spawn

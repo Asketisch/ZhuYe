@@ -1,6 +1,6 @@
 # SDK Integration Guide (Python / TypeScript)
 
-<p align="center">  [中文](sdk.md) · **English**  </p>
+<p align="center">  <a href="sdk.md">中文</a> · <b>English</b>  </p>
 
 > Scripting projects can drive this framework in full without writing
 > Rust: `zhuye serve` provides a persistent stdio JSONL session (one

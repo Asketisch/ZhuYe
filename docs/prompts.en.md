@@ -1,6 +1,6 @@
 # Prompt Library (v1.6): Externalized + Per-Model Matching
 
-<p align="center">  [中文](prompts.md) · **English**  </p>
+<p align="center">  <a href="prompts.md">中文</a> · <b>English</b>  </p>
 
 All of ZhuYe's LLM prompts have been externalized to Markdown since
 v1.6, and are matched dynamically against the **current model** — when

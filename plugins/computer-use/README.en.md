@@ -1,6 +1,6 @@
 # computer-use —— the screen and input plugin
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 xcap (screenshot) + enigo (mouse and keyboard). MCP tools carry the
 `Prompt` permission floor by nature; every call pops the host

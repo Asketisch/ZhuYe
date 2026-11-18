@@ -1,6 +1,6 @@
 # goal-queue 插件
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 目标模式 + 队列模式的交付插件(v1.10 功能2)。
 

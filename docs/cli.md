@@ -1,6 +1,6 @@
 # CLI 参考
 
-<p align="center">  <b>中文</b> · [English](cli.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="cli.en.md">English</a>  </p>
 
 > `zhuye` 二进制的子命令全量一览与用法。单一 `zhuye` 二进制由
 > `zhuye-cli` crate 产出,共 22 个顶层子命令,**不含 `tui` 子命令**

@@ -1,6 +1,6 @@
 # wit/ — ZhuYe WASM Plugin Contract (Authoritative Community Interface Definition)
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 `plugin.wit` defines the language-agnostic interface between the host
 and WASM plugin components. Any toolchain that can produce a

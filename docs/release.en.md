@@ -1,6 +1,6 @@
 # SDK Release Guide (PyPI / npm)
 
-<p align="center">  [中文](release.md) · **English**  </p>
+<p align="center">  <a href="release.md">中文</a> · <b>English</b>  </p>
 
 The Python SDK and the TS SDK are published automatically by
 `.github/workflows/release-sdks.yml`: **tag `v*` driven + OIDC Trusted

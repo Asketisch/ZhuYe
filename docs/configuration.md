@@ -1,6 +1,6 @@
 # 配置与环境变量
 
-<p align="center">  <b>中文</b> · [English](configuration.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="configuration.en.md">English</a>  </p>
 
 > 配置文件、热重载与环境变量。完整配置项的字段定义见
 > [`zhuye-config`](../crates/resources/zhuye-config/src/schema/mod.rs)。

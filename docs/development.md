@@ -1,6 +1,6 @@
 # 开发指南
 
-<p align="center">  <b>中文</b> · [English](development.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="development.en.md">English</a>  </p>
 
 > 构建、检查、测试与端到端门禁。项目约定（分层、注释规范、能力覆盖
 > 检查表）见 [AGENTS.md](../AGENTS.md)；测试分层与覆盖矩阵见

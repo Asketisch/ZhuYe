@@ -1,6 +1,6 @@
 # Tools and Hooks Design Specification
 
-<p align="center">  [中文](tools-and-hooks.md) · **English**  </p>
+<p align="center">  <a href="tools-and-hooks.md">中文</a> · <b>English</b>  </p>
 
 > This is the design-contract document for the `zhuye-tools` /
 > `zhuye-hooks` crates; source doc-comments reference sections of this
