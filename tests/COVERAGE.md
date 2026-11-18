@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | **能力覆盖层**(主) | `tests/functional/` | **Rust 代码在真产物上的行为**(原始 JSONL wire)与测试设施自检 | ❌ | 384 条(pytest 收集,含设施自检) |
 | CLI 参数面 | `tests/rust/*.sh`、能力层 | 18 个子命令的参数矩阵与输出契约 | ❌ | 128+ 断言 + C10–C19(四份 bash 深度套件已全部迁入能力层) |
-| **事故回放与语义差分层** | `tests/verification/` | 新旧版本二进制在同一确定性输入上的**行为语义对比**(5 个真实事故回放 + 变异自证) | ❌ | 自测 18 条 + 差分用例 5 条 |
+| **事故回放与语义差分层** | `tests/verification/` | 新旧版本二进制在同一确定性输入上的**行为语义对比**(5 个真实事故回放 + 变异自证) | ❌ | 自测 21 条 + 差分用例 5 条 |
 | SDK 绑定层 | `tests/sdk-python/`、`tests/sdk-ts/` | 两个**客户端自己**的行为 | ✅ | Python 19 条 / TS 19 条 |
 | SDK 单测 | `sdks/*/tests/` | SDK 纯逻辑(mock serve),随包发布 | ✅ | Python 28 / TS 40 条 |
 | 原生 Python 绑定 | `tests/native-python/` | 安装实际构建的 PyO3 wheel,验证 Python 接口 | ✅ | 2 条 |
@@ -39,7 +39,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 协议信封与 Op 随机往返 | — | — | — | ✅(proptest:Op / Submission / Event serde) | — |
 | 真实任务效果与版本比较 | 本地网关驱动真进程的评分设施自检 | — | — | ✅(zhuye-eval 评分器) | `agent.quality`:12 个合成任务、默认三次重复、客观产物验收及失败轨迹;需显式启用 |
 | 质量门禁判定(observe/enforce) | — | — | — | ✅(`tests/eval/eval_policy.py` 纯函数 + `test_policy.py` 合成报告 24 条;退化可阻断、infra 不误判) | — |
-| 已修复事故回放与语义差分(Ask/Deny 击穿 / 重定向写 / 默认档语义 / 崩溃恢复 / 工具错误恢复) | `agent.contract.differential`:新旧二进制重放同一 mock 输入,比较回合终态/工具序列/审批/文件副作用/事件类型;需 ZHUYE_DIFF=1 | — | — | ✅(`tests/verification/test_differential.py`:9 类变异必被抓 + 语料自洽 18 条) | — |
+| 已修复事故回放与语义差分(Ask/Deny 击穿 / 重定向写 / 默认档语义 / 崩溃恢复 / 工具错误恢复) | `agent.contract.differential`:新旧二进制重放同一 mock 输入,比较回合终态/工具序列/审批/文件副作用/事件类型;INC-002 独立验证审批与拒绝后的文件状态;需 ZHUYE_DIFF=1 | — | — | ✅(`tests/verification/test_differential.py`:9 类变异及两版同错必被抓 + 语料自洽) | — |
 | 协议事件变异回归(截断 / 字节替换 / 判别子破坏 / 多种子多重变异) | — | — | — | ✅(`event_mutation_fuzz`,默认 1 万次可配置) | — |
 | Rollout 只读目录写失败 | — | — | — | ✅(返回错误、已有会话文件字节不变) | — |
 | Rollout 磁盘满写失败 | — | — | — | ✅(`/dev/full` 真实 ENOSPC,返回错误且不 panic) | — |

@@ -92,7 +92,9 @@ def project(events: list[dict[str, Any]], files: dict[str, str],
                  for e in events if e["msg"].get("type") == "approval_request"]
     errors = [e["msg"].get("type") for e in events
               if e["msg"].get("type") in ERROR_TYPES]
-    event_types = sorted({e["msg"].get("type", "") for e in events})
+    # collect 在回合终态返回,submission_closed 可能因接收线程调度而被附带。
+    event_types = sorted({e["msg"].get("type", "") for e in events
+                          if e["msg"].get("type") != "submission_closed"})
     projection: dict[str, Any] = {
         "turns": turns, "text": text, "tools": tools, "approvals": approvals,
         "errors": errors, "files": files, "event_types": event_types,
@@ -131,6 +133,17 @@ def compare(base: dict[str, Any], cand: dict[str, Any],
     for lost_type in sorted(base_types - cand_types):
         divergences.append(f"候选丢失基线事件类型:{lost_type}")
     return divergences
+
+
+def check_case_oracle(case: dict[str, Any], projection: dict[str, Any]) -> list[str]:
+    """独立校验事故预期,避免两版出现相同缺陷时误判通过。"""
+    failures = []
+    if case["kind"] == "bash_redirect" and case.get("decision", "deny") == "deny":
+        if "bash" not in projection["approvals"]:
+            failures.append("INC-002:缺少 bash 审批请求")
+        if "out.txt" in projection["files"]:
+            failures.append("INC-002:拒绝后仍产生 out.txt")
+    return failures
 
 
 def load_cases(case_dir: Path | None = None) -> list[dict[str, Any]]:
@@ -352,9 +365,10 @@ def run_all(baseline: Path, candidate: Path, case_ids: list[str] | None,
     for case in cases:
         print(f"差分用例:{case['id']}({case['kind']})", flush=True)
         try:
-            base_proj = run_case(case, baseline, output)
-            cand_proj = run_case(case, candidate, output)
+            base_proj = run_case(case, baseline, output / "baseline")
+            cand_proj = run_case(case, candidate, output / "candidate")
             divergences = compare(base_proj, cand_proj, case.get("approved_differences"))
+            divergences.extend(check_case_oracle(case, cand_proj))
             entry = {"id": case["id"], "kind": case["kind"], "verdict":
                      "pass" if not divergences else "divergence",
                      "divergences": divergences}
