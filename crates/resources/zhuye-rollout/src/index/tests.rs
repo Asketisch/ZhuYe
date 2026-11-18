@@ -228,6 +228,89 @@ fn skips_files_without_session_meta() {
     assert!(sessions.is_empty(), "should skip bogus file");
 }
 
+/// v1.x 修复:首条 UserInput 前落盘的 `PermissionModeChanged` 占据物理首行
+/// (写路径已加守卫,此处覆盖存量坏文件)。前缀窗口扫描应从第 2 条非空行
+/// 恢复 SessionMeta —— 会话重新出现在列表里且 workspace 归属不丢。
+#[test]
+fn recovers_meta_within_prefix_window_when_leading_mode_change() {
+    let dir = tempdir().unwrap();
+    let day_dir = dir.path().join("2026/06/18");
+    std::fs::create_dir_all(&day_dir).unwrap();
+    let sid = ThreadId::new();
+
+    let mode_line = serde_json::to_string(&RolloutRecord::PermissionModeChanged {
+        from: zhuye_protocol::PermissionMode::Auto,
+        to: zhuye_protocol::PermissionMode::Plan,
+        at: Utc::now(),
+    })
+    .unwrap();
+    let meta_line = serde_json::to_string(&RolloutRecord::SessionMeta {
+        session_id: sid,
+        model: "openai/gpt-4o".into(),
+        started_at: Utc::now(),
+        workspace: Some("/tmp/proj".into()),
+    })
+    .unwrap();
+    let msg_line = serde_json::to_string(&RolloutRecord::message(
+        TurnId::new(),
+        MessageRole::User,
+        serde_json::json!("帮我规划官网"),
+    ))
+    .unwrap();
+    let path = day_dir.join(format!("{sid}.jsonl"));
+    std::fs::write(path, format!("{mode_line}\n{meta_line}\n{msg_line}\n")).unwrap();
+
+    let sessions = list_sessions(dir.path()).unwrap();
+    assert_eq!(sessions.len(), 1, "meta on line 2 should be recovered");
+    let s = &sessions[0];
+    assert_eq!(s.session_id, sid);
+    assert_eq!(s.workspace.as_deref(), Some("/tmp/proj"));
+    // 3 条非空行(1 mode + 1 meta + 1 message),meta 行减 1 → 2。
+    assert_eq!(s.message_count, 2);
+}
+
+/// 窗口边界:SessionMeta 之后的无 meta 文件不因窗口扫描而复活;meta 排在
+/// 窗口(8 条非空行)之外时同样放弃 —— 真正的 meta 首行文件不应有 8 条以上
+/// 前置记录,超出即数据异常,维持跳过 + warn 的保守行为。
+#[test]
+fn prefix_window_scan_gives_up_out_of_window() {
+    let dir = tempdir().unwrap();
+    let day_dir = dir.path().join("2026/06/18");
+    std::fs::create_dir_all(&day_dir).unwrap();
+    let sid = ThreadId::new();
+
+    // 10 条 message 前置 + meta 在第 11 行(超出窗口)。
+    let mut body = String::new();
+    for i in 0..10 {
+        body.push_str(
+            &serde_json::to_string(&RolloutRecord::message(
+                TurnId::new(),
+                MessageRole::User,
+                serde_json::json!(format!("m{i}")),
+            ))
+            .unwrap(),
+        );
+        body.push('\n');
+    }
+    body.push_str(
+        &serde_json::to_string(&RolloutRecord::SessionMeta {
+            session_id: sid,
+            model: "m".into(),
+            started_at: Utc::now(),
+            workspace: None,
+        })
+        .unwrap(),
+    );
+    body.push('\n');
+    std::fs::write(day_dir.join(format!("{sid}.jsonl")), body).unwrap();
+
+    let sessions = list_sessions(dir.path()).unwrap();
+    assert!(
+        sessions.is_empty(),
+        "meta beyond window should stay skipped"
+    );
+}
+
 /// 恢复路径:当活动 `<id>.jsonl` 的第一行不是 `SessionMeta`(rotated
 /// session 在修复前的 orphan 状态)时,索引回退到同辈 rotated 文件
 /// (`.1.jsonl`) 以恢复 meta,使该 session 仍出现在 `/session` 列表中。

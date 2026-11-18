@@ -324,6 +324,42 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
         });
     }
 
+    // v1.x 修复:前缀窗口扫描。首行不是 SessionMeta 时,先在**前几条非空行**
+    // 内找 SessionMeta —— 历史版本会在首条 UserInput 之前落盘
+    // PermissionModeChanged(v1.x 起写路径已加「SessionMeta 未写不落盘」守卫),
+    // 这些存量文件的第 2 行就是 SessionMeta。磁盘实测同一目录下可达 ~1/4
+    // 文件受影响。窗口取 8 覆盖多条前置记录的极端情况;扫到即恢复,
+    // `message_count` 与 happy path 同口径(meta 行本身减 1)。
+    const META_SCAN_WINDOW: usize = 8;
+    let mut scanned = 0usize;
+    for line in body.lines().filter(|l| !l.trim().is_empty()).skip(1) {
+        scanned += 1;
+        if scanned > META_SCAN_WINDOW {
+            break;
+        }
+        if let Ok(record) = serde_json::from_str::<RolloutRecord>(line)
+            && let RolloutRecord::SessionMeta {
+                session_id,
+                model,
+                started_at,
+                workspace,
+            } = record
+        {
+            return Some(SessionInfo {
+                session_id,
+                model,
+                started_at,
+                message_count: non_blank_lines.saturating_sub(1),
+                title,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cost_usd,
+                workspace,
+            });
+        }
+    }
+
     // Recovery path:本文件首行不是 SessionMeta。这种情况发生在:
     // 较早的 rollout 文件(writer 还没有在轮转时重写 SessionMeta),
     // 或者文件本身就是某份轮转的 `.N` 副本。此时去扫描同级轮转副本

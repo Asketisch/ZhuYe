@@ -422,6 +422,18 @@ pub async fn submission_loop(
                         );
                         let _ = turn_tx.send(ev.clone()).await;
                         fan_out_session(&session_subs, &ev);
+                        // v1.x 修复:初始模式通告**同步落盘**。首条消息前经
+                        // `Op::SetPermissionMode` 切的模式因「SessionMeta 未写
+                        // 不落盘」守卫被跳过,这里在 SessionMeta 之后补记,
+                        // 保证 `--resume` / GUI bind 仍能从最后一条
+                        // PermissionModeChanged 还原权限模式。
+                        persist_rollout_best_effort(&cfg, || {
+                            RolloutRecord::PermissionModeChanged {
+                                from: zhuye_protocol::PermissionMode::Auto,
+                                to: initial_mode,
+                                at: chrono::Utc::now(),
+                            }
+                        });
                         tracing::info!(
                             mode = ?initial_mode,
                             "session starts in non-default permission mode; announced"
@@ -1465,6 +1477,7 @@ pub async fn submission_loop(
                     sub.id.clone(),
                     cfg.clone(),
                     task,
+                    session_emitted || existing_session,
                 )
                 .await;
             }
@@ -1479,6 +1492,7 @@ pub async fn submission_loop(
                     sub.id.clone(),
                     cfg.clone(),
                     FALLBACK_PLAN_MARKDOWN.to_string(),
+                    session_emitted || existing_session,
                 )
                 .await;
             }
@@ -1575,11 +1589,23 @@ pub async fn submission_loop(
                         "downgraded legacy PermissionMode::Bypass to Prompt per v1.3 safety baseline"
                     );
                 }
-                apply_permission_mode_change(&cfg, target, &session_subs, &turn_subs);
+                apply_permission_mode_change(
+                    &cfg,
+                    target,
+                    &session_subs,
+                    &turn_subs,
+                    session_emitted || existing_session,
+                );
             }
             zhuye_protocol::Op::CyclePermissionMode => {
                 let next = cfg.permission_mode().next_in_ui_cycle();
-                apply_permission_mode_change(&cfg, next, &session_subs, &turn_subs);
+                apply_permission_mode_change(
+                    &cfg,
+                    next,
+                    &session_subs,
+                    &turn_subs,
+                    session_emitted || existing_session,
+                );
             }
             // v1.2 P1:目标模式 —— 构造 GoalController 放入 cfg.goal。
             // 校验用 LLM client 从 registry 取主模型的 client(与主 agent 同模型,
@@ -1986,6 +2012,7 @@ fn apply_permission_mode_change(
     to: PermissionMode,
     session_subs: &Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
     turn_subs: &Arc<Mutex<HashMap<String, mpsc::Sender<Event>>>>,
+    meta_written: bool,
 ) {
     let from = cfg.permission_mode();
     if from == to {
@@ -2004,11 +2031,18 @@ fn apply_permission_mode_change(
     // v1.x:把 mode 切换落进 session JSONL(best-effort)。与 EventMsg 的
     // 广播不同,持久化是为了让 `--resume` / `/export` 能还原权限状态轨迹。
     // 单点覆盖 /mode slash、CyclePermissionMode、Bypass→Prompt 降级三条路径。
-    persist_rollout_best_effort(&cfg, || RolloutRecord::PermissionModeChanged {
-        from,
-        to,
-        at: chrono::Utc::now(),
-    });
+    //
+    // v1.x 修复:`SessionMeta` 尚未落盘(首条 UserInput 未到 / 非恢复会话)
+    // 时**不能**持久化本记录 —— 否则它会成为 jsonl 物理首行,而 rollout
+    // 索引只认首行为 SessionMeta,整个会话会从 `/session` 列表消失。
+    // 首条消息前切的模式由会话头落地时的初始模式通告补记(见 session_emitted 块)。
+    if meta_written {
+        persist_rollout_best_effort(&cfg, || RolloutRecord::PermissionModeChanged {
+            from,
+            to,
+            at: chrono::Utc::now(),
+        });
+    }
     tracing::info!(?from, ?to, "permission mode changed");
 }
 
@@ -2240,16 +2274,22 @@ pub(crate) async fn dispatch_plan_request(
     sub_id: String,
     cfg: AgentConfig,
     task: String,
+    meta_written: bool,
 ) {
     let plan_id = PlanId::new();
     let rx = gate.register(plan_id);
     // v1.x:把 PlanRequest 落进 session JSONL,让 resume / export 能还原 plan 起点。
+    // v1.x 修复:SessionMeta 未落盘时跳过(与 apply_permission_mode_change 同理
+    // —— 首行必须是 SessionMeta,否则 rollout 索引丢弃整个会话)。
+    // tool_exec(LLM 工具)路径恒在首条 UserInput 之后,meta 必已写。
     let request_at = chrono::Utc::now();
-    persist_rollout_best_effort(&cfg, || RolloutRecord::PlanRequest {
-        plan_id,
-        task: task.clone(),
-        at: request_at,
-    });
+    if meta_written {
+        persist_rollout_best_effort(&cfg, || RolloutRecord::PlanRequest {
+            plan_id,
+            task: task.clone(),
+            at: request_at,
+        });
+    }
     if turn_tx
         .send(Event::new(
             sub_id.clone(),
@@ -2287,6 +2327,7 @@ pub(crate) async fn dispatch_plan_ready(
     sub_id: String,
     cfg: AgentConfig,
     markdown: String,
+    meta_written: bool,
 ) {
     let plan_id = PlanId::new();
     let rx = gate.register(plan_id);
@@ -2295,15 +2336,19 @@ pub(crate) async fn dispatch_plan_ready(
     let plan_path = persist_plan_markdown(&cfg.current_workspace(), plan_id, &markdown);
     // v1.x:同步把 PlanReady(markdown 全文 + path)落进 session JSONL。
     // 与 .md 双写:JSONL 让 session 完整可还原 / 可 export,.md 给 LLM cat 引用。
+    // v1.x 修复:SessionMeta 未落盘时跳过 JSONL 记录(首行必须是 SessionMeta,
+    // 见 dispatch_plan_request 同款守卫);.md 产物按 plan_id 独立命名,无首行约束。
     let ready_at = chrono::Utc::now();
     let ready_path = plan_path.clone();
     let ready_markdown = markdown.clone();
-    persist_rollout_best_effort(&cfg, || RolloutRecord::PlanReady {
-        plan_id,
-        markdown: ready_markdown,
-        path: ready_path,
-        at: ready_at,
-    });
+    if meta_written {
+        persist_rollout_best_effort(&cfg, || RolloutRecord::PlanReady {
+            plan_id,
+            markdown: ready_markdown,
+            path: ready_path,
+            at: ready_at,
+        });
+    }
     if turn_tx
         .send(Event::new(
             sub_id.clone(),
@@ -2841,6 +2886,7 @@ mod tests {
             "sub-1".to_string(),
             cfg,
             "refactor auth".to_string(),
+            true,
         )
         .await;
 
@@ -2875,6 +2921,7 @@ mod tests {
             "sub-1".to_string(),
             cfg,
             markdown.clone(),
+            true,
         )
         .await;
 
@@ -2999,6 +3046,7 @@ mod tests {
             "sub-2".to_string(),
             cfg,
             "task".to_string(),
+            true,
         )
         .await;
         // waiter 已注册(注册在 send 失败之前),但 waiter task 会因 rx drop 退出。
@@ -3070,6 +3118,7 @@ mod tests {
             "sub-1".to_string(),
             cfg,
             markdown.clone(),
+            true,
         )
         .await;
         // 消费 emit 的事件,避免 channel 积压。
@@ -3103,6 +3152,7 @@ mod tests {
             "sub-1".to_string(),
             cfg,
             "refactor auth".to_string(),
+            true,
         )
         .await;
         let _ = turn_rx.recv().await;
@@ -3117,6 +3167,54 @@ mod tests {
             })
             .expect("PlanRequest record should be persisted");
         assert_eq!(task, "refactor auth");
+    }
+
+    /// v1.x 修复:SessionMeta 未落盘(`meta_written = false`,即首条 UserInput
+    /// 之前经 Op 触发 plan 流程)时,PlanRequest / PlanReady **不得**写进
+    /// recorder —— 否则它们会成为 jsonl 物理首行,rollout 索引只认首行
+    /// SessionMeta,整个会话会从列表消失(与 apply_permission_mode_change
+    /// 同款守卫)。
+    #[tokio::test]
+    async fn plan_dispatch_skips_persist_before_session_meta() {
+        let gate = Arc::new(PlanApprovalGate::new());
+        let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::new(CapturingRecorder::default());
+
+        {
+            let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
+            dispatch_plan_request(
+                &gate,
+                &session_subs,
+                turn_tx,
+                "sub-0".to_string(),
+                cfg_with_recorder(captured.clone()),
+                "early task".to_string(),
+                false,
+            )
+            .await;
+            let _ = turn_rx.recv().await;
+        }
+        {
+            let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
+            dispatch_plan_ready(
+                &gate,
+                &session_subs,
+                turn_tx,
+                "sub-0".to_string(),
+                cfg_with_recorder(captured.clone()),
+                "## early plan".to_string(),
+                false,
+            )
+            .await;
+            let _ = turn_rx.recv().await;
+        }
+        yield_for_spawns().await;
+
+        let recs = captured.0.lock().clone();
+        assert!(
+            recs.is_empty(),
+            "pre-meta plan dispatch must not persist records, got {recs:?}"
+        );
     }
 
     // ── persist_plan_markdown:plan 落盘为持久产物 ────────────────────────
