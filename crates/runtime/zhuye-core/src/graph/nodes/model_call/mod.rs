@@ -27,6 +27,19 @@ use zhuye_recovery::recovery_meta_to_messages;
 
 use crate::graph::nodes::model_call::stream::process_stream_events;
 
+/// 单次 `model_call` 跨全部重试的总时长预算(5 分钟)。
+///
+/// 与 `RoutingPolicy::max_attempts`(次数上限)互补:次数限不住
+/// 「每次都要等满超时」的死端点(建连 / 读空闲超时 × 10 次可达
+/// 几十分钟)。超过本预算立即放弃并报 `RETRY_BUDGET_EXHAUSTED`,
+/// 保证用户能在可接受的时间内拿到明确失败。
+const RETRY_TOTAL_BUDGET: Duration = Duration::from_secs(300);
+
+/// 是否已超出重试总时长预算(抽成纯函数便于单测)。
+fn retry_budget_exhausted(elapsed: Duration) -> bool {
+    elapsed > RETRY_TOTAL_BUDGET
+}
+
 /// `model_call` —— 调用 LLM 并流式返回响应。
 pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<GraphNode> {
     state.iteration = state.iteration.saturating_add(1);
@@ -201,6 +214,31 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     let llm_call_started = std::time::Instant::now();
 
     let (text_buf, tool_calls, usage, success_provider, success_label, truncated, thinking_buf) = loop {
+        // v1.10:重试总时长预算 —— `max_attempts` 限制次数,本预算限制
+        // 时间。死端点(建连超时 / 读空闲超时)下 10 次重试可空转几十
+        // 分钟,用户会误以为程序卡死;超预算即以
+        // `RETRY_BUDGET_EXHAUSTED` 收场。仅约束「重试」路径:单次合法
+        // 长流成功后直接 break,不受此预算影响。
+        if attempt > 0 && retry_budget_exhausted(llm_call_started.elapsed()) {
+            tried.push(TriedCredential {
+                label: "retry_budget".into(),
+                outcome: "retry_budget_exhausted".into(),
+            });
+            failed(
+                tried.clone(),
+                ctx,
+                state,
+                &FailedCall {
+                    code: "RETRY_BUDGET_EXHAUSTED",
+                    model: &spec,
+                    provider: None,
+                    attempt,
+                    started: llm_call_started,
+                },
+            )
+            .await;
+            return None;
+        }
         let next_client = match ctx.registry.next_for(&spec, &exclude) {
             Some(nc) => nc,
             None => {
@@ -927,12 +965,17 @@ async fn failed(
     } = *call;
     record_failed_model_call(ctx, model, provider, attempt, code, started);
     if state.deferred_error.is_none() {
+        let elapsed_secs = started.elapsed().as_secs();
         state.deferred_error = Some(ErrorEvent {
             code: code.into(),
             message: match code {
                 "MAX_ATTEMPTS" => {
                     format!("模型调用重试预算已耗尽(共尝试 {attempt} 次);请检查网络 / 端点可用性")
                 }
+                "RETRY_BUDGET_EXHAUSTED" => format!(
+                    "模型调用重试总时长已超限(共尝试 {attempt} 次,耗时 {elapsed_secs}s);\
+                     端点可能不可达或长时间无响应"
+                ),
                 _ => format!("all credentials exhausted ({} tried)", tried.len()),
             },
             details: Some(serde_json::json!({ "tried": tried, "attempts": attempt })),
@@ -1001,5 +1044,21 @@ mod cancellation_tests {
                 .expect("取消应及时完成")
                 .expect("任务不应 panic")
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_budget_boundary() {
+        // 预算内继续重试;超预算放弃(避免死端点空转几十分钟)。
+        assert!(!retry_budget_exhausted(Duration::from_secs(0)));
+        assert!(!retry_budget_exhausted(RETRY_TOTAL_BUDGET));
+        assert!(retry_budget_exhausted(
+            RETRY_TOTAL_BUDGET + Duration::from_millis(1)
+        ));
+        assert!(retry_budget_exhausted(Duration::from_secs(3600)));
     }
 }
