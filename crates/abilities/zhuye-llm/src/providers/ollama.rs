@@ -466,7 +466,10 @@ pub struct OllamaRequest {
 
 impl From<ChatRequest> for OllamaRequest {
     /// 公开供 test/snapshot 访问;生产路径走 `OllamaClient::stream`。
-    fn from(req: ChatRequest) -> Self {
+    fn from(mut req: ChatRequest) -> Self {
+        // 防御性折叠内联 System(主路径已在 `model_call` 折叠,幂等):
+        // Ollama 原样透传 system 位置,中途出现会被严格上游拒绝。
+        req.fold_system_messages();
         let mut messages = Vec::new();
         if let Some(sys) = req.system.as_single_string() {
             messages.push(serde_json::json!({"role": "system", "content": sys}));
@@ -1067,5 +1070,40 @@ mod tests {
         };
         let wire = serde_json::to_value(OllamaRequest::from(req)).unwrap();
         assert!(wire.get("format").is_none());
+    }
+}
+
+#[cfg(test)]
+mod system_fold_tests {
+    use super::*;
+    use crate::request::{ChatMessage, ContentBlock, SystemBlock, SystemBlocks, UserContent};
+
+    /// 内联 System 折叠后,Ollama 线上消息只有一条首位 system。
+    #[test]
+    fn 内联system折叠为单条首位system消息() {
+        let req = ChatRequest {
+            model: "qwen2.5:7b".into(),
+            messages: vec![
+                ChatMessage::User(UserContent {
+                    blocks: vec![ContentBlock::text("第一问")],
+                }),
+                ChatMessage::System("压缩摘要".into()),
+            ],
+            system: SystemBlocks(vec![SystemBlock {
+                text: "核心 prompt".into(),
+                cache_control: None,
+                ephemeral: false,
+            }]),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(OllamaRequest::from(req)).unwrap();
+        let msgs = wire["messages"].as_array().unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["system", "user"]);
+        let sys = msgs[0]["content"].as_str().unwrap();
+        assert!(
+            sys.contains("核心 prompt") && sys.contains("压缩摘要"),
+            "{sys}"
+        );
     }
 }

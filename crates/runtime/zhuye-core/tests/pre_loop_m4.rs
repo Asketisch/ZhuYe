@@ -2307,3 +2307,82 @@ async fn todo_checklist_is_injected_back_into_model_context() {
         "清单的三态标记不对,实际:\n{system_text}"
     );
 }
+
+/// 回归:resume 回放的压缩摘要是 preload 里的一条 `ChatMessage::System`。
+/// 发请求前必须把它折叠进 `system` 块 —— 否则线上 messages 出现非首位
+/// system,严格 OpenAI 兼容网关直接返回
+/// `System message must be at the beginning.`(Desktop 报 INVALID_REQUEST)。
+#[tokio::test]
+async fn resumed_summary_is_folded_into_system_before_send() {
+    let registry = Arc::new(ModelRegistry::new());
+    let stub = Arc::new(StubClient::new(vec![
+        ChatEvent::MessageStart {
+            id: "m1".into(),
+            model: "stub-1".into(),
+        },
+        ChatEvent::ContentDelta("ok".into()),
+        ChatEvent::MessageStop,
+    ]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+
+    let m4 = make_m4_deps("tester", "You are a tester.");
+    let cfg = AgentConfig::new("stub/m1", Path::new("."))
+        .with_m4(m4)
+        .with_preload_messages(vec![ChatMessage::System(
+            "<summary>\n先前对话摘要\n</summary>".into(),
+        )]);
+    let thread = build_thread_with_config(cfg, registry);
+    let mut handle = thread.submit(make_sub("继续")).await;
+    while let Some(ev) = handle.next().await {
+        if matches!(ev.msg, EventMsg::TurnComplete(_)) {
+            break;
+        }
+    }
+
+    let guard = stub.last_request.lock();
+    let request = guard.as_ref().expect("model 应被调用一次");
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::System(_))),
+        "请求 messages 不应含内联 System,实际: {:?}",
+        request
+            .messages
+            .iter()
+            .map(|m| match m {
+                ChatMessage::System(_) => "System",
+                ChatMessage::User(_) => "User",
+                ChatMessage::Assistant(_) => "Assistant",
+                ChatMessage::Tool(_) => "Tool",
+            })
+            .collect::<Vec<_>>()
+    );
+    let system_text = request.system.as_single_string().unwrap_or_default();
+    assert!(
+        system_text.contains("先前对话摘要"),
+        "摘要内容必须保留在 system 块里,实际:\n{system_text}"
+    );
+    assert!(
+        system_text.contains("You are a tester."),
+        "核心 prompt 必须仍在 system 块里,实际:\n{system_text}"
+    );
+    // 缓存断点按折叠后的消息下标记录,不能越界(provider 侧不会丢消息)。
+    for br in &request.cache_control {
+        assert!(
+            br.after_message_index < request.messages.len(),
+            "cache break 下标越界: {:?} vs {} 条消息",
+            br.after_message_index,
+            request.messages.len()
+        );
+    }
+}

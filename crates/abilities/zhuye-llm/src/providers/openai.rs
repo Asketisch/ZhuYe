@@ -704,7 +704,12 @@ pub(crate) fn openai_response_format(rf: &crate::request::ResponseFormat) -> Val
 
 impl From<ChatRequest> for OpenAIRequest {
     /// 对测试 / snapshot 公开。生产代码走 `OpenAIClient::stream`。
-    fn from(req: ChatRequest) -> Self {
+    fn from(mut req: ChatRequest) -> Self {
+        // 防御性折叠:主路径已在 `model_call` 折叠过(幂等)。直接构造
+        // `ChatRequest` 的调用方(summarizer / 库嵌入)若带内联 System,
+        // 这里兜底,保证线上只有一条首位 system(否则严格网关 400:
+        // System message must be at the beginning.)。
+        req.fold_system_messages();
         let mut messages = Vec::new();
         if let Some(sys) = req.system.as_single_string() {
             messages.push(serde_json::json!({"role": "system", "content": sys}));
@@ -1521,5 +1526,48 @@ mod tests {
         assert_eq!(wire["response_format"]["type"], "json_schema");
         assert_eq!(wire["response_format"]["json_schema"]["name"], "answer");
         assert_eq!(wire["response_format"]["json_schema"]["strict"], true);
+    }
+}
+
+#[cfg(test)]
+mod system_fold_tests {
+    use super::*;
+    use crate::request::{ChatMessage, ContentBlock, SystemBlock, SystemBlocks, UserContent};
+
+    fn user(text: &str) -> ChatMessage {
+        ChatMessage::User(UserContent {
+            blocks: vec![ContentBlock::text(text)],
+        })
+    }
+
+    /// 内联 System(压缩摘要 / hook 注入)不能原样留在消息中途 —— 严格网关
+    /// 会以「System message must be at the beginning.」400 拒绝。折叠后线上
+    /// 只有一条首位 system,内容完整保留。
+    #[test]
+    fn 内联system折叠为单条首位system消息() {
+        let req = ChatRequest {
+            model: "deepseek-chat".into(),
+            messages: vec![
+                user("第一问"),
+                ChatMessage::Assistant(crate::request::AssistantContent::default()),
+                ChatMessage::System("hook 注入的提醒".into()),
+            ],
+            system: SystemBlocks(vec![SystemBlock {
+                text: "核心 prompt".into(),
+                cache_control: None,
+                ephemeral: false,
+            }]),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(OpenAIRequest::from(req)).unwrap();
+        let msgs = wire["messages"].as_array().unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["system", "user", "assistant"]);
+        let sys = msgs[0]["content"].as_str().unwrap();
+        assert!(sys.contains("核心 prompt"), "system 应含核心 prompt: {sys}");
+        assert!(
+            sys.contains("hook 注入的提醒"),
+            "system 应含注入内容: {sys}"
+        );
     }
 }

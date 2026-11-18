@@ -673,7 +673,12 @@ pub struct AnthropicRequest {
 
 impl From<ChatRequest> for AnthropicRequest {
     /// 对测试 / snapshot 公开。生产代码走 `AnthropicClient::stream`。
-    fn from(req: ChatRequest) -> Self {
+    fn from(mut req: ChatRequest) -> Self {
+        // 防御性折叠内联 System(主路径已在 `model_call` 折叠,幂等)。
+        // Anthropic 的 system 是顶层字段,`push_message` 会丢弃内联 System
+        // —— 压缩摘要/hook 注入内容会直接消失;先折叠才能保住内容,
+        // 也让 `cache_control.after_message_index` 与实际消息下标对齐。
+        req.fold_system_messages();
         // 在最后一块 system block 上注入 cache_control(若尚无)。
         let mut system_blocks: Vec<Value> = req
             .system
@@ -863,8 +868,9 @@ fn push_message(m: ChatMessage, out: &mut Vec<Value>) {
     match m {
         ChatMessage::System(s) => {
             // System 在 Anthropic 中是顶层字段,不是消息。
-            // 若意外出现 ChatMessage::System,直接忽略
-            // (我们已在顶层处理过 `request.system`)。
+            // 正常路径已在 `AnthropicRequest::from` 入口折叠内联 System
+            // (内容进顶层 system blocks);这里只剩最后一道保险,
+            // 真走到说明有调用方绕过折叠,忽略而不发非法消息。
             let _ = s;
         }
         ChatMessage::User(u) => {
@@ -1549,5 +1555,54 @@ mod tests {
         }
         assert!(saw_json, "应产出包含 JSON 的 ContentDelta,实际: {out:?}");
         assert!(matches!(out.last(), Some(ChatEvent::MessageStop)));
+    }
+}
+
+#[cfg(test)]
+mod system_fold_tests {
+    use super::*;
+    use crate::request::{ChatMessage, ContentBlock, SystemBlock, SystemBlocks, UserContent};
+
+    /// Anthropic 的 system 是顶层字段:内联 System 必须折叠进去而不能被静默
+    /// 丢弃(此前 `push_message` 直接忽略,压缩摘要/hook 注入内容会消失)。
+    #[test]
+    fn 内联system折叠进顶层system块而非被丢弃() {
+        let req = ChatRequest {
+            model: "claude-3-5-sonnet-latest".into(),
+            messages: vec![
+                ChatMessage::User(UserContent {
+                    blocks: vec![ContentBlock::text("第一问")],
+                }),
+                ChatMessage::System("压缩摘要".into()),
+            ],
+            system: SystemBlocks(vec![SystemBlock {
+                text: "核心 prompt".into(),
+                cache_control: None,
+                ephemeral: false,
+            }]),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(AnthropicRequest::from(req)).unwrap();
+        let system_texts: Vec<&str> = wire["system"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["text"].as_str().unwrap())
+            .collect();
+        assert!(
+            system_texts.iter().any(|t| t.contains("核心 prompt"))
+                && system_texts.iter().any(|t| t.contains("压缩摘要")),
+            "顶层 system 应含全部内容: {system_texts:?}"
+        );
+        let roles: Vec<&str> = wire["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap_or(""))
+            .collect();
+        assert!(
+            !roles.contains(&"system"),
+            "messages 不应含 system: {roles:?}"
+        );
     }
 }
