@@ -216,9 +216,12 @@ jobs:
         run: ZHUYE_ENV_STRESS_RUNS=30 ./tests/rust/env_lock_stress.sh
       # 核心语义差分(P1):同一提交的 release/debug 两个二进制对 5 个事故
       # 回放场景重放,零分歧预期 —— 验证差分链路本身在 CI 环境可跑且全绿。
+      # 注意:run 必须用块标量(|),plain scalar 会把反斜杠续行折叠成空格。
       - name: Build debug runtime (差分候选)
         run: cargo build -p zhuye-cli
       - name: Run semantic differential (事故回放)
-        run: ZHUYE_DIFF=1 ZHUYE_DIFF_BASELINE="$PWD/target/release/zhuye" \
-             ZHUYE_DIFF_CANDIDATE="$PWD/target/debug/zhuye" \
-             python3 tests/runner.py run --task agent.contract.differential
+        run: |
+          ZHUYE_DIFF=1 \
+          ZHUYE_DIFF_BASELINE="$PWD/target/release/zhuye" \
+          ZHUYE_DIFF_CANDIDATE="$PWD/target/debug/zhuye" \
+          python3 tests/runner.py run --task agent.contract.differential
