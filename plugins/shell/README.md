@@ -1,5 +1,7 @@
 # shell —— 常驻 shell 会话插件
 
+<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+
 与内置 `bash`(一次性)互补:后台启动进程 → 增量读输出 → 写 stdin →
 kill。适合 REPL / dev server / watch / 需要中途停止的长任务。PTY
 (resize / raw mode)不做(与桌面端共同的缺口)。

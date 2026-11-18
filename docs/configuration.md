@@ -1,5 +1,7 @@
 # 配置与环境变量
 
+<p align="center">  <b>中文</b> · [English](configuration.en.md)  </p>
+
 > 配置文件、热重载与环境变量。完整配置项的字段定义见
 > [`zhuye-config`](../crates/resources/zhuye-config/src/schema/mod.rs)。
 
@@ -41,7 +43,7 @@ anthropic 段同样支持免 key 本地网关（`api_key = ""` + 显式 `base_ur
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | provider 凭据，起步二选一 |
 | `ZHUYE_MODEL` | 覆盖模型规格，`=mock` 供离线运行 |
 | `ZHUYE_HOME` | 数据目录，默认 `~/.zhuye` |
-| `ZHUYE_BIN` | SDK 去哪找 `zhuye` 二进制 |
+| `ZHUYE_BIN` | SDK 去哪找 `zhuye` 二进制(查找顺序:`options.bin` → `ZHUYE_BIN` → 包内二进制 → PATH,见 [sdk.md](sdk.md)) |
 | `ZHUYE_MEMORY_BACKEND` | 记忆后端：默认 `markdown`（MEMORY.md 文件 + BM25 分节检索）；`=sqlite` 启用条目版本库（`memory.db` + FTS5 中文检索，MEMORY.md 退化为可编辑投影；首次打开自动幂等导入既有内容）。sqlite 模式下 compact 固化与后台文件整理暂禁用（自动写入待 M5b 经持久队列提供），新笔记带 workspace 归属、旧无归属笔记不再参加跨项目召回 |
 | `RUST_LOG` | 日志过滤，默认 `warn,zhuye=info` |
 

@@ -1,5 +1,7 @@
 # 工具与 Hooks 设计规范
 
+<p align="center">  <b>中文</b> · [English](tools-and-hooks.en.md)  </p>
+
 > 本文是 `zhuye-tools` / `zhuye-hooks` 两个 crate 的设计契约文档,
 > 源码 doc-comment 以 `§N.M` 形式引用本文章节。行为以代码为准,本文
 > 与代码不一致时视为文档 bug,欢迎修文档或提 issue。
@@ -37,7 +39,10 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 
 ## §2 内置工具契约
 
-内置工具共 25 个,实现在 `crates/abilities/zhuye-tools/src/builtins/`(memory 在 `zhuye-exec`,见下)。
+核心内置工具共 27 个(`BUILTIN_TOOL_COUNT`),`register_builtin_tools` 统一注册,
+实现在 `crates/abilities/zhuye-tools/src/builtins/`(`ast` 由调用方注入,
+`memory` 在 `zhuye-exec`,见下)。27 个是核心注册清单 —— 编排 / cron /
+插件 / MCP / SDK 远程工具还会再注册,不是运行时可见工具的全集。
 名字分两派:**计划 / worktree 一族是 PascalCase**,其余是 snake_case。
 
 | 工具 | 用途 |
@@ -64,6 +69,7 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 | `background_status` | 后台工具调用的状态 |
 | `EnterPlanMode` / `ExitPlanMode` / `PlanWrite` | 只读规划模式的控制面 |
 | `EnterWorktree` / `ExitWorktree` | 进 / 出临时 git worktree |
+| `checkpoint` / `rewind` | git 快照:建 / 回退 `zhuye-checkpoint` 快照(§10) |
 
 通用约定:
 
