@@ -1589,6 +1589,13 @@ pub async fn submission_loop(
                         "downgraded legacy PermissionMode::Bypass to Prompt per v1.3 safety baseline"
                     );
                 }
+                // v1.x 修复:用户显式接管模式 = 所有在途 plan 审批作废。
+                // 不清的话:(a) 悬挂的 blocking waiter 在用户稍后点了仍显示
+                // 的弹窗时被迟到 Op::PlanApproval 唤醒,再次翻转模式**覆盖
+                // 用户刚设置的模式**;(b) spawn 版 waiter 泄漏到会话关闭。
+                // cancel_all 解除全部 waiter —— 迟到的 PlanApproval 因查无
+                // waiter 而 no-op(complete_plan_approval 返回 false)。
+                plan_approval_gate.cancel_all();
                 apply_permission_mode_change(
                     &cfg,
                     target,
@@ -1599,6 +1606,7 @@ pub async fn submission_loop(
             }
             zhuye_protocol::Op::CyclePermissionMode => {
                 let next = cfg.permission_mode().next_in_ui_cycle();
+                plan_approval_gate.cancel_all();
                 apply_permission_mode_change(
                     &cfg,
                     next,
@@ -2114,6 +2122,17 @@ async fn apply_plan_approval_choice(
                 return;
             }
             cfg.set_permission_mode(target_mode);
+            // v1.x 修复:审批触发的模式切换**补落盘**。此前只有 slash /
+            // SetPermissionMode 路径持久化 PermissionModeChanged —— 审批
+            // 批准(AutoMode→AcceptEdits / ManualApprove→Prompt)不落盘,
+            // 会话重开时 bind 取最后一条记录,已批准退出的会话「幽灵复活」
+            // 为 Plan 模式。极序竞态(pre-meta 弹窗被答,此记录先于
+            // SessionMeta 落盘)由 rollout 索引的前缀扫描兜底。
+            persist_rollout_best_effort(cfg, || RolloutRecord::PermissionModeChanged {
+                from,
+                to: target_mode,
+                at: chrono::Utc::now(),
+            });
             let ev = Event::new(
                 sub_id,
                 EventMsg::PermissionModeChanged(PermissionModeChangedEvent {
@@ -2399,6 +2418,7 @@ pub(crate) async fn dispatch_plan_ready_blocking(
     sub_id: String,
     cfg: AgentConfig,
     markdown: String,
+    turn_cancel: tokio_util::sync::CancellationToken,
 ) -> Option<zhuye_protocol::PlanApprovalChoice> {
     let plan_id = PlanId::new();
     let rx = gate.register(plan_id);
@@ -2436,8 +2456,12 @@ pub(crate) async fn dispatch_plan_ready_blocking(
         markdown_chars = markdown.len(),
         "plan ready emitted (blocking); awaiting user decision in tool_exec"
     );
-    // clone 一份 cancel 句柄,避免 select! 两个分支同时借用 cfg。
-    let cancel = cfg.cancel.clone();
+    // v1.x 修复:select 监听**回合级**令牌(`NodeContext.cancel`,Op::Interrupt
+    // 经在飞回合表 cancel 它)。它是会话令牌的 child:`Op::Shutdown` 级联
+    // 取消依旧覆盖。此前这里监听 cfg.cancel(会话级),plan 审批弹窗待决时
+    // 按停止/Interrupt 完全唤不醒等待,turn 悬挂在审批上(TurnAborted 不发、
+    // active_turns 残留)—— GUI「停止按钮不再静默失效」在 plan 审批上的盲区。
+    let cancel = turn_cancel;
     tokio::select! {
         c = rx => match c {
             Ok(choice) => {
@@ -2450,18 +2474,15 @@ pub(crate) async fn dispatch_plan_ready_blocking(
             Err(_) => {
                 tracing::debug!(
                     plan_id = %plan_id,
-                    "blocking plan waiter cancelled (caller dropped or session shutdown)"
+                    "blocking plan waiter cancelled (caller dropped or gate cleared)"
                 );
                 None
             }
         },
         _ = cancel.cancelled() => {
-            // session Shutdown 触发 cfg.cancel.cancel()。Op::Interrupt 不触发
-            // 会话级 token(不可逆)—— 与普通 tool approval 阻塞行为一致,
-            // 属既有架构局限,不在此修复范围。
             tracing::info!(
                 plan_id = %plan_id,
-                "session cancelled while awaiting plan approval; aborting blocking dispatch"
+                "turn cancelled while awaiting plan approval (Interrupt/Shutdown); aborting blocking dispatch"
             );
             None
         }
@@ -2478,6 +2499,7 @@ pub(crate) async fn dispatch_plan_request_blocking(
     sub_id: String,
     cfg: AgentConfig,
     task: String,
+    turn_cancel: tokio_util::sync::CancellationToken,
 ) -> Option<zhuye_protocol::PlanApprovalChoice> {
     let plan_id = PlanId::new();
     let rx = gate.register(plan_id);
@@ -2509,7 +2531,9 @@ pub(crate) async fn dispatch_plan_request_blocking(
         %task,
         "plan request emitted (blocking); awaiting user decision in tool_exec"
     );
-    let cancel = cfg.cancel.clone();
+    // v1.x 修复:与 dispatch_plan_ready_blocking 同款 —— 监听回合级令牌
+    // (Interrupt / Shutdown 均可唤醒),而非会话级 cfg.cancel。
+    let cancel = turn_cancel;
     tokio::select! {
         c = rx => match c {
             Ok(choice) => {
@@ -2521,7 +2545,13 @@ pub(crate) async fn dispatch_plan_request_blocking(
             }
             Err(_) => None,
         },
-        _ = cancel.cancelled() => None,
+        _ = cancel.cancelled() => {
+            tracing::info!(
+                plan_id = %plan_id,
+                "turn cancelled while awaiting plan-entry approval (Interrupt/Shutdown); aborting blocking dispatch"
+            );
+            None
+        },
     }
 }
 
@@ -2966,6 +2996,7 @@ mod tests {
                 "sub-blk".into(),
                 cfg,
                 "## Plan".into(),
+                tokio_util::sync::CancellationToken::new(),
             )
             .await
         });
@@ -2995,13 +3026,14 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_plan_ready_blocking_returns_none_on_cancel() {
-        // session Shutdown 触发 cfg.cancel.cancel() 时,阻塞中的 dispatch 必须
-        // 退出并返回 None(不 flip mode),避免图节点在会话关闭时永久挂起。
+        // Shutdown 语义(级联):dispatch 监听回合级 child token,父级
+        // cfg.cancel.cancel()(Op::Shutdown)必须级联唤醒并返回 None。
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let cfg = test_cfg();
         let cancel = cfg.cancel.clone();
+        let turn_token = cfg.cancel.child_token();
 
         let gate_for_task = gate.clone();
         let subs_for_task = session_subs.clone();
@@ -3013,6 +3045,7 @@ mod tests {
                 "sub-cancel".into(),
                 cfg,
                 "## Plan".into(),
+                turn_token,
             )
             .await
         });
@@ -3028,6 +3061,104 @@ mod tests {
         assert_eq!(
             choice, None,
             "cancel must abort blocking dispatch with None"
+        );
+    }
+
+    /// v1.x 修复回归:Op::Interrupt 只 cancel 回合级 child token —— 此前
+    /// blocking dispatch 监听会话级 cfg.cancel,审批弹窗待决时按停止完全
+    /// 唤不醒等待,turn 悬挂在审批上(TurnAborted 不发、active_turns 残留)。
+    #[tokio::test]
+    async fn dispatch_plan_ready_blocking_returns_none_on_turn_interrupt() {
+        let gate = Arc::new(PlanApprovalGate::new());
+        let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
+        let cfg = test_cfg();
+        let turn_token = cfg.cancel.child_token();
+        let cancel_handle = turn_token.clone();
+
+        let gate_for_task = gate.clone();
+        let subs_for_task = session_subs.clone();
+        let task = tokio::spawn(async move {
+            dispatch_plan_ready_blocking(
+                &gate_for_task,
+                &subs_for_task,
+                turn_tx,
+                "sub-interrupt".into(),
+                cfg,
+                "## Plan".into(),
+                turn_token,
+            )
+            .await
+        });
+
+        turn_rx.recv().await.expect("PlanReady event missing");
+        // 仅取消回合令牌(Interrupt 语义),会话令牌不动。
+        cancel_handle.cancel();
+        let choice = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("turn interrupt must unblock the dispatch")
+            .expect("task panicked");
+        assert_eq!(
+            choice, None,
+            "turn-level cancel must abort blocking dispatch"
+        );
+    }
+
+    /// v1.x 修复回归:审批触发的模式切换必须落盘 PermissionModeChanged ——
+    /// 否则 bind/resume 取最后一条记录,已批准退出的会话「幽灵复活」为
+    /// Plan 模式。
+    #[tokio::test]
+    async fn plan_approval_persists_permission_mode_change() {
+        let captured = Arc::new(CapturingRecorder::default());
+        let cfg = cfg_with_recorder(captured.clone());
+        let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Enter 方向批准 → Plan。
+        apply_plan_approval_choice(
+            zhuye_protocol::PlanApprovalChoice::ManualApprove,
+            PlanId::new(),
+            PlanDirection::Enter,
+            &cfg,
+            "sub-appr",
+            &session_subs,
+        )
+        .await;
+        assert!(matches!(
+            cfg.permission_mode(),
+            zhuye_protocol::PermissionMode::Plan
+        ));
+
+        // Exit 方向 AutoMode → AcceptEdits。
+        apply_plan_approval_choice(
+            zhuye_protocol::PlanApprovalChoice::AutoMode,
+            PlanId::new(),
+            PlanDirection::Exit,
+            &cfg,
+            "sub-appr",
+            &session_subs,
+        )
+        .await;
+        yield_for_spawns().await;
+
+        assert!(matches!(
+            cfg.permission_mode(),
+            zhuye_protocol::PermissionMode::AcceptEdits
+        ));
+        let recs = captured.0.lock().clone();
+        let persisted: Vec<_> = recs
+            .iter()
+            .filter_map(|r| match r {
+                RolloutRecord::PermissionModeChanged { to, .. } => Some(*to),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            persisted,
+            vec![
+                zhuye_protocol::PermissionMode::Plan,
+                zhuye_protocol::PermissionMode::AcceptEdits,
+            ],
+            "审批两跳的落盘顺序应为 Plan → AcceptEdits,实得 {recs:?}"
         );
     }
 

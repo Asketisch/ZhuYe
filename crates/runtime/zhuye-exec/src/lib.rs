@@ -133,6 +133,66 @@ fn is_plan_ready_event(event: &zhuye_protocol::Event) -> bool {
     )
 }
 
+/// v1.x 修复:headless plan 审批自动应答 —— 无交互方时的防挂死。
+///
+/// `zhuye exec` 的事件循环此前只统计 `PlanReady` 标志,从不发
+/// `Op::PlanApproval`。若模型按提示词指引调 `EnterPlanMode` /
+/// `ExitPlanMode`,`dispatch_*_blocking` 会**无限等待**用户决策,turn
+/// 永不结束,进程只能 Ctrl-C(与交互式前端的故障模式同构)。
+///
+/// 应答策略(用户决策:「批准+中断收尾」):
+/// - `PlanReady` → `ManualApprove`(保守切 Prompt,不自动写码)+ 随发
+///   `Op::Interrupt` 结束回合 —— 计划已落盘(.md + JSONL 记录),
+///   `--plan-mode`「只产计划不执行」的语义不变,进程按契约正常收尾。
+/// - `PlanRequest` → `Revise`(拒绝进入;普通 headless 运行中模型自调
+///   `EnterPlanMode` 也不会挂死),不打断回合。
+///
+/// 返回 `(plan_id, choice, interrupt)`;`interrupt = true` 时调用方须
+/// 在审批 Op 之后补发 `Op::Interrupt`,并把最终退出码归零(回合是被
+/// **我们主动**终止的,`TurnAborted` 的 122/1 映射不适用)。
+fn plan_event_autoreply(
+    msg: &zhuye_protocol::EventMsg,
+) -> Option<(String, zhuye_protocol::PlanApprovalChoice, bool)> {
+    match msg {
+        zhuye_protocol::EventMsg::PlanReady(ev) => Some((
+            ev.plan_id.to_string(),
+            zhuye_protocol::PlanApprovalChoice::ManualApprove,
+            true,
+        )),
+        zhuye_protocol::EventMsg::PlanRequest(ev) => Some((
+            ev.plan_id.to_string(),
+            zhuye_protocol::PlanApprovalChoice::Revise,
+            false,
+        )),
+        _ => None,
+    }
+}
+
+/// 提交一条 plan 审批自动应答(必要时随发 Interrupt)。fire-and-forget:
+/// 审批 Op 唤醒引擎内阻塞的 waiter;Interrupt 触发回合收尾。
+async fn send_plan_autoreply(
+    thread: &zhuye_core::AgentThread,
+    plan_id: String,
+    choice: zhuye_protocol::PlanApprovalChoice,
+    interrupt: bool,
+) {
+    let sub = Submission::with_id(
+        uuid::Uuid::new_v4().to_string(),
+        zhuye_protocol::Op::PlanApproval {
+            id: plan_id,
+            choice,
+        },
+    );
+    let _ = thread.submit(sub).await;
+    if interrupt {
+        let interrupt_sub = Submission::with_id(
+            uuid::Uuid::new_v4().to_string(),
+            zhuye_protocol::Op::Interrupt { child_id: None },
+        );
+        let _ = thread.submit(interrupt_sub).await;
+    }
+}
+
 /// `--plan-mode` 收尾:产出过计划 → `Ok(())`;否则按文档约定 exit 122。
 ///
 /// 只在显式请求了 Plan mode 时生效,普通 headless 调用不受影响。
@@ -261,6 +321,7 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         // 消费者;record 失败只丢审计不杀会话。
         let activity = zhuye_telemetry::ActivityLogger::with_default_home();
         let mut plan_produced = false;
+        let mut autoreplied_exit_zero = false;
         let mut code = 0;
         while let Some(event) = handle.next().await {
             if let Some(a) = zhuye_telemetry::map_event(&event) {
@@ -268,6 +329,14 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
             }
             if is_plan_ready_event(&event) {
                 plan_produced = true;
+            }
+            // v1.x:headless 无交互方 → plan 审批自动应答,防 blocking
+            // dispatch 无限等待挂死(见 plan_event_autoreply 文档)。
+            if let Some((plan_id, choice, interrupt)) = plan_event_autoreply(&event.msg) {
+                send_plan_autoreply(&session.thread, plan_id, choice, interrupt).await;
+                if interrupt {
+                    autoreplied_exit_zero = true;
+                }
             }
             // 一般失败(Error / 非 Success 的 TurnComplete / TurnAborted)→
             // 非零退出码,CI 与脚本可据此感知失败。
@@ -279,6 +348,11 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         }
         // 冲出攒批滞留的尾部 delta(broken pipe 退出时忽略二次错误)。
         let _ = writer.flush();
+        // 回合是被**自动应答主动终止**的(计划已交付),TurnAborted 的
+        // 122/1 映射不适用 —— 归零。
+        if autoreplied_exit_zero {
+            code = 0;
+        }
         // plan 模式未产出计划 → 按上游约定 exit 122;其余失败由上面的
         // `exit_code_for` 映射成 0 / 1 / 122。
         finish_plan_mode(args.plan_mode, plan_produced)?;
@@ -317,6 +391,7 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
     // v1.x:Activity 审计 tee(同 resume 分支)。
     let activity = zhuye_telemetry::ActivityLogger::with_default_home();
     let mut plan_produced = false;
+    let mut autoreplied_exit_zero = false;
     let mut code = 0;
     // writer 移出循环:此前每事件重建 JsonlWriter(BufWriter + flush)
     // 是纯浪费;复用同一实例,由 write_event 内部按事件类型决定冲刷。
@@ -329,6 +404,14 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         if is_plan_ready_event(&event) {
             plan_produced = true;
         }
+        // v1.x:headless 无交互方 → plan 审批自动应答,防 blocking
+        // dispatch 无限等待挂死(见 plan_event_autoreply 文档)。
+        if let Some((plan_id, choice, interrupt)) = plan_event_autoreply(&event.msg) {
+            send_plan_autoreply(&session.thread, plan_id, choice, interrupt).await;
+            if interrupt {
+                autoreplied_exit_zero = true;
+            }
+        }
         // 一般失败(Error / 非 Success 的 TurnComplete / TurnAborted)→
         // 非零退出码,CI 与脚本可据此感知失败。
         code = exit_code_for(&args, &event.msg);
@@ -340,6 +423,11 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
     }
     // 冲出攒批滞留的尾部 delta(broken pipe 退出时忽略二次错误)。
     let _ = writer.flush();
+    // 回合是被**自动应答主动终止**的(计划已交付),TurnAborted 的
+    // 122/1 映射不适用 —— 归零。
+    if autoreplied_exit_zero {
+        code = 0;
+    }
     finish_plan_mode(args.plan_mode, plan_produced)?;
     Ok(code)
 }
