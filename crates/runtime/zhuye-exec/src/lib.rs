@@ -44,7 +44,7 @@ use runtime_config::apply_coordinator_from_config;
 /// forward-ref 解析问题),在 clap 层恢复三者互斥。位置参数 `prompt` 与
 /// resume 输入的互斥仍由 `async_main` 的优先级链兜底
 /// (`--resume` > (`-c` / `-r`) > `prompt`)。
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct ExecArgs {
     /// 本次会话使用的提示词方案(default、auto 或方案标识)。
     #[arg(long, value_name = "PROFILE")]
