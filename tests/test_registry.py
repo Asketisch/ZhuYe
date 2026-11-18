@@ -89,6 +89,18 @@ TASKS: dict[str, dict] = {
         "note": "A-C09~A-C10:CLI 参数面(cargo test + bash 参数矩阵)",
         "timeout_s": 3600,
     },
+    "agent.contract.verification": {
+        # 差分验证器纯函数层自测:变异注入必被抓 + 语料库自洽;不调用二进制
+        "command": ["python3", "tests/verification/test_differential.py"],
+        "note": "事故回放/差分验证器自证(变异必被抓、控制组零分歧、语料引用闭环)",
+    },
+    "agent.contract.differential": {
+        # 需要显式提供 baseline/candidate 二进制的条件任务(nightly 观察)
+        "coverage": "conditional",
+        "command": ["tests/verification/run_differential.sh"],
+        "timeout_s": 3600,
+        "note": "新旧二进制核心语义差分(5 个真实事故回放);需 ZHUYE_DIFF=1 与两个二进制路径",
+    },
 
     # ---- 工具、权限与真实副作用(PLAN §2.5,A-I01~A-I22) ----
     "agent.integration.tools": {
@@ -111,9 +123,11 @@ TASKS: dict[str, dict] = {
         "timeout_s": 3600,
     },
     "agent.integration.orchestration": {
-        # A-X19~A-X26:讨论 / pipeline / goal 编排冒烟在 scripts/discussion_smoke.sh
+        # A-X19~A-X26:讨论 / pipeline / goal 编排冒烟 —— 真实 LLM(discussion_smoke
+        # 硬性要求 API key),按工作区规则归入 live 车道:不进日常门禁,无 key 判跳过
+        "coverage": "conditional",
         "command": ["scripts/discussion_smoke.sh"],
-        "note": "A-X19~A-X26:discussion 编排冒烟(其余编排随 functional)",
+        "note": "A-X19~A-X26:discussion 编排冒烟(真 LLM;需 ZHUYE_LIVE=1 与真实凭据;其余编排随 functional)",
         "timeout_s": 1800,
     },
 
@@ -209,7 +223,12 @@ TASKS: dict[str, dict] = {
         "coverage": "conditional",
         "command": ["tests/eval/run_quality.sh"],
         "timeout_s": 86400,
-        "note": "固定真实模型的任务质量、资源消耗和版本比较",
+        "note": "固定真实模型的任务质量、资源消耗和版本比较;ZHUYE_EVAL_MODE=observe/enforce 控制门禁模式",
+    },
+    "agent.quality.unit": {
+        # 质量门禁策略判定器自测:合成报告,无真实模型、无网络、无额度消耗
+        "command": ["python3", "tests/eval/test_policy.py"],
+        "note": "质量门禁策略判定(pass/regression/incomplete 与退出码映射)合成报告自测",
     },
     "agent.e2e": {
         "command": ["scripts/e2e.sh"],
@@ -228,7 +247,8 @@ SUITES: dict[str, list[str]] = {
         "agent.static", "agent.build", "agent.docs",
         "agent.unit.engine", "agent.unit.context", "agent.unit.config",
         "agent.contract.protocol", "agent.contract.event", "agent.contract.properties", "agent.contract.cli",
-        "sdk.ts.unit", "sdk.python.unit",
+        "agent.contract.verification",
+        "sdk.ts.unit", "sdk.python.unit", "agent.quality.unit",
     ],
     # 冒烟:少量关键路径(真实文件结果 + 资源清理)
     "smoke": ["agent.contract.protocol", "agent.e2e"],
@@ -237,17 +257,18 @@ SUITES: dict[str, list[str]] = {
         "agent.static", "agent.build", "agent.docs",
         "agent.unit.engine", "agent.unit.context", "agent.unit.config",
         "agent.contract.protocol", "agent.contract.event", "agent.contract.properties", "agent.contract.cli",
+        "agent.contract.verification",
         "agent.integration.tools", "agent.integration.approval",
         "agent.integration.extensions", "agent.integration.persistence",
         "agent.contract.provider",
         "sdk.ts.unit", "sdk.python.unit", "sdk.binding", "sdk.binding.ts",
-        "sdk.native-python", "agent.security",
+        "sdk.native-python", "agent.security", "agent.quality.unit",
     ],
-    # 夜间:完整故障、编排、fuzz、性能
+    # 夜间:完整故障、编排、fuzz、性能、语义差分
     "nightly": [
         "agent.integration.orchestration", "agent.integration.provider",
         "agent.fault", "agent.fault.lock", "agent.fuzz", "agent.performance",
-        "agent.soak", "agent.eval", "agent.quality",
+        "agent.soak", "agent.eval", "agent.quality", "agent.contract.differential",
     ],
     # 发布候选:最终产物与版本矩阵
     "release": [

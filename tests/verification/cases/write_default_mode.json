@@ -1,0 +1,11 @@
+{
+  "id": "write_default_mode",
+  "kind": "write_default_mode",
+  "description": "默认档(Auto)对文件编辑(write 工具)自动批准:不弹审批、直接落盘。回归来源:工作模式收敛为三段时确立的默认档语义(INC-003),候选若退回弹窗或拒绝执行即为本用例分歧。",
+  "source_incident": "INC-003",
+  "mock_script": [
+    "{\"type\":\"tool_call\",\"name\":\"write\",\"args\":{\"path\":\"out.txt\",\"content\":\"seed-default\"}}",
+    "{\"type\":\"text\",\"text\":\"完成\"}"
+  ],
+  "approved_differences": []
+}

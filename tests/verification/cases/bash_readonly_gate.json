@@ -1,0 +1,11 @@
+{
+  "id": "bash_readonly_gate",
+  "kind": "bash_readonly_gate",
+  "description": "三种工作模式 × 只读 bash 捷径:Ask 档必须弹审批,Deny 档必须拒绝执行,Auto 档直接放行。回归来源:printf 这类只读捷径曾在 Ask/Deny 档被静默放行(INC-001)。",
+  "source_incident": "INC-001",
+  "mock_script": [
+    "{\"type\":\"tool_call\",\"name\":\"bash\",\"args\":{\"cmd\":\"printf readonly-marker\"}}",
+    "{\"type\":\"text\",\"text\":\"完成\"}"
+  ],
+  "approved_differences": []
+}

@@ -1,0 +1,13 @@
+{
+  "id": "INC-003",
+  "title": "默认档自动批准文件编辑的语义漂移",
+  "severity": "medium",
+  "kind": "behavior",
+  "source_commit": "81776217",
+  "source_note": "feat(protocol): 工作模式收敛为三段 ── 默认档自动批准文件编辑。回归表现:默认档对 write 工具重新弹窗或拒绝执行,破坏既定默认体验。",
+  "case_file": "write_default_mode.json",
+  "trigger_paths": ["crates/runtime/**", "crates/abilities/zhuye-tools/**"],
+  "oracle": "默认档不出现 approval_request,write 直接执行,out.txt 内容为脚本指定值。候选多弹/不执行均为分歧。",
+  "approved_differences": [],
+  "control": true
+}

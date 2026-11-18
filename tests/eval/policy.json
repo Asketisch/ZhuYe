@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "description": "客观任务质量门禁策略。初始阈值为观察口径(observe 只记录 would_block 不阻断);完成至少 10 次成对真实样本后按实际波动校准,再转入 enforce。变更本文件必须单独说明并经人工审查。",
+  "min_repetitions": 3,
+  "min_completed_runs": 2,
+  "max_pass_rate_drop": 0.15,
+  "forbid_full_case_regression": true,
+  "max_mean_elapsed_regression_ratio": 0.5,
+  "max_tokens_regression_ratio": 0.5
+}

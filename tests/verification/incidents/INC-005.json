@@ -1,0 +1,13 @@
+{
+  "id": "INC-005",
+  "title": "工具错误被升级为回合中止,丢失恢复机会",
+  "severity": "medium",
+  "kind": "behavior",
+  "source_commit": "10e9c558",
+  "source_note": "feat(eval): 固定任务集的真实 agent 质量评测与评分器。merge 类任务的恢复语义:read 缺失文件产生 is_error 后,模型应能在同回合内用 write 完成恢复;若错误升级为回合中止则任务必败。",
+  "case_file": "tool_error_recovery.json",
+  "trigger_paths": ["crates/runtime/**", "crates/abilities/zhuye-tools/**"],
+  "oracle": "tool_call_end 序列为 [read is_error=true, write is_error=false];result.json 落盘;回合成功收尾。",
+  "approved_differences": [],
+  "control": true
+}

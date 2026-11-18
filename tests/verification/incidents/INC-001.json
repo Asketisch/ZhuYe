@@ -1,0 +1,13 @@
+{
+  "id": "INC-001",
+  "title": "Ask/Deny 工作模式被只读 bash 捷径击穿",
+  "severity": "high",
+  "kind": "security",
+  "source_commit": "12398067",
+  "source_note": "fix(approval): Ask/Deny 工作模式压过只读 bash 捷径 ── 承诺不被击穿。回归表现:printf 这类只读捷径在 Ask/Deny 档被静默执行,不弹审批也不拒绝。",
+  "case_file": "bash_readonly_gate.json",
+  "trigger_paths": ["crates/abilities/zhuye-tools/**", "crates/runtime/**"],
+  "oracle": "Ask(prompt) 档出现 bash 审批请求;Deny 档不执行且回合仍成功;Auto 档直接放行。差分投影中 approvals/tools/files 任一漂移即为分歧。",
+  "approved_differences": [],
+  "control": true
+}

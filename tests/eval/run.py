@@ -16,7 +16,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/functional"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wire  # noqa: E402
+import eval_policy  # noqa: E402  质量门禁策略判定层(与本文件同目录)
 
 CASES = Path(__file__).with_name("cases.json")
 
@@ -273,9 +275,19 @@ def main() -> int:
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--input-price", type=float, default=None, help="每百万输入 token 的美元价格")
     parser.add_argument("--output-price", type=float, default=None, help="每百万输出 token 的美元价格")
+    parser.add_argument("--policy", type=Path, default=None,
+                        help="质量门禁策略文件(默认 tests/eval/policy.json)")
+    parser.add_argument("--mode", choices=("observe", "enforce"), default="observe",
+                        help="observe 记录 would_block 不阻断;enforce 下退化/样本不足返回 1")
     args = parser.parse_args()
     if args.repetitions < 1:
         parser.error("重复次数必须大于零")
+    # 策略配置在产生任何模型费用前加载校验,配置错误属用法错误(退出码 3)。
+    try:
+        policy_doc = eval_policy.load_policy(args.policy)
+    except (OSError, ValueError) as exc:
+        print(f"质量门禁策略配置错误:{exc}", file=sys.stderr)
+        return 3
     key = os.environ.get("ZHUYE_EVAL_API_KEY", "")
     if not key:
         parser.error("必须设置 ZHUYE_EVAL_API_KEY")
@@ -320,9 +332,32 @@ def main() -> int:
             } for name, prior in before.items()}
         payload = json.dumps(report, ensure_ascii=False, indent=2)
         (args.output / "report.json").write_text(redact_key(payload, key))
+    # 质量门禁判定:纯函数,只依赖已生成的汇总,不再触碰模型或二进制。
+    policy_target = args.policy if args.policy is not None else eval_policy.DEFAULT_POLICY_PATH
+    gate = {
+        "mode": args.mode,
+        "policy_path": str(policy_target),
+        "policy_sha256": hashlib.sha256(policy_target.read_bytes()).hexdigest(),
+        **eval_policy.assess(report, policy_doc),
+    }
+    (args.output / "gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2))
+    report["gate"] = gate
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    (args.output / "report.json").write_text(redact_key(payload, key))
+    print(f"质量门禁[{args.mode}] verdict={gate['verdict']} would_block={gate['would_block']}")
+    for violation in gate["violations"]:
+        print(f"  - 违规:{violation}")
+    for item in gate["insufficient"]:
+        print(f"  - 样本不足:{item}")
     has_infra = any(item["status"] == "infra_error"
                     for version in report["versions"].values() for item in version["results"])
-    return 2 if has_infra else 0
+    if has_infra:
+        # 基础设施错误优先:此时样本不完整,任何 verdict 都不可信。
+        print("评测存在基础设施错误,质量门禁不可判定", file=sys.stderr)
+        return 2
+    if args.mode == "enforce" and gate["verdict"] != "pass":
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

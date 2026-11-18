@@ -243,10 +243,11 @@ def run_task(task_id: str, args: argparse.Namespace) -> TaskResult:
         return TaskResult(task_id, "pending",
                           task.get("note", "任务已登记,尚无实现映射(未覆盖)"))
     enabled = task.get("enabled", False) or (
-        task_id == "agent.eval" and os.environ.get("ZHUYE_LIVE") == "1"
+        task_id in ("agent.eval", "agent.integration.orchestration")
+        and os.environ.get("ZHUYE_LIVE") == "1"
     ) or (task_id == "agent.release.artifact" and bool(getattr(args, "artifact", None))) or (
         task_id == "agent.quality" and os.environ.get("ZHUYE_EVAL") == "1"
-    )
+    ) or (task_id == "agent.contract.differential" and os.environ.get("ZHUYE_DIFF") == "1")
     if coverage == "conditional" and not enabled:
         return TaskResult(task_id, "skip",
                           f"条件能力未启用:{task.get('note', '')}")
