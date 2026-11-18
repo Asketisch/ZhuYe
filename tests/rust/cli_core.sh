@@ -99,6 +99,15 @@ cli_core_exec() {
     # 2g. --auto-root / --ephemeral-tasks 旗标路径不 panic
     tcase "exec --auto-root --ephemeral-tasks 退出 0" \
         env ZHUYE_MODEL=mock "$ZHUYE_BIN" exec --auto-root --ephemeral-tasks "hi"
+
+    # 2h. --prompt-profile 在任务启动前应用会话覆盖；未知方案立即报错。
+    env ZHUYE_MODEL=mock "$ZHUYE_BIN" exec --prompt-profile default "hi" >/dev/null 2>&1
+    tcase "exec --prompt-profile default 退出 0" test $? -eq 0
+    env ZHUYE_MODEL=mock "$ZHUYE_BIN" exec --prompt-profile missing-profile "hi" \
+        > exec_missing_prompt.txt 2>&1
+    tcase "exec --prompt-profile 未知方案被拒绝" test $? -ne 0
+    tcase "exec --prompt-profile 未知方案给出字段级错误" \
+        grep -q "提示词方案不存在" exec_missing_prompt.txt
 }
 
 # ════════════════════════════════════════════════════════════════════════
