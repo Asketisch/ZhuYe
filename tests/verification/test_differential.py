@@ -202,7 +202,15 @@ class CorpusIntegrityTest(unittest.TestCase):
 
     def test_source_commits_exist_in_history(self):
         # 来源提交号必须能在本仓库历史中解析到(用 rev-parse 验证,不受
-        # git 短哈希长度自适应的影响)。
+        # git 短哈希长度自适应的影响)。CI 的 actions/checkout 默认浅克隆
+        # (depth=1),没有历史对象 —— 此时跳过;本地开发仓为完整克隆,
+        # 校验仍然生效。
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=HERE.parents[1], capture_output=True, text=True,
+            timeout=15, check=False)
+        if shallow.stdout.strip() == "true":
+            self.skipTest("浅克隆无历史对象:来源提交校验仅在完整克隆下执行")
         for path in sorted((HERE / "incidents").glob("*.json")):
             incident = json.loads(path.read_text(encoding="utf-8"))
             verify = subprocess.run(
