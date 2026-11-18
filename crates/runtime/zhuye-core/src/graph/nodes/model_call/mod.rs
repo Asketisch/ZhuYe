@@ -213,6 +213,15 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         }),
         ..Default::default()
     };
+    // OpenAI 兼容 / Ollama / Responses 要求 system 只能出现在 messages 开头,
+    // 严格的网关对「中途 system」直接返回 400(System message must be at the
+    // beginning.);Anthropic 则会静默丢弃内联 System。压缩摘要(PreCompact
+    // hook 注入、resume 回放的 summary)都以内联 System 落在 messages 里,
+    // 统一在发请求前折叠进 system 块。
+    //
+    // 必须在 `inject_cache_control` **之前**折叠:缓存断点按消息下标记录,
+    // 先折叠才能保证下标与 provider 实际发出的数组一致。
+    request.fold_system_messages();
 
     // M4:注入 cache_control 断点
     if let Some(m4) = ctx.m4.as_ref() {

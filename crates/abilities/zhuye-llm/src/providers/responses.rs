@@ -645,7 +645,11 @@ pub struct ResponsesRequest {
 }
 
 impl From<ChatRequest> for ResponsesRequest {
-    fn from(req: ChatRequest) -> Self {
+    fn from(mut req: ChatRequest) -> Self {
+        // 防御性折叠内联 System(主路径已在 `model_call` 折叠,幂等):
+        // Responses 的 system 走顶层 `instructions`,消息流里的 system 只是
+        // 兼容兜底,不应依赖它承载摘要/hook 注入内容。
+        req.fold_system_messages();
         // Responses 用 `input`(message 数组)替代 `messages`;system 拆到
         // `instructions`(顶层)。
         let instructions = req.system.as_single_string();
@@ -1169,5 +1173,45 @@ mod reasoning_tests {
         }))
         .unwrap();
         assert!(wire.get("reasoning").is_none(), "历史请求体不变");
+    }
+}
+
+#[cfg(test)]
+mod system_fold_tests {
+    use super::*;
+    use crate::request::{ChatMessage, ContentBlock, SystemBlock, SystemBlocks, UserContent};
+
+    /// 内联 System 折叠进顶层 `instructions`,input 里不再出现 system 条目。
+    #[test]
+    fn 内联system折叠进instructions() {
+        let req = ChatRequest {
+            model: "gpt-5".into(),
+            messages: vec![
+                ChatMessage::User(UserContent {
+                    blocks: vec![ContentBlock::text("第一问")],
+                }),
+                ChatMessage::System("压缩摘要".into()),
+            ],
+            system: SystemBlocks(vec![SystemBlock {
+                text: "核心 prompt".into(),
+                cache_control: None,
+                ephemeral: false,
+            }]),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(ResponsesRequest::from(req)).unwrap();
+        let instructions = wire["instructions"].as_str().unwrap();
+        assert!(
+            instructions.contains("核心 prompt") && instructions.contains("压缩摘要"),
+            "{instructions}"
+        );
+        let roles: Vec<&str> = wire["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap_or(""))
+            .collect();
+        assert!(!roles.contains(&"system"), "input 不应含 system: {roles:?}");
+        assert_eq!(roles, ["user"]);
     }
 }

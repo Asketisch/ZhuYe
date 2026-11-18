@@ -381,7 +381,16 @@ fn keep_recent_tail(messages: &[ChatMessage], n: usize) -> Vec<ChatMessage> {
     while start > 0 && matches!(messages[start], ChatMessage::Tool(_)) {
         start -= 1;
     }
-    messages[start..].to_vec()
+    let tail = messages[start..].to_vec();
+    // 摘要类内联 System 不参与 tail:新摘要已覆盖旧摘要,带进来会让同一份
+    // 摘要在 system 前缀里重复(白烧 token)。若过滤后为空则回退原 tail ——
+    // 保住「messages 非空」的既有守卫。
+    let filtered: Vec<ChatMessage> = tail
+        .iter()
+        .filter(|m| !matches!(m, ChatMessage::System(_)))
+        .cloned()
+        .collect();
+    if filtered.is_empty() { tail } else { filtered }
 }
 
 #[cfg(test)]
@@ -758,6 +767,23 @@ mod tests {
     fn keep_recent_tail_empty_input() {
         assert!(keep_recent_tail(&[], 5).is_empty());
         assert!(keep_recent_tail(&sample_conversation(), 0).is_empty());
+    }
+
+    /// 旧摘要(System)不能被 tail 带回压缩结果:新摘要已覆盖它,重复出现
+    /// 只会把同一份摘要再塞进 system 前缀。
+    #[test]
+    fn keep_recent_tail_drops_inline_system_summary() {
+        let mut msgs = vec![ChatMessage::System("<summary>旧摘要</summary>".into())];
+        msgs.extend(sample_conversation());
+        // n 大于消息总数 → 起点为 0,旧摘要本来会被整段带走。
+        let tail = keep_recent_tail(&msgs, msgs.len() + 10);
+        assert!(
+            !tail.iter().any(|m| matches!(m, ChatMessage::System(_))),
+            "tail 不应含 System: {:?}",
+            tail.len()
+        );
+        // 最后一条 User 仍在,保证 messages 非空。
+        assert!(tail.iter().any(|m| matches!(m, ChatMessage::User(_))));
     }
 
     // ── M8 P0b: LLM-reported input tokens drive trigger ─────────────────

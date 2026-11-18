@@ -62,6 +62,57 @@ impl Default for ChatRequest {
     }
 }
 
+impl ChatRequest {
+    /// 把 `messages` 里内联的 `System` 消息折叠进 `system` 块。
+    ///
+    /// OpenAI 兼容(Chat Completions)/ Ollama / OpenAI Responses 的线上形态
+    /// 都要求 `system` 只能出现在数组**开头**,严格的网关对「用户消息之后
+    /// 再出现 system」直接返回 HTTP 400
+    /// (`System message must be at the beginning.`);Anthropic 的 system
+    /// 是顶层字段,消息流里的 `System` 会被静默丢弃(内容直接丢失)。
+    ///
+    /// 折叠后请求恰好只有一条首位 system,语义不变(压缩摘要 / hook 注入
+    /// 内容仍在上下文里),并且 `inject_cache_control` 按**消息下标**写入的
+    /// 缓存断点不会因为 provider 丢弃消息而漂移。
+    ///
+    /// 幂等;若 `messages` 全是 `System`(折叠后为空),保持原样 —— 上游
+    /// 对空 `messages` 会返回 `messages must not be empty`。
+    pub fn fold_system_messages(&mut self) {
+        if !self
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::System(_)))
+        {
+            return;
+        }
+        let inline: Vec<String> = self
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                ChatMessage::System(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        // 全 System 时不折叠:折叠后 messages 为空会被 provider 拒绝。
+        if inline.len() == self.messages.len() {
+            return;
+        }
+        self.messages
+            .retain(|m| !matches!(m, ChatMessage::System(_)));
+        for text in inline {
+            // 空 system 块只占位置,不产生任何语义。
+            if text.trim().is_empty() {
+                continue;
+            }
+            self.system.0.push(SystemBlock {
+                text,
+                cache_control: None,
+                ephemeral: false,
+            });
+        }
+    }
+}
+
 /// v1.4 B1:结构化输出格式声明。
 ///
 /// `JsonSchema` 是强约束(provider 按 schema 严格生成);`JsonObject`
@@ -469,5 +520,99 @@ mod tests {
         assert!(text.contains("[image: image/png, 5000 bytes]"));
         // 关键:绝不能把字节数组灌进文本。
         assert!(!text.contains("[1, 1, 1"));
+    }
+
+    /// 构造一条纯文本 User 消息(测试辅助)。
+    fn user(text: &str) -> ChatMessage {
+        ChatMessage::User(UserContent {
+            blocks: vec![ContentBlock::text(text)],
+        })
+    }
+
+    /// 折叠内联 System:末尾注入的 system(PreCompact hook / 压缩摘要)与
+    /// 中途 system 都必须上移到 `system` 块,`messages` 只留对话轮次。
+    #[test]
+    fn fold_system_messages_moves_inline_system_into_system_blocks() {
+        let mut req = ChatRequest {
+            model: "deepseek-chat".into(),
+            messages: vec![
+                ChatMessage::System("<summary>\n旧摘要\n</summary>".into()),
+                user("你好"),
+                ChatMessage::Assistant(AssistantContent::default()),
+                ChatMessage::System("hook 注入的提醒".into()),
+            ],
+            system: SystemBlocks(vec![SystemBlock {
+                text: "核心 system prompt".into(),
+                cache_control: None,
+                ephemeral: false,
+            }]),
+            ..Default::default()
+        };
+
+        req.fold_system_messages();
+
+        // messages 里不再有任何 System,顺序保持。
+        assert!(
+            !req.messages
+                .iter()
+                .any(|m| matches!(m, ChatMessage::System(_))),
+            "折叠后不应残留内联 System: {:?}",
+            req.messages
+        );
+        assert!(matches!(&req.messages[0], ChatMessage::User(_)));
+        assert_eq!(req.messages.len(), 2);
+
+        // system 块按原出现顺序追加在核心 prompt 之后。
+        let texts: Vec<&str> = req.system.0.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "核心 system prompt",
+                "<summary>\n旧摘要\n</summary>",
+                "hook 注入的提醒"
+            ]
+        );
+    }
+
+    /// 幂等:重复折叠不改变结果。
+    #[test]
+    fn fold_system_messages_is_idempotent() {
+        let mut req = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![user("hi"), ChatMessage::System("note".into())],
+            ..Default::default()
+        };
+        req.fold_system_messages();
+        let once = (req.messages.len(), req.system.0.len());
+        req.fold_system_messages();
+        assert_eq!(once, (req.messages.len(), req.system.0.len()));
+        assert_eq!(req.system.0[0].text, "note");
+    }
+
+    /// 守卫:全部是 System 的消息列表不折叠 —— 折叠后 messages 为空,
+    /// 上游会返回 `messages must not be empty`。
+    #[test]
+    fn fold_system_messages_keeps_all_system_list_untouched() {
+        let mut req = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage::System("only".into())],
+            ..Default::default()
+        };
+        req.fold_system_messages();
+        assert!(req.system.0.is_empty());
+        assert_eq!(req.messages.len(), 1);
+    }
+
+    /// 空白 System 内容直接丢弃(不产生空的 system 块)。
+    #[test]
+    fn fold_system_messages_drops_blank_system() {
+        let mut req = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage::System("   ".into()), user("hi")],
+            ..Default::default()
+        };
+        req.fold_system_messages();
+        assert!(req.system.0.is_empty());
+        assert_eq!(req.messages.len(), 1);
     }
 }
