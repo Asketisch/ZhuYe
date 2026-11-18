@@ -216,12 +216,55 @@ jobs:
         run: ZHUYE_ENV_STRESS_RUNS=30 ./tests/rust/env_lock_stress.sh
       # 核心语义差分(P1):同一提交的 release/debug 两个二进制对 5 个事故
       # 回放场景重放,零分歧预期 —— 验证差分链路本身在 CI 环境可跑且全绿。
-      # 注意:run 必须用块标量(|),plain scalar 会把反斜杠续行折叠成空格。
       - name: Build debug runtime (差分候选)
         run: cargo build -p zhuye-cli
       - name: Run semantic differential (事故回放)
+        env:
+          ZHUYE_DIFF: "1"
+          ZHUYE_DIFF_BASELINE: ${{ github.workspace }}/target/release/zhuye
+          ZHUYE_DIFF_CANDIDATE: ${{ github.workspace }}/target/debug/zhuye
+          ZHUYE_DIFF_OUTPUT: ${{ github.workspace }}/target/verification/builds
+        run: python3 tests/runner.py run --task agent.contract.differential
+      - name: Download latest published runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          ZHUYE_DIFF=1 \
-          ZHUYE_DIFF_BASELINE="$PWD/target/release/zhuye" \
-          ZHUYE_DIFF_CANDIDATE="$PWD/target/debug/zhuye" \
-          python3 tests/runner.py run --task agent.contract.differential
+          set -euo pipefail
+          mkdir -p target/previous-release
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*x86_64-unknown-linux-gnu.tar.gz' --dir target/previous-release
+          tar -xzf target/previous-release/*.tar.gz -C target/previous-release
+          binary=$(find target/previous-release -type f -name zhuye -print -quit)
+          test -n "$binary"
+          cp "$binary" target/previous-release/zhuye-baseline
+          chmod +x target/previous-release/zhuye-baseline
+          printf '%s\n' "$tag" > target/previous-release/tag.txt
+      - name: Run published version differential
+        env:
+          ZHUYE_DIFF: "1"
+          ZHUYE_DIFF_BASELINE: ${{ github.workspace }}/target/previous-release/zhuye-baseline
+          ZHUYE_DIFF_CANDIDATE: ${{ github.workspace }}/target/debug/zhuye
+          ZHUYE_DIFF_OUTPUT: ${{ github.workspace }}/target/verification/published
+        run: python3 tests/runner.py run --task agent.contract.differential
+      - name: Check differential reports
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          expected = {json.loads(path.read_text())['id'] for path in Path('tests/verification/cases').glob('*.json')}
+          assert expected
+          for path in (Path('target/verification/builds/report.json'), Path('target/verification/published/report.json')):
+              report = json.loads(path.read_text())
+              assert report['verdict'] == 'pass', path
+              assert {result['id'] for result in report['results']} == expected, path
+              assert all(result['verdict'] == 'pass' for result in report['results']), path
+          PY
+      - name: Upload semantic differential evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-differential
+          path: |
+            target/verification/
+            target/previous-release/tag.txt
+          if-no-files-found: ignore

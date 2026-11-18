@@ -18,8 +18,10 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -98,6 +100,11 @@ class ProjectTest(unittest.TestCase):
         without = differential.project([], [])
         self.assertNotIn("rollout_types", without)
 
+    def test_late_submission_closed_does_not_change_projection(self):
+        control = differential.project(base_events(), {})
+        closed = differential.project(base_events() + [ev({"type": "submission_closed"})], {})
+        self.assertEqual(control, closed)
+
 
 class CompareControlTest(unittest.TestCase):
     """干净控制组:相同语义零分歧,不得误报。"""
@@ -112,6 +119,43 @@ class CompareControlTest(unittest.TestCase):
         cand = differential.project(cand_events, {})
         divergences = differential.compare(base, cand, ["event:compaction_started"])
         self.assertEqual(divergences, [])
+
+
+class IncidentOracleTest(unittest.TestCase):
+    """事故预期独立于新旧版本的差异。"""
+
+    def test_both_versions_broken_and_healthy_control(self):
+        case = next(c for c in differential.load_cases() if c["id"] == "bash_redirect")
+        healthy = differential.project(
+            [ev({"type": "approval_request", "kind": {"tool_name": "bash"}})], {})
+        broken = differential.project([], {"out.txt": "hi"})
+        self.assertEqual(differential.compare(broken, broken), [])
+        self.assertEqual(differential.check_case_oracle(case, healthy), [])
+        failures = differential.check_case_oracle(case, broken)
+        self.assertTrue(any("审批请求" in item for item in failures))
+        self.assertTrue(any("out.txt" in item for item in failures))
+        self.assertEqual(len(differential.check_case_oracle(
+            case, {**healthy, "approvals": []})), 1)
+        self.assertEqual(len(differential.check_case_oracle(
+            case, {**healthy, "files": {"out.txt": "hi"}})), 1)
+
+    def test_report_checks_candidate_and_keeps_both_sides(self):
+        case = next(c for c in differential.load_cases() if c["id"] == "bash_redirect")
+        broken = differential.project([], {"out.txt": "hi"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline, candidate = root / "old", root / "new"
+            baseline.write_text("old")
+            candidate.write_text("new")
+            with mock.patch.object(differential, "load_cases", return_value=[case]), \
+                 mock.patch.object(differential, "run_case", return_value=broken) as run:
+                result = differential.run_all(baseline, candidate, None, root / "report")
+            self.assertEqual(result, 1)
+            self.assertEqual(run.call_args_list[0].args[2], root / "report" / "baseline")
+            self.assertEqual(run.call_args_list[1].args[2], root / "report" / "candidate")
+            report = json.loads((root / "report" / "report.json").read_text())
+            self.assertEqual(report["verdict"], "divergence")
+            self.assertEqual(len(report["results"][0]["divergences"]), 2)
 
 
 class CompareMutantTest(unittest.TestCase):
