@@ -289,6 +289,7 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                                 ctx.sub_id.clone(),
                                 ctx.cfg.clone(),
                                 task,
+                                ctx.cancel.clone(),
                             )
                             .await;
                         }
@@ -324,6 +325,7 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                             ctx.sub_id.clone(),
                             ctx.cfg.clone(),
                             markdown,
+                            ctx.cancel.clone(),
                         )
                         .await;
                         // v1.4 审批信号回传:choice 此前被丢弃,模型收到的

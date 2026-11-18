@@ -667,3 +667,41 @@ fn finish_plan_mode_exits_122_when_no_plan() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ── v1.x:headless plan 审批自动应答(防 blocking dispatch 挂死)──────────
+
+#[test]
+fn plan_autoreply_maps_plan_events_to_choices() {
+    use zhuye_protocol::{PlanApprovalChoice, PlanId, PlanReadyEvent, PlanRequestEvent};
+
+    let pid = PlanId::new();
+    let ready = EventMsg::PlanReady(PlanReadyEvent {
+        plan_id: pid,
+        markdown: "## Plan".into(),
+        path: None,
+    });
+    let (id, choice, interrupt) = plan_event_autoreply(&ready).expect("PlanReady must autoreply");
+    assert_eq!(id, pid.to_string());
+    assert_eq!(choice, PlanApprovalChoice::ManualApprove);
+    assert!(interrupt, "PlanReady autoreply must interrupt the turn");
+
+    let pid2 = PlanId::new();
+    let request = EventMsg::PlanRequest(PlanRequestEvent {
+        plan_id: pid2,
+        task: "refactor auth".into(),
+    });
+    let (id, choice, interrupt) =
+        plan_event_autoreply(&request).expect("PlanRequest must autoreply");
+    assert_eq!(id, pid2.to_string());
+    assert_eq!(choice, PlanApprovalChoice::Revise);
+    assert!(!interrupt, "PlanRequest autoreply must not interrupt");
+
+    // 无关事件不触发。
+    assert!(
+        plan_event_autoreply(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: TurnId::new(),
+            user_message_id: None,
+        }))
+        .is_none()
+    );
+}
