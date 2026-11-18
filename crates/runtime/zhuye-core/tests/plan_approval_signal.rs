@@ -207,10 +207,7 @@ async fn plan_approval_approved_rewrites_model_tool_output() {
             }],
         },
     );
-    // v1.x ExitPlanMode 模式守卫:派发 PlanReady 审批要求会话处于 Plan 模式。
-    let cfg = AgentConfig::new("stub/m1", Path::new("."))
-        .with_initial_permission_mode(PermissionMode::Plan)
-        .with_approvals(true);
+    let cfg = AgentConfig::new("stub/m1", Path::new(".")).with_approvals(true);
     let tools = Arc::new(ToolRegistry::default());
     tools.register(Arc::new(ExitPlanModeStub));
     let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
@@ -285,10 +282,7 @@ async fn plan_approval_revise_rewrites_then_approval_continues() {
             }],
         },
     );
-    // v1.x ExitPlanMode 模式守卫:派发 PlanReady 审批要求会话处于 Plan 模式。
-    let cfg = AgentConfig::new("stub/m1", Path::new("."))
-        .with_initial_permission_mode(PermissionMode::Plan)
-        .with_approvals(true);
+    let cfg = AgentConfig::new("stub/m1", Path::new(".")).with_approvals(true);
     let tools = Arc::new(ToolRegistry::default());
     tools.register(Arc::new(ExitPlanModeStub));
     let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
@@ -342,57 +336,6 @@ async fn plan_approval_revise_rewrites_then_approval_continues() {
     assert!(
         final_text.contains("The user requested changes"),
         "Revise 重写应留在历史中(同 turn 内两条工具结果);got: {final_text}"
-    );
-}
-
-/// v1.x:ExitPlanMode 模式守卫。非 Plan 模式下模型乱调 ExitPlanMode
-/// **不得**派发 PlanReady 审批 —— 此前会照常弹审批,批准后
-/// `apply_plan_approval_choice` 无条件翻模式(Prompt 被静默降级为
-/// AcceptEdits / legacy Deny 被提权),且 markdown 兜底会读到
-/// `.zhuye/plan/` 里陈年旧计划。默认 Auto 模式下应直接完成 turn,
-/// 全程无 PlanReady 事件。
-#[tokio::test]
-async fn exit_plan_mode_outside_plan_mode_skips_approval() {
-    let registry = Arc::new(ModelRegistry::new());
-    let stub = Arc::new(RecordingStub::new(vec![
-        exit_plan_mode_batch("m1", "tc1"),
-        vec![ChatEvent::MessageStart {
-            id: "m2".into(),
-            model: "stub-1".into(),
-        }],
-    ]));
-    registry.register_pool(
-        "stub",
-        CredentialPool {
-            entries: vec![PoolEntry {
-                client: stub.clone(),
-                label: "default".into(),
-                weight: 1,
-            }],
-        },
-    );
-    // 注意:不加 with_initial_permission_mode —— 保持默认 Auto。
-    let cfg = AgentConfig::new("stub/m1", Path::new(".")).with_approvals(true);
-    let tools = Arc::new(ToolRegistry::default());
-    tools.register(Arc::new(ExitPlanModeStub));
-    let thread = Arc::new(AgentThread::new(cfg, registry, tools, None, None));
-
-    let mut saw_plan_ready = false;
-    let mut handle = thread.submit(user_sub("sub-noplan", "casual task")).await;
-    while let Some(ev) = timeout(Duration::from_secs(5), handle.next())
-        .await
-        .expect("event arrives within 5s")
-    {
-        if matches!(ev.msg, EventMsg::PlanReady(_)) {
-            saw_plan_ready = true;
-        }
-        if matches!(ev.msg, EventMsg::TurnComplete(_)) {
-            break;
-        }
-    }
-    assert!(
-        !saw_plan_ready,
-        "Auto 模式下的 ExitPlanMode 不应派发 PlanReady 审批"
     );
 }
 

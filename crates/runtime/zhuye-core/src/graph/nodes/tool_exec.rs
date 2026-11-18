@@ -297,18 +297,14 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                 }
             }
             "ExitPlanMode" => {
-                // v1.x 修复:模式守卫(与 EnterPlanMode 分支对称)。非 Plan
-                // 模式下模型乱调 ExitPlanMode 此前会照常派发 PlanReady 审批,
-                // 批准后 apply_plan_approval_choice 无条件翻模式 —— Prompt 被
-                // 静默降级为 AcceptEdits、legacy Deny 被提权;且 markdown 兜底
-                // 会读到 `.zhuye/plan/` 里陈年的旧计划文件。不在 Plan 模式时
-                // 跳过派发,工具结果原样返回(模型看到的是未触发审批的输出)。
-                if *ctx.cfg.permission_mode.read() != PermissionMode::Plan {
-                    tracing::info!(
-                        tool_call_id = %r.call_id,
-                        "ExitPlanMode called but not in Plan mode; skipping PlanReady dispatch"
-                    );
-                } else if let (Some(gate), Some(subs)) = (
+                // v1.x 复盘:曾在此加「非 Plan 模式跳过派发」守卫,已被上游
+                // functional 测试(test_A8b_plan审批_工具路径全链路)证伪——
+                // 「非 Plan 模式直接调 ExitPlanMode 提交计划」是合法工作流,
+                // 且 plan 审批走独立的 PlanApprovalGate(永远人工弹窗,不经
+                // approval policy 自动批准),不存在守卫要防的自动提权路径。
+                // 意外模式翻转的真实防线在 SetPermissionMode 的 cancel_all
+                // 与审批落盘,守卫本身回退。
+                if let (Some(gate), Some(subs)) = (
                     ctx.plan_approval_gate.as_ref(),
                     ctx.plan_session_subs.as_ref(),
                 ) {
