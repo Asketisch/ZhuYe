@@ -7,7 +7,27 @@
 **不含** `tui` 子命令)。
 
 - Rust stable,edition 2024,MSRV 1.89(安全依赖面要求)
-- 42 crate workspace,按 6 层分组于 `crates/<layer>/<crate>/`
+- 45 crate workspace,按 6 层分组于 `crates/<layer>/<crate>/`
+
+## AGENTS.md 体系导航
+
+本体系按**渐进式披露**组织:根篇常驻上下文,层篇与 crate 篇按需展开,系统级说明在 `docs/`。
+**修改任何 crate / 顶层目录前,先读该目录(或其所在层)的 AGENTS.md。**
+
+| 想了解什么 | 读哪个 AGENTS.md |
+|---|---|
+| 协议契约:Op / EventMsg / Item / Submission | [crates/protocol/](crates/protocol/AGENTS.md) · [zhuye-protocol/](crates/protocol/zhuye-protocol/AGENTS.md) |
+| 能力原语:模型 / 工具 / hook / 提示词 / 检索 | [crates/abilities/](crates/abilities/AGENTS.md) · [zhuye-llm/](crates/abilities/zhuye-llm/AGENTS.md) · [zhuye-tools/](crates/abilities/zhuye-tools/AGENTS.md) · [zhuye-hooks/](crates/abilities/zhuye-hooks/AGENTS.md) |
+| 资源层:配置 / 权限 / 插件 / 持久化 / 文件 | [crates/resources/](crates/resources/AGENTS.md) · [zhuye-plugin/](crates/resources/zhuye-plugin/AGENTS.md) |
+| 多 agent 编排:子代理 / 讨论 / 任务 / 流水线 / 目标 | [crates/orchestration/](crates/orchestration/AGENTS.md) |
+| 外部集成:MCP / LSP / 会话导入 / computer-use / shell / git | [crates/integrations/](crates/integrations/AGENTS.md) |
+| 运行时与入口:StateGraph / headless / CLI / facade / PyO3 | [crates/runtime/](crates/runtime/AGENTS.md) · [zhuye-core/](crates/runtime/zhuye-core/AGENTS.md) · [zhuye-exec/](crates/runtime/zhuye-exec/AGENTS.md) · [zhuye-cli/](crates/runtime/zhuye-cli/AGENTS.md) |
+| 构建 · 发布 · 冒烟 · 插件打包脚本 | [scripts/](scripts/AGENTS.md) |
+| 双 SDK:Python / TypeScript | [sdks/](sdks/AGENTS.md) |
+| 测试分层与覆盖矩阵 | [tests/](tests/AGENTS.md) |
+| 插件与 WASM 宿主 | [plugins/README.md](plugins/README.md)(外链) |
+| WIT 组件接口 | [wit/README.md](wit/README.md)(外链) |
+| 架构与系统说明 | [docs/architecture.md](docs/architecture.md) · [README 文档表](README.md)(外链) |
 
 ## 常用命令
 
@@ -58,11 +78,11 @@ make gc                                   # 清 target/debug 中 cargo 不 GC �
 | 层 | Crate | 职责 |
 |----|-------|------|
 | `protocol/` | zhuye-protocol | Submission / Op / EventMsg / Item + RolloutRecorder trait。所有层的公共契约 |
-| `abilities/` | llm, tools, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, kms | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、HookEngine、压缩 escalation、本地知识库 wiki 等 |
-| `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, ast, fs, git, wasm | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索、共享文件原语、git 能力族、WASM 组件插件宿主 |
+| `abilities/` | llm, tools, bm25, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, kms, eval | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、BM25 检索、HookEngine、压缩 escalation、本地知识库 wiki、评测等 |
+| `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, audit, secrets, ast, fs, git, wasm | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索、审计、加密密钥存储、共享文件原语、git 能力族、WASM 组件插件宿主 |
 | `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队/squad、DAG 流水线、目标模式、side-channel(zhuye-core) |
 | `integrations/` | mcp, lsp, integration, stream, import, computer-use, shell, git-tools | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端(含 cron / autopilot)、外部 Harness 会话导入、Computer Use、常驻 shell 会话池、git 工作流 MCP server(后四者是 `plugins/*` 的能力核心,不进 SDK facade) |
-| `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(130+ re-exports + Builder)、PyO3 绑定 |
+| `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(百余个 re-exports + Builder)、PyO3 绑定 |
 
 ### 核心数据流
 
@@ -110,8 +130,28 @@ make gc                                   # 清 target/debug 中 cargo 不 GC �
 3. **覆盖矩阵同步** —— `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表随改动
    更新:新增能力补一行;移除能力移到「未覆盖项」并写明原因;发现的 SDK 缺陷
    记入「已知缺陷」。
-4. **验证** —— 按下方「验证矩阵」跑对应命令,全绿再提交。
-5. **注释与提交信息** —— 注释一律中文;commit 用 `type(scope): 描述`
+4. **AGENTS.md 分层索引同步** —— 修改或新增代码时,对应的 AGENTS.md(该 crate 篇、
+   其所在层篇、根导航表)必须同步更新;契约 / 同步点 / 禁止事项变化即改对应篇,
+   导航目标增删即改根表。按下表定位:
+
+   | 代码改动 | 同步更新 |
+   |---|---|
+   | 新增 / 移除 crate 或层 | 新建 / 删除该篇 + 更新所在层篇速览表 + 更新根导航表 |
+   | 协议 Op / EventMsg / 变体 | `crates/protocol/` + `zhuye-protocol/` |
+   | 内置工具 / provider / mock / hook 事件与决策 | `crates/abilities/` + `zhuye-tools/` `zhuye-llm/` `zhuye-hooks/` |
+   | 插件 manifest / 能力 / 安装模型 | `crates/resources/` + `zhuye-plugin/` |
+   | StateGraph / NodeContext / side-channel | `crates/runtime/` + `zhuye-core/` |
+   | exec/serve 参数 / 退出码 / 恢复 | `crates/runtime/` + `zhuye-exec/` |
+   | CLI 子命令 / 参数面 | `crates/runtime/` + `zhuye-cli/` |
+   | 编排原语(子代理 / 讨论 / 流水线 / 任务 / 目标) | `crates/orchestration/`(+ 对应 crate 篇若有) |
+   | 外部集成(MCP / LSP / 导入 / computer-use / shell / git) | `crates/integrations/`(+ 对应 crate 篇若有) |
+   | 脚本新增 / 移除 / 行为变更 | `scripts/` 速览表 |
+   | SDK 公开 API / wire 语义 | `sdks/` |
+   | 测试分层 / 覆盖矩阵结构 | `tests/` |
+
+   拿不准改哪篇时,至少更新该改动所在层篇与根导航表,确保索引不失真。
+5. **验证** —— 按下方「验证矩阵」跑对应命令,全绿再提交。
+6. **注释与提交信息** —— 注释一律中文;commit 用 `type(scope): 描述`
    conventional 风格。
 
 ## 验证矩阵(按改动范围选跑)

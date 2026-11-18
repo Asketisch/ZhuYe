@@ -1,0 +1,157 @@
+# Capabilities
+
+<p align="center">  [中文](features.md) · **English**  </p>
+
+> This document is ZhuYe's capability overview and known boundaries, with
+> every item annotated by "enabled by default / requires configuration /
+> requires a plugin". For quick start, see the root
+> [README](../README.md); for how the engine is built internally, see
+> [architecture.md](architecture.md); for field-level specs of tools and
+> hooks, see [tools-and-hooks.md](tools-and-hooks.md).
+
+## Three Ways to Embed (default)
+
+The same Rust engine has three usage modes, all **available by default**; which one you pick depends on
+your host:
+
+| Mode | Entry | Notes |
+|------|-------|------|
+| In-process linking | `zhuye` library facade | `Zhuye::builder(model).workspace(".").build()?` + `Submission::user_input`, driving it directly inside the host process; suitable for embedding the agent as a module |
+| Headless single turn | `zhuye exec` | Runs one turn and exits; events as JSONL on stdout, tracing on stderr, so `zhuye exec | jq` stays free of log noise |
+| Long-running session | `zhuye serve` | stdio JSONL protocol entry; the Python / TypeScript SDKs are both built on it, supporting multi-turn shared state, remote tool replies, approval interactions, and more |
+
+For offline development, the examples and e2e use `ZHUYE_MODEL=mock` to skip real LLM network calls, so
+it runs without an API key.
+
+## Tools Stay in Your Own Process (default)
+
+Functions you write in Python or TypeScript do not need to be rewritten in Rust. Register a name and an
+argument schema, and when the model wants to use it, the engine sends the request back to your process
+via the serve protocol; after the function runs, the result is sent back. Built-in / MCP / remote tools
+all go through the same `ToolExecutionQueue`.
+
+## Core Built-in Tools (default)
+
+The engine ships with **27 core built-in tools** (a single registration list in `zhuye-tools`, shared by
+the exec / serve / lib facade paths):
+
+`echo`, `bash`, `background_status`, `read`, `write`, `edit`, `delete_file`, `grep`, `glob`,
+`EnterPlanMode`, `ExitPlanMode`, `PlanWrite`, `EnterWorktree`, `ExitWorktree`, `ast`, `web_fetch`,
+`web_search`, `ask_user_question`, `ask_user`, `request_human_input`, `tool_search`, `image_view`,
+`notebook_edit`, `brief`, `get_context_remaining`, `checkpoint`, `rewind`.
+
+Note: this is the **core registration list, not the full set** — orchestration, cron, and plugins can
+register more tools. The tool schema sent to the LLM is trimmed by PreLoop (see architecture.md §5);
+unregistered or trimmed tools never enter the prompt. `bash` runs in the OS sandbox by default (see
+"Security Gates").
+
+## Multiple LLM Providers (default)
+
+Native implementations for the **Anthropic, OpenAI, and Ollama** providers, plus an offline `mock` (runs
+without a key) and an OpenAI Responses implementation. The OpenAI-compatible interface can serve other
+vendors (point `base_url` at any compatible gateway), so you do not have to write a separate native
+client for each one. Each model's prompts are layered as "default → vendor → specific model"; switching
+models automatically switches to the copy suited to it; you can also configure a fallback candidate
+chain, so if one provider goes down it automatically switches to the next.
+
+## Five Orchestration Primitives (default)
+
+Multi-agent orchestration is a built-in capability of the engine, not a plugin. Each of the five
+primitives is its own crate:
+
+| Primitive | Crate | Notes |
+|------|-------|------|
+| Sub-agent | `zhuye-subagent` | Sub-agent factory, concurrent in-flight ≤ 16; can use an independent model registry |
+| Role discussion | `zhuye-discussion` | Multi-role discussion orchestration, message bus + convergence decision |
+| Task/team | `zhuye-task` | Declarative tasks, team / squad delegation |
+| Pipeline | `zhuye-pipeline` | DAG pipeline; `Abort` / `ContinueCollect` failure policies |
+| Goal mode | `zhuye-goal` | After `EnterGoalMode`, each turn's `on_turn_end` self-check + continuation |
+
+The side-channel lets user-initiated concurrent agents run in parallel with the main turn without
+interfering with each other (carried by `zhuye-core`).
+
+## Context Management (default)
+
+Approaching the context limit, it first trims locally (step-by-step escalation); only when it really
+cannot be squeezed does it call the summarization model to rewrite; after compaction, still-active files
+are read back in. Related primitives:
+
+- **Compaction escalation** (`zhuye-compact`) — upgrades the strategy
+step by step per input token threshold;
+- **Cross-session memory** (`zhuye-memory`) — the `memory` tool lets
+the model write experience into cross-session memory, isolated by scope;
+- **Skills directory** (`zhuye-skills`) — reusable skill packs;
+- **Session notes** (`zhuye-notes`) — injected on every
+`pre_loop`, appended into the message by `model_call`;
+- **BM25 relevance ranking** (`zhuye-bm25`) — local retrieval ranking,
+no model dependency;
+- **External prompt library** (`zhuye-prompt`) — prompts externalized
+and matched per model, see [docs/prompts.md](prompts.md).
+
+## Security Gates (default)
+
+Three layers of gates stacked, all active by default:
+
+- **Permission modes** (`zhuye-permissions`) — decide which operations
+to ask about, which to let through, and which to forbid outright; `bash` defaults to Prompt permission,
+`web_search` defaults to Auto;
+- **Hooks** (`zhuye-hooks`) — 12 event types, 7 decision kinds; can
+modify arguments before/after tool execution, block calls, interject, and veto turn completion;
+- **OS sandbox** (`zhuye-sandbox`) — Seatbelt on macOS, Landlock on
+Linux; if the sandbox fails to start, it fails outright, it will **not** silently fall back to a bare
+shell. The macOS sandbox cuts network by default; Linux only restricts writes, not network.
+
+In addition, there is a **prompt injection guard** (enabled by default since F01) and **output
+sanitization** (`zhuye-sanitize`, see [docs/sanitize.md](sanitize.md)), which redact keys in tool output.
+**Audit** (`zhuye-audit`) and **encrypted key storage** (`zhuye-secrets`, AES-256-GCM + machine key)
+provide un-bypassable audit records and at-rest key protection. Note: auditing can be turned off via the
+`[telemetry].activity` setting; it is not an unconditional per-turn record. Field-level details are in
+[tools-and-hooks.md](tools-and-hooks.md).
+
+## Integrations (requires configuration)
+
+- **MCP client** (`zhuye-mcp`) — stdio / streamable-http transports;
+- **LSP** (`zhuye-lsp`) — language server integration;
+- **Computer-use** (`zhuye-computer-use`) — screenshot / keyboard-mouse,
+gated by the `real` feature (default is mock; real operations require explicitly enabling the feature);
+- **Git capability family** (`zhuye-git` / `zhuye-git-tools`) —
+checkpoint / rewind (tag-based snapshots, still reachable after rewinding) + branch / PR probing;
+- **WASM component plugin host** (`zhuye-wasm`) — Wasmtime component
+model, multi-language plugin runtime; 30s deadline, no fs / network / env inheritance.
+
+## Persistence and Recovery (default)
+
+The whole process is written as a JSONL rollout (`~/.zhuye/sessions/YYYY/MM/DD/<thread>.jsonl`),
+supporting recovery by ID, most recent session, or ordinal: `--resume <uuid>` / `-c` (continue the most
+recent) / `-r N` (by ordinal, 1-indexed, newest first); the three are mutually exclusive. You can look
+back, keep running, fork a new branch, search across sessions, and export to Markdown with usage
+statistics.
+
+## Resident Shell Session Pool (requires configuration)
+
+`zhuye-shell` maintains a pool of resident shell sessions, avoiding creating a new process for every
+`bash` call; suitable for frequent short-command scenarios.
+
+## cron / autopilot (requires configuration)
+
+`zhuye-stream` provides real scheduled cron (5-field expression parsing) and autopilot (automatic
+advancement); tasks persist across restarts. Only takes effect after a cron expression / autopilot policy
+is configured on serve.
+
+## Plan Mode (default)
+
+Once Plan mode is entered, `write` / `edit` are forcibly removed and the LLM can only use the
+path-restricted `PlanWrite`; approval goes through the `PlanApprovalGate` and session-level fan-out.
+Design in [docs/PLAN_MODE.md](PLAN_MODE.md).
+
+## Boundaries and Limitations
+
+- This repository's binary has no TUI subcommand. The interactive
+interface lives in the [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI) repository.
+- The sandbox cuts network by default on macOS; on Linux it only
+restricts writes, not network.
+- At most 16 sub-agents can be in flight in the same session at once;
+slots are released as sub-tasks finish.
+- Protocol v0 is frozen: adding `Op` / `EventMsg` variants is
+non-breaking, but **existing variants must not be changed**; clients must tolerate unknown `"type"`
+values (see [sdks/PROTOCOL.md](../sdks/PROTOCOL.md) for details).
