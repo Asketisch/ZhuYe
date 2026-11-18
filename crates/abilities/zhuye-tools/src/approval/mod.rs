@@ -59,6 +59,11 @@ pub const MAX_PENDING_APPROVALS: usize = 64;
 /// 共享同一绝对死线。
 pub const DEFAULT_APPROVAL_TTL_SECS: u64 = 300;
 
+/// v1.x:结构化问答(ask_user_question)的绝对死线(秒),与 ask_user
+/// 默认对齐。此前该等待无任何 TTL —— headless 强开审批且无人应答时
+/// 永久挂起,只能 Ctrl-C。
+pub const ASK_QUESTION_TIMEOUT_SECS: u64 = 900;
+
 /// S6 统一过期原因串。裁决可见:客户端收到的是带该原因的 Deny。
 pub(crate) fn expired_reason() -> String {
     format!(

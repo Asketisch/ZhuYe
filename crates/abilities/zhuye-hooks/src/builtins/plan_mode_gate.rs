@@ -53,6 +53,19 @@ pub fn default_read_only_allowlist() -> Vec<String> {
         "echo".into(),
         "ExitPlanMode".into(),
         "PlanWrite".into(),
+        // v1.x:纯读工具补齐 —— 此前白名单与可见工具集漂移,Plan 调研被
+        // 砍到只剩 read/grep/glob/Safe-bash:无 web 检索、无背景任务查询、
+        // 无 skill 资源读取。以下均为确定性只读(不落盘、不改外部状态):
+        // - web_search / web_fetch:检索与抓取(plan 调研主路径之一;内容
+        //   注入上下文,等同 read)
+        // - image_view:读图
+        // - background_status:查后台任务
+        // - read_skill_resource:读 skill 附带资源文件
+        "web_search".into(),
+        "web_fetch".into(),
+        "image_view".into(),
+        "background_status".into(),
+        "read_skill_resource".into(),
     ]
 }
 
@@ -737,5 +750,28 @@ mod tests {
         assert!(!is_plan_file_path("x.zhuye/plan/y.md"));
         // 穿越到 plan 目录之外 → 归一化后不再命中。
         assert!(!is_plan_file_path(".zhuye/plan/../../etc/passwd"));
+    }
+
+    /// v1.x:白名单补纯读调研工具(web_search / web_fetch / image_view /
+    /// background_status / read_skill_resource)—— 此前白名单与可见工具
+    /// 集漂移,Plan 调研被砍到 read/grep/glob/Safe-bash,连 web 检索都拦。
+    #[tokio::test]
+    async fn plan_mode_allows_read_only_research_tools() {
+        let h = PlanModeGate::default_mode();
+        for tool in [
+            "web_search",
+            "web_fetch",
+            "image_view",
+            "background_status",
+            "read_skill_resource",
+        ] {
+            assert_eq!(
+                h.handle(&pre_event(tool, PermissionMode::Plan))
+                    .await
+                    .unwrap(),
+                HookDecision::Allow,
+                "{tool} 应在 Plan mode 白名单内(纯读调研工具)"
+            );
+        }
     }
 }

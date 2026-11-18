@@ -288,6 +288,14 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
     {
         anyhow::bail!("--image 不能与 --resume/-c/-r 同时使用");
     }
+    // v1.x 修复:二者互斥。--full-auto(Bubble,非高危自动批)会完全覆盖
+    // --plan-mode(Plan 只读),且 PlanModeGate 只在 Plan 模式下生效 ——
+    // 组合给出会静默击穿「--plan-mode 只读」的文档契约,不如显式报错。
+    if args.full_auto && args.plan_mode {
+        anyhow::bail!(
+            "--full-auto 与 --plan-mode 互斥:前者自动批准非高危工具,后者要求只读规划,同时给出会静默击穿 plan 语义"
+        );
+    }
     let hargs = HeadlessArgs {
         agent: args.agent.clone(),
         ephemeral_tasks: args.ephemeral_tasks,
