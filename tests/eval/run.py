@@ -139,7 +139,8 @@ def events_text(events: list[dict]) -> str:
     return "".join([*texts, current])
 
 
-def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, destination: Path) -> dict:
+def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, destination: Path,
+            profile: str = "default") -> dict:
     """在独立 HOME 和工作区执行一条用例,保存脱敏事件轨迹。"""
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="zhuye-eval-") as tmp:
@@ -150,6 +151,10 @@ def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, desti
         config = ('[hooks]\nenabled = []\n[active]\nprovider = "openai"\nmax_iterations = 30\n[openai]\n'
                   f'api_key = {json.dumps(key)}\nbase_url = {json.dumps(base_url)}\n'
                   'timeout_secs = 300\n')
+        mode = profile if profile in ("default", "auto") else "manual"
+        config += f'\n[prompts]\nmode = {json.dumps(mode)}\n'
+        if mode == "manual":
+            config += f'profile = {json.dumps(profile)}\n'
         (home / ".zhuye/config.toml").write_text(config)
         prompt, expected = prepare(case, workspace)
         sandbox = wire.Sandbox(home, workspace)
@@ -161,6 +166,12 @@ def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, desti
         try:
             with wire.ServeSession(sandbox, env=env, timeout=300) as session:
                 session.wait_global(lambda e: e["msg"].get("type") == "session_configured", timeout=60)
+                if mode == "manual":
+                    state_events = session.submit({"type": "prompt_command", "action": {"type": "list"}}, timeout=60)
+                    prompt_state = next((event["msg"] for event in state_events
+                                         if event.get("msg", {}).get("type") == "prompt_list"), None)
+                    if prompt_state is None or prompt_state.get("profile") != profile:
+                        raise EvaluationInfrastructureError(f"提示词方案未生效: {profile}")
                 events.extend(session.submit({"type": "user_input", "items": [{"type": "text", "text": prompt}]}, timeout=300))
                 if case["kind"] == "resume":
                     events.extend(session.submit({"type": "user_input", "items": [{"type": "text", "text": "继续。"}]}, timeout=300))
@@ -219,7 +230,9 @@ def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, desti
             (destination / path.name).write_text(redact_key(content, key))
         return {"name": case["name"], "kind": case["kind"], "status": status, "reason": reason,
                 "elapsed_s": time.monotonic() - start, "text": events_text(events), "tools": tools,
-                "usage": usage, "objective_passed": passed}
+                "usage": usage, "objective_passed": passed,
+                "tool_errors": sum(1 for item in events if item.get("msg", {}).get("type") == "tool_call_end"
+                                   and item["msg"].get("is_error"))}
 
 
 def score(scorer: Path, results: list[dict]) -> None:
@@ -252,6 +265,7 @@ def summarize(results: list[dict], input_price: float | None, output_price: floa
         group[item["status"]] += 1
         group["elapsed_s"].append(item["elapsed_s"])
         group["tool_calls"] += len(item["tools"])
+        group["tool_errors"] = group.get("tool_errors", 0) + item.get("tool_errors", 0)
         if not item["usage"]:
             group["missing_usage_runs"] += 1
         for usage in item["usage"]:
@@ -268,6 +282,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="比较固定模型与任务集上的 agent 效果")
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument("--baseline-profile", default="default")
+    parser.add_argument("--candidate-profile", default="default")
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--scorer", type=Path, required=True)
@@ -292,6 +308,7 @@ def main() -> int:
     if not key:
         parser.error("必须设置 ZHUYE_EVAL_API_KEY")
     binaries = {"baseline": args.baseline.resolve(), "candidate": args.candidate.resolve()}
+    profiles = {"baseline": args.baseline_profile, "candidate": args.candidate_profile}
     scorer = args.scorer.resolve()
     for path in [*binaries.values(), scorer]:
         if not path.is_file() or not os.access(path, os.X_OK):
@@ -313,9 +330,10 @@ def main() -> int:
             for iteration in range(args.repetitions):
                 print(f"{role}: {case['name']} 第 {iteration + 1} 次", flush=True)
                 results.append(run_one(case, binary, args.model, args.base_url, key,
-                                       args.output / role / case["name"] / str(iteration + 1)))
+                                       args.output / role / case["name"] / str(iteration + 1),
+                                       profiles[role]))
         score(scorer, results)
-        report["versions"][role] = {"path": str(binary), "version": version,
+        report["versions"][role] = {"path": str(binary), "version": version, "prompt_profile": profiles[role],
                                     "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                                     "cases": summarize(results, args.input_price, args.output_price),
                                     "results": results}
@@ -328,6 +346,7 @@ def main() -> int:
                 "input_tokens_delta": after[name]["input_tokens"] - prior["input_tokens"],
                 "output_tokens_delta": after[name]["output_tokens"] - prior["output_tokens"],
                 "tool_calls_delta": after[name]["tool_calls"] - prior["tool_calls"],
+                "tool_errors_delta": after[name]["tool_errors"] - prior["tool_errors"],
                 "complete": prior["infra_error"] == 0 and after[name]["infra_error"] == 0,
             } for name, prior in before.items()}
         payload = json.dumps(report, ensure_ascii=False, indent=2)

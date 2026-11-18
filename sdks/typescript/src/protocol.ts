@@ -13,6 +13,12 @@ export interface Submission {
   client_user_message_id?: string;
 }
 
+/** 会话使用的提示词选择策略。 */
+export type PromptSelection =
+  | { mode: 'default' }
+  | { mode: 'auto' }
+  | { mode: 'manual'; profile: string };
+
 /**
  * Op —— 客户端可向 core 提交的操作。`type` 字段是判别符,与 Rust
  * `#[serde(tag = "type", rename_all = "snake_case")]` 一致。
@@ -46,7 +52,9 @@ export type Op =
   /** v1.6.1:提示词层管理(list 查询 / switch 重扫 `.zhuye/prompts`)。 */
   | {
       type: 'prompt_command';
-      action: { type: 'list' } | { type: 'switch'; layer?: string | null };
+      action: { type: 'list' } | { type: 'switch'; layer?: string | null }
+        | { type: 'select'; selection: PromptSelection | null }
+        | { type: 'save_default'; selection: PromptSelection };
     }
   /** v1.x:运行时重扫扩展目录(skills 已接线;commands 位回执恒 false)。 */
   | { type: 'rescan_extensions'; skills: boolean; commands: boolean }
@@ -177,6 +185,8 @@ export type EventMsg =
   | ErrorEvent
   | StreamError
   | ConfigReloaded
+  | PromptList
+  | PromptSwitched
   | ExtensionsRescanned
   | GuardStats
   | CollabStarted
@@ -556,4 +566,25 @@ export interface Routing {
 export interface UnknownEventMsg {
   type: string;
   [k: string]: unknown;
+}
+
+/** 提示词选择查询结果。 */
+export interface PromptList {
+  type: 'prompt_list';
+  available: string[];
+  current_spec: string;
+  active_layers: string[];
+  selection?: PromptSelection;
+  profile?: string;
+  fallback_reason?: string;
+}
+
+/** 提示词重扫或选择结果。 */
+export interface PromptSwitched {
+  type: 'prompt_switched';
+  action: string;
+  active_layers: string[];
+  selection?: PromptSelection;
+  profile?: string;
+  fallback_reason?: string;
 }

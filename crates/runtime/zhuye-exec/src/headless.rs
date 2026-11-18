@@ -1478,10 +1478,23 @@ pub fn expand_prompt_slash(prompt: &str) -> Option<Submission> {
     if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
         return None;
     }
-    let arg = rest.split_whitespace().next().unwrap_or("list");
+    let mut args = rest.split_whitespace();
+    let arg = args.next().unwrap_or("list");
     let action = match arg {
         "list" | "" => zhuye_protocol::PromptAction::List,
         "reload" | "rescan" => zhuye_protocol::PromptAction::Switch { layer: None },
+        "default" => zhuye_protocol::PromptAction::Select {
+            selection: Some(zhuye_protocol::PromptSelection::Default),
+        },
+        "auto" => zhuye_protocol::PromptAction::Select {
+            selection: Some(zhuye_protocol::PromptSelection::Auto),
+        },
+        "follow" => zhuye_protocol::PromptAction::Select { selection: None },
+        "use" => zhuye_protocol::PromptAction::Select {
+            selection: Some(zhuye_protocol::PromptSelection::Manual {
+                profile: args.next().unwrap_or_default().to_string(),
+            }),
+        },
         other => zhuye_protocol::PromptAction::Switch {
             layer: Some(other.to_string()),
         },

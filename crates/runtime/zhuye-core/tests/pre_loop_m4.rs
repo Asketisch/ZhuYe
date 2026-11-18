@@ -128,6 +128,10 @@ fn make_m4_deps(agent_name: &str, system_prompt: &str) -> M4Deps {
 
 fn build_thread(registry: Arc<ModelRegistry>, m4: M4Deps) -> AgentThread {
     let cfg = AgentConfig::new("stub/m1", Path::new(".")).with_m4(m4);
+    build_thread_with_config(cfg, registry)
+}
+
+fn build_thread_with_config(cfg: AgentConfig, registry: Arc<ModelRegistry>) -> AgentThread {
     let tools = Arc::new(ToolRegistry::default());
     tools.register(Arc::new(EchoTool));
     AgentThread::new(cfg, registry, tools, None, None)
@@ -1686,7 +1690,9 @@ fn make_prompts_dir(dir: &Path, provider: &str, model: &str) -> std::io::Result<
     )?;
     std::fs::write(
         dir.join(format!("{model}.md")),
-        format!("## system.main\n{model}-exact main prompt.\n"),
+        format!(
+            "## system.main\n{model}-exact main prompt.\n\n## tool.echo\n{provider}-layer echo description.\n"
+        ),
     )?;
     Ok(())
 }
@@ -1699,6 +1705,130 @@ fn make_prompts_dir(dir: &Path, provider: &str, model: &str) -> std::io::Result<
 /// 静态互斥锁串行执行,避免并发重扫互相冲掉对方的用户层。测试体是
 /// async,用 tokio 的 async-aware 锁避免 guard 跨 await。
 static PROMPT_LIBRARY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn prompt_selection_and_workspace_are_isolated_between_threads() {
+    let root = tempfile::tempdir().unwrap();
+    let mut threads = Vec::new();
+    let mut clients = Vec::new();
+    for text in ["第一个工作区", "第二个工作区"] {
+        let dir = root.path().join(format!("p{}", threads.len()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("default.md"), format!("## system.main\n{text}\n")).unwrap();
+        let mut m4 = make_m4_deps("tester", "");
+        m4.prompt_dirs = vec![dir];
+        m4.active_agent_def = Arc::new(AgentDefinition {
+            name: "tester".into(),
+            source: zhuye_agent_def::SystemPromptSource::BuiltinDefault,
+            ..Default::default()
+        });
+        let client = Arc::new(StubClient::new(vec![
+            ChatEvent::MessageStart {
+                id: "m".into(),
+                model: "m1".into(),
+            },
+            ChatEvent::ContentDelta("ok".into()),
+            ChatEvent::MessageStop,
+        ]));
+        let registry = Arc::new(ModelRegistry::new());
+        registry.register_pool(
+            "stub",
+            CredentialPool {
+                entries: vec![PoolEntry {
+                    client: client.clone(),
+                    label: "default".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        threads.push(build_thread(registry, m4));
+        clients.push(client);
+    }
+    for thread in &threads {
+        let mut handle = thread.submit(make_sub("test")).await;
+        while handle.next().await.is_some() {}
+    }
+    for (client, expected) in clients.iter().zip(["第一个工作区", "第二个工作区"]) {
+        let request = client.last_request.lock().clone().unwrap();
+        assert!(
+            request
+                .system
+                .0
+                .iter()
+                .any(|block| block.text.contains(expected))
+        );
+    }
+}
+
+#[tokio::test]
+async fn fallback_model_uses_session_system_prompt_and_tool_description() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("team-profile.md"),
+        "## system.main\nfallback-session-profile\n\n## tool.echo\nfallback-echo-description\n",
+    )
+    .unwrap();
+    let client = Arc::new(StubClient::new(vec![
+        ChatEvent::MessageStart {
+            id: "fallback".into(),
+            model: "m1".into(),
+        },
+        ChatEvent::ContentDelta("ok".into()),
+        ChatEvent::MessageStop,
+    ]));
+    let registry = Arc::new(ModelRegistry::new());
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: client.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let mut m4 = make_m4_deps("tester", "");
+    m4.prompt_dirs = vec![tmp.path().to_path_buf()];
+    m4.active_agent_def = Arc::new(AgentDefinition {
+        name: "tester".into(),
+        source: zhuye_agent_def::SystemPromptSource::BuiltinDefault,
+        ..Default::default()
+    });
+    let policy = zhuye_llm::RoutingPolicy {
+        main: zhuye_llm::SpecSlot {
+            primary: "unavailable/primary".into(),
+            fallbacks: vec!["stub/m1".into()],
+            weights: vec![1],
+        },
+        max_attempts: 1,
+        ..Default::default()
+    };
+    let cfg = AgentConfig::new("unavailable/primary", Path::new("."))
+        .with_m4(m4)
+        .with_policy(Arc::new(policy));
+    let thread = build_thread_with_config(cfg, registry);
+    *thread.config().prompt_selection.write() = Some(zhuye_protocol::PromptSelection::Manual {
+        profile: "team-profile".into(),
+    });
+
+    let mut handle = thread.submit(make_sub("fallback")).await;
+    while handle.next().await.is_some() {}
+    let request = client.last_request.lock().clone().expect("fallback request");
+    assert!(
+        request
+            .system
+            .0
+            .iter()
+            .any(|block| block.text.contains("fallback-session-profile"))
+    );
+    let echo = request.tools.iter().find_map(|tool| match tool {
+        zhuye_llm::ToolSpec::Function {
+            name, description, ..
+        } if name == "echo" => Some(description.as_str()),
+        _ => None,
+    });
+    assert_eq!(echo, Some("fallback-echo-description"));
+}
 
 #[tokio::test]
 async fn model_layer_prompts_end_to_end() {
@@ -1737,7 +1867,11 @@ async fn model_layer_prompts_end_to_end() {
         source: zhuye_agent_def::SystemPromptSource::BuiltinDefault,
         ..Default::default()
     });
+    m4.prompt_dirs = vec![prompts_dir.clone()];
     let thread = build_thread(registry, m4);
+    *thread.config().prompt_selection.write() = Some(zhuye_protocol::PromptSelection::Manual {
+        profile: "m1".into(),
+    });
 
     // 2) spec = stub/m1 → 精确层 system.main + 厂商层 tool.echo 描述。
     let mut handle = thread.submit(make_sub("hi")).await;
@@ -1831,7 +1965,11 @@ async fn hot_model_swap_switches_prompt_layer_on_next_request() {
         source: zhuye_agent_def::SystemPromptSource::BuiltinDefault,
         ..Default::default()
     });
+    m4.prompt_dirs = vec![prompts_dir.clone()];
     let thread = build_thread(registry, m4);
+    *thread.config().prompt_selection.write() = Some(zhuye_protocol::PromptSelection::Manual {
+        profile: "m1".into(),
+    });
 
     // Turn 1:spec = stub/m1 → 命中 m1 精确层。
     let mut handle = thread.submit(make_sub("first turn")).await;
@@ -1864,16 +2002,16 @@ async fn hot_model_swap_switches_prompt_layer_on_next_request() {
         req2.system
             .0
             .iter()
-            .any(|b| b.text.contains("m2-exact main prompt.")),
-        "热切换后下一请求应命中 m2 精确层"
+            .any(|b| b.text.contains("m1-exact main prompt.")),
+        "热切换后手动方案应保持不变"
     );
     assert!(
         !req2
             .system
             .0
             .iter()
-            .any(|b| b.text.contains("m1-exact main prompt.")),
-        "热切换后旧模型层不应残留"
+            .any(|b| b.text.contains("m2-exact main prompt.")),
+        "热切换后不应自动应用其他方案"
     );
 
     // 清理:恢复全局库到内嵌默认,不污染其他测试。
@@ -1949,7 +2087,7 @@ async fn prompt_command_lists_and_rescans_library() {
             assert!(info.available.iter().any(|l| l == "m1"));
             assert!(info.available.iter().any(|l| l == "claude"));
             assert_eq!(info.current_spec, "stub/m1");
-            assert!(info.active_layers.iter().any(|l| l == "m1"));
+            assert_eq!(info.profile, "default");
             saw_list = true;
         }
     }
@@ -1974,6 +2112,17 @@ async fn prompt_command_lists_and_rescans_library() {
         }
     }
     assert!(saw_switched, "Switch 应答 PromptSwitched 事件");
+
+    let mut handle = thread
+        .submit(make_op_sub(zhuye_protocol::Op::PromptCommand {
+            action: zhuye_protocol::PromptAction::Select {
+                selection: Some(zhuye_protocol::PromptSelection::Manual {
+                    profile: "m2".into(),
+                }),
+            },
+        }))
+        .await;
+    while handle.next().await.is_some() {}
 
     // 重扫后 m2 层进入库:set_model 到 stub/m2,下一请求命中 m2 文案。
     thread.config().set_model("stub/m2");

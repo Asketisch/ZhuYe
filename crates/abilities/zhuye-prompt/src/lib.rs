@@ -24,16 +24,17 @@ pub mod template;
 
 pub use builder::{
     AGENTS_MD_HEADER, CORE_PREFIX, EPHEMERAL_PREFIX, LayeredPrompt, MEMORY_HEADER,
-    PLAN_MODE_HEADER, PromptBuilder, append_active_mode_section, append_agents_md_section,
-    is_section_off, plan_mode_enabled_for, plan_mode_guidance,
+    PLAN_MODE_HEADER, PromptBuilder, append_active_mode_section,
+    append_active_mode_section_with_set, append_agents_md_section, is_section_off,
+    plan_mode_enabled_for, plan_mode_guidance,
 };
 pub use caching::{
     CacheBreakDetector, CacheBreakError, CacheMonitorStats, DEFAULT_PREFIX_ANCHOR_OFFSET,
     find_prefix_anchor, inject_cache_control,
 };
 pub use library::{
-    DescriptionSource, PromptLibrary, PromptSet, apply_model_overrides, init_library, library,
-    split_spec,
+    DescriptionSource, PromptLibrary, PromptResolution, PromptSet, apply_model_overrides,
+    init_library, library, split_spec,
 };
 pub use resources::{PromptResources, copy, prompts};
 pub use template::{PromptError, render, render_with};

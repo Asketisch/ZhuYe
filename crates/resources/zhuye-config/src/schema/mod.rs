@@ -57,6 +57,9 @@ use serde::{Deserialize, Serialize};
 pub struct ReflectConfig {
     #[serde(default)]
     pub active: ActiveSection,
+    /// 新会话使用的提示词选择策略。
+    #[serde(default)]
+    pub prompts: zhuye_protocol::PromptSelection,
     #[serde(default)]
     pub anthropic: Option<AnthropicSection>,
     #[serde(default)]
@@ -271,6 +274,7 @@ impl Default for ReflectConfig {
     fn default() -> Self {
         Self {
             active: ActiveSection::default(),
+            prompts: zhuye_protocol::PromptSelection::default(),
             anthropic: None,
             openai: None,
             ollama: None,

@@ -1,0 +1,18 @@
+{
+  "collection": {"repository": "asgeirtj/system_prompts_leaks", "revision": "14f61488024b6d5abec253ef5705a48c479b8fd3", "branch": "main"},
+  "profiles": [
+    {"id":"claude","path":"Anthropic/claude-code/claude-code-sonnet-5.5.md","sha256":"add8751b1632e8181eab7fd59e0cd355d8d0e29b1fece5aae3b4e647b7b5aaa9","models":["claude-sonnet-5.5"],"evaluation":"unverified"},
+    {"id":"gpt","path":"OpenAI/Codex/gpt-5.6.md","sha256":"40f053be80a6ee153b007dc4805d9f480d3847204e80c7f643ee5725054ef42d","models":["gpt-5.6"],"evaluation":"unverified"},
+    {"id":"deepseek","path":"DeepSeek/deepseek-chat.md","sha256":"97bae42325c8efc78e84b8c28409953a42d59e76581efe2eacac08c33c5748e2","models":["deepseek-chat"],"evaluation":"unverified"},
+    {"id":"gemini","path":"Google/gemini-cli.md","sha256":"c694fed38822fe3045b9c0670df092604fe947723502c00b00ea6a8f488c0539","models":["gemini"],"evaluation":"unverified"},
+    {"id":"kimi","path":"Kimi/kimi-3.md","sha256":"ad1cc66f2577e1767aeca45da439e55cc0c9119ccbbe4747fa4e9efdf401f961","models":["kimi-3"],"evaluation":"unverified"},
+    {"id":"qwen","path":"Qwen/qwen3.8-max.md","sha256":"cc4544648ab13abd1f390fb2666c866f05c95f5f4a8c193e7f13d40fe8d12ef9","models":["qwen3.8-max"],"evaluation":"unverified"},
+    {"id":"grok","path":"xAI/grok-4.7-cli.md","sha256":"027b871997e0cbfc1a5f03c90c4a48d55839e43d90540a309e38559c8591db91","models":["grok-4.7"],"evaluation":"unverified"},
+    {"id":"glm","path":"GLM/zcode-desktop.md","sha256":"e8575a7d602c67ab32e57628a7c49c55de74c0751f82c3254788b028d5c8ffa9","models":["glm"],"evaluation":"unverified","note":"跟踪候选；当前适配文案另见 glm.md 中的来源。"},
+    {"id":"minimax","path":"MiniMax/minimax-m2.5.md","sha256":"65129f1d2f3c783bdc4974fe7d9dd098e75cb52f57025da8eac924271028b869","models":["minimax-m2.5"],"evaluation":"unverified"}
+  ],
+  "additional_sources": [
+    {"profile":"deepseek","repository":"deepseek-ai/deepseek-harness","branch":"master","revision":"ca33fd6843b205e279c7ccb6cb73a472c78f5760","path":"snapshots/session/advanced-toolchain/system-prompt.expected.md","sha256":"8ca326cc76458e56f2b43f344f86032128c5a6f81a821c627d2eed02be044b36"},
+    {"profile":"glm","repository":"x1xhlol/system-prompts-and-models-of-ai-tools","branch":"main","revision":"162db92f54d717d8ebd12292e155aeef32bb4b3c","path":"Z.ai Code/prompt.txt","sha256":"1e62c474838e6ecc6378899747f80e1f481a7dbff2ea0b6ea4ce827a0fef22d8"}
+  ]
+}

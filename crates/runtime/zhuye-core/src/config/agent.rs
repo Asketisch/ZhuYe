@@ -16,6 +16,12 @@ use super::m4::M4Deps;
 /// `AgentThread` 的运行时配置。
 #[derive(Clone)]
 pub struct AgentConfig {
+    /// 当前会话的提示词库快照。
+    pub prompt_library: Arc<RwLock<Arc<zhuye_prompt::PromptLibrary>>>,
+    /// 当前会话的提示词选择覆盖。
+    pub prompt_selection: Arc<RwLock<Option<zhuye_protocol::PromptSelection>>>,
+    /// 新会话默认提示词选择。
+    pub prompt_default: Arc<RwLock<zhuye_protocol::PromptSelection>>,
     /// 默认 model spec(如 `"openai/gpt-4o"`、`"anthropic/claude-3-5-sonnet-latest"`)。
     ///
     /// v0.2.2 起改为 `Arc<RwLock<String>>`:`zhuye-exec` 的热重载 task 会在
@@ -233,6 +239,11 @@ impl Default for AgentConfig {
 impl AgentConfig {
     pub fn new(model: impl Into<String>, workspace: impl Into<PathBuf>) -> Self {
         Self {
+            prompt_library: Arc::new(RwLock::new(Arc::new(
+                zhuye_prompt::PromptLibrary::embedded(),
+            ))),
+            prompt_selection: Arc::new(RwLock::new(None)),
+            prompt_default: Arc::new(RwLock::new(zhuye_protocol::PromptSelection::default())),
             model: Arc::new(RwLock::new(model.into())),
             permission_mode: Arc::new(RwLock::new(PermissionMode::Auto)),
             inherited_approval_mode: None,
@@ -383,8 +394,31 @@ impl AgentConfig {
 
     /// 设置 M4 依赖。由 `zhuye-exec` 启动时调用。
     pub fn with_m4(mut self, m4: M4Deps) -> Self {
+        let dirs: Vec<&std::path::Path> = m4.prompt_dirs.iter().map(|p| p.as_path()).collect();
+        let legacy = zhuye_config::data_dir()
+            .and_then(|dir| std::fs::read_to_string(dir.join("prompts.md")).ok());
+        let library =
+            zhuye_prompt::PromptLibrary::scan_dirs(&dirs).with_legacy_overrides(legacy.as_deref());
+        *self.prompt_library.write() = Arc::new(library);
+        *self.prompt_default.write() = zhuye_config::load_default().prompts;
         self.m4 = Some(m4);
         self
+    }
+
+    /// 解析当前会话和实际模型使用的提示词。
+    pub fn resolve_prompt(&self, spec: &str) -> zhuye_prompt::PromptResolution {
+        let selection = self.current_prompt_selection();
+        self.prompt_library
+            .read()
+            .resolve_selection(spec, &selection)
+    }
+
+    /// 返回当前会话生效的提示词选择。
+    pub fn current_prompt_selection(&self) -> zhuye_protocol::PromptSelection {
+        self.prompt_selection
+            .read()
+            .clone()
+            .unwrap_or_else(|| self.prompt_default.read().clone())
     }
 
     /// v1.x:注入 `[sandbox]` 解析出的 OS 沙箱默认开关(见

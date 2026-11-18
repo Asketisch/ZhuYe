@@ -19,6 +19,7 @@ zhuye-memory   = { workspace = true }
 zhuye-skills   = { workspace = true }
 zhuye-agent-def = { workspace = true }
 zhuye-prompt   = { workspace = true }
+zhuye-config   = { workspace = true }
 # v1.11 基建#9:pre_loop 读用户级 `~/.zhuye/AGENTS.md` 时解析数据目录
 # (`ZHUYE_HOME` / `HOME`),与 zhuye-config `data_path_or_relative` 同源。
 zhuye-fs       = { workspace = true }

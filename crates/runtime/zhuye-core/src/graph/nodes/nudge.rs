@@ -10,8 +10,12 @@ use crate::graph::state::AgentState;
 
 /// v1.6:从注入文案库取 nudge section 并用 minijinja 渲染 `{{ var }}`。
 /// 缺失 key 时用 `fallback` 兜底;渲染失败也回落原始模板值。
-fn render_nudge(key: &str, fallback: &str, vars: &serde_json::Value) -> String {
-    let set = zhuye_prompt::library().resolve("");
+fn render_nudge(
+    set: &zhuye_prompt::PromptSet,
+    key: &str,
+    fallback: &str,
+    vars: &serde_json::Value,
+) -> String {
     let template = set.get_or(key, fallback);
     zhuye_prompt::render(template, vars).unwrap_or_else(|_| fallback.to_string())
 }
@@ -52,10 +56,11 @@ pub(crate) fn canonical_call_signature(calls: &[zhuye_tools::ToolCallRequest]) -
 }
 
 /// 注入一条 system-reminder,提示模型停止重复调用工具、基于已有结果作答。
-pub(crate) fn inject_loop_nudge(state: &mut AgentState) {
+pub(crate) fn inject_loop_nudge(state: &mut AgentState, set: &zhuye_prompt::PromptSet) {
     // v1.6:文案外置为 `runtime.nudge-loop` section,按库内当前(空
     // spec → default 层)解析;`FINAL ANSWER` 模板仍由常量注入保持契约。
     let nudge = render_nudge(
+        set,
         "runtime.nudge-loop",
         "You are repeating the same tool call with identical arguments \
          without making progress. Stop calling tools. Review the results \
@@ -99,6 +104,15 @@ pub fn url_host(url: &str) -> Option<String> {
 /// 注入 nudge → 回到 model_call 时模型在最后一次迭代被逼收口产出
 /// `FINAL ANSWER:`,而非带着 "Let me check ..." 中途用尽迭代。
 pub fn maybe_inject_progress_nudge(state: &mut AgentState, max_iterations: u32) {
+    let set = zhuye_prompt::library().resolve("");
+    maybe_inject_progress_nudge_with_set(state, max_iterations, &set);
+}
+
+pub(crate) fn maybe_inject_progress_nudge_with_set(
+    state: &mut AgentState,
+    max_iterations: u32,
+    set: &zhuye_prompt::PromptSet,
+) {
     let mut nudge_lines: Vec<String> = Vec::new();
 
     // 触发条件 0:迭代剩余很少 → 必须立即作答(最高优先级,与 web_fetch 无关,
@@ -107,6 +121,7 @@ pub fn maybe_inject_progress_nudge(state: &mut AgentState, max_iterations: u32) 
     if remaining <= MAX_ITERATIONS_REMAINING_THRESHOLD && max_iterations > 0 {
         // v1.6:文案外置为 `runtime.nudge-final` section。
         nudge_lines.push(render_nudge(
+            set,
             "runtime.nudge-final",
             "You are on iteration {{ iteration }}/{{ max_iterations }} and are about to run out of turns. \
              Stop calling tools NOW. Give your final answer immediately using the \
@@ -126,6 +141,7 @@ pub fn maybe_inject_progress_nudge(state: &mut AgentState, max_iterations: u32) 
         if n >= WEB_HISTORY_NUDGE_THRESHOLD {
             // v1.6:标题行外置为 `runtime.nudge-web-fetched` section。
             nudge_lines.push(render_nudge(
+                set,
                 "runtime.nudge-web-fetched",
                 "You have fetched {{ count }} web pages so far. Facts collected (URL → excerpt):",
                 &serde_json::json!({ "count": n }),
@@ -142,6 +158,7 @@ pub fn maybe_inject_progress_nudge(state: &mut AgentState, max_iterations: u32) 
             }
             // v1.6:收尾行外置为 `runtime.nudge-web-review` section。
             nudge_lines.push(render_nudge(
+                set,
                 "runtime.nudge-web-review",
                 "Review these facts. If you have enough to answer, stop calling tools \
                  and respond with: {{ final_answer_template }}. Do NOT keep searching.",
@@ -165,6 +182,7 @@ pub fn maybe_inject_progress_nudge(state: &mut AgentState, max_iterations: u32) 
                 .join(", ");
             // v1.6:文案外置为 `runtime.nudge-domain-repeat` section。
             nudge_lines.push(render_nudge(
+                set,
                 "runtime.nudge-domain-repeat",
                 "You have already fetched from the same domain(s) multiple times ({{ domains }}). \
                  You almost certainly have enough information — respond with \

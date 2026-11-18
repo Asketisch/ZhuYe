@@ -41,6 +41,57 @@ pub mod paths;
 pub mod schema;
 pub mod watch;
 
+/// 将提示词默认选择原子写入配置文件，保留其余配置和注释。
+pub fn save_prompt_selection(
+    path: &std::path::Path,
+    selection: &zhuye_protocol::PromptSelection,
+) -> Result<(), ConfigError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut document = source
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| ConfigError::Parse(error.to_string()))?;
+    if !document.as_table().contains_key("prompts") {
+        document["prompts"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let table = document["prompts"]
+        .as_table_like_mut()
+        .ok_or_else(|| ConfigError::Parse("prompts 必须是表".into()))?;
+    match selection {
+        zhuye_protocol::PromptSelection::Default => {
+            table.insert("mode", toml_edit::value("default"));
+            table.remove("profile");
+        }
+        zhuye_protocol::PromptSelection::Auto => {
+            table.insert("mode", toml_edit::value("auto"));
+            table.remove("profile");
+        }
+        zhuye_protocol::PromptSelection::Manual { profile } => {
+            table.insert("mode", toml_edit::value("manual"));
+            table.insert("profile", toml_edit::value(profile.as_str()));
+        }
+    }
+    let rendered = document.to_string();
+    load_from_str(&rendered)?;
+    zhuye_fs::write_atomic(path, rendered.as_bytes())?;
+    Ok(())
+}
+
 pub use analytics::{
     ExporterGuard, Health, default_service_name, init_exporter, is_enabled as analytics_enabled,
     status_line as analytics_status_line,
@@ -78,3 +129,28 @@ pub use watch::{ConfigWatcher, WatcherHandle};
 pub const DEFAULT_CONFIG_DIR: &str = ".zhuye";
 /// 默认配置文件名。
 pub const DEFAULT_CONFIG_FILE: &str = "config.toml";
+
+#[cfg(test)]
+mod prompt_selection_tests {
+    #[test]
+    fn saving_prompt_default_preserves_unrelated_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# 保留注释\n[custom]\nvalue = 42\n").unwrap();
+        let selection = zhuye_protocol::PromptSelection::Manual {
+            profile: "claude".into(),
+        };
+        super::save_prompt_selection(&path, &selection).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# 保留注释"));
+        assert!(content.contains("value = 42"));
+        assert_eq!(super::load_from_str(&content).unwrap().prompts, selection);
+        super::save_prompt_selection(&path, &zhuye_protocol::PromptSelection::Auto).unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(!content.contains("profile ="));
+        assert_eq!(
+            super::load_from_str(&content).unwrap().prompts,
+            zhuye_protocol::PromptSelection::Auto
+        );
+    }
+}

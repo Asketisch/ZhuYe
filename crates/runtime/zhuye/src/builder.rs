@@ -89,6 +89,8 @@ pub struct ZhuyeBuilder {
     /// `Some(dir)` = 额外扫描该目录下的 `*.md` 模型层(优先级最高,
     /// 覆盖同名层)。TUI / GUI 用它把自带提示词包挂进运行时。
     prompts_dir: Option<PathBuf>,
+    /// 当前会话的显式提示词选择。
+    prompt_selection: Option<zhuye_protocol::PromptSelection>,
     /// v1.x:telemetry 记录开关。默认 `Auto`(按 `[telemetry]` config 段
     /// 构造,与 zhuye-exec 对齐);`with_telemetry(None)` 关闭;
     /// `with_telemetry(Some(sink))` 自定义。
@@ -141,6 +143,7 @@ impl ZhuyeBuilder {
             cancel: None,
             plugins: None,
             prompts_dir: None,
+            prompt_selection: None,
             telemetry: TelemetryChoice::Auto,
             traces_dir: None,
             rollout_base: None,
@@ -203,6 +206,12 @@ impl ZhuyeBuilder {
     /// `## key` 分节,缺失 key 落回内嵌默认。
     pub fn with_prompts_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.prompts_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// 指定当前会话的提示词选择，优先于共享默认。
+    pub fn with_prompt_selection(mut self, selection: zhuye_protocol::PromptSelection) -> Self {
+        self.prompt_selection = Some(selection);
         self
     }
 
@@ -367,6 +376,8 @@ impl ZhuyeBuilder {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
         }
         cfg = cfg.with_m4(m4);
+        validate_prompt_selection(&cfg, self.prompt_selection.as_ref())?;
+        *cfg.prompt_selection.write() = self.prompt_selection.clone();
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
         cfg = cfg.with_telemetry(telemetry_sink);
         // v1.x(WP13):与 build_async / exec 对齐 —— build() 此前
@@ -504,6 +515,8 @@ impl ZhuyeBuilder {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
         }
         cfg = cfg.with_m4(m4);
+        validate_prompt_selection(&cfg, self.prompt_selection.as_ref())?;
+        *cfg.prompt_selection.write() = self.prompt_selection.clone();
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
         cfg = cfg.with_telemetry(telemetry_sink);
         // v1.x(WP13):[sandbox] / side-channel 与 exec / build() 对齐。
@@ -721,6 +734,25 @@ pub enum BuilderError {
         "no provider available: set OPENAI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_HOST/OLLAMA_API_KEY (离线场景可显式用 mock)"
     )]
     NoProvider,
+    /// 显式指定的提示词方案不存在。
+    #[error("prompt profile not found: {0}")]
+    PromptProfileNotFound(String),
+}
+
+fn validate_prompt_selection(
+    cfg: &AgentConfig,
+    selection: Option<&zhuye_protocol::PromptSelection>,
+) -> Result<(), BuilderError> {
+    if let Some(zhuye_protocol::PromptSelection::Manual { profile }) = selection
+        && !cfg
+            .prompt_library
+            .read()
+            .available_layers()
+            .contains(profile)
+    {
+        return Err(BuilderError::PromptProfileNotFound(profile.clone()));
+    }
+    Ok(())
 }
 
 fn build_registry_from_env(

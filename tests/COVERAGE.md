@@ -103,6 +103,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 模型计价(费率表公开 / 费率卡 / cost 聚合) | — | — | — | zhuye-llm pricing(6 例) | — |
 | git 能力族(checkpoint tag+安全快照 / 分支 PR 探测 / 指令解析) | — | — | — | zhuye-git(16 例)+ zhuye-tools builtin_tools(1 例) | — |
 | 缺陷修复回归(预算耗尽显性化 / 配置隔离 / 工具裁切 / 提示词关闭 / mock 显性化) | ✔(12 条,见 `test_bugfixes.py`) | config(show 的 ZHUYE_HOME 断言) | — | ✅(provider 层非 SSE 校验 / 版本段拼接 / 采样参数默认值有 wiremock 回归) | — |
+| 提示词选择与会话恢复 | A12(默认、手动、智能回退、无效方案、重扫及恢复) | — | — | ✅(提示词解析与请求组装) | — |
 | 模型自动输出预算与配置优先级 | ✔(本地 HTTP 网关断言模型、输出字段、中文输入余量,见 `test_bugfixes.py`) | — | — | ✅(模型上限、余量、未知型号及请求体) | — |
 | 提示注入检测库(凭据外传规则) | —(尚无运行时入口) | — | — | ✅(zhuye-sanitize 检测及误报边界) | — |
 | v1.10 功能:配置一键导入 / goal+队列插件 / 上下文窗口 / 思考强度分级 / 空 key | V1–V10 | —(独立二进制 `zhuye-import config`,非 zhuye 参数面) | ✅(effort 阶梯字面量双侧断言) | ✅(llm 能力表钳制 / override 表 / builder 免 key / queue 调度 / config_import 合并) | — |

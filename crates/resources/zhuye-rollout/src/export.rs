@@ -276,6 +276,10 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
                 out.push_str(&format!("- {} → {}\n", from.as_str(), to.as_str()));
                 out.push_str(&format!("- at: {}\n\n", at.format("%Y-%m-%dT%H:%M:%SZ")));
             }
+            RolloutRecord::PromptSelectionChanged { selection } => {
+                push_header(&mut out, "PromptSelectionChanged");
+                out.push_str(&format!("- selection: {selection:?}\n\n"));
+            }
             // v1.x:记忆访问审计(读 = 检索注入;写 = compact 固化)。
             RolloutRecord::MemoryAccess {
                 op,
@@ -490,6 +494,7 @@ pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
             | RolloutRecord::PlanReady { .. }
             | RolloutRecord::PlanRejected { .. }
             | RolloutRecord::PermissionModeChanged { .. } => {}
+            RolloutRecord::PromptSelectionChanged { .. } => {}
         }
     }
     out

@@ -1,0 +1,23 @@
+name: Prompt sources
+
+on:
+  schedule:
+    - cron: '13 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查来源变更
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_prompt_sources.py | tee prompt-sources-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prompt-sources-report
+          path: prompt-sources-report.md
