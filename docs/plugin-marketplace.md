@@ -1,9 +1,11 @@
 # 烛夜插件市场(Marketplace)
 
+<p align="center">  <b>中文</b> · [English](plugin-marketplace.en.md)  </p>
+
 > marketplace 是一个**插件集合**:一个 JSON manifest 列出多个插件条目,
 > 每个条目告诉用户去哪儿拉。发布侧格式与使用侧流程都在本文。
-> 插件本身怎么写见 [`plugin-dev-guide.md`](plugin-dev-guide.md)（上手教程）与
-> [`plugins.md`](plugins.md)（字段级参考）。
+> 插件本身怎么写见 [`plugin-dev-guide.md`](plugin-dev-guide.md)(上手教程);
+> 安装 / 启用视角见 [`plugins.md`](plugins.md)。
 
 ## 1. manifest 格式(发布者向)
 
@@ -32,7 +34,7 @@
 | `name` | 是 | marketplace 名,不能仿冒 `inline` / `builtin` |
 | `owner` | 是 | `PluginAuthor`,`name` 必填 |
 | `plugins` | 是 | entry 数组 |
-| `force_remove_deleted_plugins` | 否(默认 `false`) | marketplace 里移除的插件自动卸载 |
+| `force_remove_deleted_plugins` | 否(默认 `false`) | 已定义但**运行时尚未消费**,当前不会自动卸载插件,请勿依赖 |
 
 每个 entry(`PluginMarketplaceEntry`):
 
@@ -68,6 +70,7 @@ zhuye plugin marketplace add my-tools --from directory --path ./plugins
 zhuye plugin marketplace ls                        # 列出已知 marketplace
 zhuye plugin marketplace refresh --name my-tools   # 增量刷新
 zhuye plugin marketplace refresh                   # 刷全部 auto_update = true 的
+zhuye plugin marketplace discover --topic devtools # 按主题发现(可 --limit)
 zhuye plugin marketplace remove my-tools           # 删除(真删 cache 目录)
 ```
 
@@ -87,7 +90,16 @@ source 的依赖需先单独 fetch。
 `[plugins.marketplaces.<名>]` —— 但该段**当前无运行时消费点**,
 marketplace 的实际状态由 CLI 读写 `~/.zhuye/plugins/marketplaces.json`
 维护,以 `zhuye plugin marketplace ...` 为准。详见
-[`plugins.md`](plugins.md) 的「config.toml 的 `[plugins]` 段」。
+[`plugins.md`](plugins.md) 的状态模型章节。
+
+## 5. ⚠️ 危险行为:directory 源
+
+`--from directory --path <dir>` 注册时**不复制**目录,`<dir>` 本身被直接
+记为安装位置(install location)。执行 `zhuye plugin marketplace remove`
+时,CLI 会对该路径执行 `remove_dir_all`(代码依据:
+`crates/runtime/zhuye-cli/src/plugin/marketplace.rs`)——**你提供的源目录
+连同其中所有内容都会被删除**。本地目录实验请用 `file` 源(单 JSON)或
+先 `cp -r` 一份副本再注册 `directory` 源。
 
 ## 4. 错误
 

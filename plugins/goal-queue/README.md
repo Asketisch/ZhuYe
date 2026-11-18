@@ -1,5 +1,7 @@
 # goal-queue 插件
 
+<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+
 目标模式 + 队列模式的交付插件(v1.10 功能2)。
 
 ## 功能

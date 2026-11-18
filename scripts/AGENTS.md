@@ -1,0 +1,119 @@
+**何时读我**:你要在 `scripts/` 下新增、修改或删除脚本,或要跑构建打包 / 冒烟 / 发版流程时,先读本篇。
+
+# scripts —— 构建、冒烟、发布与插件打包脚本
+
+## 本目录是什么
+
+仓库的**自动化入口层**:把构建分发、插件打包、端到端冒烟、SDK 发布、基准采样、网关启停这些动作固化成脚本,让 CI 与本地用同一套命令。
+脚本本身不实现产品能力 —— 产品能力在 `crates/`;脚本只负责编排、校验与打包。
+
+## 脚本速览
+
+本目录下的可执行脚本**全部登记在下表**;新增脚本必须同时在此登记。
+
+### 构建与分发
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `build.sh` | 跨平台构建 CLI 二进制,`--dist` 时按平台分发打包到 `dist/` |
+| `build-dmg.sh` | macOS DMG 镜像打包(含 Finder 拖拽安装) |
+| `build-targz.sh` | Linux / macOS 的 tar.gz 分发包打包 |
+| `build-zip.sh` | Windows 的 zip 分发包打包 |
+
+### 插件打包
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `build_computer_use_plugin.sh` | 构建 Computer Use 插件二进制 |
+| `build_git_tools_plugin.sh` | 构建 Git Tools 插件二进制 |
+| `build_import_plugin.sh` | 构建 harness-import 插件二进制并装配进插件目录 |
+| `build_kms_plugin.sh` | 构建 KMS 插件二进制(装插件前必跑) |
+| `build_shell_plugin.sh` | 构建 Shell 插件二进制(装插件前必跑) |
+| `build_plugin_demo_wasm.sh` | 构建 plugin-demo 的 Rust WASM 组件样例 |
+
+### 冒烟与端到端
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `e2e.sh` | 端到端冒烟:构建 + 文档 + examples + headless + 全量测试 + clippy/fmt |
+| `sdk_smoke.sh` | Python / TypeScript SDK 对真实 `zhuye serve` 二进制的离线冒烟 |
+| `full_link.sh` | 全链路集成测试(只 mock LLM,贯通引擎完整链路) |
+| `discussion_smoke.sh` | 真实 LLM 的 discussion 编排冒烟 |
+
+### 发布
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `release_sdk.sh` | SDK 发布辅助:版本一致性校验、文档门禁、bump、打 tag |
+| `create_tag.sh` | 一站式发版:校验 + 四处版本 bump + 提交 + 打 tag + 推送 |
+
+### 基准
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `bench.sh` | 性能基线采样入口(薄包装,转调 `bench.py`) |
+| `bench.py` | 采集隔离 mock 会话的启动、首事件、首文本、耗时与峰值内存 |
+
+### 网关与演练
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `ofm_gateway.sh` | 本地免费模型网关的启停与状态查询助手 |
+| `free_model_practice.sh` | 免费模型横向对比演练,输出 Markdown 对比表 |
+
+### 开发辅助(非脚本)
+
+| 路径 | 一句话职责 |
+|---|---|
+| `dev/ime-test/` | 独立 Rust 小程序(不在主 workspace 构建面),隔离排查中文 IME 引发的终端 panic |
+
+## 各分区本地契约
+
+### 构建与分发
+
+- `make dist` → `scripts/build.sh --dist` → 按平台转调 `build-dmg.sh`(macOS)/ `build-targz.sh`(Linux)/ `build-zip.sh`(Windows),产物落 `dist/`。
+- `--dist` 强制用 release profile(分发要小体积);不带 `--dist` 时用 `release-fast` 供本地快速迭代。
+
+### 插件打包
+
+- 5 个 `build_*_plugin.sh` 与 `build_plugin_demo_wasm.sh` 的产物都拷进对应 `plugins/<name>/bin/`。
+- 这与插件的「安装是缓存复制」模型直接相关:改插件源码后必须**重跑构建脚本并 reinstall**,否则装出去的仍是旧副本。
+- WASM 样例是独立 cargo 项目(不进主 workspace 构建面),需先 `rustup target add wasm32-wasip2`。
+
+### 冒烟与端到端
+
+- `e2e.sh` 的步骤数以脚本内的 `step "N/13 ..."` 为准;增删步骤时同步改这个计数。
+- `e2e.sh`、`sdk_smoke.sh`、`full_link.sh` 走离线 mock 模型(不需要真实 API key)。
+- `discussion_smoke.sh` **例外**:它要求真实的 provider key,跑一次完整 discussion 流程验证编排;不能用 mock 结论冒充通过。
+
+### 发布
+
+- `release_sdk.sh` 的子命令:`check` / `check_docs` / `bump` / `tag`;版本四处同步:`Cargo.toml`(workspace package 版本)/ `sdks/python/pyproject.toml` / `sdks/python/zhuye/__init__.py`(`__version__`)/ `sdks/typescript/package.json`。
+- `check_docs` 从 `zhuye-protocol` 源码提取 Op 全集,校验两份 SDK README 与类型层是否收录齐全;它的**解析口径(枚举边界怎么判定、变体怎么提取)以 [crates/protocol/zhuye-protocol/AGENTS.md](../crates/protocol/zhuye-protocol/AGENTS.md) 为准**,本篇不重复。
+- `release_sdk.sh tag` 要求:本地版本已等于目标版本、工作区干净、当前分支是 main;推送 `v*` tag 会触发两条流水线(`release.yml` 发 CLI、`release-sdks.yml` 发 Python SDK 到 PyPI 与 TS SDK 到 npm),**公开发布且不可撤回**。
+- `create_tag.sh` 是更前置的一站式脚本:它自己做前置校验、四处版本 bump、提交、打 tag、推送;`release_sdk.sh tag` 只负责「版本已就绪」之后的打 tag 与推送。两者触发的是同样的两条流水线。
+- **测试阶段只跑 `check` / `bump`,不跑 `tag`,也不跑 `create_tag.sh`。**
+
+### 基准
+
+- `bench.sh` 只是 `bench.py` 的转调包装,两者指标口径一致(冷启动 / 首事件 / RSS)。
+- 改基准实现或采集口径时,要给出与既有基线数值的对比说明,而不是只贴新数字。
+
+### 网关与演练
+
+- **`ofm_gateway.sh` 不执行 `npm install`** —— 安装依赖会修改宿主状态,必须由用户显式触发;脚本只做启停与状态查询。这是本目录「脚本不碰宿主状态」边界的样板。
+- `free_model_practice.sh` 跑真实模型的横向对比,输出 Markdown 表。
+
+## 禁止事项
+
+- **不新增会改宿主状态的隐式操作**(如 `npm install`、`cargo install`、写全局配置)。这类动作必须由用户显式触发,脚本最多提示,不得代劳 —— 参照 `ofm_gateway.sh` 的既有边界。
+- **新增脚本必须在本速览表登记**,否则目录里的脚本集合与本篇脱节,评审与排障都会失真。
+- 不在测试 / 验证阶段跑 `release_sdk.sh tag` 或 `create_tag.sh`(会推送 tag 并触发公开发布);不把构建产物提交进仓库(`dist/`、插件 `bin/` 产物按各自约定处理)。
+- 不改动冒烟脚本的断言口径来「让门禁变绿」—— 门禁红是真问题。
+
+## 深入阅读
+
+- [docs/release.md](../docs/release.md) —— SDK 发布流程、流水线与正式发布清单
+- [docs/development.md](../docs/development.md) —— 开发流程与验证矩阵
+- [docs/plugin-dev-guide.md](../docs/plugin-dev-guide.md) —— 插件构建产物与安装模型
+- [docs/cli.md](../docs/cli.md) —— CLI 参数面

@@ -1,9 +1,12 @@
 # 烛夜插件开发指南(社区向)
 
+<p align="center">  <b>中文</b> · [English](plugin-dev-guide.en.md)  </p>
+
 > 本指南面向**想为烛夜开发插件的所有开发者**,不要求熟悉烛夜内部实现。
 > 从零开始跑通第一个插件,再按需深入各类能力与 WASM 组件。
-> 字段级参考(完整 manifest 字段表、API 索引、错误速查)见
-> [`plugins.md`](plugins.md);本文聚焦「怎么做」。
+> 插件使用视角(安装 / 启用 / 内置插件 / 排障)见
+> [`plugins.md`](plugins.md);发布到市场见
+> [`plugin-marketplace.md`](plugin-marketplace.md)。本文聚焦「怎么做」。
 
 ---
 
@@ -61,9 +64,8 @@ zhuye plugin list
 zhuye exec "/my-first:hello 烛夜"     # → 你好,烛夜!这是来自插件的消息。
 ```
 
-> **调试技巧**:安装到开发目录可以用 `zhuye plugin install ./my-first-plugin`
-> 直接指向工作目录;命令**正文**在每次展开时实时读盘,改 `hello.md`
-> 立即生效,无需重新安装(增删命令文件需要重挂,见 §6)。
+> **重要**:本地安装会把插件目录**整个复制**到 `~/.zhuye/plugins/cache`,
+> 安装后与工作目录脱钩。开发迭代的完整流程见 §5.3。
 
 ### 1.3 热重载
 
@@ -343,16 +345,24 @@ name = "my_tool"
 | MCP 工具没出现 | server 启动失败(stdio 初始化超时 / 命令不存在),看 stderr warn |
 | WASM 工具加载失败 | 非 zhuye 世界 / 工具链矩阵不匹配 / 文件损坏;挂载期显式报错 |
 | SKILL.md 被降级 | frontmatter 缺 `name` / `description` |
-| rescan 后内置技能消失 | 升级到含 bundled 补挂的版本(见 CHANGELOG) |
 
-### 5.3 本地开发工作流
+### 5.3 本地开发工作流(安装是缓存复制)
+
+本地安装把插件目录**复制**到 `~/.zhuye/plugins/cache/inline/<name>/<version>/`,
+安装后与工作目录脱钩 —— 改源码目录的文件**不会**自动生效。两种迭代方式:
 
 ```bash
-# 安装指向工作目录,命令正文实时读盘
-zhuye plugin install ./my-plugin
-# hooks.json / plugin.toml 变更 → 重新 install(或直接改
-# ~/.zhuye/plugins/cache/inline/<name>/<ver>/ 内的文件)+ enable
+# 方式 A(推荐):每次改动后重装,先卸旧再装新
+zhuye plugin uninstall my-first@inline --yes
+zhuye plugin install ./my-first-plugin
+
+# 方式 B(快速):直接改缓存里的文件,命令正文每次展开实时读盘
+vi ~/.zhuye/plugins/cache/inline/my-first/0.1.0/commands/hello.md
 ```
+
+注意:同一 `id@scope` 重复 `install` 会报「已安装」,需先 `uninstall`、
+或升 `version` / 换 scope 再装。`plugin.toml`、`hooks.json` 与能力目录结构
+变更必须走方式 A 重新安装(缓存内直接改文件仅对纯正文内容生效)。
 
 ---
 
@@ -384,8 +394,9 @@ zhuye plugin install my-formatter@my-tools
 zhuye plugin enable my-formatter@my-tools
 ```
 
-来源支持 `github` / `git` / `url` / `file` / `directory` 五种;字段级
-说明见 [`plugin-marketplace.md`](plugin-marketplace.md)。
+来源支持 `github` / `git` / `url` / `file` / `directory` 五种;⚠️
+`directory` 源的 `marketplace remove` 会删除你提供的源目录,详见
+[`plugin-marketplace.md`](plugin-marketplace.md) 的危险行为警告。
 
 ---
 
