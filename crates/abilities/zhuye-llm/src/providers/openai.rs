@@ -41,7 +41,9 @@ impl Default for OpenAIConfig {
         Self {
             api_key: String::new(),
             base_url: None,
-            timeout: Duration::from_secs(60),
+            // 语义为「建连 + 读空闲」双层超时(见 `stream_http_client`),
+            // 非整请求总时长;300s 覆盖推理模型思考期无字节窗口。
+            timeout: Duration::from_secs(300),
             temperature: None,
             max_tokens: None,
         }
@@ -55,10 +57,7 @@ pub struct OpenAIClient {
 
 impl OpenAIClient {
     pub fn new(config: OpenAIConfig) -> Result<Self, LlmError> {
-        let http = reqwest::Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(LlmError::from)?;
+        let http = super::stream_http_client(config.timeout)?;
         Ok(Self { config, http })
     }
 }

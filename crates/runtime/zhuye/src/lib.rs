@@ -55,13 +55,14 @@ pub use zhuye_llm::{
 
 // ── 协议(Protocol)───────────────────────────────────────────────────────
 pub use zhuye_protocol::{
-    AbortReason, AgentMessage, AgentMessageDelta, ApprovalKind, ApprovalRequestEvent, ContentBlock,
-    ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, Event, EventMsg, MessageRole,
-    ModelUsage, NullRecorder, Op, PromptAction, PromptListEvent, PromptSwitchedEvent,
-    ProtocolError, ReviewDecision, RiskLevel, RolloutError, RolloutRecord, RolloutRecorder,
-    SandboxPolicy, SessionConfiguredEvent, SessionInfo, SessionStats, StreamErrorEvent, Submission,
-    ThreadId, TokenCountEvent, TokenUsage, ToolCallBeginEvent, ToolCallEndEvent, ToolOutput,
-    TurnAbortedEvent, TurnCompleteEvent, TurnId, TurnStartedEvent, TurnStatus, UserInputItem,
+    AbortReason, AgentMessage, AgentMessageDelta, AgentMessageResetEvent, ApprovalKind,
+    ApprovalRequestEvent, ContentBlock, ContextCompactedEvent, ContextCompactedStrategy,
+    ErrorEvent, Event, EventMsg, MessageRole, ModelUsage, NullRecorder, Op, PromptAction,
+    PromptListEvent, PromptSwitchedEvent, ProtocolError, ReviewDecision, RiskLevel, RolloutError,
+    RolloutRecord, RolloutRecorder, SandboxPolicy, SessionConfiguredEvent, SessionInfo,
+    SessionStats, StreamErrorEvent, Submission, ThreadId, TokenCountEvent, TokenUsage,
+    ToolCallBeginEvent, ToolCallEndEvent, ToolOutput, TurnAbortedEvent, TurnCompleteEvent, TurnId,
+    TurnStartedEvent, TurnStatus, UserInputItem,
 };
 
 // ── Tools ──────────────────────────────────────────────────────────────────

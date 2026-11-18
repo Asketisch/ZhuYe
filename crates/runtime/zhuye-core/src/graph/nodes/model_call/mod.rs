@@ -19,7 +19,7 @@ use zhuye_protocol::{
 };
 
 use super::nudge::MAX_AUTO_CONTINUATIONS;
-use super::retry::{RetryAction, classify_action, error_code, outcome_code};
+use super::retry::{RetryAction, classify_action, error_code, outcome_code, retry_backoff_ms};
 use crate::graph::GraphNode;
 use crate::graph::state::AgentState;
 use crate::submission_loop::NodeContext;
@@ -248,11 +248,14 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                 failed(
                     tried.clone(),
                     ctx,
-                    "ALL_CREDENTIALS_EXHAUSTED",
-                    &spec,
-                    None,
-                    attempt,
-                    llm_call_started,
+                    state,
+                    &FailedCall {
+                        code: "ALL_CREDENTIALS_EXHAUSTED",
+                        model: &spec,
+                        provider: None,
+                        attempt,
+                        started: llm_call_started,
+                    },
                 )
                 .await;
                 return None;
@@ -278,11 +281,14 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             failed(
                 tried.clone(),
                 ctx,
-                "MAX_ATTEMPTS",
-                &spec,
-                Some(&provider_name),
-                attempt,
-                llm_call_started,
+                state,
+                &FailedCall {
+                    code: "MAX_ATTEMPTS",
+                    model: &spec,
+                    provider: Some(&provider_name),
+                    attempt,
+                    started: llm_call_started,
+                },
             )
             .await;
             return None;
@@ -304,6 +310,10 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             Err(e) => {
                 let action = classify_action(&e, default_cooldown_rate_limited);
                 let outcome = outcome_code(&e).to_string();
+                // v1.10:单凭证且无 fallback 模型时,RetrySame 不把当前
+                // 凭证排除出候选 —— 排除等于直接 ALL_CREDENTIALS_EXHAUSTED,
+                // 「默认自动重试 10 次」在单凭证配置下永远不可达。
+                let mut keep_client_for_retry = false;
                 match action {
                     RetryAction::CooldownAndFailover { cooldown } => {
                         let reason = match &e {
@@ -336,15 +346,29 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                             .await;
                     }
                     RetryAction::RetrySame { delay_ms } => {
+                        let backoff = retry_backoff_ms(delay_ms, attempt);
                         let ca = per_cred_attempts.entry(cred_ptr).or_insert(0);
-                        if *ca >= 2 {
+                        if !has_alternative_credential(
+                            ctx,
+                            &spec,
+                            &exclude,
+                            &client,
+                            spec_index,
+                            spec_chain.len(),
+                        ) {
+                            // 单凭证无备选:重置 per-cred 计数,指数退避后
+                            // 同凭证重试(不 exclude),烧满 max_attempts 才放弃。
+                            *ca = 0;
+                            keep_client_for_retry = true;
+                            if retry_cancelled(&ctx.cancel, backoff).await {
+                                return None;
+                            }
+                        } else if *ca >= 2 {
                             // 同一凭证的 RetrySame 已重试上限:强制 failover。
-                            // 下方 line 289 会无条件把该 client push 进 `exclude`,
-                            // 故 `next_for` 会选另一个凭证。但此前缺了退避
-                            // sleep —— 在持久瞬时错误(SseParse / Http)下会以
-                            // 无延迟空转 `max_attempts` 轮,顺带刷爆事件流。
-                            // 这里补上与「未到上限」分支同样的 `delay_ms` 退避。
-                            if retry_cancelled(&ctx.cancel, delay_ms).await {
+                            // 下方循环尾会无条件把该 client push 进 `exclude`,
+                            // 故 `next_for` 会选另一个凭证。退避防持久瞬时错误
+                            // (SseParse / Http)下无延迟空转刷爆事件流。
+                            if retry_cancelled(&ctx.cancel, backoff).await {
                                 return None;
                             }
                             let _ = ctx
@@ -361,7 +385,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                                     }),
                                 ))
                                 .await;
-                        } else if retry_cancelled(&ctx.cancel, delay_ms).await {
+                        } else if retry_cancelled(&ctx.cancel, backoff).await {
                             return None;
                         }
                     }
@@ -370,21 +394,20 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                             label: label.clone(),
                             outcome: outcome.clone(),
                         });
-                        let _ = ctx
-                            .event_tx
-                            .send(Event::new(
-                                ctx.sub_id.clone(),
-                                EventMsg::Error(ErrorEvent {
-                                    code: error_code(&e).into(),
-                                    message: e.to_string(),
-                                    details: Some(serde_json::json!({
-                                        "provider": provider_name,
-                                        "credential_label": label,
-                                        "tried": tried.clone(),
-                                    })),
-                                }),
-                            ))
-                            .await;
+                        // v1.10:不在此处直接发 Error —— 写 deferred_error 让
+                        // submission loop 统一发「Error + TurnAborted」,保证
+                        // 失败回合必有 turn 终态(否则客户端 turn 卡在 streaming)。
+                        if state.deferred_error.is_none() {
+                            state.deferred_error = Some(ErrorEvent {
+                                code: error_code(&e).into(),
+                                message: e.to_string(),
+                                details: Some(serde_json::json!({
+                                    "provider": provider_name,
+                                    "credential_label": label,
+                                    "tried": tried.clone(),
+                                })),
+                            });
+                        }
                         // v1.x:补一条 failed span(此前失败调用在 telemetry
                         // 里完全不可见)。
                         record_failed_model_call(
@@ -414,7 +437,11 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                                 RetryAction::CooldownAndFailover { cooldown } => {
                                     cooldown.as_millis() as u64
                                 }
-                                RetryAction::RetrySame { delay_ms } => delay_ms,
+                                // 与实际 sleep 同公式(指数退避),UI 展示
+                                // 的等待时长与真实等待一致。
+                                RetryAction::RetrySame { delay_ms } => {
+                                    retry_backoff_ms(delay_ms, attempt)
+                                }
                                 _ => 0,
                             },
                             provider: Some(provider_name.clone()),
@@ -423,7 +450,11 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                         }),
                     ))
                     .await;
-                exclude.push(client.clone());
+                // v1.10:单凭证 RetrySame 保留当前凭证不排除(见上方
+                // keep_client_for_retry);其余路径照旧排除。
+                if !keep_client_for_retry {
+                    exclude.push(client.clone());
+                }
                 if !matches!(action, RetryAction::RetrySame { .. }) {
                     let _ = ctx
                         .event_tx
@@ -452,8 +483,12 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         match process_stream_events(
             &mut *s,
             &mut tried,
-            (&provider_name, &pool_name),
-            &label,
+            &stream::AttemptCtx {
+                provider_name: &provider_name,
+                pool_name: &pool_name,
+                label: &label,
+                attempt,
+            },
             state,
             ctx,
             default_cooldown_rate_limited,
@@ -471,7 +506,25 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                     // 此前 mid-stream 错误路径没有上限检查,持久 SSE 解析 /
                     // 网络错误会把 max_attempts 全部烧在一个死凭证上,从不
                     // 尝试其他凭证。
+                    //
+                    // v1.10 例外:单凭证且无 fallback 模型时,failover 无处
+                    // 可去 —— 保持上限只会让「默认自动重试 10 次」退化为
+                    // 「2 次即 ALL_CREDENTIALS_EXHAUSTED」。此时重置计数,
+                    // 同凭证指数退避后继续重试,烧满 max_attempts 才放弃。
+                    let backoff = retry_backoff_ms(delay_ms, attempt);
                     let ca = per_cred_attempts.entry(cred_ptr).or_insert(0);
+                    if *ca >= 2
+                        && !has_alternative_credential(
+                            ctx,
+                            &spec,
+                            &exclude,
+                            &client,
+                            spec_index,
+                            spec_chain.len(),
+                        )
+                    {
+                        *ca = 0;
+                    }
                     if *ca >= 2 {
                         let _ = ctx
                             .event_tx
@@ -490,7 +543,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                         exclude.push(client.clone());
                         continue;
                     }
-                    if retry_cancelled(&ctx.cancel, delay_ms).await {
+                    if retry_cancelled(&ctx.cancel, backoff).await {
                         return None;
                     }
                     continue;
@@ -815,32 +868,76 @@ async fn retry_cancelled(cancel: &tokio_util::sync::CancellationToken, delay_ms:
     }
 }
 
+/// v1.10:判断排除当前凭证后是否还有可用候选 —— 同 spec 池内还有其他
+/// 凭证,或 spec 链还有 fallback 模型可切。
+///
+/// 两者都没有(单凭证 + 单模型,最常见的个人配置)时,per-credential
+/// 重试上限失去意义:failover 无处可去,保持上限只会把「自动重试烧满
+/// max_attempts」退化成「两次瞬时错误即整体失败」。调用方据此放宽
+/// 同凭证重试。
+fn has_alternative_credential(
+    ctx: &NodeContext,
+    spec: &str,
+    exclude: &[Arc<dyn zhuye_llm::ModelClient>],
+    current: &Arc<dyn zhuye_llm::ModelClient>,
+    spec_index: usize,
+    spec_chain_len: usize,
+) -> bool {
+    // spec 链还有 fallback 模型 → 排除当前凭证后循环可跨模型降级。
+    if spec_index + 1 < spec_chain_len {
+        return true;
+    }
+    // 探测:把当前凭证也加进排除集后池内是否还有别的凭证。
+    let mut probe = exclude.to_vec();
+    probe.push(current.clone());
+    ctx.registry.next_for(spec, &probe).is_some()
+}
+
+/// 单次失败调用的上报信息(错误码 / 模型 spec / provider / 尝试序号 / 起始时刻)。
+struct FailedCall<'a> {
+    code: &'static str,
+    model: &'a str,
+    provider: Option<&'a str>,
+    attempt: u32,
+    started: std::time::Instant,
+}
+
 /// v1.0 多 Provider 路由:`model_call` 全部 candidate 失败时的收尾路径。
 ///
 /// v1.x:收尾时补一条 `model.request.failed` span —— 此前 4 个失败路径
 /// 全部直接 `return None`,`record_model_call` 的调用点又全部硬编码
 /// `Completed`,导致失败调用在 telemetry 里完全不可见。
+///
+/// v1.10:失败不再在此处直接发 `Error` —— 统一写 `state.deferred_error`,
+/// 由 submission loop 收尾时发「Error + TurnAborted(AbortReason::Error)」。
+/// 否则失败回合没有任何 turn 终态事件,客户端 turn 永远停在 streaming
+/// (停止按钮恒显、点击后配对不到 id 而静默失效)。
 async fn failed(
     tried: Vec<TriedCredential>,
     ctx: &NodeContext,
-    code: &'static str,
-    model: &str,
-    provider: Option<&str>,
-    attempt: u32,
-    started: std::time::Instant,
+    state: &mut AgentState,
+    call: &FailedCall<'_>,
 ) {
+    let FailedCall {
+        code,
+        model,
+        provider,
+        attempt,
+        started,
+    } = *call;
     record_failed_model_call(ctx, model, provider, attempt, code, started);
-    let _ = ctx
-        .event_tx
-        .send(Event::new(
-            ctx.sub_id.clone(),
-            EventMsg::Error(ErrorEvent {
-                code: code.into(),
-                message: format!("all credentials exhausted ({} tried)", tried.len()),
-                details: Some(serde_json::json!({ "tried": tried })),
-            }),
-        ))
-        .await;
+    if state.deferred_error.is_none() {
+        state.deferred_error = Some(ErrorEvent {
+            code: code.into(),
+            message: match code {
+                "MAX_ATTEMPTS" => {
+                    format!("模型调用重试预算已耗尽(共尝试 {attempt} 次);请检查网络 / 端点可用性")
+                }
+                _ => format!("all credentials exhausted ({} tried)", tried.len()),
+            },
+            details: Some(serde_json::json!({ "tried": tried, "attempts": attempt })),
+        });
+    }
 }
 
 /// v1.x:LLM 调用彻底失败时补一条 failed span(带 attempt / duration /

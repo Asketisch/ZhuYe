@@ -30,8 +30,9 @@ use crate::request::{ChatMessage, ChatRequest, ContentBlock, ToolSpec, UserConte
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
 /// 默认模型 —— 体积小、社区维护、`ollama pull llama3.2` 一键拉。
 const DEFAULT_MODEL: &str = "llama3.2";
-/// 默认超时 120s;本地首次模型加载可能 30s+,比 OpenAI/Anthropic 的 60s 宽。
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// 默认超时 300s。语义为「建连 + 读空闲」双层超时(见 `stream_http_client`),
+/// 非整请求总时长;本地首次模型加载 30s+ 与推理思考期无字节窗口都覆盖。
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
@@ -45,7 +46,8 @@ pub struct OllamaConfig {
     pub num_ctx: Option<u32>,
     /// GPU 层数(传给 Ollama `options.num_gpu`)。
     pub num_gpu: Option<u32>,
-    /// 单次 HTTP 请求超时;本地首次模型加载可能较慢,默认 120s。
+    /// HTTP 超时(建连 + 读空闲双层,见 `stream_http_client`);本地首次
+    /// 模型加载可能较慢,默认 300s。
     pub timeout: Duration,
     /// 默认 model 覆盖。builder 一般已带;这里是兜底。
     pub model: Option<String>,
@@ -80,10 +82,7 @@ pub struct OllamaClient {
 
 impl OllamaClient {
     pub fn new(config: OllamaConfig) -> Result<Self, LlmError> {
-        let http = reqwest::Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(LlmError::from)?;
+        let http = super::stream_http_client(config.timeout)?;
         Ok(Self { config, http })
     }
 

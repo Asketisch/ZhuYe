@@ -17,6 +17,16 @@ base_url = "https://api.kilo.ai/api/gateway"
 model = "free"                                # 免费模型：运行时从清单里挑一个
 temperature = 0.3
 max_tokens = 4096
+timeout_secs = 300                            # HTTP 超时:建连 + **读空闲**双层
+                                              # (读到数据即重置),默认 300。注意不是
+                                              # 整请求总时长 —— 合法长流不会因总时长
+                                              # 被腰斩;只有连接无字节超过该值才断
+
+[routing]
+max_attempts = 10                             # 单次模型调用的总尝试上限(默认 10,
+                                              # 即初始 1 次 + 最多 9 次自动重试)。
+                                              # 网络 / SSE 中断 / 5xx / 429 等瞬时
+                                              # 错误在引擎内自动重试,烧满才报错
 
 [model]
 context_window = 128000                       # 模型上下文最大长度(token);自适应输出

@@ -54,7 +54,9 @@ pub struct OpenAIResponsesConfig {
 }
 
 fn default_timeout_secs() -> u64 {
-    60
+    // 语义为「建连 + 读空闲」双层超时(见 `stream_http_client`),
+    // 非整请求总时长;300s 覆盖推理模型思考期无字节窗口。
+    300
 }
 
 fn default_model() -> String {
@@ -82,10 +84,7 @@ pub struct OpenAIResponsesClient {
 
 impl OpenAIResponsesClient {
     pub fn new(config: OpenAIResponsesConfig) -> Result<Self, LlmError> {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .build()
-            .map_err(LlmError::from)?;
+        let http = super::stream_http_client(Duration::from_secs(config.timeout_secs))?;
         Ok(Self { config, http })
     }
 
