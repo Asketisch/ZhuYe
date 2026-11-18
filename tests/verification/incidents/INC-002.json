@@ -1,0 +1,13 @@
+{
+  "id": "INC-002",
+  "title": "bash 重定向写文件绕过审批直接落盘",
+  "severity": "high",
+  "kind": "security",
+  "source_commit": "86f75e33",
+  "source_note": "fix(bash): F04 安全补丁 ── 重定向写文件必须走审批。回归表现:`printf hi > out.txt` 类命令不弹审批,文件直接写入工作区。",
+  "case_file": "bash_redirect.json",
+  "trigger_paths": ["crates/abilities/zhuye-tools/**"],
+  "oracle": "Ask 档出现 bash 审批请求;拒绝后工作区不得出现 out.txt。候选若跳过审批或仍落盘,投影 approvals/files 漂移。",
+  "approved_differences": [],
+  "control": true
+}

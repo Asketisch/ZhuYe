@@ -1,0 +1,12 @@
+{
+  "id": "bash_redirect",
+  "kind": "bash_redirect",
+  "description": "Ask 档下 bash 重定向写(printf hi > out.txt)必须弹审批;拒绝后不得产生文件。回归来源:重定向写文件曾绕过审批直接落盘(INC-002)。",
+  "source_incident": "INC-002",
+  "decision": "deny",
+  "mock_script": [
+    "{\"type\":\"tool_call\",\"name\":\"bash\",\"args\":{\"cmd\":\"printf hi > out.txt\"}}",
+    "{\"type\":\"text\",\"text\":\"完成\"}"
+  ],
+  "approved_differences": []
+}

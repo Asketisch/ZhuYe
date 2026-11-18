@@ -1,0 +1,13 @@
+{
+  "id": "INC-004",
+  "title": "强杀进程后恢复丢失已提交历史",
+  "severity": "high",
+  "kind": "persistence",
+  "source_commit": "5a4e8d54",
+  "source_note": "test(recovery): 崩溃恢复与审批中断时序回归。回归表现:kill 后 --resume 丢失首轮已落盘历史,或恢复回合无法完成;rollout 记录类型序列漂移。",
+  "case_file": "crash_resume.json",
+  "trigger_paths": ["crates/runtime/**", "crates/resources/**"],
+  "oracle": "首轮检查点落盘后 kill;--resume 后第二轮 turn_complete 成功;两侧 rollout 记录类型序列一致。",
+  "approved_differences": [],
+  "control": true
+}

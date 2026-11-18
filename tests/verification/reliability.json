@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "diff 触发的可靠性规则表(核心仓)。来源:真实事故与工作区验证增强计划 P3。规则只追加定向检查,不替代 pr/main/nightly/release 完整选集;变更本表需单独说明并人工审查。",
+  "rules": [
+    {
+      "id": "REL-CORE-001",
+      "trigger_paths": ["crates/protocol/**", "crates/resources/**"],
+      "task_ids": ["agent.contract.event", "agent.contract.properties", "agent.contract.differential"],
+      "reason": "协议与 rollout 变更影响旧数据恢复、双客户端契约与持久化兼容(INC-004)",
+      "source": "INC-004",
+      "owner": "core",
+      "status": "active"
+    },
+    {
+      "id": "REL-CORE-002",
+      "trigger_paths": ["crates/abilities/**"],
+      "task_ids": ["agent.integration.tools", "agent.integration.approval", "agent.contract.differential"],
+      "reason": "工具/审批语义漂移曾是真实安全回归(INC-001/INC-002/INC-005)",
+      "source": "INC-001,INC-002,INC-005",
+      "owner": "core",
+      "status": "active"
+    },
+    {
+      "id": "REL-CORE-003",
+      "trigger_paths": ["sdks/**"],
+      "task_ids": ["sdk.ts.unit", "sdk.python.unit", "sdk.binding"],
+      "reason": "SDK 与绑定层必须跟随协议面同步验证",
+      "source": "工作区验证增强计划 P3",
+      "owner": "core",
+      "status": "active"
+    },
+    {
+      "id": "REL-CORE-004",
+      "trigger_paths": ["crates/integrations/**", "crates/abilities/zhuye-llm/**"],
+      "task_ids": ["agent.integration.provider"],
+      "reason": "provider / 外部集成行为需真 wire 层验证",
+      "source": "工作区验证增强计划 P3",
+      "owner": "core",
+      "status": "active"
+    },
+    {
+      "id": "REL-CORE-005",
+      "trigger_paths": ["tests/eval/**"],
+      "task_ids": ["agent.quality.unit"],
+      "reason": "质量门禁策略本身变更时,判定器自测必须全绿(P0)",
+      "source": "工作区验证增强计划 P0",
+      "owner": "core",
+      "status": "active"
+    },
+    {
+      "id": "REL-CORE-006",
+      "trigger_paths": ["tests/verification/**"],
+      "task_ids": ["agent.contract.verification"],
+      "reason": "差分语料/验证器自身变更时,变异自测必须全绿(P1)",
+      "source": "工作区验证增强计划 P1",
+      "owner": "core",
+      "status": "active"
+    }
+  ]
+}

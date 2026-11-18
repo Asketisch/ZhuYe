@@ -164,6 +164,22 @@ python3 tests/runner.py run --suite release --artifact <产物路径>
 隐藏宿主 HOME;需要 macOS `sandbox-exec` 或 Linux `bubblewrap` 与可用的
 用户命名空间。沙箱不可用时评测记录基础设施错误,不会降级为裸运行。
 
+质量门禁判定与运行解耦:策略判定层 `tests/eval/eval_policy.py` 是纯函数,
+只消费汇总报告,输出 `pass / regression / incomplete` 三种 verdict 与
+`would_block` 标记。策略阈值在 `tests/eval/policy.json`(版本化;变更需
+单独说明并人工审查):
+
+- `--mode observe`(默认):判定结果写入 `gate.json`,不改变退出码语义,
+  用于在转 enforce 前收集真实波动(至少 10 次成对样本);
+- `--mode enforce`:候选相对基线客观退化(regression)或样本不足
+  (incomplete)返回 1 —— 「无法证明未退化」不等价于「通过」;
+  基础设施错误仍返回 2,且优先于任何 verdict;
+- 单用例成功率阈值含统计下限 `1/min_completed_runs`:重复次数很少时,
+  单次翻转属模型噪声,重大退化由总体成功率与「全通过转全失败」兜底。
+
+`agent.quality.unit` 以合成报告覆盖判定器的全部 verdict 与退出码映射,
+不调用真实模型,属 PR/main 必跑任务。
+
 - 结果语义:`pass / fail / skip(条件不适用) / infra_error / timeout / pending(未覆盖)`;
   skip 不计通过;pending 与基础设施错误使退出码为 2,失败为 1。
 - 报告:`.test-runner/report.json`(JSON)+ `junit.xml`(JUnit)+ 人类摘要;

@@ -30,7 +30,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest
-      - run: python -m unittest -v tests.test_runner tests.test_bench tests.test_diagnostics tests.test_eval_quality
+      # 质量门禁策略判定(P0)与差分验证器变异自测(P1)纳入调度器自检。
+      - run: python -m unittest -v tests.test_runner tests.test_bench tests.test_diagnostics tests.test_eval_quality tests.eval.test_policy tests.verification.test_differential
       - run: python tests/update_coverage_count.py --check
 
 
@@ -213,3 +214,11 @@ jobs:
         run: BENCH_RUNS=10 ./scripts/bench.sh
       - name: Run env lock soak
         run: ZHUYE_ENV_STRESS_RUNS=30 ./tests/rust/env_lock_stress.sh
+      # 核心语义差分(P1):同一提交的 release/debug 两个二进制对 5 个事故
+      # 回放场景重放,零分歧预期 —— 验证差分链路本身在 CI 环境可跑且全绿。
+      - name: Build debug runtime (差分候选)
+        run: cargo build -p zhuye-cli
+      - name: Run semantic differential (事故回放)
+        run: ZHUYE_DIFF=1 ZHUYE_DIFF_BASELINE="$PWD/target/release/zhuye" \
+             ZHUYE_DIFF_CANDIDATE="$PWD/target/debug/zhuye" \
+             python3 tests/runner.py run --task agent.contract.differential

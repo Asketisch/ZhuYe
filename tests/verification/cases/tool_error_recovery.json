@@ -1,0 +1,15 @@
+{
+  "id": "tool_error_recovery",
+  "kind": "tool_error_recovery",
+  "description": "read 缺失文件产生工具错误(is_error)后,同回合内继续用 write 完成结果落盘并成功收尾。回归来源:质量评测 merge 类任务的恢复语义(INC-005);候选若把工具错误升级为回合中止即为本用例分歧。",
+  "source_incident": "INC-005",
+  "setup_files": {
+    "part1.json": "{\"value\": 7}"
+  },
+  "mock_script": [
+    "{\"type\":\"tool_call\",\"name\":\"read\",\"args\":{\"path\":\"missing.json\"}}",
+    "{\"type\":\"tool_call\",\"name\":\"write\",\"args\":{\"path\":\"result.json\",\"content\":\"{\\\"label\\\": \\\"差分\\\", \\\"sum\\\": 7}\"}}",
+    "{\"type\":\"text\",\"text\":\"完成\"}"
+  ],
+  "approved_differences": []
+}
