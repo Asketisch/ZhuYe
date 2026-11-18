@@ -1,14 +1,16 @@
 # wit/ — 烛夜 WASM 插件契约(社区接口权威定义)
 
+<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+
 `plugin.wit` 定义了宿主与 WASM 插件组件之间的语言无关接口。任何能产出
 **组件模型 .wasm** 的工具链都可实现:
 
 | 语言 | 工具链 | 成熟度 |
 |---|---|---|
-| Rust | wit-bindgen(`wasm32-wasip2` target) | 生产可用 |
-| TypeScript / JS | jco(componentize-js) | 生产可用 |
-| Python | componentize-py | 可用(工具链更新频繁,锁版本) |
-| Go | tinygo + wasm-tools | 走在前(实验性) |
+| Rust | wit-bindgen(`wasm32-wasip2` target) | 生产可用(仓库已验证) |
+| TypeScript / JS | jco(componentize-js) | 接口兼容,未经本仓库验证 |
+| Python | componentize-py | 接口兼容,未经本仓库验证 |
+| Go | tinygo + wasm-tools | 接口兼容,未经本仓库验证 |
 
 ABI 刻意选 **JSON 字符串进出**(而非细粒度 WIT record):动态语言作者
 无需生成强类型绑定即可参与;schema 由 `plugin.wit` 注释与
@@ -45,5 +47,5 @@ cargo build --release --target wasm32-wasip2   # 独立项目,不进主 workspac
 # 产物: target/wasm32-wasip2/release/<name>.wasm → 拷进插件 bin/
 ```
 
-`zhuye plugin new <name> --lang rust|typescript` 可生成完整脚手架
-(见 `docs/plugins.md` 的「WASM 插件(多语言)」章节)。
+`zhuye plugin new` 脚手架命令当前尚未实现;手工按上面的 target 构建即可,
+完整 WASM 教程见 `docs/plugin-dev-guide.md` 的「WASM 组件」章节。

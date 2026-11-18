@@ -1,5 +1,7 @@
 # kms —— 本地知识库插件
 
+<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+
 多 wiki Markdown 知识管理:`~/.zhuye/kms/<wiki>/{index.md,pages/*.md}`。
 unix 下目录操作走 `openat` 语义(rustix),防 TOCTOU / 目录替换攻击。
 

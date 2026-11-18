@@ -1,12 +1,39 @@
 # SDK 接入指南(Python / TypeScript)
 
+<p align="center">  <b>中文</b> · [English](sdk.en.md)  </p>
+
 > 脚本项目不需要写 Rust 也能完整驱动本框架:`zhuye serve` 提供常驻
 > stdio JSONL 会话(一个进程 = 一个常驻 AgentThread,多轮共享内存状态,
 > 支持 resume),官方 SDK 在其上封装出符合各自语言习惯的 API ——
 > **推理与编排在 Rust 引擎,业务逻辑留在宿主语言**。
+> 命令参数全貌见 [cli.md](cli.md);wire 协议细节见
+> [sdks/PROTOCOL.md](../sdks/PROTOCOL.md)。
 
-最有特点的能力是**跨语言自定义工具注册**:把 Python / TS 函数声明成
-工具(JSON Schema 参数),LLM 调用时 core 下发 `tool_execution_request`,
+## 快速开始
+
+SDK 通过 spawn `zhuye serve` 子进程工作。开发自源码时先编出二进制:
+
+```bash
+cargo build -p zhuye-cli
+ZHUYE_BIN="$PWD/target/debug/zhuye" ZHUYE_MODEL=mock python3 -c \
+  "from zhuye import ZhuyeAgent; print(ZhuyeAgent.spawn().prompt('hello')); ..."
+```
+
+`ZHUYE_MODEL=mock` 是显式离线模型(无网络、无 API key);真模型配置见
+[configuration.md](configuration.md)。
+
+## 三种用法总览
+
+| 用法 | 入口 | 适用 |
+|------|------|------|
+| headless 单轮 | `zhuye exec "..."` | 脚本 / CI,跑一轮就退,事件 JSONL 走 stdout |
+| 常驻会话(SDK) | `ZhuyeAgent.spawn()` | 嵌进 Python / TS 产品,多轮共享、宿主工具、审批交互 |
+| 进程内库链接 | `Zhuye::builder(...)`(Rust) | 宿主就是 Rust,免子进程 |
+
+## 跨语言自定义工具
+
+最有特点的能力是**宿主语言工具注册**:把 Python / TS 函数声明成工具
+(JSON Schema 参数),LLM 调用时 core 下发 `tool_execution_request`,
 SDK 在本地执行 handler 并回执 —— 工具实现无需进 Rust 进程:
 
 ```mermaid
@@ -28,10 +55,24 @@ sequenceDiagram
 回执,让 LLM 看到错误而不是挂死。完整 wire 协议(握手 / 审批 / 退出
 语义)见 [`sdks/PROTOCOL.md`](../sdks/PROTOCOL.md)。
 
+## 二进制解析顺序
+
+两套 SDK 一致,从高到低:
+
+```
+options.bin(ZhuyeAgentOptions 显式传入)
+  → ZHUYE_BIN 环境变量
+  → 包内二进制(Python: 平台 wheel 内嵌;TS: 平台子包)
+  → PATH 上的 zhuye
+```
+
+已发布安装(`pip install zhuye` / `npm install zhuye`)自带内嵌二进制,
+开箱即用;从本仓库开发时,用 `options.bin` 或 `ZHUYE_BIN` 指向
+`target/debug/zhuye` 即可。
+
 ## Python
 
-`sdks/python`,纯 stdlib 零依赖;二进制定位:`ZHUYE_BIN` env →
-PATH 上的 `zhuye`:
+`sdks/python`,纯 stdlib 零依赖,Python ≥ 3.10,含 `py.typed`:
 
 ```python
 from zhuye import ZhuyeAgent, ToolOutput, ContentBlock
@@ -59,9 +100,18 @@ for ev in agent.submit("北京天气如何?"):        # 阻塞式迭代器,增�
 agent.close()
 ```
 
+公开 API(`sdks/python/zhuye/__init__.py`):`ZhuyeAgent`、
+`ZhuyeAgentOptions`、`ToolHandler`、`ToolOutput`、`ContentBlock`、
+`Op`、`Submission`、`Event`、`EventMsg`、`UnknownEventMsg`、
+`RemoteToolSpec`。`ZhuyeAgent` 主要方法:`spawn(options)` /
+`register_tool` / `submit(text)`(阻塞事件迭代器)/ `submit_op(op)` /
+`prompt(text)`(聚合文本)/ `interrupt` / `approve` /
+`next_global_event` / `close`。
+
 ## TypeScript
 
-`sdks/typescript`,纯 TS 零运行时依赖,API 与 Python 版同构:
+`sdks/typescript`,纯 TS 零运行时依赖,Node ≥ 18,纯 ESM,带 `.d.ts`,
+API 与 Python 版同构:
 
 ```ts
 import { ZhuyeAgent } from 'zhuye';
@@ -77,8 +127,16 @@ await agent.registerTool(
 );
 
 const text = await agent.prompt('北京天气如何?');   // 聚合增量文本
+// 或逐事件消费:
+for await (const ev of agent.submit('北京天气如何?')) {
+  if (ev.msg.type === 'turn_complete') break;
+}
 await agent.close();
 ```
+
+`ZhuyeAgent` 主要方法:`spawn(options)` / `registerTool` /
+`submit(text | op, opts)`(异步事件迭代器)/ `prompt` / `interrupt` /
+`approve` / `nextGlobalEvent` / `close`,另有 `childProcess` getter。
 
 ## 高级面
 
@@ -117,17 +175,52 @@ agent = ZhuyeAgent.spawn(ZhuyeAgentOptions(plugins=["harness-import@inline"]))
 await ZhuyeAgent.spawn({ plugins: ['harness-import@inline'] });
 ```
 
-## 离线联调
+## 协议速览
+
+serve 线格式:stdin 每行一个 `Submission`,stdout 每行一个 `Event`,
+stderr 是日志(不污染事件流)。类型判别符 snake_case。
+
+- **Op(客户端 → serve)**:27 种 —— 核心如 `user_input`、`compact`、
+  `interrupt`、`rewind`、`shutdown`、`tool_approval`、`steer`、
+  `register_tools`、`tool_execution_response`,以及 plan / goal /
+  permission / side-channel / guard-stats 等交互族。
+- **EventMsg(serve → 客户端)**:49 种 —— turn 生命周期
+  (`turn_started` / `turn_complete` / `turn_aborted`)、增量流
+  (`agent_message_delta` / `thinking_delta`)、工具调用
+  (`tool_call_begin` / `tool_call_args_delta` / `tool_call_end` /
+  `tool_execution_request`)、审批与提问(`approval_request` /
+  `ask_user_question` / `permission_bubble`)、编排
+  (`subagent_progress` / `side_channel_*`)、集成
+  (`mcp_server_started` / `lsp_server_failed` / `plan_ready` …)。
+- 完整字段级参考(含每种变体的 JSON 形状)见
+  [sdks/PROTOCOL.md](../sdks/PROTOCOL.md)。
+- **未知事件降级**:SDK 把未知 `type` 按开放类型原样透传(不改成
+  固定 `"unknown"`),旧 SDK 配新 serve 不崩;你自己的事件处理逻辑
+  仍应容忍未知 `type`。
+
+## 离线联调与恢复
 
 ```bash
 # 免 API key、无网络:内置 mock provider(ZHUYE_MOCK_SCRIPT 可脚本化每次模型回复)
 ZHUYE_MODEL=mock ./scripts/sdk_smoke.sh   # 对真实二进制跑两套 SDK 全链路(需先构建 release)
 ```
 
+会话恢复(经 serve / SDK 的提交通道或 CLI):
+
+| 方式 | CLI 等价 |
+|------|----------|
+| 按 thread id | `zhuye exec --resume <UUID>` |
+| 续最近一次 | `zhuye exec -c` |
+| 按序号(1-indexed,newest first) | `zhuye exec -r <N>` |
+
+三者互斥;同时给 prompt 时恢复优先。
+
 ## 延伸阅读
 
 | 文档 | 内容 |
 |------|------|
-| [`sdks/PROTOCOL.md`](../sdks/PROTOCOL.md) | serve wire 协议规范(握手 / 工具执行流 / 审批回执 / 退出语义),任何语言手写集成的依据 |
-| [`sdks/python/README.md`](../sdks/python/README.md) | Python SDK 安装、用法与 pytest 测试 |
-| [`sdks/typescript/README.md`](../sdks/typescript/README.md) | TypeScript SDK 安装、用法与 npm test |
+| [sdks/PROTOCOL.md](../sdks/PROTOCOL.md) | serve wire 协议规范(握手 / 工具执行流 / 审批回执 / 退出语义),任何语言手写集成的依据 |
+| [sdks/python/README.md](../sdks/python/README.md) | Python SDK 安装、完整 API 与 pytest 测试 |
+| [sdks/typescript/README.md](../sdks/typescript/README.md) | TypeScript SDK 安装、完整 API 与 npm test |
+| [cli.md](cli.md) | CLI 子命令全量参考 |
+| [plugins.md](plugins.md) | 插件使用(SDK 的 `plugins` 选项即其入口) |

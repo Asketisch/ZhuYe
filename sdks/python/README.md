@@ -1,5 +1,7 @@
 # zhuye (Python SDK)
 
+<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+
 让 Python 项目直接驱动 [ZhuYe Agent](https://github.com/Asketisch/ZhuYe) 的官方 SDK。
 底层 spawn `zhuye serve` 子进程、走 JSONL stdio 协议:**安装即用**(平台 wheel
 内嵌对应平台的 `zhuye` 二进制)、**零运行时第三方依赖**(仅 stdlib)、
@@ -328,7 +330,7 @@ Responses 输出达到上限时尝试续写,未完成的工具调用不会执行
 
 | 变量 | 作用 |
 |------|------|
-| `ZHUYE_BIN` | `zhuye` 二进制路径(最高优先级覆盖;缺省用 wheel 内嵌二进制)。 |
+| `ZHUYE_BIN` | `zhuye` 二进制路径。优先级低于 `ZhuyeAgentOptions.bin`(显式传入最高),高于 wheel 内嵌二进制与 PATH。 |
 | `ZHUYE_MODEL` | 模型 spec(`mock/mock-1` 用于离线测试)。 |
 | `ZHUYE_REMOTE_TOOL_TIMEOUT_SECS` | 远程工具等待客户端回执的上限,默认 120s。 |
 

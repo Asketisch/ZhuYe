@@ -1,31 +1,42 @@
 # plugins/ —— 烛夜插件统一存放目录
 
+<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+
 仓库自带的全部插件集中在此,便于管理、审阅与分发。每个子目录是一个
 完整插件(以 `plugin.toml` 清单为入口),可直接安装:
 
 ```bash
 # 从仓库路径安装(user 作用域,装到 ~/.zhuye/plugins/cache/)
-zhuye plugin install plugins/<插件名> --scope user
+zhuye plugin install plugins/<目录名> --scope user
 
-# 启用(写进 ~/.zhuye/config.toml 的 [plugins].enabled_plugins)
-zhuye plugin enable <插件名>@inline
+# 启用(写进 ~/.zhuye/config.toml 的 [plugins].enabled_plugins;
+# 注意 id 的 <name> 部分取清单的 name,不是目录名)
+zhuye plugin enable <清单名>@inline
 ```
 
-插件机制说明(清单格式、五类 capability、`${PLUGIN_ROOT}` 展开、热重载)
+插件机制说明(清单格式、六类 capability、`${PLUGIN_ROOT}` 展开、热重载)
 见 [`docs/plugins.md`](../docs/plugins.md);安装 / 启用 / marketplace /
 排障等使用向内容见 [`docs/plugins.md`](../docs/plugins.md)。
 
 ## 现有插件
 
-| 插件 | 功能 | 需要构建 |
+| 目录名 | 清单名(id) | 定位 |
 |---|---|---|
-| [`plugin-demo/`](plugin-demo/) | 五类 capability 全量示例(命令 / 子代理 / 技能 / hook / MCP echo) | 否(纯声明 + Python 脚本) |
-| [`harness-import/`](harness-import/) | 导入外部 Harness(Claude Code / Codex / ZCode)历史会话为烛夜会话 | 是(`./scripts/build_import_plugin.sh` 构建并装配 `bin/zhuye-import`) |
-| [`goal-queue/`](goal-queue/) | 目标模式(goal 工具)+ 队列模式(queue 工具,FIFO 串行消费) | 否(纯声明;启用后在 headless 侧注册内置工具) |
+| [`plugin-demo/`](plugin-demo/) | `demo` | 全能力示例:六类 capability(commands / 子代理 / 技能 / hook / MCP / WASM)各配一个最小可运行样例 |
+| [`computer-use/`](computer-use/) | `computer-use` | 屏幕 / 鼠标 / 键盘操作(xcap + enigo;需先构建二进制) |
+| [`git-tools/`](git-tools/) | `git-tools` | git 工作流:分支 / PR / diff 探测 + checkpoint 快照 + Stop 自动 checkpoint(需先构建二进制) |
+| [`shell/`](shell/) | `shell` | 常驻 shell 会话池:启动进程 / 增量读输出 / 写 stdin / kill(需先构建二进制) |
+| [`harness-import/`](harness-import/) | `harness-import` | 导入外部 Harness(Claude Code / Codex / ZCode)历史会话;一键导入其他本地 agent 的模型 / MCP 配置(需先构建二进制) |
+| [`goal-queue/`](goal-queue/) | `goal-queue` | 目标模式(goal 工具)+ FIFO 队列模式(queue 工具;纯声明) |
+| [`kms/`](kms/) | `kms` | 本地 Markdown 知识库:多 wiki 分页 + grep 检索 + dream 固化(需先构建二进制) |
+
+⚠️ **目录名与清单名不必相同**:manifest 的 `name` 必填,并用于构成
+插件 id(`name@marketplace` 的 `<name>` 部分)。以 `plugin-demo` 为例,
+目录名是 `plugin-demo`、清单名是 `demo`,启用时写
+`zhuye plugin enable demo@inline`。
 
 ## 约定
 
-- 插件目录名 = `plugin.toml` 的 `name`(即插件 id 的 `<name>` 部分)。
 - 二进制类插件把可执行文件放 `bin/`(`.mcp.json` / hooks 用
   `${PLUGIN_ROOT}/bin/<name>` 引用),`bin/` 内容由构建脚本生成、不入库。
 - 纯声明资源(commands / skills / agents / hooks)直接放对应子目录。
