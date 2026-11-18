@@ -8355,6 +8355,7 @@ dependencies = [
  "uuid",
  "zhuye-config",
  "zhuye-core",
+ "zhuye-hooks",
  "zhuye-llm",
  "zhuye-protocol",
  "zhuye-recovery",
