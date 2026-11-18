@@ -6,11 +6,14 @@
 use futures::{Stream, StreamExt};
 use zhuye_llm::{ChatEvent, LlmError};
 use zhuye_protocol::{
-    AgentMessage, AgentMessageDelta, ContentBlock, ErrorEvent, Event, EventMsg, StreamErrorEvent,
-    ThinkingDelta, ThinkingDeltaKind, TokenUsage, ToolCallBeginEvent, TriedCredential,
+    AgentMessage, AgentMessageDelta, AgentMessageResetEvent, ContentBlock, ErrorEvent, Event,
+    EventMsg, StreamErrorEvent, ThinkingDelta, ThinkingDeltaKind, TokenUsage, ToolCallBeginEvent,
+    TriedCredential,
 };
 
-use super::super::retry::{RetryAction, classify_action, error_code, outcome_code};
+use super::super::retry::{
+    RetryAction, classify_action, error_code, outcome_code, retry_backoff_ms,
+};
 use crate::graph::state::AgentState;
 use crate::submission_loop::NodeContext;
 
@@ -61,6 +64,18 @@ pub type StreamResult = (
     String,                                   // thinking_buf
 );
 
+/// 单次流式尝试的上报上下文:provider 名 / 路由池名 / 凭证标签 / 尝试序号。
+///
+/// 打成一个结构体只为收敛参数个数与语义:错误分类、cooldown、事件上报
+/// 都以这四元组为坐标系;`attempt` 用于把 RetrySame 的指数退避时长算成
+/// 与 model_call 实际 sleep 一致的 `retry_in_ms`。
+pub(crate) struct AttemptCtx<'a> {
+    pub provider_name: &'a str,
+    pub pool_name: &'a str,
+    pub label: &'a str,
+    pub attempt: u32,
+}
+
 /// 从 `client.stream()` 消费事件直到流结束。
 ///
 /// `s` 是 `std::pin::pin!(stream_result?)` 的结果,类型为
@@ -72,13 +87,17 @@ pub type StreamResult = (
 pub async fn process_stream_events(
     s: &mut (dyn Stream<Item = std::result::Result<ChatEvent, LlmError>> + Send + Unpin),
     tried: &mut Vec<TriedCredential>,
-    provider: (&str, &str),
-    label: &str,
+    attempt_ctx: &AttemptCtx<'_>,
     state: &mut AgentState,
     ctx: &NodeContext,
     default_cooldown_rate_limited: std::time::Duration,
 ) -> Result<StreamResult, RetryAction> {
-    let (provider_name, pool_name) = provider;
+    let AttemptCtx {
+        provider_name,
+        pool_name,
+        label,
+        attempt,
+    } = *attempt_ctx;
     let mut text_buf = String::new();
     let mut thinking_buf = String::new();
     let mut tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
@@ -291,20 +310,17 @@ pub async fn process_stream_events(
     }
 
     if let Some(e) = error {
-        if !text_buf.is_empty()
+        let action = classify_action(&e, default_cooldown_rate_limited);
+        // 可见增量 = 文本 / thinking / 半成品工具调用已转发给客户端,
+        // 客户端缓冲里存在半条 assistant 消息。
+        let has_visible_output = !text_buf.is_empty()
             || !thinking_buf.is_empty()
             || current_tool.is_some()
-            || !tool_calls.is_empty()
-        {
-            // 可见增量无法撤回。重新调用模型会把两次输出拼在一起,
-            // 因此保留已输出文本并结束本轮,由调用方决定是否续跑。
+            || !tool_calls.is_empty();
+        if has_visible_output && matches!(action, RetryAction::GiveUp) {
+            // 不可重试错误(4xx / 取消 / 上下文超限):可见增量无法撤回,
+            // 保留已输出文本并结束本轮,由调用方决定是否续跑(原有行为)。
             preserve_interrupted_text(state, &mut text_buf);
-            if let RetryAction::CooldownAndFailover { cooldown } =
-                classify_action(&e, default_cooldown_rate_limited)
-            {
-                ctx.registry
-                    .mark_cooldown(pool_name, label, cooldown, build_cooldown_reason(&e));
-            }
             tried.push(TriedCredential {
                 label: label.to_string(),
                 outcome: outcome_code(&e).to_string(),
@@ -320,11 +336,55 @@ pub async fn process_stream_events(
             });
             return Err(RetryAction::GiveUp);
         }
+        if has_visible_output {
+            // v1.10:可重试错误(SSE 中断 / 网络 / 5xx / 429)不再因
+            // 「已有可见增量」直接放弃 —— 那会让单次流式输出超过 provider
+            // 超时的会话一次就死(实战:SSE_PARSE_ERROR 一击必杀)。
+            // 改为:发 `AgentMessageReset` 让客户端清掉半成品缓冲,丢弃
+            // 本地累积,按分类动作自动重试;重试从头重新生成,防止两次
+            // 输出拼接污染。
+            if let RetryAction::CooldownAndFailover { cooldown } = action {
+                ctx.registry
+                    .mark_cooldown(pool_name, label, cooldown, build_cooldown_reason(&e));
+            }
+            tried.push(TriedCredential {
+                label: label.to_string(),
+                outcome: outcome_code(&e).to_string(),
+            });
+            let retry_in_ms = action_retry_in_ms(&action, attempt);
+            // StreamError 先行:告知失败原因与重试等待;随后 AgentMessageReset
+            // 通知客户端清缓冲(UI 可显示「N ms 后重试」)。
+            let _ = ctx
+                .event_tx
+                .send(Event::new(
+                    ctx.sub_id.clone(),
+                    EventMsg::StreamError(StreamErrorEvent {
+                        code: error_code(&e).into(),
+                        message: e.to_string(),
+                        retry_in_ms,
+                        provider: Some(provider_name.to_string()),
+                        credential_label: Some(label.to_string()),
+                        tried: Some(tried.clone()),
+                    }),
+                ))
+                .await;
+            let _ = ctx
+                .event_tx
+                .send(Event::new(
+                    ctx.sub_id.clone(),
+                    EventMsg::AgentMessageReset(AgentMessageResetEvent {
+                        reason_code: error_code(&e).into(),
+                        retry_in_ms,
+                    }),
+                ))
+                .await;
+            return Err(action);
+        }
         return Err(process_midstream_error(
             &e,
-            (provider_name, pool_name),
-            label,
+            attempt_ctx,
             tried,
+            state,
             ctx,
             default_cooldown_rate_limited,
         )
@@ -358,16 +418,33 @@ fn preserve_interrupted_text(state: &mut AgentState, text: &mut String) {
     }
 }
 
+/// 由重试动作推 `StreamError.retry_in_ms` / `AgentMessageReset.retry_in_ms`:
+/// RetrySame 走指数退避(与 model_call 实际 sleep 同公式),Failover
+/// 立即切换(0),CooldownAndFailover 用冷却时长。
+fn action_retry_in_ms(action: &RetryAction, attempt: u32) -> u64 {
+    match action {
+        RetryAction::RetrySame { delay_ms } => retry_backoff_ms(*delay_ms, attempt),
+        RetryAction::Failover => 0,
+        RetryAction::CooldownAndFailover { cooldown } => cooldown.as_millis() as u64,
+        RetryAction::GiveUp => 0,
+    }
+}
+
 /// 流式消费中发生错误时的处理逻辑:分类 + cooldown + 事件 + 决策。
 async fn process_midstream_error(
     e: &LlmError,
-    provider: (&str, &str),
-    label: &str,
+    attempt_ctx: &AttemptCtx<'_>,
     tried: &mut Vec<TriedCredential>,
+    state: &mut AgentState,
     ctx: &NodeContext,
     default_cooldown_rate_limited: std::time::Duration,
 ) -> RetryAction {
-    let (provider_name, pool_name) = provider;
+    let AttemptCtx {
+        provider_name,
+        pool_name,
+        label,
+        attempt,
+    } = *attempt_ctx;
     let action = classify_action(e, default_cooldown_rate_limited);
     let outcome = outcome_code(e).to_string();
 
@@ -399,28 +476,54 @@ async fn process_midstream_error(
                 .await;
         }
         // 退避由 model_call 统一处理,以便期间响应取消且不重复等待。
-        RetryAction::RetrySame { .. } => {}
-        RetryAction::Failover => {}
+        // v1.10:补发 StreamError 消除重试期间的 UI 盲区 —— 此前只有
+        // cooldown 路径有事件,RetrySame / Failover 期间客户端只见静默。
+        RetryAction::RetrySame { .. } | RetryAction::Failover => {
+            let _ = ctx
+                .event_tx
+                .send(Event::new(
+                    ctx.sub_id.clone(),
+                    EventMsg::StreamError(StreamErrorEvent {
+                        code: error_code(e).into(),
+                        message: e.to_string(),
+                        retry_in_ms: action_retry_in_ms(&action, attempt),
+                        provider: Some(provider_name.to_string()),
+                        credential_label: Some(label.to_string()),
+                        tried: Some({
+                            let mut t = tried.clone();
+                            t.push(TriedCredential {
+                                label: label.to_string(),
+                                outcome: outcome.clone(),
+                            });
+                            t
+                        }),
+                    }),
+                ))
+                .await;
+        }
         RetryAction::GiveUp => {
             tried.push(TriedCredential {
                 label: label.to_string(),
                 outcome: outcome.clone(),
             });
-            let _ = ctx
-                .event_tx
-                .send(Event::new(
-                    ctx.sub_id.clone(),
-                    EventMsg::Error(ErrorEvent {
-                        code: error_code(e).into(),
-                        message: e.to_string(),
-                        details: Some(serde_json::json!({
-                            "provider": provider_name,
-                            "credential_label": label,
-                            "tried": tried.clone(),
-                        })),
-                    }),
-                ))
-                .await;
+            // v1.10:写 deferred_error 交由 submission loop 统一发
+            // 「Error + TurnAborted」—— 失败回合必须带 turn 终态事件,
+            // 否则客户端 turn 永远停在 streaming。
+            //
+            // 用户取消是例外:`Cancelled` 分类到 GiveUp,但它不是失败 ——
+            // 交由 submission loop 的取消分支发 `TurnAborted(UserInterrupt)`,
+            // 否则下游(子代理工厂 / UI)会把用户中断误记为 Failed。
+            if state.deferred_error.is_none() && !matches!(e, LlmError::Cancelled) {
+                state.deferred_error = Some(ErrorEvent {
+                    code: error_code(e).into(),
+                    message: e.to_string(),
+                    details: Some(serde_json::json!({
+                        "provider": provider_name,
+                        "credential_label": label,
+                        "tried": tried.clone(),
+                    })),
+                });
+            }
             return RetryAction::GiveUp;
         }
     }
@@ -529,8 +632,12 @@ mod tests {
         let result = process_stream_events(
             &mut s,
             &mut tried,
-            ("mock", "mock"),
-            "label",
+            &AttemptCtx {
+                provider_name: "mock",
+                pool_name: "mock",
+                label: "label",
+                attempt: 1,
+            },
             &mut state,
             &ctx,
             std::time::Duration::from_secs(1),

@@ -1059,15 +1059,41 @@ pub async fn submission_loop(
                                     .await;
                             }
                         }
-                        let event = if let Some(error) = final_state.deferred_error.take() {
-                            EventMsg::Error(error)
-                        } else {
+                        // v1.10:取消**优先于**并发错误 —— 被取消的回合即便
+                        // 同时产生了耗尽 / 超时错误,终态也必须是 Cancelled
+                        // (UserInterrupt / Shutdown);把用户中断记为 Failed
+                        // 会让子代理状态中心与 UI 误判。
+                        let event = if turn_cancel_clone.is_cancelled() {
                             let reason = if session_cancel_clone.is_cancelled() {
                                 AbortReason::Shutdown
                             } else {
                                 AbortReason::UserInterrupt
                             };
+                            final_state.deferred_error = None;
                             EventMsg::TurnAborted(TurnAbortedEvent { turn_id, reason })
+                        } else if let Some(error) = final_state.deferred_error.take() {
+                            // v1.10:Error 之后再补发 TurnAborted(AbortReason::Error)
+                            // 作为 turn 级终态 —— 此前失败回合只发 Error、不发任何
+                            // turn 终态事件,客户端的 turn 状态永远停在 streaming:
+                            // 停止按钮恒显、点击后引擎空闲分支回一条现编
+                            // turn_id 的 TurnAborted,客户端按 id 配对不到 → 静默
+                            // no-op(实战:Desktop SSE_PARSE_ERROR 后卡死)。
+                            // 终态用真实 turn_id、事件 id 用原 submission id,
+                            // 客户端可据此终结对应 turn。
+                            let code = error.code.clone();
+                            let message = error.message.clone();
+                            let _ = turn_tx_clone
+                                .send(Event::new(sub_id_clone.clone(), EventMsg::Error(error)))
+                                .await;
+                            EventMsg::TurnAborted(TurnAbortedEvent {
+                                turn_id,
+                                reason: AbortReason::Error { code, message },
+                            })
+                        } else {
+                            EventMsg::TurnAborted(TurnAbortedEvent {
+                                turn_id,
+                                reason: AbortReason::UserInterrupt,
+                            })
                         };
                         let _ = turn_tx_clone.send(Event::new(sub_id_clone, event)).await;
                     }

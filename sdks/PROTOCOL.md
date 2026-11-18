@@ -122,6 +122,7 @@ SDK 关心的核心变体(完整列表见 `event_msg/mod.rs`):
 | `turn_started` | `turn_id` | turn 开始 |
 | `agent_message_delta` | `delta` | 增量文本 |
 | `agent_message` | `text` | 完整消息(非流式 provider) |
+| `agent_message_reset` | `reason_code`, `retry_in_ms` | **v1.10 新增(additive)**:模型流式调用失败将自动重试,本 turn 的半成品输出(文本 / thinking / 未完成工具调用)作废;客户端应清空对应流式缓冲,等待重试的全新输出,防止两次输出拼接。老客户端按未知 `type` 忽略即可(代价是重试输出与旧输出拼接) |
 | `tool_call_args_delta` | `call_id`, `delta` | **v1.5 新增(additive)**:模型生成工具参数的原始 JSON 片段;按 `call_id` 和到达顺序拼接得到完整参数。老客户端按未知 `type` 忽略即可 |
 | `tool_call_begin` / `tool_call_end` | `call_id`, `tool_name`, `output`, `is_error` | 内置工具调用 |
 | `tool_execution_request` | `call_id`, `tool`, `args` | **远程工具**:请求客户端本地执行(见 §5) |

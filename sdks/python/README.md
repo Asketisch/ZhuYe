@@ -287,6 +287,7 @@ evs = list(agent.submit_op({
 | `turn_started` / `turn_complete` | submission | 回合起止;complete 带 `status` 与 `usage` |
 | `turn_aborted` | submission | 回合被打断,`reason ∈ user_interrupt/shutdown/error` |
 | `agent_message` / `agent_message_delta` | submission | 最终文本 / 流式增量 |
+| `agent_message_reset` | submission | **v1.10 新增**:模型调用失败将自动重试,清空本 turn 半成品输出缓冲(防两次输出拼接) |
 | `thinking_delta` | submission | 思考流增量 |
 | `token_count` | 全局 | 用量统计 |
 | `tool_call_begin` / `tool_call_args_delta` / `tool_call_output_delta` / `tool_call_end` | submission | 内置工具调用四件套;end 带 `is_error` 与最终 output |

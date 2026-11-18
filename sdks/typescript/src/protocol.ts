@@ -161,6 +161,7 @@ export type EventMsg =
   | SubmissionClosed
   | AgentMessage
   | AgentMessageDelta
+  | AgentMessageReset
   | ThinkingDelta
   | TokenCount
   | ToolCallBegin
@@ -261,6 +262,17 @@ export interface AgentMessage {
 export interface AgentMessageDelta {
   type: 'agent_message_delta';
   delta: string;
+}
+
+/**
+ * v1.10:本 turn 流式 assistant 输出被重置 —— 模型调用失败将自动重试,
+ * 客户端应清空该 turn 正在流式生成的消息缓冲(文本 / thinking / 未
+ * 完成的工具调用),等待重试的全新输出,防止两次输出拼接。
+ */
+export interface AgentMessageReset {
+  type: 'agent_message_reset';
+  reason_code: string;
+  retry_in_ms: number;
 }
 
 export interface ThinkingDelta {

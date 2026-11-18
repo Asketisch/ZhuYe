@@ -54,7 +54,9 @@ zhuye-prompt = { workspace = true }
 zhuye-agent-def = { workspace = true }
 zhuye-notes = { workspace = true }
 zhuye-recovery = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# `test-util`:重试类测试用 `start_paused = true` 让指数退避的真实
+# sleep 即时推进(v1.10 退避封顶 10s,不暂停时钟的退避测试要跑分钟级)。
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }
 
 [lints]
 workspace = true

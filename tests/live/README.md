@@ -219,7 +219,7 @@ scripts/free_model_practice.sh --models cohere/north-mini-code:free --out report
 | **配额是全局的** | 免费池 429 常见(OpenCode 车道按会话计额度,`retry-after` 可达 12h) | 用例自带重试;429 判为跳过;**矩阵必须串行** |
 | **地区门 403** | 免费车道按出口 IP 判地区 | 换出口后重跑 |
 | **模型集合随时变** | 上游随时下架某个 id | 清单每次实时拉取;fallback 链兜底 |
-| **慢首字 / 思考静默** | 实测首字 >30s、思考阶段可静默 60~70s | `timeout_secs` **必须放大到 300** —— reqwest 的 timeout 是「建连→body 读完」的**总**时长,默认 60s 会把流式响应腰斩 |
+| **慢首字 / 思考静默** | 实测首字 >30s、思考阶段可静默 60~70s | v1.10 起超时语义为「建连 + **读空闲**」双层(默认 300s):流只要还在吐字节就不会超时,合法长流不再被总时长腰斩;仅无字节静默超过 300s 才需调大 |
 | **思考过程字段名不一** | 多数端点用 `delta.reasoning_content`,免费池用 `delta.reasoning` | 烛夜 两个都认(`reasoning_content` 优先) |
 | **usage 可能在结束原因之后** | 部分端点把 usage 放在尾部额外 chunk | 烛夜 收到结束原因后会在有界窗口内继续读 usage |
 | **部分模型不支持 tools** | provider 直接 400 | 能力探测识别并跳过 |
@@ -247,5 +247,8 @@ enabled = true`)。
 → 端点用了第三种字段名(`delta.reasoning_details[]`),当前不解析 ——
 见「已知限制」。
 
-**流式响应被腰斩**
-→ `timeout_secs` 太小。放大到 300。
+**`SSE_PARSE_ERROR: Transport error: error decoding response body`**
+→ v1.10 起 provider 超时是「建连 + 读空闲」双层语义(默认 300s),合法长流
+不会被总时长掐断;mid-stream 可重试错误也会自动重试至 `[routing] max_attempts`
+(默认 10)耗尽。若仍出现,说明连接真的挂死超过 300s(期间零字节)——
+调大该 provider 段的 `timeout_secs`。

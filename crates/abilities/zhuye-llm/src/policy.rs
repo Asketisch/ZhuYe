@@ -9,7 +9,10 @@
 //! `Role::Subagent` 只有 `resolve` 的匹配臂,没有任何调用方传入;
 //! 子代理用启动时的主模型,或 `[subagent_providers]` 的独立 registry。
 //!
-//! `max_attempts` 限制单轮总尝试次数,默认 16。
+//! `max_attempts` 限制单次 LLM 调用的总尝试次数(含同凭证重试 / 冷却 /
+//! failover),默认 10 —— 即「初始 1 次 + 最多 9 次自动重试」;瞬时错误
+//! (网络 / SSE 中断 / 5xx / 429)在引擎内自动重试,烧满 10 次才向
+//! 客户端报错。
 //!
 //! v1.0 Phase 3:从 `ReflectConfig.routing` TOML 段构建;v1.0 Phase 1
 //! 暂用 `RoutingPolicy::default()`,`main.primary` 为空时由 caller
@@ -32,8 +35,9 @@ pub struct RoutingPolicy {
     /// 角色名前缀,留扩展用;`Role::Subagent("researcher")` 配合
     /// `subagent_prefix = "subagent"` 形成 `"subagent/researcher"`。
     pub subagent_prefix: String,
-    /// 单轮 LLM 调用的最大尝试次数(包括 cooldown / failover)。
-    /// 默认 16,够 `candidates * 2` 跑两轮。
+    /// 单次 LLM 调用的最大尝试次数(含同凭证重试 / cooldown / failover)。
+    /// 默认 10:「初始 1 次 + 最多 9 次自动重试」,瞬时错误烧满 10 次
+    /// 才对客户端报错(v1.10 前默认 16)。
     pub max_attempts: u32,
     /// 429 全局默认 cooldown(credential 级 `cooldown_override` 优先)。
     pub default_cooldown_rate_limited: Duration,
@@ -50,7 +54,7 @@ impl Default for RoutingPolicy {
             compact: SpecSlot::default(),
             subagent: SpecSlot::default(),
             subagent_prefix: "subagent".to_string(),
-            max_attempts: 16,
+            max_attempts: 10,
             default_cooldown_rate_limited: Duration::from_secs(60),
             default_cooldown_auth: Duration::from_secs(3600),
             default_cooldown_5xx: Duration::from_secs(60),

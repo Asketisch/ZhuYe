@@ -22,6 +22,22 @@ pub(crate) enum RetryAction {
     GiveUp,
 }
 
+/// v1.10 重试退避:base×2^(attempt-1),封顶 10s;`attempt` 从 1 起。
+///
+/// 自动重试烧满 max_attempts(默认 10)期间,纯固定短退避会在持续性
+/// 瞬时错误(SSE 断流 / 网络抖动)下高频空转打爆对端;指数退避让
+/// 重试节奏逐步放缓,同时保持首两轮的快速重试体验。
+pub(crate) fn retry_backoff_ms(base_ms: u64, attempt: u32) -> u64 {
+    // 2^10 = 1024 倍已远超 10s 封顶,移位再大无意义。
+    let shift = attempt.saturating_sub(1).min(10);
+    base_ms
+        .saturating_mul(1u64 << shift)
+        .min(RETRY_BACKOFF_CAP_MS)
+}
+
+/// 重试退避封顶:10s。
+const RETRY_BACKOFF_CAP_MS: u64 = 10_000;
+
 pub(crate) fn classify_action(
     e: &LlmError,
     default_cooldown_rate_limited: Duration,
@@ -135,5 +151,19 @@ mod tests {
             error_code(&LlmError::ContextLengthExceeded { used: 0, limit: 0 }),
             "CONTEXT_TOO_LONG"
         );
+    }
+
+    #[test]
+    fn retry_backoff_is_exponential_and_capped() {
+        // 指数增长:500ms 基数 → 500 / 1000 / 2000 / 4000 …
+        assert_eq!(retry_backoff_ms(500, 1), 500);
+        assert_eq!(retry_backoff_ms(500, 2), 1_000);
+        assert_eq!(retry_backoff_ms(500, 3), 2_000);
+        assert_eq!(retry_backoff_ms(500, 4), 4_000);
+        // 封顶 10s,此后不再增长。
+        assert_eq!(retry_backoff_ms(500, 6), 10_000);
+        assert_eq!(retry_backoff_ms(500, 20), 10_000);
+        // 饱和保护:大基数 × 大位移不回绕。
+        assert_eq!(retry_backoff_ms(u64::MAX, 20), 10_000);
     }
 }

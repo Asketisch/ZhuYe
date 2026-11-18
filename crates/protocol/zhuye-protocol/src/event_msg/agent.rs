@@ -16,6 +16,22 @@ pub struct AgentMessageDelta {
     pub delta: String,
 }
 
+/// 本 turn 当前流式 assistant 输出被重置(additive 新变体,v1.10)。
+///
+/// 模型流式调用中途失败且已有可见增量时,引擎将**自动重试**该次调用;
+/// 重试会从头重新生成,客户端应清空本 turn **正在流式生成**的 assistant
+/// 消息缓冲(文本 / thinking / 尚未 `ToolCallEnd` 的半成品工具调用),
+/// 等待重试的全新输出 —— 否则两次输出会拼接污染。
+/// 已完成的工具调用(`ToolCallEnd` 已发)不受影响。
+/// 旧客户端按未知变体降级忽略(此时会看到两次输出拼接,属已知降级)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessageResetEvent {
+    /// 触发重置的错误码(如 `"SSE_PARSE_ERROR"`),供客户端展示重试原因。
+    pub reason_code: String,
+    /// 本次重试的退避等待(ms);客户端可显示「N ms 后重试」。
+    pub retry_in_ms: u64,
+}
+
 /// thinking delta 的语义类型。此前是自由 `String`(构造端每片
 /// `"raw".to_string()` 分配一次),类型化为枚举:wire 形状不变
 /// (`"raw"` / `"summary"` 小写),未知值容错为 `Unknown` 不崩。

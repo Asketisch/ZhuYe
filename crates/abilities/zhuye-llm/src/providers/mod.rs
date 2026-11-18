@@ -9,10 +9,35 @@ pub mod pricing;
 pub mod quota;
 pub mod responses;
 
+use std::time::Duration;
+
 use crate::error::LlmError;
 use crate::request::ChatRequest;
 
 // ── provider 共享的端点拼接与 SSE 响应校验 ─────────────────────────
+
+/// 构建流式 provider 共用的 HTTP client(建连 + 读空闲双层超时)。
+///
+/// **不要**在这里挂 `ClientBuilder::timeout` —— reqwest 的 total timeout
+/// 覆盖「建连 → 响应体读完」的全程,而流式 LLM 响应(长规划输出、
+/// 推理模型思考)单次跑几分钟完全正常;total deadline 会把合法长流
+/// 在固定时长处腰斩,`bytes_stream` 以 Decode 错误终止,表现为
+/// `SSE_PARSE_ERROR: Transport error: error decoding response body`
+/// (实战:内网 vLLM 端点 60s 整点断流,短请求全部成功)。
+///
+/// 正确语义是两层:
+/// - `connect_timeout`:仅 TCP/TLS 建连阶段,防端点不可达时久挂;
+/// - `read_timeout`:**读空闲**超时 —— 每次读到数据即重置计时,流只要
+///   还在吐字节就永不超时,只在连接真正挂死(无字节窗口超时)才断。
+///   默认 300s 覆盖推理模型 prefill/思考期的无字节窗口(对齐
+///   OpenAI/Anthropic 官方 SDK 600s 量级的包容度)。
+pub(crate) fn stream_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
+    reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .read_timeout(timeout)
+        .build()
+        .map_err(LlmError::from)
+}
 
 /// 把 base_url 与 API path 拼成完整端点。
 ///

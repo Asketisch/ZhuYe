@@ -29,7 +29,8 @@ mod tool;
 mod turn;
 
 pub use agent::{
-    AgentMessage, AgentMessageDelta, ThinkingDelta, ThinkingDeltaKind, TokenCountEvent,
+    AgentMessage, AgentMessageDelta, AgentMessageResetEvent, ThinkingDelta, ThinkingDeltaKind,
+    TokenCountEvent,
 };
 pub use approval::{ApprovalKind, ApprovalRequestEvent, PermissionBubbleEvent};
 pub use collab::{CollabFinishedEvent, CollabMessageEvent, CollabStartedEvent};
@@ -100,6 +101,9 @@ pub enum EventMsg {
     AgentMessage(AgentMessage),
     /// 流式 assistant 消息分片。
     AgentMessageDelta(AgentMessageDelta),
+    /// v1.10:本 turn 流式 assistant 输出被重置(模型调用失败将自动重试,
+    /// 客户端清掉半成品缓冲,防止两次输出拼接)。additive 新变体。
+    AgentMessageReset(AgentMessageResetEvent),
     /// Anthropic extended-thinking 分片。
     ThinkingDelta(ThinkingDelta),
     /// Token 用量快照(通常在 turn 结束时 emit)。
@@ -277,6 +281,7 @@ impl EventMsg {
             EventMsg::ShutdownComplete => "shutdown_complete",
             EventMsg::AgentMessage(_) => "agent_message",
             EventMsg::AgentMessageDelta(_) => "agent_message_delta",
+            EventMsg::AgentMessageReset(_) => "agent_message_reset",
             EventMsg::ThinkingDelta(_) => "thinking_delta",
             EventMsg::TokenCount(_) => "token_count",
             EventMsg::ToolCallBegin(_) => "tool_call_begin",

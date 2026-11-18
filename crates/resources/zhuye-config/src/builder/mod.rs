@@ -37,7 +37,11 @@ use crate::schema::{
     OpenAISubagentSection, ReflectConfig, SpecSlotConfig,
 };
 
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// provider HTTP 超时默认 300s。语义为「建连 + 读空闲」双层超时
+/// (zhuye-llm `stream_http_client`),非整请求总时长 —— reqwest 的
+/// total timeout 会把超过时长的流式响应腰斩(实战 60s 整点断流),
+/// 300s 读空闲同时覆盖推理模型 prefill/思考期的无字节窗口。
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// MCP tool call 默认超时 30s,与 `mcp.connection.timeoutMs` (Anthropic) 一致。
 const DEFAULT_MCP_TIMEOUT_MS: u64 = 30_000;
 /// LSP request 默认超时 30s,与 MCP 对齐。

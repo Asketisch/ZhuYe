@@ -13,7 +13,9 @@ use zhuye_llm::{
     Capabilities, ChatEvent, ChatRequest, CredentialPool, LlmError, ModelClient, ModelRegistry,
     PoolEntry,
 };
-use zhuye_protocol::{EventMsg, RoutingEventKind, Submission, UserInputItem};
+use zhuye_protocol::{
+    AbortReason, AgentMessageResetEvent, EventMsg, RoutingEventKind, Submission, UserInputItem,
+};
 use zhuye_tools::{ToolRegistry, builtins::EchoTool};
 
 struct StubClient {
@@ -1053,13 +1055,19 @@ async fn max_attempts_cap_ends_turn_with_error_event() {
     );
 }
 
-/// G3:mid-stream RetrySame 的同凭证上限 —— 同一凭证最多尝试 2 次,
-/// 超限强制 failover(exclude),池耗尽后以 `ALL_CREDENTIALS_EXHAUSTED`
-/// 快速收场,而不是烧满 `max_attempts`。
+/// G3:mid-stream RetrySame 的同凭证上限 —— 同一凭证最多连续尝试 2 次,
+/// 超限且**还有备选凭证**时强制 failover(exclude)+ Switched 路由事件。
 ///
-/// 修复前:mid-stream 错误路径没有上限检查,两个凭证交替重试到
-/// `max_attempts`(16 次)才以 MAX_ATTEMPTS 结束,多空转 12 次。
-#[tokio::test]
+/// v1.10 语义变更:全部凭证触顶后不再以 `ALL_CREDENTIALS_EXHAUSTED`
+/// 提前收场 —— 自动重试要烧满 `max_attempts` 总预算才放弃(用户要求
+/// 「重试默认 10 次失败后再停下」),最后一个凭证在无备选时重置
+/// per-cred 计数继续重试。本测试用 `max_attempts = 4` 验证:
+/// c1 触顶 2 次 → failover 到 c2;c2 触顶后无备选 → 重置继续 →
+/// 总尝试恰为 4 次,以 `MAX_ATTEMPTS` 收场。
+///
+/// 修复前(v1.5):双凭证全部触顶直接 ALL_CREDENTIALS_EXHAUSTED,
+/// 总预算未烧完就放弃 —— 持续瞬时错误下重试次数远小于 max_attempts。
+#[tokio::test(start_paused = true)]
 async fn mid_stream_retry_same_is_capped_then_fails_over() {
     let registry = Arc::new(ModelRegistry::new());
     // 两个凭证在产生可见输出前都遇到持久性 SSE 错误,可以安全重试。
@@ -1088,7 +1096,13 @@ async fn mid_stream_retry_same_is_capped_then_fails_over() {
             ],
         },
     );
-    let thread = build_thread(registry.clone());
+    let thread = build_thread_with_policy(
+        registry.clone(),
+        RoutingPolicy {
+            max_attempts: 4,
+            ..RoutingPolicy::default()
+        },
+    );
     let mut handle = thread.submit(make_sub("cap me")).await;
 
     let mut saw_all_exhausted = false;
@@ -1114,15 +1128,15 @@ async fn mid_stream_retry_same_is_capped_then_fails_over() {
     let total = c1.calls() + c2.calls();
     assert_eq!(
         total, 4,
-        "2 个凭证 × 同凭证上限 2 次 = 恰好 4 次尝试(修复前为 16 次)"
+        "总尝试烧满 max_attempts=4(v1.10 前为双凭证各 2 次提前收场)"
     );
-    assert_eq!(c1.calls(), 2, "c1 应恰好尝试 2 次");
-    assert_eq!(c2.calls(), 2, "c2 应恰好尝试 2 次");
+    assert_eq!(c1.calls(), 2, "c1 触发同凭证上限后应 failover,恰好 2 次");
+    assert_eq!(c2.calls(), 2, "c2 是最后凭证,与 c1 分摊剩余预算");
     assert!(
-        saw_all_exhausted,
-        "双凭证全部超限后应以 ALL_CREDENTIALS_EXHAUSTED 收场"
+        !saw_all_exhausted,
+        "v1.10:凭证触顶不再提前放弃,不应出现 ALL_CREDENTIALS_EXHAUSTED"
     );
-    assert!(!saw_max_attempts, "上限生效时不应烧满 max_attempts 才结束");
+    assert!(saw_max_attempts, "应烧满预算后以 MAX_ATTEMPTS 收场");
     assert!(
         saw_switched_exhausted,
         "超限 failover 应发 Switched(retry_same_exhausted) 路由事件"
@@ -1357,5 +1371,273 @@ async fn goal_mode_without_client_reports_error() {
     assert!(
         saw_error,
         "没有 LLM 客户端时目标模式必须发 GOAL_NO_CLIENT 错误事件,而不是静默丢弃"
+    );
+}
+
+// ── v1.10:自动重试(可见增量重试化 / 单凭证烧满预算)+ 失败终态 ──────
+
+/// v1.10 夹具:第 1 次调用在已产出可见增量后中途断流(SSE 中断的典型
+/// 形态 —— 正是 SSE_PARSE_ERROR 事故的复现形态),第 2 次起返回完整
+/// 正常流。用于验证「有可见增量的 mid-stream 错误自动重试 +
+/// AgentMessageReset 清缓冲、两次输出不拼接」。
+struct RecoveringClient {
+    calls: Mutex<u32>,
+}
+
+#[async_trait]
+impl ModelClient for RecoveringClient {
+    fn name(&self) -> &str {
+        "stub"
+    }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+    async fn stream(
+        &self,
+        _request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatEvent, LlmError>> + Send>>, LlmError> {
+        let n = {
+            let mut c = self.calls.lock();
+            *c += 1;
+            *c
+        };
+        let items: Vec<Result<ChatEvent, LlmError>> = if n == 1 {
+            vec![
+                Ok(ChatEvent::ContentDelta("partial".into())),
+                Err(LlmError::SseParse("connection reset mid-stream".into())),
+            ]
+        } else {
+            vec![
+                Ok(ChatEvent::ContentDelta("complete answer".into())),
+                Ok(ChatEvent::MessageStop),
+            ]
+        };
+        Ok(Box::pin(stream::iter(items)))
+    }
+}
+
+/// v1.10:有可见增量的 mid-stream 可重试错误(SSE 中断)→ 自动重试,
+/// 重试前发 `AgentMessageReset` 让客户端清半成品缓冲;最终文本只有
+/// 重试后的完整输出,两次输出不拼接。
+///
+/// 修复前:可见增量直接 GiveUp(「重新调用模型会把两次输出拼在一
+/// 起」),一次瞬时断流就把整回合打死 —— Desktop 会话
+/// SSE_PARSE_ERROR 一击必杀的直接原因。
+#[tokio::test(start_paused = true)]
+async fn mid_stream_visible_output_error_retries_with_reset() {
+    let registry = Arc::new(ModelRegistry::new());
+    let client = Arc::new(RecoveringClient {
+        calls: Mutex::new(0),
+    });
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client,
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let thread = build_thread(registry);
+    let mut handle = thread.submit(make_sub("flaky stream")).await;
+
+    let mut reset_events: Vec<AgentMessageResetEvent> = Vec::new();
+    let mut saw_stream_error = false;
+    // 模拟客户端语义:AgentMessageReset 到达时清空流式缓冲(与
+    // Desktop / CLI 的 adapter 行为一致),再累积后续增量 —— 最终
+    // 文本只能来自重试后的完整输出。
+    let mut streamed_text = String::new();
+    let mut saw_turn_complete = false;
+    while let Some(ev) = handle.next().await {
+        match ev.msg {
+            EventMsg::AgentMessageReset(r) => {
+                streamed_text.clear();
+                reset_events.push(r);
+            }
+            EventMsg::StreamError(s) if s.code == "SSE_PARSE_ERROR" => saw_stream_error = true,
+            EventMsg::AgentMessageDelta(d) => streamed_text.push_str(&d.delta),
+            EventMsg::TurnComplete(_) => saw_turn_complete = true,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        reset_events.len(),
+        1,
+        "重试前应恰好发一次 AgentMessageReset"
+    );
+    assert_eq!(
+        reset_events[0].reason_code, "SSE_PARSE_ERROR",
+        "reset 事件携带触发重试的错误码"
+    );
+    assert!(
+        reset_events[0].retry_in_ms > 0,
+        "reset 事件应携带重试退避时长"
+    );
+    assert!(saw_stream_error, "重试前应发 StreamError 说明失败原因");
+    assert_eq!(
+        streamed_text, "complete answer",
+        "最终文本只能是重试后的完整输出(partial 已被 reset 清除,不拼接)"
+    );
+    assert!(saw_turn_complete, "重试成功后 turn 正常完成");
+    // 夹具自证:恰好调用了 2 次(1 次失败 + 1 次成功)。
+    // (RecoveringClient 无 calls() 访问器,次数由 reset_events.len()==1
+    //  与成功收尾共同佐证。)
+}
+
+/// v1.10:不可重试错误(4xx InvalidRequest)+ 可见增量 → 保留部分文本、
+/// 发 Error 后**补发 TurnAborted(AbortReason::Error)终态**。
+///
+/// 修复前:失败回合只发 Error、无任何 turn 终态事件,客户端 turn 状态
+/// 永远停在 streaming(Desktop 失败后停止按钮恒显、点击 no-op 的根因)。
+#[tokio::test]
+async fn failed_turn_emits_turn_aborted_terminal() {
+    let registry = Arc::new(ModelRegistry::new());
+    // InvalidRequest(400)分类为 GiveUp:不重试,走 deferred_error 路径。
+    let client = Arc::new(StubClient::with_mid_stream_error(
+        vec![ChatEvent::ContentDelta("partial".into())],
+        LlmError::InvalidRequest {
+            message: "bad request".into(),
+        },
+    ));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client,
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let thread = build_thread(registry);
+    let mut handle = thread.submit(make_sub("will fail")).await;
+
+    let mut started_turn_id: Option<String> = None;
+    let mut error_code: Option<String> = None;
+    let mut aborted: Option<(String, AbortReason)> = None;
+    let mut saw_turn_complete = false;
+    // 记录事件顺序:Error 必须先于 TurnAborted。
+    let mut error_before_abort = false;
+    while let Some(ev) = handle.next().await {
+        match ev.msg {
+            EventMsg::TurnStarted(t) => started_turn_id = Some(t.turn_id.to_string()),
+            EventMsg::Error(e) => {
+                error_code = Some(e.code.clone());
+                error_before_abort = aborted.is_none();
+            }
+            EventMsg::TurnAborted(t) => aborted = Some((t.turn_id.to_string(), t.reason)),
+            EventMsg::TurnComplete(_) => saw_turn_complete = true,
+            _ => {}
+        }
+    }
+    assert_eq!(error_code.as_deref(), Some("INVALID_REQUEST"));
+    let (abort_turn_id, reason) = aborted.expect("失败回合必须补发 TurnAborted 终态");
+    assert_eq!(
+        Some(&abort_turn_id),
+        started_turn_id.as_ref(),
+        "TurnAborted 必须携带真实 turn_id(此前空闲中断回执用现编 id,客户端配对不到)"
+    );
+    // 失败终态的 reason 是 AbortReason::Error,携带与 Error 事件一致的错误码。
+    match reason {
+        AbortReason::Error { code, message } => {
+            assert_eq!(code, "INVALID_REQUEST");
+            assert!(message.contains("bad request"));
+        }
+        other => panic!("失败终态 reason 应为 AbortReason::Error,实际 {other:?}"),
+    }
+    assert!(error_before_abort, "Error 应先于 TurnAborted 发出");
+    assert!(!saw_turn_complete, "失败回合不应发 TurnComplete");
+}
+
+/// v1.10:单凭证 mid-stream 持久瞬时错误 → 烧满 max_attempts 全预算
+/// 才放弃(不再被 per-cred 上限 2 提前打死成 ALL_CREDENTIALS_EXHAUSTED)。
+#[tokio::test(start_paused = true)]
+async fn single_credential_burns_full_retry_budget() {
+    let registry = Arc::new(ModelRegistry::new());
+    let client = Arc::new(StubClient::with_mid_stream_error(
+        vec![],
+        LlmError::SseParse("persistent".into()),
+    ));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: client.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let thread = build_thread_with_policy(
+        registry,
+        RoutingPolicy {
+            max_attempts: 4,
+            ..RoutingPolicy::default()
+        },
+    );
+    let mut handle = thread.submit(make_sub("keep trying")).await;
+
+    let mut saw_max_attempts = false;
+    let mut saw_all_exhausted = false;
+    while let Some(ev) = handle.next().await {
+        match ev.msg {
+            EventMsg::Error(e) if e.code == "MAX_ATTEMPTS" => saw_max_attempts = true,
+            EventMsg::Error(e) if e.code == "ALL_CREDENTIALS_EXHAUSTED" => {
+                saw_all_exhausted = true;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(client.calls(), 4, "单凭证应烧满 max_attempts=4 次预算");
+    assert!(saw_max_attempts, "应以 MAX_ATTEMPTS 收场");
+    assert!(!saw_all_exhausted, "单凭证重试不再被 per-cred 上限提前打死");
+}
+
+/// v1.10:单凭证**建流阶段**持久瞬时错误(如连接失败)同样烧满预算 ——
+/// 此前初始化错误路径的 RetrySame 无条件 exclude 当前凭证,单凭证一次
+/// 失败就直接 ALL_CREDENTIALS_EXHAUSTED,自动重试完全不可达。
+#[tokio::test(start_paused = true)]
+async fn single_credential_init_error_burns_full_retry_budget() {
+    let registry = Arc::new(ModelRegistry::new());
+    let client = Arc::new(StubClient::with_sync_error(LlmError::Http(
+        "connection refused".into(),
+    )));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: client.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let thread = build_thread_with_policy(
+        registry,
+        RoutingPolicy {
+            max_attempts: 3,
+            ..RoutingPolicy::default()
+        },
+    );
+    let mut handle = thread.submit(make_sub("init fails")).await;
+
+    let mut saw_max_attempts = false;
+    let mut saw_all_exhausted = false;
+    while let Some(ev) = handle.next().await {
+        match ev.msg {
+            EventMsg::Error(e) if e.code == "MAX_ATTEMPTS" => saw_max_attempts = true,
+            EventMsg::Error(e) if e.code == "ALL_CREDENTIALS_EXHAUSTED" => {
+                saw_all_exhausted = true;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(client.calls(), 3, "建流失败应同凭证重试烧满 max_attempts=3");
+    assert!(saw_max_attempts, "应以 MAX_ATTEMPTS 收场");
+    assert!(
+        !saw_all_exhausted,
+        "单凭证建流失败不再一次就 ALL_CREDENTIALS_EXHAUSTED"
     );
 }

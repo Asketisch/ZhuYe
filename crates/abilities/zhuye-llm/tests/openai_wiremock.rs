@@ -626,3 +626,84 @@ async fn openai_base_url_with_version_segment_not_duplicated() {
         "全部请求应打到版本段路径: {urls:?}"
     );
 }
+
+// ── 慢滴流回归:超时语义必须是「读空闲」而非「整请求总时长」 ──────────
+//
+// 事故背景:reqwest 的 `ClientBuilder::timeout` 是 total deadline
+// (建连 → 响应体读完),流式 LLM 响应总时长超阈值即被腰斩,表现为
+// `SSE_PARSE_ERROR: Transport error: error decoding response body`。
+// 修复后语义为 `connect_timeout` + `read_timeout`(读到数据即重置)。
+// 本测试构造「总时长 > 超时、但块间隔 << 超时」的慢滴 SSE 流:
+// 旧实现(total deadline)在 250ms 处掐断 → 断言失败;新实现完整收完。
+#[tokio::test]
+async fn openai_slow_drip_stream_survives_beyond_total_timeout() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // 手写极简 HTTP/1.1 SSE 服务器:wiremock 不支持逐块延迟。
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("accept");
+        // 读掉请求头即可(不关心请求体,提前写响应是合法的 HTTP 行为)。
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+        if sock.write_all(head.as_bytes()).await.is_err() {
+            return; // 客户端已断开(旧实现被掐断的场景)
+        }
+        let _ = sock.flush().await;
+        // 8 个内容块,间隔 60ms:总时长 ~480ms > timeout(250ms),
+        // 单块间隔 60ms << timeout(读空闲远未到)。
+        for i in 0..8u32 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let frame = format!(
+                "data: {{\"id\":\"chatcmpl-slow\",\"model\":\"gpt-4o\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{i}\"}}}}]}}\n\n"
+            );
+            if sock.write_all(frame.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = sock.flush().await;
+        }
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let tail = "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        let _ = sock.write_all(tail.as_bytes()).await;
+        let _ = sock.flush().await;
+        let _ = sock.shutdown().await;
+    });
+
+    let client = OpenAIClient::new(OpenAIConfig {
+        api_key: "test-key".into(),
+        base_url: Some(format!("http://{addr}")),
+        // 超时 250ms:小于流总时长(~540ms),大于单块间隔(60ms)。
+        timeout: Duration::from_millis(250),
+        temperature: None,
+        max_tokens: None,
+    })
+    .expect("client");
+
+    let started = std::time::Instant::now();
+    let mut stream = client
+        .stream(basic_request(), CancellationToken::new())
+        .await
+        .expect("stream 建立成功");
+    let mut deltas = Vec::new();
+    let mut saw_stop = false;
+    while let Some(ev) = stream.next().await {
+        match ev.expect("慢滴流不应中途出错") {
+            ChatEvent::ContentDelta(d) => deltas.push(d),
+            ChatEvent::MessageStop => saw_stop = true,
+            _ => {}
+        }
+    }
+    server.abort();
+    // 8 个增量全部收到且正常收尾 —— 读空闲语义下流未被腰斩。
+    assert_eq!(deltas, (0..8).map(|i| i.to_string()).collect::<Vec<_>>());
+    assert!(saw_stop, "流应正常收到 MessageStop");
+    // 防御断言:确实是慢流(总时长 > timeout),否则测试失去意义。
+    assert!(
+        started.elapsed() >= Duration::from_millis(480),
+        "流总时长应超过 timeout 配置,实际 {:?}",
+        started.elapsed()
+    );
+}

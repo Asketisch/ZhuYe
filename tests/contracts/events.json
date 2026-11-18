@@ -41,6 +41,11 @@
     "shutdown_complete": { "type": "shutdown_complete" },
     "agent_message": { "type": "agent_message", "text": "final answer" },
     "agent_message_delta": { "type": "agent_message_delta", "delta": "partial " },
+    "agent_message_reset": {
+      "type": "agent_message_reset",
+      "reason_code": "SSE_PARSE_ERROR",
+      "retry_in_ms": 500
+    },
     "thinking_delta": {
       "type": "thinking_delta",
       "delta": "considering...",
