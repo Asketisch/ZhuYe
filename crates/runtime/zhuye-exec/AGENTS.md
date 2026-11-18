@@ -24,6 +24,7 @@ headless 与 serve 的共享装配层：读参数、bootstrap 会话、把协议
 - **stdout / stderr 分工是硬不变量**：协议事件以 JSONL 写 stdout，tracing 日志写 stderr（`src/runtime_config.rs` 的 `init_tracing`）。`zhuye exec | jq` 依赖这条，任何日志混进 stdout 都是回归。
 - **`ExecArgs`（`src/lib.rs`）与 `ServeArgs`（`src/serve.rs`）是两个入口的参数结构**，也是 CLI 文档的同源定义；`zhuye-cli` 的 clap 外壳投影自它们。改参数先改这里，再改 CLI 侧投影。
 - **恢复链三选一**：`--resume <UUID>` / `-c`（`continue_last`）/ `-r N`（`resume_by`）在 clap 层用 `conflicts_with_all` 互斥；`async_main` 另有 `if/else if` 优先级链兜底（`--resume` 优先于 `-c` / `-r`，二者优先于 `prompt`）。两边都要改才能保持一致。
+- **`--prompt-profile` 三态提示词方案**（`ExecArgs::prompt_profile` + `src/lib.rs` 的 `apply_prompt_profile`）：取值 `default` / `auto` / 方案标识，映射 `PromptSelection` 后在会话装配前以一条 `Op::PromptCommand { Select }` 提交生效；与 resume 输入不互斥，仅设定本会话的提示词选择。方案库与来源登记见 abilities 层篇 `zhuye-prompt` 条目。
 - **`PLAN_MODE_EXIT_CODE`**（`src/lib.rs`）：`--plan-mode` 下计划未产出时的退出码，`docs/PLAN_MODE.md` 对它有明文承诺，改它要同步文档与依赖该码值的调用方脚本。
 - **hooks 启用口径**由 `HeadlessArgs::hooks_explicit_only`（`src/headless.rs`）决定：serve 侧收紧为 `true`（内置 hook 需在配置段显式列出才启用），exec / 库侧保持 `false`（未配置即全部启用）。
 - **telemetry 与 activity 开关**：sink 由 `src/runtime_config.rs` 的 `build_telemetry_sink` 构造；activity 审计是否落 `~/.zhuye/activity/activity.jsonl` 由配置段的 `activity` 开关决定（父开关 `enabled` 关闭时一并关闭）。

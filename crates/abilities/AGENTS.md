@@ -18,7 +18,7 @@
 | `zhuye-skills` | SKILL.md 扫描、加载与技能激活 | 并入本篇 |
 | `zhuye-memory` | 三 scope 持久记忆与检索 | 并入本篇 |
 | `zhuye-agent-def` | Markdown + frontmatter 的 agent 定义解析 | 并入本篇 |
-| `zhuye-prompt` | 提示词模板装配与 provider 提示词资源 | 并入本篇 |
+| `zhuye-prompt` | 提示词模板装配、provider 提示词资源、三态方案选择（default / auto / manual）与上游来源维护 | 并入本篇 |
 | `zhuye-compact` | 上下文压缩策略 | 并入本篇 |
 | `zhuye-recovery` | 上下文恢复(元消息收集与回填) | 并入本篇 |
 | `zhuye-notes` | 会话级增量笔记 | 并入本篇 |
@@ -45,7 +45,7 @@
 ## 本层通用规则
 
 1. **错误类型统一在协议层** —— `ToolError` / `ToolOutput` 定义在 `zhuye-protocol`,目的就是打破 tools ↔ hooks 的循环依赖。tools 与 hooks 之间新增能力时直接复用协议层类型,不要在两个 crate 之间另造错误类型,也不要新开一条依赖边。
-2. **提示词文案外置** —— 面向模型的文案不写死在 Rust 代码里:按 provider 拆成 `crates/abilities/zhuye-prompt/prompts/` 下的 Markdown 文件。改文案改文件,不动逻辑;新增 provider 提示词同时在该目录补文件。
+2. **提示词文案外置** —— 面向模型的文案不写死在 Rust 代码里:按 provider 拆成 `crates/abilities/zhuye-prompt/prompts/` 下的 Markdown 文件。改文案改文件,不动逻辑;新增 provider 提示词同时在该目录补文件。上游来源与固定版本登记在同目录 `sources.json`(repository / revision / sha256 / 适配模型);`scripts/check_prompt_sources.py` 对比固定版与上游分支并产出审核报告,由 CI `.github/workflows/prompt-sources.yml` 调用 —— 更新文案时同步登记来源,否则审核报告会出现指纹漂移。
 3. **检索只此一份** —— BM25 相关性排序由 `zhuye-bm25` 提供,`zhuye-tools`(grep 的 `rank=bm25`)、`zhuye-memory`、`zhuye-notes` 共用。新增消费方直接依赖它,不要在消费方另写一套打分逻辑。
 4. **记忆存储契约**(zhuye-memory 无独立篇,故留在本篇)—— 持久记忆分 project / user / session 三 scope:project 落 `{workspace}/.zhuye/agent-memory/{agent_type}/MEMORY.md`(可入 VCS 共享),user 落 `~/.zhuye/agent-memory/{agent_type}/MEMORY.md`,session 仅在内存中。注入记忆的字符上限由 `MAX_MEMORY_INJECT_CHARS` 定义;改存储位置或 scope 语义要同步调用方。
 
@@ -57,6 +57,7 @@
 | `zhuye-llm/src/lib.rs` | `ModelClient` 与 provider 注册入口 |
 | `zhuye-hooks/src/lib.rs` | `HookEngine` 与事件 / 决策类型导出 |
 | `zhuye-prompt/src/lib.rs` | 提示词模板装配入口 |
+| `zhuye-prompt/prompts/sources.json` | 提示词方案的上游来源登记(revision + sha256),`check_prompt_sources.py` 的解析输入 |
 | `zhuye-memory/src/scope.rs` | 三 scope 路径解析 |
 | `zhuye-bm25/src/lib.rs` | BM25 检索内核 |
 | `zhuye-sanitize/src/lib.rs` | 脱敏规则与提示词守卫 |
