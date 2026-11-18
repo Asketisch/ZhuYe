@@ -9,7 +9,7 @@
 
 ## 脚本速览
 
-本目录下的可执行脚本**全部登记在下表**;新增脚本必须同时在此登记。
+本目录下的可执行脚本与工具型 Python 脚本**全部登记在下表**;新增脚本必须同时在此登记。
 
 ### 构建与分发
 
@@ -60,6 +60,15 @@
 |---|---|
 | `ofm_gateway.sh` | 本地免费模型网关的启停与状态查询助手 |
 | `free_model_practice.sh` | 免费模型横向对比演练,输出 Markdown 对比表 |
+
+### 提示词来源维护
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `check_prompt_sources.py` | 对比提示词方案固定版与上游分支(`zhuye-prompt/prompts/sources.json` 登记来源),产出维护者审核报告 |
+
+- 非可执行,以 `python3 scripts/check_prompt_sources.py` 运行;依赖 `gh` CLI 访问 GitHub API。
+- 由 CI `.github/workflows/prompt-sources.yml` 定期调用;**只产出报告不自动改文件** —— 是否跟随上游更新由维护者决定,更新文案时须同步 `sources.json` 的 sha256(见 abilities 层篇 `zhuye-prompt` 条目)。
 
 ### 开发辅助(非脚本)
 

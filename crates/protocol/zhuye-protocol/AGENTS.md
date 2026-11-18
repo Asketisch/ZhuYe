@@ -11,6 +11,7 @@
 | 文件 | 一句话职责 |
 |------|-----------|
 | `src/op.rs` | `Op` 操作枚举（客户端 → 引擎），serde 以 `type` 标签（snake_case）编码 |
+| `src/op_prompt.rs` | `Op::PromptCommand`（`/prompt`）的 `PromptAction` 与 `PromptSelection` 三态选择策略（default / auto / manual） |
 | `src/event_msg/mod.rs` | `EventMsg` 事件枚举本体；各域负载类型拆到同目录子模块 |
 | `src/event.rs` | `Event` 外壳：事件 id + 消息体 |
 | `src/submission.rs` | `Submission` 提交信封，一次提交的请求单元 |
@@ -24,6 +25,7 @@
 - **`Op` 枚举形态是发布门禁的解析输入**：`scripts/release_sdk.sh` 的 `check_docs` 从 `src/op.rs` 读入，以「列 0 的 `}`」判定枚举边界，再用 `^    ([A-Z][A-Za-z0-9]+)` 提取变体名；边界解析不到或提不出变体，脚本直接 FAIL。
 - **新增 `Op` 变体的同步链路**：`src/op.rs` → `sdks/python/README.md` 与 `sdks/typescript/README.md` 的 Op 参考表 → `sdks/python/zhuye/protocol.py` 的 `Literal["..."]` → `sdks/typescript/src/protocol.ts` 的 `type: '...'` → （wire 语义变化时）`sdks/PROTOCOL.md`。
 - **新增 `EventMsg` 变体的同步链路**：枚举本体加在 `src/event_msg/mod.rs`，负载类型放同目录子模块；随后同步双 README 的 EventMsg 参考表与双 SDK 类型层。注意 `check_docs` 只解析 `Op`，EventMsg 变体靠这套流程人工同步，脚本不会替你兜底。
+- **带 action 载荷的 `Op` 变体拆独立模块**：`PromptCommand` 的 `PromptAction` / `PromptSelection` 定义在 `src/op_prompt.rs`，应答事件体（`PromptList` / `PromptSwitched`）在 `event_msg` 域 —— 既守住「枚举体外定义」的禁止事项，也让 `check_docs` 不误判变体。新增同类变体照此办理。
 - **门禁命令**：`./scripts/release_sdk.sh check_docs`。协议文档落后于源码，会在 `check` / `tag` 发布前直接失败。
 - **覆盖矩阵**：新增或移除协议能力时同步 `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表。
 

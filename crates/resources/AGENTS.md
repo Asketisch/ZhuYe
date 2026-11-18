@@ -59,6 +59,7 @@
 | `zhuye-config/src/builder/` | 配置 → ModelRegistry 的装配 |
 | `zhuye-plugin/src/manager/mod.rs` | 插件安装 / 卸载与状态记账 |
 | `zhuye-rollout/src/lib.rs` | JSONL rollout 落盘与轮转 |
+| `zhuye-rollout/src/index/mod.rs` | 会话索引:`list_sessions` 只读每文件首行(按 session 去重);首行非 SessionMeta 时在前缀窗口与轮转副本中恢复 |
 | `zhuye-ast/src/lib.rs` | tree-sitter 代码搜索工具入口 |
 | `zhuye-wasm/src/lib.rs` | WASM 组件宿主入口 |
 

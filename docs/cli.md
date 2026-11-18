@@ -47,6 +47,7 @@ prompt 被忽略,恢复优先)。
 | `-c` / `--continue` | 续最近一次 session |
 | `-r <N>` | 按序号恢复(1-indexed,newest first) |
 | `--agent <NAME>` | Agent 定义名(`~/.zhuye/agents/` 与 `{workspace}/.zhuye/agents/`,默认 `default`) |
+| `--prompt-profile <PROFILE>` | 本次会话的提示词方案:`default`(烛夜默认文案)/ `auto`(按模型选已评测方案)/ 方案标识(固定用指定层,如 `claude`);等价会话内 `/prompt select`,方案库见 [prompts.md](prompts.md) |
 | `--plan-mode` | 启动即进入 Plan mode(只读;与 `--full-auto` 互斥) |
 | `--full-auto` / `--yolo` | 完全托管:以 `PermissionMode::Bubble` 启动,非高危工具自动批准,高危仍强制人工确认 |
 | `--ephemeral-tasks` | 任务不持久化(内存 store) |

@@ -16,7 +16,13 @@
 - provider 身份用强类型的 `ProviderKind` 表达(`Anthropic` / `OpenAI` / `Ollama` / `Custom`),不要退回字符串比较。
 - 多凭据场景走 `registry.rs` 的 `ModelRegistry`(name → `CredentialPool`,加权轮询 + cooldown 过滤),单凭据元数据在 `credential.rs`,冷却状态在 `cooldown.rs`。
 
-### 2. 新增 provider 的同步点
+### 2. 内联 System 消息折叠是发 wire 前的硬步骤
+
+- 压缩摘要（`zhuye-compact`）与 hook 注入会往 `messages` 中途塞入内联 `System`；而 OpenAI 兼容 / Ollama / Responses 的线上形态要求 system 只能出现在数组开头，严格网关对「用户消息之后再出现 system」直接返回 HTTP 400，Anthropic 则会静默丢弃消息流里的 `System`（内容直接丢失）。
+- 因此各 provider 在发 wire 前统一调 `ChatRequest::fold_system_messages`（`src/request.rs`）：把内联 `System` 按原出现顺序折叠进顶层 `system` 块，`messages` 只留对话轮次。幂等；全 `System` 的消息列表保持原样（折叠后为空会被 provider 拒绝）；空白内容直接丢弃。
+- 新增 provider 必须同样走这一步 —— 跳过它不仅触发 400 / 丢内容，`inject_cache_control` 按消息下标写入的缓存断点也会因 provider 丢弃消息而漂移。
+
+### 3. 新增 provider 的同步点
 
 新增一个 provider 时,除本 crate 的实现外,下列三处必须同步:
 
@@ -26,7 +32,7 @@
 | 配置段 | `docs/configuration.md` 的 provider 段说明 + `zhuye-config` 的 schema |
 | 模型清单入口 | `zhuye models` 子命令(`crates/runtime/zhuye-cli/src/models.rs`) |
 
-### 3. mock provider 是离线门禁的基础设施,不得静默变更
+### 4. mock provider 是离线门禁的基础设施,不得静默变更
 
 `providers/mock.rs` 的行为契约是全仓离线流程(`ZHUYE_MODEL=mock`、examples、SDK 冒烟)的地基:
 
@@ -42,6 +48,7 @@
 | 文件 | 一句话职责 |
 |---|---|
 | `src/client.rs` | `ModelClient` trait 定义 |
+| `src/request.rs` | `ChatRequest` 及嵌套类型;`fold_system_messages` 内联 System 折叠 |
 | `src/capabilities.rs` | provider / 模型能力标志与 `ProviderKind` |
 | `src/registry.rs` | 多凭据池注册表与派位 |
 | `src/policy.rs` | 角色 → spec slot 路由策略 |
