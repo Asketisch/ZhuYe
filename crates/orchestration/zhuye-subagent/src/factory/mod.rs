@@ -701,6 +701,12 @@ impl SubAgentFactory {
             cfg.subagent_status = Some(slot.clone());
         }
         let child_thread = AgentThread::new(cfg, target_registry, child_tools, None, None);
+        // v1.x 修复:子代理注册 PlanModeGate。cfg.permission_mode 继承父级
+        // (可能为 Plan),此前子代理的 hook engine 为空 —— 即使父会话
+        // (CLI)带 gate,子代理内只剩 pre_loop 的 write/edit 裁剪,bash 写
+        // 命令 / ast replace 等穿透只读边界。gate 按当前 mode 判定,父会话
+        // 非 Plan 时对子代理无副作用。
+        child_thread.register_hook(zhuye_hooks::builtins::PlanModeGate::default_mode());
 
         // 子 agent 以单条 User 消息接收 system prompt + role 标签 + user prompt;
         // 筛选出的父级历史由 preload 前置。

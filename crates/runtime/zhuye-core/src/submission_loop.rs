@@ -1259,6 +1259,11 @@ pub async fn submission_loop(
                 // Shutdown 后 spawned turn 任务成为孤儿(其 turn_tx 已被本
                 // 循环 drop,send 永久失败却无人 await)。
                 cfg.cancel.cancel();
+                // v1.x 修复:Shutdown 时清空在途 plan 审批 waiter。spawn 版
+                // waiter 是裸 rx.await、不监听取消令牌,不清会泄漏到进程结束;
+                // blocking 版虽已听回合令牌(父级级联可解),一并清理保持语义
+                // 明确:「会话关闭 = 所有待决审批作废」。
+                plan_approval_gate.cancel_all();
                 // v1.6:SessionEnd hook —— 显式关闭路径(与 SessionStart
                 // 配对)。通知外部命令式 hook 落审计 / 清理资源。
                 let _ = hook_engine

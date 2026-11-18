@@ -73,6 +73,9 @@ pub struct ApprovalGate {
     /// 为**共享绝对死线**,本 turn 全部挂起审批到点统一过期(Deny);
     /// `None` = 不超时(headless 全自动流水线显式关闭)。
     pub(super) approval_ttl: Option<std::time::Duration>,
+    /// v1.x:`ask_question` 的绝对死线(秒)。此前结构化问答无任何 TTL,
+    /// headless 强开审批且无人应答时永久挂起。
+    pub(super) question_timeout_secs: u64,
     /// v1.9 S6:gate 构造时刻(死线锚点)。
     pub(super) created_at: std::time::Instant,
 }
@@ -246,8 +249,16 @@ impl ApprovalGate {
             approval_ttl: Some(std::time::Duration::from_secs(
                 super::DEFAULT_APPROVAL_TTL_SECS,
             )),
+            question_timeout_secs: super::ASK_QUESTION_TIMEOUT_SECS,
             created_at: std::time::Instant::now(),
         }
+    }
+
+    /// v1.x:覆盖 `ask_question` 的绝对死线(秒)。测试注入用;生产走
+    /// [`ASK_QUESTION_TIMEOUT_SECS`] 默认值。
+    pub fn with_question_timeout_secs(mut self, secs: u64) -> Self {
+        self.question_timeout_secs = secs;
+        self
     }
 
     /// 设置当前回合独立的审批策略，不改变规划模式。
@@ -788,6 +799,19 @@ impl ApprovalGate {
             _ = self.wait_turn_cancel() => {
                 self.question_waiters.lock().remove(&request_id);
                 Err(ToolError::Cancelled)
+            }
+            // v1.x 修复:绝对死线 —— 此前 ask_question 无任何 TTL,headless
+            // 强开审批(ZHUYE_APPROVALS=1 / serve approvals)且无人应答时
+            // 永久挂起,只能 Ctrl-C。与 ask_user 的默认 900s 对齐;GUI 交互
+            // 场景用户 15 分钟未答同样作废并回错,优于无限等待。
+            _sleep = tokio::time::sleep(std::time::Duration::from_secs(
+                self.question_timeout_secs,
+            )) => {
+                self.question_waiters.lock().remove(&request_id);
+                Err(ToolError::Execution(format!(
+                    "ask_user_question: timed out after {}s waiting for response",
+                    self.question_timeout_secs
+                )))
             }
             res = rx => match res {
                 Ok(answers) => Ok(answers),

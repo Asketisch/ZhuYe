@@ -144,7 +144,33 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     }
     messages.extend(recovery_meta_to_messages(&state.recovery_meta));
     let mut tools: Vec<zhuye_llm::ToolSpec> = if state.force_final_answer {
-        Vec::new()
+        // v1.x 修复:Plan 模式下保留 ExitPlanMode。最后一轮清空全部工具会
+        // 把唯一的计划提交出口也清掉 —— 调研耗尽迭代预算的 plan 永远无法
+        // 经 PlanReady 提交,只能纯文本收尾(违背 plan 收尾指引)。
+        if *ctx.cfg.permission_mode.read() == zhuye_protocol::PermissionMode::Plan {
+            ctx.tools_queue
+                .registry()
+                .list_specs()
+                .into_iter()
+                .filter(|s| {
+                    matches!(s, zhuye_tools::ToolSpec::Function { name, .. } if name == "ExitPlanMode")
+                })
+                .map(|s| match s {
+                    zhuye_tools::ToolSpec::Function {
+                        name,
+                        description,
+                        parameters,
+                        ..
+                    } => zhuye_llm::ToolSpec::Function {
+                        name,
+                        description,
+                        parameters,
+                    },
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
     } else if !state.effective_tools.is_empty() {
         state.effective_tools.clone()
     } else {

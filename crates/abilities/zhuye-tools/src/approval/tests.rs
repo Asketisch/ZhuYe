@@ -1427,3 +1427,23 @@ async fn turn_policy_is_independent_of_plan_mode() {
         .await;
     assert!(matches!(decision, ReviewDecision::Deny { .. }));
 }
+
+/// v1.x:结构化问答的绝对死线。此前 ask_question 无任何 TTL —— headless
+/// 强开审批(ZHUYE_APPROVALS=1 / serve approvals)且无人应答时永久挂起,
+/// 只能 Ctrl-C。到点回 Execution 错误并清理 waiter。
+#[tokio::test]
+async fn ask_question_times_out_with_execution_error() {
+    let (gate, _rx) = make_gate();
+    let gate_arc = Arc::new(gate.with_question_timeout_secs(1));
+    let cancel = CancellationToken::new();
+    let err = gate_arc
+        .ask_question(sample_questions(), &cancel)
+        .await
+        .expect_err("question must time out");
+    match &err {
+        ToolError::Execution(msg) => assert!(msg.contains("timed out"), "got: {msg}"),
+        other => panic!("expected Execution(timeout), got {other:?}"),
+    }
+    // waiter 已被清理。
+    assert!(gate_arc.question_waiters().lock().is_empty());
+}

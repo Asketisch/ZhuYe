@@ -1342,34 +1342,36 @@ pub async fn bootstrap_resumed(
     }
     // 0.5:Plan mode 的执行机制是 hook,不是 permission mode。normal 分支
     // 注册的 PlanModeGate / read_before_edit 在 resume 分支也要有。
-    if args.plan_mode {
-        thread.register_hook(PlanModeGate::default_mode());
-        // v1.11 重构:resume 路径同款内置注入 hooks(见上方普通分支注释)。
-        if initial_cfg.active.agents_md.unwrap_or(true) {
-            let user_data_dir = zhuye_config::data_path_or_relative(&[]);
-            thread.register_hook(crate::builtin_hooks::AgentsMdHook::new(
-                workspace.clone(),
-                Some(user_data_dir),
-            ));
-        }
-        // v1.11 M5a:sqlite 记忆后端时限定召回归属 workspace(旧无归属
-        // 笔记不参加跨项目召回);旧后端保持无过滤口径。
-        let recall_hook = crate::builtin_hooks::CrossSessionRecallHook::new(thread_id.to_string());
-        let recall_hook = if zhuye_memory::backend_from_env() == zhuye_memory::MemoryBackend::Sqlite
-        {
-            recall_hook.with_workspace_filter(workspace.display().to_string())
-        } else {
-            recall_hook
-        };
-        thread.register_hook(recall_hook);
-        let rbe_section = initial_cfg.hooks.read_before_edit.as_ref();
-        let (_rbe_state, rbe_hook) = build_read_before_edit(
-            rbe_section.and_then(|s| s.enabled),
-            rbe_section.and_then(|s| s.mtime_drift_tolerance_ms),
-        );
-        thread.register_hook(rbe_hook);
-        tracing::info!("resume path: plan_mode=true, registered PlanModeGate + read_before_edit");
+    // v1.x 修复:此前这组注册整体包在 `if args.plan_mode` 里,与 normal
+    // 分支(无条件注册)不对称 —— 不带 --plan-mode 的 resume:(a) 会话从
+    // 记录恢复为 Plan 模式时 PlanModeGate 缺席,只读边界失守;
+    // (b) AGENTS.md 注入 / 跨会话召回 / read_before_edit 全部丢失。
+    // PlanModeGate 自身按当前 mode 判定,无条件注册对非 Plan 会话无副作用。
+    thread.register_hook(PlanModeGate::default_mode());
+    // v1.11 重构:resume 路径同款内置注入 hooks(见上方普通分支注释)。
+    if initial_cfg.active.agents_md.unwrap_or(true) {
+        let user_data_dir = zhuye_config::data_path_or_relative(&[]);
+        thread.register_hook(crate::builtin_hooks::AgentsMdHook::new(
+            workspace.clone(),
+            Some(user_data_dir),
+        ));
     }
+    // v1.11 M5a:sqlite 记忆后端时限定召回归属 workspace(旧无归属
+    // 笔记不参加跨项目召回);旧后端保持无过滤口径。
+    let recall_hook = crate::builtin_hooks::CrossSessionRecallHook::new(thread_id.to_string());
+    let recall_hook = if zhuye_memory::backend_from_env() == zhuye_memory::MemoryBackend::Sqlite {
+        recall_hook.with_workspace_filter(workspace.display().to_string())
+    } else {
+        recall_hook
+    };
+    thread.register_hook(recall_hook);
+    let rbe_section = initial_cfg.hooks.read_before_edit.as_ref();
+    let (_rbe_state, rbe_hook) = build_read_before_edit(
+        rbe_section.and_then(|s| s.enabled),
+        rbe_section.and_then(|s| s.mtime_drift_tolerance_ms),
+    );
+    thread.register_hook(rbe_hook);
+    tracing::info!("resume path: registered PlanModeGate + agents_md + recall + read_before_edit");
     // resume 也跑 MCP bootstrap,方便继续使用之前挂的 MCP server。
     let mcp_manager = bootstrap_m6(&initial_cfg, reload_tx.clone()).await;
     let _lsp_manager = bootstrap_lsp(&initial_cfg, reload_tx.clone(), tools.clone()).await;

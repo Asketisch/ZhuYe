@@ -297,7 +297,18 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                 }
             }
             "ExitPlanMode" => {
-                if let (Some(gate), Some(subs)) = (
+                // v1.x 修复:模式守卫(与 EnterPlanMode 分支对称)。非 Plan
+                // 模式下模型乱调 ExitPlanMode 此前会照常派发 PlanReady 审批,
+                // 批准后 apply_plan_approval_choice 无条件翻模式 —— Prompt 被
+                // 静默降级为 AcceptEdits、legacy Deny 被提权;且 markdown 兜底
+                // 会读到 `.zhuye/plan/` 里陈年的旧计划文件。不在 Plan 模式时
+                // 跳过派发,工具结果原样返回(模型看到的是未触发审批的输出)。
+                if *ctx.cfg.permission_mode.read() != PermissionMode::Plan {
+                    tracing::info!(
+                        tool_call_id = %r.call_id,
+                        "ExitPlanMode called but not in Plan mode; skipping PlanReady dispatch"
+                    );
+                } else if let (Some(gate), Some(subs)) = (
                     ctx.plan_approval_gate.as_ref(),
                     ctx.plan_session_subs.as_ref(),
                 ) {
