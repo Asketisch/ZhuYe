@@ -16,6 +16,12 @@ use crate::request::ChatRequest;
 
 // ── provider 共享的端点拼接与 SSE 响应校验 ─────────────────────────
 
+/// 建连超时上限:即使 provider 段配了更长的 `timeout_secs`,建连阶段
+/// 也不该等几分钟 —— 端点不可达(丢包 / 防火墙静默丢弃)时尽快失败,
+/// 让自动重试与用户反馈都能及时到来。LLM 端点(含内网 vLLM)正常建连
+/// 远快于 10s,超过即视为路径不通。
+const CONNECT_TIMEOUT_CAP: Duration = Duration::from_secs(10);
+
 /// 构建流式 provider 共用的 HTTP client(建连 + 读空闲双层超时)。
 ///
 /// **不要**在这里挂 `ClientBuilder::timeout` —— reqwest 的 total timeout
@@ -26,14 +32,15 @@ use crate::request::ChatRequest;
 /// (实战:内网 vLLM 端点 60s 整点断流,短请求全部成功)。
 ///
 /// 正确语义是两层:
-/// - `connect_timeout`:仅 TCP/TLS 建连阶段,防端点不可达时久挂;
+/// - `connect_timeout`:仅 TCP/TLS 建连阶段,封顶 [`CONNECT_TIMEOUT_CAP`],
+///   防端点不可达时久挂;
 /// - `read_timeout`:**读空闲**超时 —— 每次读到数据即重置计时,流只要
 ///   还在吐字节就永不超时,只在连接真正挂死(无字节窗口超时)才断。
 ///   默认 300s 覆盖推理模型 prefill/思考期的无字节窗口(对齐
 ///   OpenAI/Anthropic 官方 SDK 600s 量级的包容度)。
 pub(crate) fn stream_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
     reqwest::Client::builder()
-        .connect_timeout(timeout)
+        .connect_timeout(timeout.min(CONNECT_TIMEOUT_CAP))
         .read_timeout(timeout)
         .build()
         .map_err(LlmError::from)
