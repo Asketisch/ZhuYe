@@ -1813,7 +1813,8 @@ async fn fallback_model_uses_session_system_prompt_and_tool_description() {
 
     let mut handle = thread.submit(make_sub("fallback")).await;
     while handle.next().await.is_some() {}
-    let request = client.last_request.lock().clone().expect("fallback request");
+    let last_request = client.last_request.lock().clone();
+    let request = last_request.expect("fallback request");
     assert!(
         request
             .system
