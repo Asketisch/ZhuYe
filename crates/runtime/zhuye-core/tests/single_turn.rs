@@ -1524,7 +1524,7 @@ async fn failed_turn_emits_turn_aborted_terminal() {
         match ev.msg {
             EventMsg::TurnStarted(t) => started_turn_id = Some(t.turn_id.to_string()),
             EventMsg::Error(e) => {
-                error_code = Some(e.code.clone());
+                error_code = Some(e.code);
                 error_before_abort = aborted.is_none();
             }
             EventMsg::TurnAborted(t) => aborted = Some((t.turn_id.to_string(), t.reason)),
