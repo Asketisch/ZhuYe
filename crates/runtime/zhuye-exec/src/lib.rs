@@ -46,6 +46,9 @@ use runtime_config::apply_coordinator_from_config;
 /// (`--resume` > (`-c` / `-r`) > `prompt`)。
 #[derive(Debug, Args)]
 pub struct ExecArgs {
+    /// 本次会话使用的提示词方案(default、auto 或方案标识)。
+    #[arg(long, value_name = "PROFILE")]
+    pub prompt_profile: Option<String>,
     /// 待执行的用户 prompt。若同时给出 `--resume` / `-c` / `-r`(优先级更高
     /// —— 详见 `async_main` 的 resume 分支),则本字段被忽略。
     pub prompt: Option<String>,
@@ -146,6 +149,37 @@ fn finish_plan_mode(plan_requested: bool, plan_produced: bool) -> anyhow::Result
     Ok(())
 }
 
+async fn apply_prompt_profile(
+    thread: &zhuye_core::AgentThread,
+    profile: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(profile) = profile else {
+        return Ok(());
+    };
+    let selection = match profile {
+        "default" => zhuye_protocol::PromptSelection::Default,
+        "auto" => zhuye_protocol::PromptSelection::Auto,
+        profile => zhuye_protocol::PromptSelection::Manual {
+            profile: profile.into(),
+        },
+    };
+    let sub = Submission::with_id(
+        uuid::Uuid::new_v4().to_string(),
+        zhuye_protocol::Op::PromptCommand {
+            action: zhuye_protocol::PromptAction::Select {
+                selection: Some(selection),
+            },
+        },
+    );
+    let mut handle = thread.submit(sub).await;
+    while let Some(event) = handle.next().await {
+        if let EventMsg::Error(error) = event.msg {
+            anyhow::bail!("{}", error.message);
+        }
+    }
+    Ok(())
+}
+
 /// 入口函数:既被独立 `zhuye-exec` 二进制调用,也被顶层 CLI router 的
 /// `zhuye exec` 子命令调用。
 ///
@@ -217,6 +251,7 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
     if let Some(thread_id_str) = resume_thread_id_str.as_deref() {
         // ── resume 分支:回放历史 + 合成续跑 prompt ──
         let session = headless::bootstrap_resumed(common, &hargs, thread_id_str).await?;
+        apply_prompt_profile(&session.thread, args.prompt_profile.as_deref()).await?;
         let prompt = headless::resumed_prompt(thread_id_str, session.prior_messages);
         let sub = Submission::user_input(prompt);
         let mut handle = session.thread.submit(sub).await;
@@ -256,6 +291,7 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
     }
     let prompt = args.prompt.clone().unwrap_or_default();
     let session = headless::bootstrap_normal(common, &hargs).await?;
+    apply_prompt_profile(&session.thread, args.prompt_profile.as_deref()).await?;
     // v1.7:图片附件 → 多模态 UserInput(items = [Image.., Text?]),不经
     // 插件 slash 展开(命令展开是纯文本路径)。
     let sub = if args.images.is_empty() {

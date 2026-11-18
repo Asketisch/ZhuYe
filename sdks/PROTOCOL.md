@@ -102,6 +102,14 @@ zhuye serve [--resume <uuid> | -c | -r <N>] [--agent <name>] [--plan-mode] ...
 
 ## 3. Event 输出(stdout)
 
+`prompt_command` 的 `select` 动作接受 `selection`，其值为
+`{"mode":"default"}`、`{"mode":"auto"}`、
+`{"mode":"manual","profile":"claude"}` 或 `null`。`null` 令会话跟随
+共享默认。`save_default` 接受非空 `selection` 并保存为共享默认。
+`prompt_list` 和 `prompt_switched` 包含 `selection`、`profile` 和可选的
+`fallback_reason`，`active_layers` 继续表示实际命中的用户文件层。
+不存在的手动方案产生 `PROMPT_PROFILE_NOT_FOUND` 错误。
+
 ```json
 {"id": "<submission-id>", "msg": {"type": "agent_message_delta", "delta": "你"}}
 ```

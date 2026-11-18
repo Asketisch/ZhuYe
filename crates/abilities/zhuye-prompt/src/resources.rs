@@ -122,6 +122,11 @@ mod tests {
     fn embedded_resource_contains_system_and_all_builtin_tool_sections() {
         let resources = PromptResources::from_markdown(EMBEDDED_DEFAULT_PROMPTS, None);
         assert!(resources.get("system.plan-mode").is_some());
+        assert!(
+            resources
+                .get("runtime.active-mode")
+                .is_some_and(|section| section.contains("Active Mode"))
+        );
         let tool_count = resources
             .sections
             .keys()

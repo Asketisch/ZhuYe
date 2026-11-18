@@ -29,6 +29,15 @@ pub struct PromptListEvent {
     pub current_spec: String,
     /// 当前 spec 实际命中的用户层文件名(诊断用,内嵌层不记录)。
     pub active_layers: Vec<String>,
+    /// 当前生效的选择策略。
+    #[serde(default)]
+    pub selection: crate::PromptSelection,
+    /// 当前请求使用的方案。
+    #[serde(default)]
+    pub profile: String,
+    /// 未命中时回落的原因。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
 }
 
 /// v1.6.1:`Op::PromptCommand { action: Switch }` 的应答 —— 提示词库重扫
@@ -39,6 +48,15 @@ pub struct PromptSwitchedEvent {
     pub action: String,
     /// 重扫后当前 spec 的生效用户层(让 UI 立即看到新命中)。
     pub active_layers: Vec<String>,
+    /// 当前生效的选择策略。
+    #[serde(default)]
+    pub selection: crate::PromptSelection,
+    /// 当前请求使用的方案。
+    #[serde(default)]
+    pub profile: String,
+    /// 未命中时回落的原因。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
 }
 
 /// v1.x:`Op::RescanExtensions` 的应答 —— 运行时扩展目录重扫完成。

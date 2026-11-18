@@ -216,7 +216,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 | 计划 | `enter_plan_mode` / `exit_plan_mode` / `plan_approval` | `plan_approval.choice ∈ auto_mode/manual_approve/revise` |
 | 交互 | `ask_user_question_response` / `ask_user_input_response` | 回应全局事件 ask_user_question / ask_user_input |
 | 状态 | `set_effort` / `set_permission_mode` / `cycle_permission_mode` | mode ∈ auto/prompt/plan/deny/bubble |
-| 提示词 | `prompt_command` | `action{type: 'list'\|'switch'}`;查询 / 重扫提示词层,应答 `prompt_list` / `prompt_switched` |
+| 提示词 | `prompt_command` | `action{type: 'list'\|'switch'\|'select'\|'save_default'}`;查询、重扫、选择会话方案或保存默认,应答 `prompt_list` / `prompt_switched` |
 | 转向 | `steer` | `items`(可选 `priority ∈ 'now'\|'attachment'`,缺省 attachment);回合中途投喂,不打断在飞 turn |
 | 子代理 | `query_subagents` | 可选 `child_id`;应答 `subagent_status` 状态快照 |
 | side-channel | `start_side_channel` / `cancel_side_channel` / `query_side_channels` | 用户驱动的并发 agent:start(`agent`+`prompt`)/ cancel(`id`)/ query(可选 `id`,回 `side_channel_status` 快照) |
@@ -312,6 +312,7 @@ for await (const e of await agent.submit({
 | `error` / `stream_error` | submission | 错误(`error` 会被 `prompt()` 转为异常) |
 | `shutdown_complete` | submission | 关闭完成 |
 | `submission_closed` | submission | 该提交通道排空(非 turn Op 的收尾标记) |
+| `prompt_list` / `prompt_switched` | `selection`, `profile`, `fallback_reason` | 提示词选择结果，包含生效方案和回落原因 |
 | `turn_rewound` / `config_reloaded` / `collab_*` / `mcp_server_*` / `mcp_tool_invoked` / `lsp_server_*` / `plugin_loaded` / `quota_exhausted` / `routing` | — | 其余变体见 protocol.ts |
 | `UnknownEventMsg` 形态 | 任意 | 未识别变体降级(`type` 保留原值),保证前向兼容 |
 

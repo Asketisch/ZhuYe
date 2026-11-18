@@ -45,6 +45,7 @@ fn ephemeral_tasks_field_is_bool_with_default_false() {
     }
     // 显式 true 命中 ephemeral 分支
     let on = ExecArgs {
+        prompt_profile: None,
         ephemeral_tasks: true,
         ephemeral_teams: false,
         prompt: None,

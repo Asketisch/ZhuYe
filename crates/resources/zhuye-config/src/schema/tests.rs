@@ -3,6 +3,24 @@
 
 use super::*;
 
+#[test]
+fn prompt_selection_config_defaults_and_roundtrips() {
+    use zhuye_protocol::PromptSelection;
+    let default: ReflectConfig = toml::from_str("").unwrap();
+    assert_eq!(default.prompts, PromptSelection::Default);
+    let config: ReflectConfig =
+        toml::from_str("[prompts]\nmode = 'manual'\nprofile = 'claude'\n").unwrap();
+    assert_eq!(
+        config.prompts,
+        PromptSelection::Manual {
+            profile: "claude".into()
+        }
+    );
+    let saved = toml::to_string(&config).unwrap();
+    let restored: ReflectConfig = toml::from_str(&saved).unwrap();
+    assert_eq!(restored.prompts, config.prompts);
+}
+
 // ── 解析基础 ──────────────────────────────────────────────────────────
 
 /// Phase 2:`[hooks]` 块空 → `read_before_edit = None`(默认行为)。

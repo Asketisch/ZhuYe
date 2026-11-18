@@ -54,7 +54,7 @@ pub fn build_default_m4(
 /// [`build_default_m4`] 的扩展版:额外扫描 `extra_prompt_dirs` 下的
 /// `*.md` 模型层(v1.6,TUI / GUI 经 `ZhuyeBuilder::with_prompts_dir`
 /// 传入)。目录顺序即优先级:后扫者覆盖同名层;固定顺序为
-/// `<workspace>/.zhuye/prompts` → `~/.zhuye/prompts` → 额外目录。
+/// `~/.zhuye/prompts` → `<workspace>/.zhuye/prompts` → 额外目录。
 ///
 /// v1.x:`rollout_base` 参数化 rollout 落盘根目录(见 [`build_default_m4`])。
 pub fn build_default_m4_with_prompts(

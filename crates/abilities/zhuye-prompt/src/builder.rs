@@ -96,6 +96,16 @@ pub fn plan_mode_enabled_for(spec: &str) -> bool {
 /// "Active Mode" 段落连同 `pre_loop` 里的 "Previous Turn" 注入一起
 /// 修复这两个盲区。
 pub fn append_active_mode_section(core: &mut String, mode: zhuye_protocol::PermissionMode) {
+    let resolved = crate::library().resolve("");
+    append_active_mode_section_with_set(core, mode, &resolved);
+}
+
+/// 按指定会话的提示词集合追加当前模式说明。
+pub fn append_active_mode_section_with_set(
+    core: &mut String,
+    mode: zhuye_protocol::PermissionMode,
+    resolved: &crate::PromptSet,
+) {
     if !matches!(mode, zhuye_protocol::PermissionMode::Plan) {
         return;
     }
@@ -104,15 +114,14 @@ pub fn append_active_mode_section(core: &mut String, mode: zhuye_protocol::Permi
     // 内嵌默认(provider-independent 措辞,避免各 provider 措辞漂移)。
     // 覆盖为 `off` / `none` / `disabled` / `false` 时视为显式关闭,
     // 不注入该段(与 `system.plan-mode` 的关闭语义一致)。
-    let resolved = crate::library().resolve("");
     let overridden = resolved.get("runtime.active-mode");
     if overridden.is_some_and(is_section_off) {
         return;
     }
     let section = overridden.unwrap_or("## Active Mode\nYou are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase, then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, call `ExitPlanMode` to request user approval — it reads the plan from the file. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.\n").to_string();
-    let plan_start = core
-        .find(PLAN_MODE_HEADER)
-        .expect("compose_core 一定先注入 PLAN_MODE_HEADER,这里不应缺失");
+    let Some(plan_start) = core.find(PLAN_MODE_HEADER) else {
+        return;
+    };
     // 在 plan_start 之后找下一个 `## ` 段开头(MEMORY_HEADER 或任何
     // 其他 ## 段)。找不到则直接 append 到 core 末尾。
     let insert_pos = core[plan_start + PLAN_MODE_HEADER.len()..]
@@ -246,6 +255,19 @@ impl LayeredPrompt {
         memory: &str,
         include_plan_mode: bool,
     ) -> String {
+        Self::compose_core_with_guidance(
+            agent_system_prompt,
+            memory,
+            include_plan_mode.then(plan_mode_guidance),
+        )
+    }
+
+    /// 使用会话解析后的 Plan mode 文案构造核心提示词。
+    pub fn compose_core_with_guidance(
+        agent_system_prompt: &str,
+        memory: &str,
+        plan_guidance: Option<&str>,
+    ) -> String {
         let mut out = String::with_capacity(
             agent_system_prompt.len() + memory.len() + plan_mode_guidance().len() + 96,
         );
@@ -256,10 +278,10 @@ impl LayeredPrompt {
         if !out.is_empty() {
             out.push('\n');
         }
-        if include_plan_mode {
+        if let Some(guidance) = plan_guidance {
             out.push_str(PLAN_MODE_HEADER);
             out.push('\n');
-            out.push_str(plan_mode_guidance());
+            out.push_str(guidance);
             out.push('\n');
         }
         if !memory.trim().is_empty() {

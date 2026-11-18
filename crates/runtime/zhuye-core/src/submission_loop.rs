@@ -220,6 +220,24 @@ pub async fn submission_loop(
     // 新分配(历史行为)。外部注入让 recorder 文件名、`SessionMeta.session_id`
     // 与 `SessionConfigured` 报告的 id 三者一致(TUI / 持久化场景需要)。
     let session_id = cfg.session_id.unwrap_or_default();
+    let mut existing_session = false;
+    if let Some(recorder) = cfg.m4.as_ref().and_then(|m| m.recorder.clone())
+        && cfg.session_id.is_some()
+        && let Ok(records) = recorder.replay(session_id).await
+    {
+        existing_session = records
+            .iter()
+            .any(|record| matches!(record, RolloutRecord::SessionMeta { .. }));
+        let has_prompt_override = cfg.prompt_selection.read().is_some();
+        if !has_prompt_override
+            && let Some(selection) = records.iter().rev().find_map(|record| match record {
+                RolloutRecord::PromptSelectionChanged { selection } => Some(selection.clone()),
+                _ => None,
+            })
+        {
+            *cfg.prompt_selection.write() = selection;
+        }
+    }
     let _ = hook_engine
         .dispatch(&HookEvent::SessionStart {
             session_id,
@@ -378,6 +396,10 @@ pub async fn submission_loop(
                                 started_at: chrono::Utc::now(),
                                 workspace: ws,
                             })
+                            .await;
+                        let selection = cfg.prompt_selection.read().clone();
+                        let _ = rec
+                            .record(RolloutRecord::PromptSelectionChanged { selection })
                             .await;
                     }
                     session_emitted = true;
@@ -1633,14 +1655,17 @@ pub async fn submission_loop(
                 use zhuye_protocol::{PromptAction, PromptListEvent, PromptSwitchedEvent};
                 match action {
                     PromptAction::List => {
-                        let lib = zhuye_prompt::library();
-                        let set = lib.resolve(&cfg.current_model());
+                        let lib = cfg.prompt_library.read().clone();
+                        let resolved = cfg.resolve_prompt(&cfg.current_model());
                         let ev = Event::new(
                             sub.id.clone(),
                             EventMsg::PromptList(PromptListEvent {
                                 available: lib.available_layers(),
                                 current_spec: cfg.current_model(),
-                                active_layers: set.layers.clone(),
+                                active_layers: resolved.set.layers,
+                                selection: cfg.current_prompt_selection(),
+                                profile: resolved.profile,
+                                fallback_reason: resolved.fallback_reason,
                             }),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
@@ -1654,20 +1679,129 @@ pub async fn submission_loop(
                             .map_or_else(|| Default::default(), |m| m.prompt_dirs.clone());
                         let dir_refs: Vec<&std::path::Path> =
                             dirs.iter().map(|p| p.as_path()).collect();
-                        zhuye_prompt::init_library(&dir_refs, None);
-                        let set = zhuye_prompt::library().resolve(&cfg.current_model());
+                        let legacy = zhuye_config::data_dir()
+                            .and_then(|dir| std::fs::read_to_string(dir.join("prompts.md")).ok());
+                        let lib = zhuye_prompt::PromptLibrary::scan_dirs(&dir_refs)
+                            .with_legacy_overrides(legacy.as_deref());
+                        *cfg.prompt_library.write() = Arc::new(lib);
+                        let resolved = cfg.resolve_prompt(&cfg.current_model());
                         tracing::info!(
                             dirs = dirs.len(),
-                            layers = ?set.layers,
+                            layers = ?resolved.set.layers,
                             "/prompt: prompt library rescanned"
                         );
                         let ev = Event::new(
                             sub.id.clone(),
                             EventMsg::PromptSwitched(PromptSwitchedEvent {
                                 action: layer.clone().unwrap_or_else(|| "reload".into()),
-                                active_layers: set.layers.clone(),
+                                active_layers: resolved.set.layers,
+                                selection: cfg.current_prompt_selection(),
+                                profile: resolved.profile,
+                                fallback_reason: resolved.fallback_reason,
                             }),
                         );
+                        let _ = turn_tx.send(ev.clone()).await;
+                        fan_out_session(&session_subs, &ev);
+                    }
+                    PromptAction::Select { selection } => {
+                        let missing = match &selection {
+                            Some(zhuye_protocol::PromptSelection::Manual { profile }) => !cfg
+                                .prompt_library
+                                .read()
+                                .available_layers()
+                                .contains(profile),
+                            _ => false,
+                        };
+                        let persist_error = if !missing && (session_emitted || existing_session) {
+                            if let Some(recorder) = cfg.m4.as_ref().and_then(|m| m.recorder.clone())
+                            {
+                                recorder
+                                    .record(RolloutRecord::PromptSelectionChanged {
+                                        selection: selection.clone(),
+                                    })
+                                    .await
+                                    .err()
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        let msg = if missing {
+                            EventMsg::Error(zhuye_protocol::ErrorEvent {
+                                code: "PROMPT_PROFILE_NOT_FOUND".into(),
+                                message: "提示词方案不存在".into(),
+                                details: None,
+                            })
+                        } else if let Some(error) = persist_error {
+                            EventMsg::Error(zhuye_protocol::ErrorEvent {
+                                code: "PROMPT_PERSIST_FAILED".into(),
+                                message: format!("无法保存提示词选择: {error}"),
+                                details: None,
+                            })
+                        } else {
+                            *cfg.prompt_selection.write() = selection;
+                            let resolved = cfg.resolve_prompt(&cfg.current_model());
+                            EventMsg::PromptSwitched(PromptSwitchedEvent {
+                                action: "select".into(),
+                                active_layers: resolved.set.layers,
+                                selection: cfg.current_prompt_selection(),
+                                profile: resolved.profile,
+                                fallback_reason: resolved.fallback_reason,
+                            })
+                        };
+                        let ev = Event::new(sub.id.clone(), msg);
+                        let _ = turn_tx.send(ev.clone()).await;
+                        fan_out_session(&session_subs, &ev);
+                    }
+                    PromptAction::SaveDefault { selection } => {
+                        let missing = match &selection {
+                            zhuye_protocol::PromptSelection::Manual { profile } => !cfg
+                                .prompt_library
+                                .read()
+                                .available_layers()
+                                .contains(profile),
+                            _ => false,
+                        };
+                        let result = if missing {
+                            Err("提示词方案不存在".to_string())
+                        } else if let Some(path) = zhuye_config::default_config_path() {
+                            zhuye_config::save_prompt_selection(&path, &selection)
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("无法定位配置文件".to_string())
+                        };
+                        let msg = match result {
+                            Ok(()) => {
+                                *cfg.prompt_default.write() = selection;
+                                *cfg.prompt_selection.write() = None;
+                                if (session_emitted || existing_session)
+                                    && let Some(recorder) =
+                                        cfg.m4.as_ref().and_then(|m| m.recorder.clone())
+                                    && let Err(error) = recorder
+                                        .record(RolloutRecord::PromptSelectionChanged {
+                                            selection: None,
+                                        })
+                                        .await
+                                {
+                                    tracing::warn!(%error, "无法保存提示词会话状态");
+                                }
+                                let resolved = cfg.resolve_prompt(&cfg.current_model());
+                                EventMsg::PromptSwitched(PromptSwitchedEvent {
+                                    action: "save_default".into(),
+                                    active_layers: resolved.set.layers,
+                                    selection: cfg.current_prompt_selection(),
+                                    profile: resolved.profile,
+                                    fallback_reason: resolved.fallback_reason,
+                                })
+                            }
+                            Err(message) => EventMsg::Error(zhuye_protocol::ErrorEvent {
+                                code: "PROMPT_SAVE_FAILED".into(),
+                                message,
+                                details: None,
+                            }),
+                        };
+                        let ev = Event::new(sub.id.clone(), msg);
                         let _ = turn_tx.send(ev.clone()).await;
                         fan_out_session(&session_subs, &ev);
                     }

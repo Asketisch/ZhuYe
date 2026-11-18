@@ -118,6 +118,9 @@ pub async fn handle_reload(
         return Err(format!("apply_to_registry failed: {e}"));
     }
     let sections_changed = diff_sections(old_cfg, new_cfg);
+    if old_cfg.prompts != new_cfg.prompts {
+        *agent_cfg.prompt_default.write() = new_cfg.prompts.clone();
+    }
     // `model = "free"` 这类运行时才知道的值要在**这里**重新解析 —— 配置
     // 改的可能是 `[model_discovery]` 规则,或 provider 换了(清单跟着变)。
     // 解析失败 → 本轮 reload 报错(保留旧 model),不静默沿用旧值。
@@ -339,6 +342,9 @@ pub(crate) fn diff_sections(
     new: &zhuye_config::ReflectConfig,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    if old.prompts != new.prompts {
+        out.push("prompts".to_string());
+    }
     if old.active != new.active {
         out.push("active".to_string());
     }

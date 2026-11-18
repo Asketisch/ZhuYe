@@ -12,7 +12,7 @@ use zhuye_protocol::{
 
 use super::nudge::{
     REPEAT_LOOP_THRESHOLD, WEB_HISTORY_CAP, canonical_call_signature, inject_loop_nudge,
-    maybe_inject_progress_nudge, url_host,
+    maybe_inject_progress_nudge_with_set, url_host,
 };
 use crate::graph::GraphNode;
 use crate::graph::state::{AgentState, WebFetchEntry};
@@ -92,7 +92,8 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         }
         // 提交 assistant(若本轮只有 tool calls 无文本,补一个空占位避免
         // 连续两条 assistant;此处直接注入提醒消息即可)。
-        inject_loop_nudge(state);
+        let prompt_set = ctx.cfg.resolve_prompt(&ctx.model.read()).set;
+        inject_loop_nudge(state, &prompt_set);
         // 重置计数,避免下一轮立即再触发。
         state.repeat_hit_count = 0;
         state.last_call_signature = None;
@@ -504,7 +505,8 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
     // 检测器(同签名)之外的额外机制,处理两类真实失败模式:① 不同 URL 但同
     // 主题重复检索无法收敛;② 多步推理跑满迭代却没产出 `FINAL ANSWER:`
     // (GAIA 截断类失败的主因)。已重新启用,原注释「暂禁用」作废。
-    maybe_inject_progress_nudge(state, ctx.max_iterations);
+    let prompt_set = ctx.cfg.resolve_prompt(&ctx.model.read()).set;
+    maybe_inject_progress_nudge_with_set(state, ctx.max_iterations, &prompt_set);
     // 工具执行完毕后回到 PreLoop → ModelCall,让模型基于工具结果继续推理。
     // 此前返回 CheckStop 会让默认 Stop hook(无拒绝)直接终止 turn,
     // 导致 agent 在首次工具调用后即停、无法多步工作(M2 多步回退 bug)。

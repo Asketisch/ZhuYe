@@ -47,6 +47,43 @@ const EMBEDDED_PROVIDER_PROMPTS: &[(&str, &str)] = &[
     ("minimax", include_str!("../prompts/minimax.md")),
 ];
 
+/// 只从已审核评测的清单中查找模型匹配，精确型号优先于家族前缀。
+fn evaluated_profile(spec: &str) -> Option<String> {
+    let (_, model) = split_spec(spec);
+    let model = model.to_ascii_lowercase();
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../prompts/sources.json")).ok()?;
+    let profiles = manifest.get("profiles")?.as_array()?;
+    find_evaluated_profile(&model, profiles)
+}
+
+fn find_evaluated_profile(model: &str, profiles: &[serde_json::Value]) -> Option<String> {
+    let approved = profiles
+        .iter()
+        .filter(|entry| entry.get("evaluation").and_then(|v| v.as_str()) == Some("passed"));
+    for key in ["models", "model_prefixes"] {
+        for entry in approved.clone() {
+            let matches = entry
+                .get(key)
+                .and_then(|v| v.as_array())
+                .is_some_and(|names| {
+                    names.iter().filter_map(|name| name.as_str()).any(|name| {
+                        let name = name.to_ascii_lowercase();
+                        if key == "models" {
+                            model == name
+                        } else {
+                            model.starts_with(&name)
+                        }
+                    })
+                });
+            if matches {
+                return entry.get("id")?.as_str().map(str::to_string);
+            }
+        }
+    }
+    None
+}
+
 /// 目录下的层文件名序列(不含扩展名):default → 厂商(可多个,
 /// 推断家族在前、显式 provider 在后)→ 精确模型名。
 fn layer_file_names(providers: &[String], model: &str) -> Vec<String> {
@@ -111,6 +148,17 @@ pub struct PromptSet {
     pub layers: Vec<String>,
 }
 
+/// 一次选择解析的结果，供客户端解释实际使用的方案。
+#[derive(Debug, Clone)]
+pub struct PromptResolution {
+    /// 解析后的文案。
+    pub set: PromptSet,
+    /// 实际使用的方案标识。
+    pub profile: String,
+    /// 选择回落时的原因。
+    pub fallback_reason: Option<String>,
+}
+
 impl PromptSet {
     /// 取 section(不含 `##` 标题)。缺失时返回 None。
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -125,6 +173,13 @@ impl PromptSet {
     /// 该模型是否覆盖了指定 key。
     pub fn contains(&self, key: &str) -> bool {
         self.sections.contains_key(key)
+    }
+
+    /// 枚举已解析的提示词段落。
+    pub fn sections(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.sections
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 
     pub(crate) fn extend_from(&mut self, sections: HashMap<String, String>) {
@@ -213,6 +268,71 @@ impl PromptLibrary {
         names.sort();
         names.dedup();
         names
+    }
+
+    /// 按选择策略解析提示词。自动模式仅启用已有评测依据的方案。
+    pub fn resolve_selection(
+        &self,
+        spec: &str,
+        selection: &zhuye_protocol::PromptSelection,
+    ) -> PromptResolution {
+        use zhuye_protocol::PromptSelection;
+
+        let mut set = PromptSet::default();
+        set.extend_from(parse_sections(EMBEDDED_DEFAULT_PROMPTS));
+        set.extend_from(self.legacy_overrides.clone());
+        if let Some(sections) = self.user_layers.get("default") {
+            set.layers.push("default".to_string());
+            set.extend_from(sections.clone());
+        }
+
+        let automatic_profile = match selection {
+            PromptSelection::Auto => evaluated_profile(spec),
+            _ => None,
+        };
+        let effective_selection =
+            automatic_profile
+                .as_ref()
+                .map(|profile| PromptSelection::Manual {
+                    profile: profile.clone(),
+                });
+        let (profile, fallback_reason) = match effective_selection.as_ref().unwrap_or(selection) {
+            PromptSelection::Default => ("default".to_string(), None),
+            PromptSelection::Auto => (
+                "default".to_string(),
+                Some(format!("模型 {spec} 暂无通过评测的提示词方案")),
+            ),
+            PromptSelection::Manual { profile } if profile == "default" => {
+                ("default".to_string(), None)
+            }
+            PromptSelection::Manual { profile } => {
+                let embedded = EMBEDDED_PROVIDER_PROMPTS
+                    .iter()
+                    .find(|(name, _)| *name == profile)
+                    .map(|(_, text)| *text);
+                let user = self.user_layers.get(profile);
+                if embedded.is_none() && user.is_none() {
+                    (
+                        "default".to_string(),
+                        Some(format!("提示词方案 {profile} 不存在")),
+                    )
+                } else {
+                    if let Some(text) = embedded {
+                        set.extend_from(parse_sections(text));
+                    }
+                    if let Some(sections) = user {
+                        set.layers.push(profile.clone());
+                        set.extend_from(sections.clone());
+                    }
+                    (profile.clone(), None)
+                }
+            }
+        };
+        PromptResolution {
+            set,
+            profile,
+            fallback_reason,
+        }
     }
 
     /// 按模型 spec 解析最终生效的 section 集合。
@@ -343,6 +463,95 @@ mod tests {
     }
 
     #[test]
+    fn selection_respects_default_manual_and_unverified_auto() {
+        use zhuye_protocol::PromptSelection;
+        let lib = lib_with(&[
+            ("default", "## system.main\n用户默认\n"),
+            ("claude", "## system.main\n用户方案\n"),
+        ]);
+        let default = lib.resolve_selection("openai/claude-5", &PromptSelection::Default);
+        assert_eq!(default.set.get("system.main"), Some("用户默认"));
+        let auto = lib.resolve_selection("openai/claude-5", &PromptSelection::Auto);
+        assert_eq!(auto.profile, "default");
+        assert!(auto.fallback_reason.is_some());
+        let manual = lib.resolve_selection(
+            "openai/gpt-5",
+            &PromptSelection::Manual {
+                profile: "claude".into(),
+            },
+        );
+        assert_eq!(manual.set.get("system.main"), Some("用户方案"));
+        assert_eq!(manual.profile, "claude");
+        let missing = lib.resolve_selection(
+            "openai/gpt-5",
+            &PromptSelection::Manual {
+                profile: "missing".into(),
+            },
+        );
+        assert_eq!(missing.set.get("system.main"), Some("用户默认"));
+        assert!(missing.fallback_reason.is_some());
+    }
+
+    #[test]
+    fn automatic_matching_uses_only_evaluated_models_and_prefers_exact() {
+        let profiles = serde_json::json!([
+            {"id":"family", "evaluation":"passed", "model_prefixes":["deepseek-"]},
+            {"id":"exact", "evaluation":"passed", "models":["deepseek-v4"]},
+            {"id":"pending", "evaluation":"unverified", "models":["gpt-5"]}
+        ]);
+        let profiles = profiles.as_array().unwrap();
+        assert_eq!(
+            find_evaluated_profile("deepseek-v4", profiles).as_deref(),
+            Some("exact")
+        );
+        assert_eq!(
+            find_evaluated_profile("deepseek-v3", profiles).as_deref(),
+            Some("family")
+        );
+        assert_eq!(find_evaluated_profile("gpt-5", profiles), None);
+    }
+
+    #[test]
+    fn embedded_profiles_keep_full_body_and_real_tool_descriptions() {
+        let library = PromptLibrary::embedded();
+        for (profile, marker) in [
+            ("claude", "行为守则"),
+            ("gpt", "沟通守则"),
+            ("gemini", "Interaction Details"),
+            ("deepseek", "修改已有文件前先读取"),
+        ] {
+            let selection = zhuye_protocol::PromptSelection::Manual {
+                profile: profile.into(),
+            };
+            let resolved = library.resolve_selection("mock/model", &selection);
+            assert!(
+                resolved.set.get("system.main").unwrap().contains(marker),
+                "{profile}"
+            );
+        }
+        for profile in ["claude", "gpt", "deepseek"] {
+            let selection = zhuye_protocol::PromptSelection::Manual {
+                profile: profile.into(),
+            };
+            let resolved = library.resolve_selection("mock/model", &selection);
+            assert!(
+                resolved
+                    .set
+                    .get("tool.edit")
+                    .unwrap()
+                    .contains("old_string must match exactly once")
+            );
+        }
+        let qwen = library.resolve_selection(
+            "mock/model",
+            &zhuye_protocol::PromptSelection::Manual {
+                profile: "qwen".into(),
+            },
+        );
+        assert!(!qwen.set.get("system.main").unwrap().contains("XML 标签块"));
+    }
+
+    #[test]
     fn split_spec_handles_all_shapes() {
         assert_eq!(
             split_spec("claude/claude-sonnet-4-5"),
@@ -423,8 +632,8 @@ mod tests {
             ("kimi-3", "AI agent"),
             ("qwen/qwen3.8-max", "AI 助手 agent"),
             ("qwen3.8-max", "AI 助手 agent"),
-            ("grok/grok-4.7", "Grok"),
-            ("grok-4.7-cli", "Grok"),
+            ("grok/grok-4.7", "交互式编码助手"),
+            ("grok-4.7-cli", "交互式编码助手"),
             ("glm/glm-5", "交互式 CLI 编码工具"),
             ("glm-5", "交互式 CLI 编码工具"),
             ("minimax/minimax-m2.5", "编码、写作与设计"),
@@ -440,17 +649,16 @@ mod tests {
         }
     }
 
-    /// DeepSeek 无 agent 正文(源只有工具 JSON 框架),其内嵌层没有
-    /// system.main —— resolve 应回落内嵌 default 文案。
+    /// DeepSeek 方案包含适配烛夜工具的行为约束。
     #[test]
-    fn deepseek_layer_falls_back_to_default_main() {
+    fn deepseek_layer_contains_adapted_guidance() {
         let lib = PromptLibrary::embedded();
         let set = lib.resolve("deepseek/deepseek-chat");
         assert!(
             set.get("system.main")
                 .unwrap_or_default()
-                .contains("先读后改"),
-            "deepseek 层无 system.main,应回落内嵌 default"
+                .contains("修改已有文件前先读取"),
+            "deepseek 层应包含编辑前读取约束"
         );
     }
 

@@ -58,9 +58,9 @@ pub use zhuye_protocol::{
     AbortReason, AgentMessage, AgentMessageDelta, AgentMessageResetEvent, ApprovalKind,
     ApprovalRequestEvent, ContentBlock, ContextCompactedEvent, ContextCompactedStrategy,
     ErrorEvent, Event, EventMsg, MessageRole, ModelUsage, NullRecorder, Op, PromptAction,
-    PromptListEvent, PromptSwitchedEvent, ProtocolError, ReviewDecision, RiskLevel, RolloutError,
-    RolloutRecord, RolloutRecorder, SandboxPolicy, SessionConfiguredEvent, SessionInfo,
-    SessionStats, StreamErrorEvent, Submission, ThreadId, TokenCountEvent, TokenUsage,
+    PromptListEvent, PromptSelection, PromptSwitchedEvent, ProtocolError, ReviewDecision,
+    RiskLevel, RolloutError, RolloutRecord, RolloutRecorder, SandboxPolicy, SessionConfiguredEvent,
+    SessionInfo, SessionStats, StreamErrorEvent, Submission, ThreadId, TokenCountEvent, TokenUsage,
     ToolCallBeginEvent, ToolCallEndEvent, ToolOutput, TurnAbortedEvent, TurnCompleteEvent, TurnId,
     TurnStartedEvent, TurnStatus, UserInputItem,
 };

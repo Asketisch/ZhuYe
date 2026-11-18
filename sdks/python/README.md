@@ -214,7 +214,7 @@ event = agent.next_global_event(timeout_secs=5)   # 阻塞读一条;超时抛 qu
 | 计划 | `enter_plan_mode` / `exit_plan_mode` / `plan_approval` | `plan_approval.choice ∈ auto_mode/manual_approve/revise` |
 | 交互 | `ask_user_question_response` / `ask_user_input_response` | 回应全局事件 ask_user_question / ask_user_input |
 | 状态 | `set_effort` / `set_permission_mode` / `cycle_permission_mode` | mode ∈ auto/prompt/plan/deny/bubble |
-| 提示词 | `prompt_command` | `action{type: list\|switch}`;查询 / 重扫提示词层,应答 `prompt_list` / `prompt_switched` |
+| 提示词 | `prompt_command` | `action{type: list\|switch\|select\|save_default}`;查询、重扫、选择会话方案或保存默认,应答 `prompt_list` / `prompt_switched` |
 | 转向 | `steer` | `items`(可选 `priority ∈ now/attachment`,缺省 attachment);回合中途投喂,不打断在飞 turn |
 | 子代理 | `query_subagents` | 可选 `child_id`;应答 `subagent_status` 状态快照 |
 | 目标 | `enter_goal_mode` / `exit_goal_mode` | goal + 可选 verify_command / token_budget |
@@ -302,6 +302,7 @@ evs = list(agent.submit_op({
 | `side_channel_started` / `side_channel_finished` | submission / 全局 | side-channel agent(WP9):用户发起的并发 agent;`finished` 含 done / cancelled / error 三态 |
 | `side_channel_status` | submission | `submit_op({"type":"query_side_channels"})` 的应答(channels 快照数组) |
 | `submission_closed` | submission | 该提交通道排空(非 turn Op 的收尾标记) |
+| `prompt_list` / `prompt_switched` | `selection`, `profile`, `fallback_reason` | 提示词选择结果，包含生效方案和回落原因 |
 | `turn_rewound` / `config_reloaded` / `collab_*` / `mcp_server_*` / `mcp_tool_invoked` / `lsp_server_*` / `plugin_loaded` / `quota_exhausted` / `routing` | — | 其余变体见 protocol.py |
 | `UnknownEventMsg` 形态 | 任意 | 未识别变体降级(`type` 保留原值),保证前向兼容 |
 

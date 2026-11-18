@@ -13,6 +13,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p zhuye-eval --bin zhuye-eval-score
 exec python3 "$ROOT/tests/eval/run.py" \
     --candidate "$ZHUYE_EVAL_CANDIDATE" --baseline "$ZHUYE_EVAL_BASELINE" \
+    --candidate-profile "${ZHUYE_EVAL_CANDIDATE_PROFILE:-default}" \
+    --baseline-profile "${ZHUYE_EVAL_BASELINE_PROFILE:-default}" \
     --model "$ZHUYE_EVAL_MODEL" --base-url "$ZHUYE_EVAL_BASE_URL" \
     --scorer "$ROOT/target/debug/zhuye-eval-score" \
     --output "${ZHUYE_EVAL_OUTPUT:-$ROOT/target/eval-quality}" \

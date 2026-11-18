@@ -619,6 +619,9 @@ impl SubAgentFactory {
             .with_preload_messages(history)
             .with_approval_context(self.approval_context.clone());
         if let Some(parent) = self.parent_config.lock().clone() {
+            cfg.prompt_library = parent.prompt_library.clone();
+            cfg.prompt_selection = parent.prompt_selection.clone();
+            cfg.prompt_default = parent.prompt_default.clone();
             cfg.approvals = parent.approvals;
             cfg.approval_context = parent.approval_context.clone();
             cfg.permission_mode = parent.permission_mode.clone();

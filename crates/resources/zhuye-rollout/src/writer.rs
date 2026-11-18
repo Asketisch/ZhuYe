@@ -66,6 +66,8 @@ struct Inner {
     /// 以保证索引的「首行 = SessionMeta」契约。
     /// 在见到 `SessionMeta` 之前为 `None`(此时轮转是 no-op)。
     session_meta: Option<CachedSessionMeta>,
+    /// 最近一次提示词选择，轮转后保留以支持会话恢复。
+    prompt_selection: Option<Option<zhuye_protocol::PromptSelection>>,
 }
 
 /// 持久化 JSONL writer,一个 thread 一份。
@@ -96,6 +98,7 @@ impl JsonlRolloutWriter {
                 writer: None,
                 current_size: 0,
                 session_meta: None,
+                prompt_selection: None,
             }),
         }
     }
@@ -191,6 +194,15 @@ impl JsonlRolloutWriter {
             }
             // 把刚写入的 meta 行大小计入(字符串字节数 + 换行)。
             g.current_size = g.current_size.saturating_add(line.len() as u64 + 1);
+            if let Some(selection) = g.prompt_selection.clone() {
+                let line =
+                    serialize_redacted(&RolloutRecord::PromptSelectionChanged { selection })?;
+                if let Some(writer) = g.writer.as_mut() {
+                    writeln!(writer, "{line}")?;
+                    writer.flush()?;
+                }
+                g.current_size = g.current_size.saturating_add(line.len() as u64 + 1);
+            }
         }
         Ok(())
     }
@@ -227,6 +239,9 @@ impl RolloutRecorder for JsonlRolloutWriter {
             w.flush()?;
         }
         g.current_size = g.current_size.saturating_add(line_bytes);
+        if let RolloutRecord::PromptSelectionChanged { selection } = &r {
+            g.prompt_selection = Some(selection.clone());
+        }
 
         if g.current_size >= ROTATE_AFTER_BYTES {
             Self::rotate(&mut g, self.session_id)?;
@@ -414,6 +429,32 @@ fn write_backup(path: &Path, content: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rotation_preserves_prompt_selection_for_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = ThreadId::new();
+        let writer = JsonlRolloutWriter::new(dir.path(), sid);
+        writer
+            .record(RolloutRecord::session_meta(sid, "mock/model"))
+            .await
+            .unwrap();
+        let selection = Some(zhuye_protocol::PromptSelection::Manual {
+            profile: "claude".into(),
+        });
+        writer
+            .record(RolloutRecord::PromptSelectionChanged {
+                selection: selection.clone(),
+            })
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            JsonlRolloutWriter::rotate(&mut writer.inner.lock(), sid).unwrap();
+        }
+        let records = writer.replay(sid).await.unwrap();
+        assert!(records.iter().any(|record| matches!(record,
+            RolloutRecord::PromptSelectionChanged { selection: found } if found == &selection)));
+    }
     use tempfile::tempdir;
     use zhuye_protocol::{MessageRole, TurnId};
 

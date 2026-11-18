@@ -10,6 +10,37 @@ use crate::graph::GraphNode;
 use crate::graph::state::AgentState;
 use crate::submission_loop::NodeContext;
 
+pub(super) fn compose_prompt_core(
+    context: &crate::graph::state::PromptCoreContext,
+    set: &zhuye_prompt::PromptSet,
+) -> String {
+    let agent_prompt = context
+        .custom_main
+        .as_deref()
+        .unwrap_or_else(|| set.get_or("system.main", "你是一名编码助手。"));
+    let guidance = set
+        .get("system.plan-mode")
+        .filter(|value| !zhuye_prompt::is_section_off(value));
+    let mut core = zhuye_prompt::LayeredPrompt::compose_core_with_guidance(
+        agent_prompt,
+        &context.memory,
+        guidance,
+    );
+    if guidance.is_some() {
+        zhuye_prompt::append_active_mode_section_with_set(&mut core, context.mode, set);
+    }
+    if let Some(checklist) = context
+        .checklist
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        core.push_str("\n\n## Current Todo List\n");
+        core.push_str(checklist);
+        core.push_str("\nThis is your own working checklist — keep it up to date with the `TodoWrite` tool, and work through the remaining items.\n");
+    }
+    core
+}
+
 /// `pre_loop` — M4:完整的 turn 前置流水线。
 ///
 /// 当 `ctx.m4` 为 `Some`(生产):
@@ -366,43 +397,20 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // `BuiltinDefault` 时用提示词库解析 `system.main`,用户自定义
     // (`.zhuye/agents/*.md`)则原文不动。
     let model_spec = ctx.model.read().clone();
-    let prompt_set = zhuye_prompt::library().resolve(&model_spec);
-    let agent_prompt = match m4.active_agent_def.source {
-        zhuye_agent_def::SystemPromptSource::Custom => &m4.active_agent_def.system_prompt,
-        zhuye_agent_def::SystemPromptSource::BuiltinDefault => prompt_set.get_or(
-            "system.main",
-            // 提示词库异常缺失时兜底,保证 turn 不因空 prompt 失败。
-            "你是一名编码助手。",
-        ),
-    };
-    // `## Plan Mode` 段可关闭 —— 用户在 `.zhuye/prompts/*.md`
-    // 把 `## system.plan-mode` 覆盖为 `off`(或 none/disabled/false)时,
-    // core prompt 不再追加 Plan Mode 规则段。非编码场景(自定义分析师
-    // persona 等)由此摘掉编码代理人格,不再每请求背 ~2.3KB 无关指引。
-    // 判定用同一份 `prompt_set`(已含用户 default 层 + 按模型层)。
-    let include_plan_mode = zhuye_prompt::plan_mode_enabled_for(&model_spec);
-    let mut core = zhuye_prompt::LayeredPrompt::compose_core_with_plan_mode(
-        agent_prompt,
-        &memory_text,
-        include_plan_mode,
-    );
-    if !include_plan_mode {
-        tracing::debug!("system.plan-mode=off: core prompt 未注入 Plan Mode 规则段");
-    }
+    let prompt_set = ctx.cfg.resolve_prompt(&model_spec).set;
     let current_mode = ctx.cfg.permission_mode();
-    zhuye_prompt::append_active_mode_section(&mut core, current_mode);
-    // 清单回灌:把**最近一次** `TodoWrite` 的清单注入 core prompt ——
-    // 否则清单「只出不进」,LLM 写完即忘(见 `AgentConfig::todos_slot`)。
-    // 放在 active-mode 段之后:它是**当前状态**,不是记忆。
-    if let Some(checklist) = ctx.todos_slot.read().clone() {
-        if !checklist.trim().is_empty() {
-            core.push_str("\n\n## Current Todo List\n");
-            core.push_str(&checklist);
-            core.push_str(
-                "\nThis is your own working checklist — keep it up to date with the `TodoWrite` tool, and work through the remaining items.\n",
-            );
-        }
-    }
+    let prompt_context = crate::graph::state::PromptCoreContext {
+        custom_main: matches!(
+            m4.active_agent_def.source,
+            zhuye_agent_def::SystemPromptSource::Custom
+        )
+        .then(|| m4.active_agent_def.system_prompt.clone()),
+        memory: memory_text,
+        checklist: ctx.todos_slot.read().clone(),
+        mode: current_mode,
+    };
+    let core = compose_prompt_core(&prompt_context, &prompt_set);
+    state.prompt_core = Some(prompt_context);
     let ephemeral_skills = m4.skills.render_for_system_prompt();
     let reminder = format!("Iteration {}/{}", state.iteration, ctx.max_iterations);
     let mut effective = m4.skills.active_tool_names();
@@ -439,7 +447,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     if def.readonly {
         effective.retain(|t| !zhuye_tools::READONLY_DENYLIST.contains(&t.as_str()));
     }
-    let mut tool_specs: Vec<zhuye_llm::ToolSpec> = ctx
+    let tool_specs: Vec<zhuye_llm::ToolSpec> = ctx
         .tools_queue
         .registry()
         .list_specs()
@@ -465,7 +473,6 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         .collect();
     // v1.6:模型层工具描述覆盖 —— `tool.<name>` section 存在时替换
     // description(落点在 spec 组装处,Tool trait 与外部工具不受影响)。
-    zhuye_prompt::apply_model_overrides(&mut tool_specs, &prompt_set);
     let mut ephemeral = zhuye_prompt::LayeredPrompt::compose_ephemeral_with_mode(
         &tool_specs,
         &ephemeral_skills,

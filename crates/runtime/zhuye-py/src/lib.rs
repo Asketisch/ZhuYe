@@ -99,6 +99,20 @@ impl PyZhuyeBuilder {
         }
     }
 
+    /// 设置当前会话的提示词方案，支持 default、auto 或方案标识。
+    fn prompt_profile(&self, profile: &str) -> Self {
+        let selection = match profile {
+            "default" => zhuye::PromptSelection::Default,
+            "auto" => zhuye::PromptSelection::Auto,
+            profile => zhuye::PromptSelection::Manual {
+                profile: profile.to_string(),
+            },
+        };
+        Self {
+            inner: self.inner.clone().with_prompt_selection(selection),
+        }
+    }
+
     /// 返回当前 builder 配置快照(不触发 LLM / 网络)。
     fn describe(&self) -> (String, String, bool, bool) {
         (

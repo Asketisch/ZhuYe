@@ -163,11 +163,42 @@ class ExitGoalModeOp(TypedDict):
     type: Literal["exit_goal_mode"]
 
 
+class DefaultPromptSelection(TypedDict):
+    mode: Literal["default", "auto"]
+
+
+class ManualPromptSelection(TypedDict):
+    mode: Literal["manual"]
+    profile: str
+
+
+PromptSelection = Union[DefaultPromptSelection, ManualPromptSelection]
+
+
+class PromptListAction(TypedDict):
+    type: Literal["list"]
+
+
+class PromptReloadAction(TypedDict):
+    type: Literal["switch"]
+    layer: str | None
+
+
+class PromptSelectAction(TypedDict):
+    type: Literal["select"]
+    selection: PromptSelection | None
+
+
+class PromptSaveDefaultAction(TypedDict):
+    type: Literal["save_default"]
+    selection: PromptSelection
+
+
 class PromptCommandOp(TypedDict):
-    """v1.6.1:提示词层管理(list 查询 / switch 重扫 `.zhuye/prompts`)。"""
+    """查询、重扫或选择当前会话的提示词方案。"""
 
     type: Literal["prompt_command"]
-    action: dict[str, Any]  # {"type":"list"} | {"type":"switch","layer":str|None}
+    action: Union[PromptListAction, PromptReloadAction, PromptSelectAction, PromptSaveDefaultAction]
 
 
 class RescanExtensionsOp(TypedDict):
@@ -723,6 +754,25 @@ class Routing(_RoutingOptionalFields):
     kind: str
 
 
+class _PromptStatusOptionalFields(TypedDict, total=False):
+    selection: PromptSelection
+    profile: str
+    fallback_reason: str
+
+
+class PromptList(_PromptStatusOptionalFields):
+    type: Literal["prompt_list"]
+    available: list[str]
+    current_spec: str
+    active_layers: list[str]
+
+
+class PromptSwitched(_PromptStatusOptionalFields):
+    type: Literal["prompt_switched"]
+    action: str
+    active_layers: list[str]
+
+
 class UnknownEventMsg(TypedDict):
     """协议未识别的 EventMsg 降级形态。"""
 
@@ -755,6 +805,8 @@ EventMsg = Union[
     ErrorEvent,
     StreamError,
     ConfigReloaded,
+    PromptList,
+    PromptSwitched,
     ExtensionsRescanned,
     GuardStats,
     CollabStarted,

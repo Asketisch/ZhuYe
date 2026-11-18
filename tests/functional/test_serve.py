@@ -36,6 +36,7 @@ from wire import (
     msg_types,
     require_binary,
     rollout_records,
+    rollout_thread_id,
 )
 
 pytestmark = pytest.mark.usefixtures("sandbox")
@@ -681,11 +682,60 @@ def test_A12_prompt_command_提示词层管理(serve_session, mock_script) -> No
         assert m is not None, f"未见 prompt_list:{msg_types(evs)}"
         for f in ("available", "current_spec", "active_layers"):
             assert f in m["msg"], f"prompt_list 缺 {f}:{m['msg']}"
+        assert m["msg"]["selection"] == {"mode": "default"}
+        assert m["msg"]["profile"] == "default"
+
+        evs = s.submit({"type": "prompt_command", "action": {
+            "type": "select", "selection": {"mode": "manual", "profile": "claude"}}})
+        selected = first_event(evs, "prompt_switched")["msg"]
+        assert selected["selection"] == {"mode": "manual", "profile": "claude"}
+        assert selected["profile"] == "claude"
+
+        evs = s.submit({"type": "prompt_command", "action": {
+            "type": "select", "selection": {"mode": "manual", "profile": "missing"}}})
+        error = first_event(evs, "error")["msg"]
+        assert error["code"] == "PROMPT_PROFILE_NOT_FOUND"
+
+        evs = s.submit({"type": "prompt_command", "action": {
+            "type": "select", "selection": {"mode": "auto"}}})
+        automatic = first_event(evs, "prompt_switched")["msg"]
+        assert automatic["selection"] == {"mode": "auto"}
+        assert automatic["profile"] == "default"
+        assert automatic["fallback_reason"]
+
+        evs = s.submit({"type": "prompt_command", "action": {
+            "type": "save_default", "selection": {"mode": "manual", "profile": "gpt"}}})
+        saved = first_event(evs, "prompt_switched")["msg"]
+        assert saved["selection"] == {"mode": "manual", "profile": "gpt"}
+        assert saved["profile"] == "gpt"
 
         evs = s.submit({"type": "prompt_command", "action": {"type": "switch", "layer": None}})
         m = first_event(evs, "prompt_switched")
         assert m is not None, f"未见 prompt_switched:{msg_types(evs)}"
         assert "active_layers" in m["msg"], f"prompt_switched 缺 active_layers:{m['msg']}"
+
+
+def test_A12_prompt_selection_会话恢复(serve_session, mock_script, sandbox) -> None:
+    require_binary()
+    script = mock_script(['{"type":"text","text":"ok"}'])
+    env = {"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}
+    with serve_session(env=env) as session:
+        session.submit({"type": "user_input", "items": [{"type": "text", "text": "开始"}]})
+        events = session.submit({"type": "prompt_command", "action": {
+            "type": "select", "selection": {"mode": "manual", "profile": "deepseek"}}})
+        assert first_event(events, "prompt_switched")["msg"]["profile"] == "deepseek"
+    thread_id = rollout_thread_id(sandbox.home)
+    with serve_session(args=["--resume", thread_id], env=env) as session:
+        events = session.submit({"type": "prompt_command", "action": {"type": "list"}})
+        state = first_event(events, "prompt_list")["msg"]
+        assert state["selection"] == {"mode": "manual", "profile": "deepseek"}
+        assert state["profile"] == "deepseek"
+        events = session.submit({"type": "prompt_command", "action": {
+            "type": "select", "selection": None}})
+        assert first_event(events, "prompt_switched")["msg"]["selection"] == {"mode": "default"}
+    with serve_session(args=["--resume", thread_id], env=env) as session:
+        events = session.submit({"type": "prompt_command", "action": {"type": "list"}})
+        assert first_event(events, "prompt_list")["msg"]["selection"] == {"mode": "default"}
 
 
 def test_A13_side_channel启动查询取消(serve_session, mock_script) -> None:

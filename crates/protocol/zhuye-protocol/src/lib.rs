@@ -51,7 +51,7 @@ pub use item::{
     UserInputItem, is_edit_tool_name,
 };
 pub use op::{Op, RemoteToolSpec};
-pub use op_prompt::PromptAction;
+pub use op_prompt::{PromptAction, PromptSelection};
 pub use question::{
     Answer, AskUserAnswer, AskUserQuestionEvent, MAX_HEADER_CHARS, MAX_OPTIONS, MAX_QUESTIONS,
     MIN_OPTIONS, Question, QuestionError, QuestionOption,

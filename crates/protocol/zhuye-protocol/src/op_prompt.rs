@@ -6,12 +6,38 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 会话采用的提示词选择策略。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum PromptSelection {
+    /// 使用烛夜默认文案及用户默认覆盖。
+    #[default]
+    Default,
+    /// 根据实际模型选择已通过评测的方案。
+    Auto,
+    /// 固定使用指定的内置或用户方案。
+    Manual {
+        /// 提示词方案标识，即层文件名。
+        profile: String,
+    },
+}
+
 /// `/prompt` 子命令动作。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptAction {
     /// 列出可用层 + 当前模型 spec 的生效层。应答 `EventMsg::PromptList`。
     List,
+    /// 设置当前会话的选择，空值表示恢复跟随共享默认。
+    Select {
+        /// 会话覆盖。
+        selection: Option<PromptSelection>,
+    },
+    /// 保存共享默认并令当前会话跟随该默认。
+    SaveDefault {
+        /// 将保存的选择。
+        selection: PromptSelection,
+    },
     /// 重扫提示词库(bootstrap 时记录的目录序),让用户对
     /// `.zhuye/prompts/*.md` 的修改即时生效。应答 `EventMsg::PromptSwitched`。
     /// `layer` 保留槽位:未来支持强制聚焦某层;`None` = 全量重扫。
@@ -31,6 +57,15 @@ mod tests {
     fn serde_roundtrip_prompt_action() {
         for (action, tag) in [
             (PromptAction::List, "list"),
+            (PromptAction::Select { selection: None }, "select"),
+            (
+                PromptAction::Select {
+                    selection: Some(PromptSelection::Manual {
+                        profile: "claude".into(),
+                    }),
+                },
+                "select",
+            ),
             (
                 PromptAction::Switch {
                     layer: Some("claude".into()),

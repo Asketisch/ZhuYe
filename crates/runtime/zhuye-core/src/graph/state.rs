@@ -102,6 +102,8 @@ pub struct AgentState {
     /// M4:system prompt 块(core + append),由 `pre_loop` 构造。
     /// `model_call` 读取它填充 `ChatRequest::system`。
     pub system_blocks: SystemBlocks,
+    /// 前置阶段收集的核心提示词上下文，供模型路由后重新组装。
+    pub prompt_core: Option<PromptCoreContext>,
     /// M4:临时提醒文本(以带 `<system-reminder>` 标签的 `User` 消息
     /// 渲染)。由 `pre_loop` 设置。
     pub ephemeral_text: String,
@@ -143,6 +145,19 @@ pub struct AgentState {
     /// v1.x:本 turn 是否已落盘过 `MemoryAccess::Read` 审计(与缓存配套:
     /// 审计每 turn 一条,而非每迭代一条)。
     pub memory_read_recorded: bool,
+}
+
+/// 核心提示词中与模型选择无关的会话上下文。
+#[derive(Debug, Clone)]
+pub struct PromptCoreContext {
+    /// 显式 agent 人格；内置人格由目标模型的方案解析。
+    pub custom_main: Option<String>,
+    /// 已检索的会话记忆。
+    pub memory: String,
+    /// 当前待办清单。
+    pub checklist: Option<String>,
+    /// 前置阶段的权限模式。
+    pub mode: zhuye_protocol::PermissionMode,
 }
 
 /// v1.x progress-nudge:每条 web_fetch 的 URL + 200 字符片段摘要,供

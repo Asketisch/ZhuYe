@@ -106,6 +106,11 @@ pub struct SessionInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RolloutRecord {
+    /// 会话提示词选择覆盖；空值表示跟随共享默认。
+    PromptSelectionChanged {
+        /// 用户指定的会话覆盖。
+        selection: Option<crate::PromptSelection>,
+    },
     /// 每个线程恰好发送一次,先于所有其它记录。
     SessionMeta {
         /// 会话 ID;与 `SessionConfigured.session_id` 及 JSONL 文件名一致。

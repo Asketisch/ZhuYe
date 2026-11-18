@@ -169,7 +169,37 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     // v1.6:兜底路径(pre_loop 未写入 effective_tools)也应用模型层
     // 工具描述覆盖;正常路径已在 pre_loop 应用过,这里是防御性对齐。
     // resolved_spec 已含 provider/model 拆分,直接复用。
-    zhuye_prompt::apply_model_overrides(&mut tools, &zhuye_prompt::library().resolve(&spec));
+    let base_tools = tools.clone();
+    let builtin_names: std::collections::HashSet<String> = ctx
+        .tools_queue
+        .registry()
+        .list_with_source()
+        .into_iter()
+        .filter_map(|(name, source)| (source == zhuye_tools::ToolSource::Builtin).then_some(name))
+        .collect();
+    let base_system = state.system_blocks.clone();
+    let prompt_core = state.prompt_core.clone();
+    let prompt_library = ctx.cfg.prompt_library.read().clone();
+    let selection = ctx.cfg.current_prompt_selection();
+    let resolve_for_request =
+        |spec: &str, tools: &mut Vec<zhuye_llm::ToolSpec>, system: &mut zhuye_llm::SystemBlocks| {
+            let resolved = prompt_library.resolve_selection(spec, &selection);
+            *tools = base_tools.clone();
+            for tool in tools.iter_mut() {
+                let zhuye_llm::ToolSpec::Function { name, .. } = &*tool;
+                if builtin_names.contains(name) {
+                    zhuye_prompt::apply_model_overrides(std::slice::from_mut(tool), &resolved.set);
+                }
+            }
+            *system = base_system.clone();
+            if let Some(context) = prompt_core.as_ref()
+                && let Some(block) = system.0.first_mut()
+            {
+                block.text = super::pre_loop::compose_prompt_core(context, &resolved.set);
+            }
+        };
+    let mut system = base_system.clone();
+    resolve_for_request(&spec, &mut tools, &mut system);
     let mut request = ChatRequest {
         model: spec
             .split_once('/')
@@ -177,7 +207,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             .to_string(),
         messages,
         tools,
-        system: state.system_blocks.clone(),
+        system,
         thinking: Some(zhuye_llm::ThinkingConfig::OpenAIReasoning {
             effort: (*ctx.effort.read()).into(),
         }),
@@ -253,10 +283,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                         .split_once('/')
                         .map_or(spec.as_str(), |(_, m)| m)
                         .to_string();
-                    zhuye_prompt::apply_model_overrides(
-                        &mut request.tools,
-                        &zhuye_prompt::library().resolve(&spec),
-                    );
+                    resolve_for_request(&spec, &mut request.tools, &mut request.system);
                     // 排除集按 client 指针比对,跨 provider 池不复用 —— 清空后
                     // 新池的全池重新参与派位。
                     exclude.clear();
