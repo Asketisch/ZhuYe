@@ -1,5 +1,5 @@
 <p align="center">
-  <b>中文</b> · [English](README.en.md)
+  <b>中文</b> · <a href="README.en.md">English</a>
 </p>
 
 # 烛夜 ZhuYe

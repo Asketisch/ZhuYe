@@ -1,6 +1,6 @@
 # SDK 发布指南(PyPI / npm)
 
-<p align="center">  <b>中文</b> · [English](release.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="release.en.md">English</a>  </p>
 
 Python SDK 与 TS SDK 通过 `.github/workflows/release-sdks.yml` 自动发布:
 **tag `v*` 驱动 + OIDC Trusted Publishing(仓库 secrets 不存任何 token)**。

@@ -1,6 +1,6 @@
 # harness-import —— the external Harness history import plugin
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 Imports Claude Code / Codex / ZCode conversation history into native
 ZhuYe sessions (`~/.zhuye/sessions/YYYY/MM/DD/<thread_id>.jsonl`); the

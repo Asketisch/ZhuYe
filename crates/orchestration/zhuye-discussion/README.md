@@ -1,6 +1,6 @@
 # `zhuye-discussion`
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 > M9 (2026-06-22) 上线,v0.2.3 收尾实战 LLM wiring(round 标记 + AgentTurn emit + lib re-export + docs 去 hedging)。ZhuYe 多 Agent 讨论子系统。
 

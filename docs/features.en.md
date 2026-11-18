@@ -1,6 +1,6 @@
 # Capabilities
 
-<p align="center">  [中文](features.md) · **English**  </p>
+<p align="center">  <a href="features.md">中文</a> · <b>English</b>  </p>
 
 > This document is ZhuYe's capability overview and known boundaries, with
 > every item annotated by "enabled by default / requires configuration /

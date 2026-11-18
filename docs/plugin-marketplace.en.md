@@ -1,6 +1,6 @@
 # ZhuYe Plugin Marketplace
 
-<p align="center">  [中文](plugin-marketplace.md) · **English**  </p>
+<p align="center">  <a href="plugin-marketplace.md">中文</a> · <b>English</b>  </p>
 
 > A marketplace is a **collection of plugins**: one JSON manifest
 > listing multiple plugin entries, each entry telling users where to pull

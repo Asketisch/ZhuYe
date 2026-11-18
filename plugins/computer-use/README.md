@@ -1,6 +1,6 @@
 # computer-use —— 屏幕与输入插件
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 xcap(截屏)+ enigo(鼠标键盘)。MCP 工具天然 `Prompt` 权限下限,
 每次调用弹宿主审批。

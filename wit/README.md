@@ -1,6 +1,6 @@
 # wit/ — 烛夜 WASM 插件契约(社区接口权威定义)
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 `plugin.wit` 定义了宿主与 WASM 插件组件之间的语言无关接口。任何能产出
 **组件模型 .wasm** 的工具链都可实现:

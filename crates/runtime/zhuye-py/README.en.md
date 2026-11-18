@@ -1,6 +1,6 @@
 # zhuye-py
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 Python bindings for the ZhuYe Agent (PyO3 + maturin).
 

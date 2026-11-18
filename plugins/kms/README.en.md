@@ -1,6 +1,6 @@
 # kms —— the local knowledge base plugin
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 Multi-wiki Markdown knowledge management:
 `~/.zhuye/kms/<wiki>/{index.md,pages/*.md}`. On unix, directory

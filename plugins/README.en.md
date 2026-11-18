@@ -1,6 +1,6 @@
 # plugins/ —— the unified ZhuYe plugin directory
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 All plugins bundled in the repo live here, for easier management,
 review, and distribution. Each subdirectory is a complete plugin

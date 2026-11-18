@@ -1,6 +1,6 @@
 # git-tools —— the git workflow plugin
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 Reuses the framework's `zhuye-git` capability family (branch / PR
 probing + tag-ified checkpoints).

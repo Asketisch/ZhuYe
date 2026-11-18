@@ -1,6 +1,6 @@
 # Plan Mode Design
 
-<p align="center">  [中文](PLAN_MODE.md) · **English**  </p>
+<p align="center">  <a href="PLAN_MODE.md">中文</a> · <b>English</b>  </p>
 
 > This document describes the Plan mode protocol and implementation
 > contract of ZhuYe. Related source:

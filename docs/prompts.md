@@ -1,6 +1,6 @@
 # 提示词库(v1.6):外置 + 按模型匹配
 
-<p align="center">  <b>中文</b> · [English](prompts.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="prompts.en.md">English</a>  </p>
 
 烛夜的所有 LLM 提示词从 v1.6 起外置为 Markdown,并按**当前模型**
 动态匹配 —— 同一个 agent 换用不同 LLM(如 claude / gpt / gemini /

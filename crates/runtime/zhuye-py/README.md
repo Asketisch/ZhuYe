@@ -1,6 +1,6 @@
 # zhuye-py
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 烛夜 Agent 的 Python 绑定(Pyo3 + maturin)。
 

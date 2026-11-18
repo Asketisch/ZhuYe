@@ -1,6 +1,6 @@
 # shell —— the resident shell session plugin
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 Complements the built-in `bash` (one-shot): launch a process in the
 background → read output incrementally → write to stdin → kill. Good

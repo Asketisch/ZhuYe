@@ -1,6 +1,6 @@
 # goal-queue plugin
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 The delivery plugin for goal mode + queue mode (v1.10 feature 2).
 

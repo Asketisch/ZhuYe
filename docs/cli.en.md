@@ -1,6 +1,6 @@
 # CLI Reference
 
-<p align="center">  [中文](cli.md) · **English**  </p>
+<p align="center">  <a href="cli.md">中文</a> · <b>English</b>  </p>
 
 > Full list and usage of the subcommands of the `zhuye` binary. The
 > single `zhuye` binary is produced by the `zhuye-cli` crate and has

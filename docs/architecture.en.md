@@ -1,6 +1,6 @@
 # Architecture
 
-<p align="center">  [中文](architecture.md) · **English**  </p>
+<p align="center">  <a href="architecture.md">中文</a> · <b>English</b>  </p>
 
 > This document is the architecture reference for ZhuYe: framework
 > boundaries and entry points, the six-layer workspace structure, protocol

@@ -1,6 +1,6 @@
 # `zhuye-discussion`
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 > Shipped in M9 (2026-06-22); v0.2.3 finished the real-LLM wiring (round
 > marking + AgentTurn emit + lib re-export + docs de-hedging). The

@@ -1,6 +1,6 @@
 # Security Policy
 
-<p align="center">  [中文](SECURITY.md) · **English**  </p>
+<p align="center">  <a href="SECURITY.md">中文</a> · <b>English</b>  </p>
 
 > Security vulnerability reporting and handling process for the ZhuYe
 > project. This document is intended for all researchers, users, and

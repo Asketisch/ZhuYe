@@ -1,6 +1,6 @@
 # 烛夜插件开发指南(社区向)
 
-<p align="center">  <b>中文</b> · [English](plugin-dev-guide.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="plugin-dev-guide.en.md">English</a>  </p>
 
 > 本指南面向**想为烛夜开发插件的所有开发者**,不要求熟悉烛夜内部实现。
 > 从零开始跑通第一个插件,再按需深入各类能力与 WASM 组件。

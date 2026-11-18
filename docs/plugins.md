@@ -1,6 +1,6 @@
 # 插件使用
 
-<p align="center">  <b>中文</b> · [English](plugins.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="plugins.en.md">English</a>  </p>
 
 > 本文面向**使用者**:仓库内置了哪些插件、如何安装与启用、marketplace
 > 怎么管、状态文件在哪、出了问题怎么排查。manifest 字段、capability

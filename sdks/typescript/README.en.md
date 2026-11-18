@@ -1,6 +1,6 @@
 # zhuye (TypeScript SDK)
 
-<p align="center">  [中文](README.md) · **English**  </p>
+<p align="center">  <a href="README.md">中文</a> · <b>English</b>  </p>
 
 The official SDK for driving [ZhuYe Agent](https://github.com/Asketisch/ZhuYe)
 directly from Node.js / TypeScript projects; the API mirrors the

@@ -1,6 +1,6 @@
 # ZhuYe Serve Wire Protocol (v0 + SDK Extensions)
 
-<p align="center">  [中文](PROTOCOL.md) · **English**  </p>
+<p align="center">  <a href="PROTOCOL.md">中文</a> · <b>English</b>  </p>
 
 `zhuye serve` is a persistent stdio JSONL session server: one process
 = one resident AgentThread, with multiple turns of conversation sharing

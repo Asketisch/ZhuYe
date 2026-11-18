@@ -1,6 +1,6 @@
 # harness-import —— 外部 Harness 历史会话导入插件
 
-<p align="center">  <b>中文</b> · [English](README.en.md)  </p>
+<p align="center">  <b>中文</b> · <a href="README.en.md">English</a>  </p>
 
 把 Claude Code / Codex / ZCode 的历史对话导入为烛夜原生会话
 (`~/.zhuye/sessions/YYYY/MM/DD/<thread_id>.jsonl`),导入产物即是普通

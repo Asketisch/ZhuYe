@@ -1,6 +1,6 @@
 # Using Plugins
 
-<p align="center">  [中文](plugins.md) · **English**  </p>
+<p align="center">  <a href="plugins.md">中文</a> · <b>English</b>  </p>
 
 > This page is aimed at **users**: which plugins ship with the repo, how to
 > install and enable them, how marketplaces are managed, where the state files
