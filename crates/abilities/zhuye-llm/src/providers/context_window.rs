@@ -128,8 +128,12 @@ pub fn normalize_model_spec(model_spec: &str) -> String {
 /// 查 `model_spec` 的上下文窗口大小（token）。归一化 provider 前缀 /
 /// ollama tag / 大小写后用 `starts_with` 匹配版本后缀。
 ///
-/// 级联:**运行时 override 表(用户配置,优先)** → 内置静态回退表 →
-/// `None`。返回 `None` 表示未知模型（TUI 此时省略上下文条）。
+/// 级联:**运行时 override 表(用户配置,优先)** → 内置静态回退表
+/// (本引擎策展口径)→ models.dev 社区目录(`crate::models_dev`,
+/// 跨厂商投票 + 兜底链,**补静态表未收录的新模型 / 私端模型**)→
+/// `None`。目录只填空缺、不覆盖策展值 —— 与 magpie「live 披露优先,
+/// 目录 Decorate 补缺」同语义。返回 `None` 表示未知模型
+/// (TUI 此时省略上下文条)。
 ///
 /// # 示例
 ///
@@ -147,7 +151,10 @@ pub fn context_window_for(model_spec: &str) -> Option<u32> {
     if let Some(v) = context_window_override_for(model_spec) {
         return Some(v);
     }
-    static_context_window_for(model_spec)
+    if let Some(v) = static_context_window_for(model_spec) {
+        return Some(v);
+    }
+    crate::models_dev::abilities_for(model_spec).context_window
 }
 
 fn static_context_window_for(model_spec: &str) -> Option<u32> {

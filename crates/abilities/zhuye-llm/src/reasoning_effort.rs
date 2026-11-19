@@ -42,7 +42,14 @@ const EFFORT_CAP_TABLE: &[(&str, ReasoningEffort)] = &[
 pub const DEFAULT_MAX_EFFORT: ReasoningEffort = ReasoningEffort::High;
 
 /// 查 `model_spec` 支持的最高思考强度。归一化(去 provider 前缀 /
-/// ollama tag、小写)后按前缀匹配;未知模型返回 [`DEFAULT_MAX_EFFORT`]。
+/// ollama tag、小写)后三级级联:
+///
+/// 1. 内置静态表(前缀匹配)—— 编码了本引擎对各模型族 wire 词表的
+///    决策,权威优先;
+/// 2. models.dev 社区目录的档位投票(`crate::models_dev` 的
+///    `effort_levels`,把厂商档位词映射到本阶梯后取最大)—— 静态表
+///    未收录的新模型 / 私端模型由此获得真实档位,而不是一律保守 high;
+/// 3. 都未命中返回 [`DEFAULT_MAX_EFFORT`]。
 ///
 /// # 示例
 ///
@@ -60,10 +67,34 @@ pub fn max_effort_for_model(model_spec: &str) -> ReasoningEffort {
     if needle.is_empty() {
         return DEFAULT_MAX_EFFORT;
     }
-    EFFORT_CAP_TABLE
+    if let Some((_, cap)) = EFFORT_CAP_TABLE
         .iter()
         .find(|(prefix, _)| needle.starts_with(prefix))
-        .map_or(DEFAULT_MAX_EFFORT, |(_, cap)| *cap)
+    {
+        return *cap;
+    }
+    if let Some(levels) = crate::models_dev::abilities_for(model_spec).effort_levels {
+        if let Some(cap) = ladder_cap(&levels) {
+            return cap;
+        }
+    }
+    DEFAULT_MAX_EFFORT
+}
+
+/// 厂商档位词表 → 本阶梯的最大档。只认 low/medium/high/max/ultra 五个
+/// 词;`none` / `minimal` / 未知词不参与取最大(它们不是「更高的档」)。
+fn ladder_cap(levels: &[String]) -> Option<ReasoningEffort> {
+    levels
+        .iter()
+        .filter_map(|s| match s.to_ascii_lowercase().as_str() {
+            "low" => Some(ReasoningEffort::Low),
+            "medium" => Some(ReasoningEffort::Medium),
+            "high" => Some(ReasoningEffort::High),
+            "max" => Some(ReasoningEffort::Max),
+            "ultra" => Some(ReasoningEffort::Ultra),
+            _ => None,
+        })
+        .max()
 }
 
 /// 把请求档位钳制到目标模型支持的上限(取 `min`)。
@@ -155,8 +186,11 @@ mod tests {
         assert_eq!(max_effort_for_model("gpt-5.1"), ReasoningEffort::Ultra);
         assert_eq!(max_effort_for_model("openai/gpt-5"), ReasoningEffort::Ultra);
         assert_eq!(max_effort_for_model("o3-mini"), ReasoningEffort::Ultra);
-        // 未知模型 → 保守 high。
-        assert_eq!(max_effort_for_model("glm-4.7"), ReasoningEffort::High);
+        // 未知模型 → 保守 high(用假模型名断言,不依赖目录数据)。
+        assert_eq!(
+            max_effort_for_model("zzcap-unknown-9x"),
+            ReasoningEffort::High
+        );
         assert_eq!(max_effort_for_model(""), ReasoningEffort::High);
     }
 
@@ -208,8 +242,59 @@ mod tests {
         );
         // 未知模型与 qwen 同阶梯(保守 3 档)。
         assert_eq!(
-            supported_efforts_for_model("mystery-model"),
+            supported_efforts_for_model("zzladder-mystery"),
             vec![E::Low, E::Medium, E::High]
         );
+    }
+
+    /// 目录档位投票补未知模型族:静态表未收录时,models.dev 的档位
+    /// 词表映射到本阶梯取最大;词表外的词(none/minimal)不抬升上限。
+    /// install_catalog 是进程级全局,与 models_dev / context_window 的
+    /// 目录单测互斥,用各自独有的假模型名避免串扰。
+    #[test]
+    fn catalog_levels_fill_unknown_families() {
+        use crate::models_dev::{DevCatalog, ModelAbilities, install_catalog};
+        let _guard = crate::models_dev::catalog_test_lock().lock().unwrap();
+        install_catalog(DevCatalog::from_entries([(
+            "zzeff-new-model".to_string(),
+            ModelAbilities {
+                effort_levels: Some(vec![
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                    "max".into(),
+                ]),
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(
+            max_effort_for_model("zzeff-new-model"),
+            ReasoningEffort::Max,
+            "目录说支持到 max → 上限从保守 high 升到 max"
+        );
+        assert_eq!(supported_efforts_for_model("zzeff-new-model").len(), 4);
+        // 词表外的词不参与取最大 → 仍走保守默认。
+        install_catalog(DevCatalog::from_entries([(
+            "zzeff-odd-vocab".to_string(),
+            ModelAbilities {
+                effort_levels: Some(vec!["none".into(), "minimal".into()]),
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(max_effort_for_model("zzeff-odd-vocab"), DEFAULT_MAX_EFFORT);
+        // 静态表权威优先:目录就算给了更高档,已收录模型族不被覆盖。
+        install_catalog(DevCatalog::from_entries([(
+            "qwen3-max".to_string(),
+            ModelAbilities {
+                effort_levels: Some(vec!["low".into(), "ultra".into()]),
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(
+            max_effort_for_model("qwen3-max"),
+            ReasoningEffort::High,
+            "静态表 qwen → high 压过目录的 ultra"
+        );
+        install_catalog(DevCatalog::default());
     }
 }

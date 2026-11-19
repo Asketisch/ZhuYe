@@ -67,6 +67,12 @@
 |---|---|
 | `check_prompt_sources.py` | 对比提示词方案固定版与上游分支(`zhuye-prompt/prompts/sources.json` 登记来源),产出维护者审核报告 |
 
+### 模型目录快照
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `fetch-models-dev.sh` | 拉取 models.dev api.json 生成 zhuye-llm 内嵌快照(`assets/api.json.gz` + `.meta` 抓取时刻) |
+
 - 非可执行,以 `python3 scripts/check_prompt_sources.py` 运行;依赖 `gh` CLI 访问 GitHub API。
 - 由 CI `.github/workflows/prompt-sources.yml` 定期调用;**只产出报告不自动改文件** —— 是否跟随上游更新由维护者决定,更新文案时须同步 `sources.json` 的 sha256(见 abilities 层篇 `zhuye-prompt` 条目)。
 
@@ -107,6 +113,12 @@
 
 - `bench.sh` 只是 `bench.py` 的转调包装,两者指标口径一致(冷启动 / 首事件 / RSS)。
 - 改基准实现或采集口径时,要给出与既有基线数值的对比说明,而不是只贴新数字。
+
+### 模型目录快照
+
+- `fetch-models-dev.sh` 产物是**原始 api.json 的 gzip**(不做字段裁剪),与运行时拉取零格式漂移 —— 聚合 / 投票都在 Rust 加载期完成(`zhuye-llm/src/models_dev.rs`)。
+- 快照明显过期(新模型上线 / 发版前)时手动跑;脚本只写 crate `assets/`,不碰宿主状态。
+- `.meta`(unix 秒)参与「磁盘缓存 vs 内嵌快照取新」判定,删了它等价于把快照视为远古。
 
 ### 网关与演练
 

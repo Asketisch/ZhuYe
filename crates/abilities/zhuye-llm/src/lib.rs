@@ -21,6 +21,8 @@ pub mod credential;
 pub mod error;
 pub mod event;
 pub mod model_catalog;
+/// models.dev 社区模型目录(窗口 / 输出上限 / 视觉 / 思考档位)。
+pub mod models_dev;
 pub mod output_budget;
 pub mod policy;
 pub mod providers;
@@ -40,6 +42,10 @@ pub use credential::Credential;
 pub use error::LlmError;
 pub use event::ChatEvent;
 pub use model_catalog::{DEFAULT_ALWAYS_FREE, DEFAULT_FREE_ID_PATTERNS, FreeModelRules, ModelInfo};
+pub use models_dev::{
+    CACHE_TTL_SECS, DevCatalog, LEAST_WINDOW, MODELS_DEV_URL, ModelAbilities, abilities_for,
+    enrich_model_info, install_catalog, refresh, refresh_if_stale,
+};
 pub use policy::{Role, RoutingPolicy, SpecSlot};
 pub use providers::{
     AnthropicClient, AnthropicConfig, DEFAULT_MOCK_MODEL, DEFAULT_MOCK_REPLY, ENV_MOCK_SCRIPT,
