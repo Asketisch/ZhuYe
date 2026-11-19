@@ -52,7 +52,7 @@ tree-sitter-c-sharp     = { version = "0.23", optional = true }
 tree-sitter-scala       = { version = "0.26", optional = true }
 tree-sitter-haskell     = { version = "0.23", optional = true }
 tree-sitter-elixir      = { version = "0.3",  optional = true }
-tree-sitter-php         = { version = "0.24", optional = true }
+tree-sitter-php         = { version = "0.25", optional = true }
 
 [features]
 default = ["lang-rust", "lang-typescript", "lang-python", "lang-go", "lang-javascript"]
