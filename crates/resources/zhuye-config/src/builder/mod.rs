@@ -275,11 +275,7 @@ impl ReflectConfig {
     /// 给定名字是否是已声明的模型组 id(trim 后精确匹配)。
     fn group_id_exists(&self, raw: &str) -> bool {
         let trimmed = raw.trim();
-        !trimmed.is_empty()
-            && self
-                .provider_group
-                .iter()
-                .any(|g| g.id.trim() == trimmed)
+        !trimmed.is_empty() && self.provider_group.iter().any(|g| g.id.trim() == trimmed)
     }
 
     /// `[active].credential` —— 钉住 active provider 凭证池中的条目 label。
@@ -343,7 +339,11 @@ impl ReflectConfig {
         }
         // 被钉住的凭证条目自带 model 时优先取用:它比段级覆盖更具体
         // (描述的就是当前 plan 本身);钉住只对 active provider 生效。
-        if self.active_provider_inner(env_provider, env_model).as_deref() == Some(provider) {
+        if self
+            .active_provider_inner(env_provider, env_model)
+            .as_deref()
+            == Some(provider)
+        {
             if let Some(label) = self.active_credential() {
                 let entry_model = self
                     .credentials_of(provider)
@@ -530,11 +530,7 @@ fn effective_label(label: &str) -> String {
 
 /// 池条目 weight 归一:`0` 回落 `1`(weighted round-robin 不接受零权重)。
 fn effective_weight(weight: u32) -> u32 {
-    if weight == 0 {
-        1
-    } else {
-        weight
-    }
+    if weight == 0 { 1 } else { weight }
 }
 
 /// 把一批凭据条目逐个构造为 `AnthropicClient` 并组装 `PoolEntry`。
@@ -790,7 +786,10 @@ fn build_group_pool(group: &ProviderGroupSection) -> Result<Option<CredentialPoo
 fn group_has_credential(group: &ProviderGroupSection) -> bool {
     !group.credentials.is_empty()
         || group.api_key.as_deref().is_some_and(|k| !k.is_empty())
-        || group.base_url.as_deref().is_some_and(|b| !b.trim().is_empty())
+        || group
+            .base_url
+            .as_deref()
+            .is_some_and(|b| !b.trim().is_empty())
 }
 
 /// 把 `[ollama]` 段 + env 展开为 `CredentialPool`。

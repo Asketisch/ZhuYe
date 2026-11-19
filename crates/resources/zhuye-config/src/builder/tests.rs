@@ -164,7 +164,10 @@ fn active_provider_canonicalizes_ollama_aliases() {
         ollama: Some(OllamaSection::default()),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("ollama"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("ollama")
+    );
 
     // alias `"local"` 也被 canonicalize。
     let cfg = ReflectConfig {
@@ -175,14 +178,20 @@ fn active_provider_canonicalizes_ollama_aliases() {
         ollama: Some(OllamaSection::default()),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("ollama"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("ollama")
+    );
 }
 
 #[test]
 fn active_provider_falls_back_to_ollama_when_section_present() {
     // 没显式 `active.provider` → 但有 `[ollama]` 段 → fall-back 选 ollama。
     let cfg = cfg_with_ollama(Some("qwen2.5:7b"));
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("ollama"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("ollama")
+    );
 }
 
 #[test]
@@ -445,7 +454,10 @@ fn keyless_openai_with_base_url_is_active_provider() {
         }),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("openai"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("openai")
+    );
 }
 
 /// v1.10 功能5:**免 Key 的 Anthropic 兼容端点也要注册** —— 显式
@@ -469,7 +481,10 @@ fn keyless_anthropic_with_base_url_registers_pool() {
         "免 Key 的 Anthropic 兼容端点(显式 base_url)必须注册"
     );
     // 也能推出 active provider(与注册条件同口径)。
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("anthropic")
+    );
 }
 
 /// v1.10 功能5:anthropic 既没 key 也没 base_url → 仍不注册。
@@ -521,13 +536,19 @@ fn active_provider_explicit_in_toml() {
         }),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("openai"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("openai")
+    );
 }
 
 #[test]
 fn active_provider_falls_back_to_first_nonempty() {
     let cfg = cfg_with_anthropic("sk-a");
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("anthropic")
+    );
 }
 
 #[test]
@@ -539,7 +560,10 @@ fn active_provider_canonicalizes_aliases() {
         },
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("anthropic")
+    );
 
     let cfg = ReflectConfig {
         active: ActiveSection {
@@ -548,7 +572,10 @@ fn active_provider_canonicalizes_aliases() {
         },
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("openai"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("openai")
+    );
 }
 
 #[test]
@@ -914,11 +941,18 @@ fn mcp_server_configs_results_are_sorted_by_name() {
 fn mock_provider_opt_in_paths_and_model_resolution() {
     let cfg = ReflectConfig::default();
     // `ZHUYE_PROVIDER=mock` 显式 opt-in。
-    assert_eq!(cfg.active_provider_inner(Some("mock"), None).as_deref(), Some("mock"));
-    assert_eq!(cfg.active_provider_inner(Some("MOCK"), None).as_deref(), Some("mock"));
+    assert_eq!(
+        cfg.active_provider_inner(Some("mock"), None).as_deref(),
+        Some("mock")
+    );
+    assert_eq!(
+        cfg.active_provider_inner(Some("MOCK"), None).as_deref(),
+        Some("mock")
+    );
     // `ZHUYE_MODEL` 完整 spec / 裸 mock 均可 opt-in。
     assert_eq!(
-        cfg.active_provider_inner(None, Some("mock/mock-1")).as_deref(),
+        cfg.active_provider_inner(None, Some("mock/mock-1"))
+            .as_deref(),
         Some("mock")
     );
     assert_eq!(
@@ -929,7 +963,8 @@ fn mock_provider_opt_in_paths_and_model_resolution() {
     assert_eq!(cfg.active_provider_inner(None, Some("gpt-4o")), None);
     // provider 优先于 model。
     assert_eq!(
-        cfg.active_provider_inner(Some("anthropic"), Some("mock/mock-1")).as_deref(),
+        cfg.active_provider_inner(Some("anthropic"), Some("mock/mock-1"))
+            .as_deref(),
         Some("anthropic")
     );
     // model 解析:剥前缀 / 裸 mock 回退内置 mock model(mock 是显式
@@ -953,10 +988,14 @@ fn mock_provider_opt_in_paths_and_model_resolution() {
 fn mock_not_active_for_real_provider_config() {
     let cfg = cfg_with_anthropic("sk-a");
     assert_eq!(
-        cfg.active_provider_inner(Some("anthropic"), None).as_deref(),
+        cfg.active_provider_inner(Some("anthropic"), None)
+            .as_deref(),
         Some("anthropic")
     );
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("anthropic")
+    );
 }
 
 // ── v1.5 review:`[routing] max_attempts` 配置透传 ────────────────
@@ -1008,7 +1047,11 @@ fn provider_group_registers_pool_under_group_id() {
             provider: Some("my-glm".into()),
             ..Default::default()
         },
-        provider_group: vec![group("my-glm", "openai", "https://open.bigmodel.cn/api/paas/v4")],
+        provider_group: vec![group(
+            "my-glm",
+            "openai",
+            "https://open.bigmodel.cn/api/paas/v4",
+        )],
         ..Default::default()
     };
     let r = cfg.to_registry_with_env(None, None).unwrap();
@@ -1024,17 +1067,16 @@ fn provider_group_registers_pool_under_group_id() {
 #[test]
 fn provider_group_anthropic_endpoint_registers_pool() {
     let cfg = ReflectConfig {
-        provider_group: vec![group(
-            "magpie",
-            "anthropic",
-            "http://127.0.0.1:3425",
-        )],
+        provider_group: vec![group("magpie", "anthropic", "http://127.0.0.1:3425")],
         ..Default::default()
     };
     let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(r.get("magpie").is_some());
     // 无 [active].provider 时首个有凭据的组作为隐式 active。
-    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("magpie"));
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("magpie")
+    );
 }
 
 /// 组级 model 写入 spec:`<组id>/<model>`。

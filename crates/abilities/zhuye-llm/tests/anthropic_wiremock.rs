@@ -837,12 +837,6 @@ async fn anthropic_list_models_404_degrades_to_none() {
         max_tokens: None,
     })
     .unwrap();
-    let models = client
-        .list_models(CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(
-        models.is_none(),
-        "404 = 端点无清单能力,应诚实降级为 None"
-    );
+    let models = client.list_models(CancellationToken::new()).await.unwrap();
+    assert!(models.is_none(), "404 = 端点无清单能力,应诚实降级为 None");
 }
