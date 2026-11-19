@@ -779,3 +779,70 @@ async fn anthropic_empty_api_key_omits_auth_headers() {
         received[0].headers.get("x-api-key")
     );
 }
+
+// ── list_models:Anthropic 兼容清单端点 ────────────────────────────
+
+#[tokio::test]
+async fn anthropic_list_models_parses_catalog() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        // 自定义 base_url → Bearer(与 chat 端点同规则)
+        .and(header("Authorization", "Bearer test-key"))
+        .and(header("anthropic-version", "2023-06-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [
+                {"type": "model", "id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"},
+                {"type": "model", "id": "claude-opus-4-1", "display_name": "Claude Opus 4.1"}
+            ],
+            "has_more": false
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AnthropicClient::new(AnthropicConfig {
+        api_key: "test-key".into(),
+        base_url: Some(server.uri()),
+        timeout: Duration::from_secs(5),
+        temperature: None,
+        max_tokens: None,
+    })
+    .unwrap();
+    let models = client
+        .list_models(CancellationToken::new())
+        .await
+        .unwrap()
+        .expect("anthropic 清单端点应返回条目");
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].id, "claude-sonnet-4-5");
+    // anthropic 端点不报窗口/价格字段 → None 不编造。
+    assert_eq!(models[0].context_window, None);
+    assert_eq!(models[0].is_free, None);
+}
+
+#[tokio::test]
+async fn anthropic_list_models_404_degrades_to_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = AnthropicClient::new(AnthropicConfig {
+        api_key: "k".into(),
+        base_url: Some(server.uri()),
+        timeout: Duration::from_secs(5),
+        temperature: None,
+        max_tokens: None,
+    })
+    .unwrap();
+    let models = client
+        .list_models(CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        models.is_none(),
+        "404 = 端点无清单能力,应诚实降级为 None"
+    );
+}

@@ -14,13 +14,19 @@
 //!   `label = "default"` 的单 entry pool,行为与 v0.x 完全一致;
 //! - 都空 → 该 provider 不注册。
 //!
+//! 模型组(`[[provider_group]]`,命名 provider 条目):
+//! - 组 id 直接作为 `register_pool` 的池名(模型 spec 前缀 = 组 id);
+//! - endpoint 分派 openai(含 `responses_api`)/ anthropic,client 构造
+//!   与内置段共享同一套 entries helper;
+//! - 非法 / 重复 id、未知 endpoint → warn + 跳过,不让整份配置失效。
+//!
 //! model 解析(`resolve_model`)是**诚实**的:env `ZHUYE_MODEL` >
 //! 被钉住条目的 `model` > `[<provider>].model` > `None`。未显式配置时
 //! 返回 `None` 而非编造内置默认 —— 请求打向第三方兼容端点(stepfun /
 //! MiniMax 等)时,编造的官方模型名只会产生更难诊断的远端错误,不如让
 //! 缺失在配置层就可见。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +40,7 @@ use crate::error::ConfigError;
 use crate::schema::{
     AnthropicSection, AnthropicSubagentSection, CredentialConfig, LspFilePattern, LspServerEntry,
     McpServerEntry, McpTransport, OllamaSection, OllamaSubagentSection, OpenAISection,
-    OpenAISubagentSection, ReflectConfig, SpecSlotConfig,
+    OpenAISubagentSection, ProviderGroupSection, ReflectConfig, SpecSlotConfig,
 };
 
 /// provider HTTP 超时默认 300s。语义为「建连 + 读空闲」双层超时
@@ -83,6 +89,7 @@ impl ReflectConfig {
     /// v1.0 多 Provider 路由:每个 provider 段走 `register_pool`,旧
     /// `api_key = "..."` 单值在 builder 内部 wrap 为
     /// `label = "default"` / `weight = 1` 的单 entry pool。
+    /// 模型组(`[[provider_group]]`)同走 `register_pool`,池名 = 组 id。
     pub fn apply_to_registry(&self, registry: &ModelRegistry) -> Result<(), ConfigError> {
         self.apply_to_registry_with_env(
             registry,
@@ -118,13 +125,36 @@ impl ReflectConfig {
         if let Some(pool) = build_ollama_pool(self.ollama.as_ref())? {
             registry.register_pool("ollama", pool);
         }
+        // 模型组:`[[provider_group]]` 逐条注册,池名 = 组 id。非法 id
+        //(空 / 含 '/' / 与内置段名冲突)与组间重复 id 都跳过并 warn,
+        // 不让一个写错的组阻断其余配置(坏值宽松吞掉的既有口径)。
+        let mut seen_group_ids: HashSet<String> = HashSet::new();
+        for group in &self.provider_group {
+            let id = group.id.trim();
+            if id.is_empty() {
+                tracing::warn!("模型组缺少 id,跳过该组");
+                continue;
+            }
+            if !ProviderGroupSection::is_valid_id(id) {
+                tracing::warn!(group = %id, "模型组 id 非法(含 '/' 或与内置段名冲突),跳过该组");
+                continue;
+            }
+            if !seen_group_ids.insert(id.to_string()) {
+                tracing::warn!(group = %id, "模型组 id 重复,跳过后出现的同名组");
+                continue;
+            }
+            if let Some(pool) = build_group_pool(group)? {
+                registry.register_pool(id, pool);
+            }
+        }
         // v1.3 SDK:mock provider —— `ZHUYE_PROVIDER=mock` 或
         // `ZHUYE_MODEL` 形如 `mock` / `mock/...` 时注册(离线测试用,
         // 免 key、零网络)。显式 opt-in,不作为无 key 时的静默兜底。
-        if matches!(
-            self.active_provider_inner(env_provider, env_model),
-            Some("mock")
-        ) {
+        if self
+            .active_provider_inner(env_provider, env_model)
+            .as_deref()
+            == Some("mock")
+        {
             registry.register_pool(
                 "mock",
                 CredentialPool {
@@ -144,7 +174,7 @@ impl ReflectConfig {
             self.active_provider_inner(env_provider, env_model),
             self.active_credential(),
         ) {
-            registry.set_preferred(provider, &label);
+            registry.set_preferred(&provider, &label);
         }
         // v1.10 功能3:窗口覆盖表同步到 zhuye-llm 进程级全局表 ——
         // bootstrap 与热重载共用本 choke point,让 `output_budget`(自适应
@@ -164,8 +194,9 @@ impl ReflectConfig {
         Ok(())
     }
 
-    /// 选定的 provider 名;返回 `None` 表示未配置任何可用 provider。
-    pub fn active_provider(&self) -> Option<&'static str> {
+    /// 选定的 provider 名(内置段名或模型组 id);返回 `None` 表示未配置
+    /// 任何可用 provider。
+    pub fn active_provider(&self) -> Option<String> {
         self.active_provider_inner(
             std::env::var(ENV_ZHUYE_PROVIDER).ok().as_deref(),
             std::env::var(ENV_ZHUYE_MODEL).ok().as_deref(),
@@ -174,14 +205,23 @@ impl ReflectConfig {
 
     /// `active_provider` 的纯函数核心(env 值由调用方注入,便于单测并行
     /// 运行而不必改写进程 env)。
+    ///
+    /// 返回值是**池名**:内置段名(anthropic/openai/ollama/mock)或
+    /// 模型组 id(`[[provider_group]]`)。内置名优先于组 id —— 同名场景
+    /// 下(组 id 与内置段名冲突时 builder 已跳过该组,不会真的同名)
+    /// 内置段语义不受影响。
     fn active_provider_inner(
         &self,
         env_provider: Option<&str>,
         env_model: Option<&str>,
-    ) -> Option<&'static str> {
+    ) -> Option<String> {
         if let Some(p) = env_provider {
             if let Some(name) = canonical_provider(p) {
-                return Some(name);
+                return Some(name.to_string());
+            }
+            // env 也可以直接点名模型组(组 id 与 canonical 名单同层)。
+            if self.group_id_exists(p) {
+                return Some(p.trim().to_string());
             }
         }
         // v1.3 SDK:`ZHUYE_MODEL` 以完整 spec 形式(`mock/mock-1`)或裸
@@ -189,12 +229,16 @@ impl ReflectConfig {
         // 之前,让"用户明确要 mock"总能赢过配置文件里的真实 provider。
         if let Some(m) = env_model.map(str::trim) {
             if m == "mock" || m.starts_with("mock/") {
-                return Some("mock");
+                return Some("mock".to_string());
             }
         }
         if let Some(p) = &self.active.provider {
             if let Some(name) = canonical_provider(p) {
-                return Some(name);
+                return Some(name.to_string());
+            }
+            // `[active].provider` 直接写模型组 id。
+            if self.group_id_exists(p) {
+                return Some(p.trim().to_string());
             }
         }
         // v1.0: 选 active 时看 `credentials` 数组是否非空,或单值 `api_key`
@@ -204,20 +248,38 @@ impl ReflectConfig {
             .as_ref()
             .is_some_and(|s| has_anthropic_credential(s))
         {
-            return Some("anthropic");
+            return Some("anthropic".to_string());
         }
         if self
             .openai
             .as_ref()
             .is_some_and(|s| has_openai_credential(s))
         {
-            return Some("openai");
+            return Some("openai".to_string());
         }
         // v0.3.1: Ollama fall-back —— 仅当用户显式声明(段存在 / env 设了)。
         if self.ollama.is_some() || env_has(ENV_OLLAMA_HOST) || env_has(ENV_OLLAMA_API_KEY) {
-            return Some("ollama");
+            return Some("ollama".to_string());
+        }
+        // 模型组 fall-back:首个有可用凭据(id 合法)的组。
+        if let Some(group) = self
+            .provider_group
+            .iter()
+            .find(|g| ProviderGroupSection::is_valid_id(g.id.trim()) && group_has_credential(g))
+        {
+            return Some(group.id.trim().to_string());
         }
         None
+    }
+
+    /// 给定名字是否是已声明的模型组 id(trim 后精确匹配)。
+    fn group_id_exists(&self, raw: &str) -> bool {
+        let trimmed = raw.trim();
+        !trimmed.is_empty()
+            && self
+                .provider_group
+                .iter()
+                .any(|g| g.id.trim() == trimmed)
     }
 
     /// `[active].credential` —— 钉住 active provider 凭证池中的条目 label。
@@ -281,7 +343,7 @@ impl ReflectConfig {
         }
         // 被钉住的凭证条目自带 model 时优先取用:它比段级覆盖更具体
         // (描述的就是当前 plan 本身);钉住只对 active provider 生效。
-        if self.active_provider_inner(env_provider, env_model) == Some(provider) {
+        if self.active_provider_inner(env_provider, env_model).as_deref() == Some(provider) {
             if let Some(label) = self.active_credential() {
                 let entry_model = self
                     .credentials_of(provider)
@@ -300,22 +362,32 @@ impl ReflectConfig {
     }
 
     /// provider 段的 `credentials` 数组(mock 无段,返回 `None`)。
+    /// 模型组按组 id 查(组内多凭据池;单凭据组返回空数组,走段级/组级
+    /// model 覆盖)。
     fn credentials_of(&self, provider: &str) -> Option<&Vec<CredentialConfig>> {
         match provider {
             "anthropic" => self.anthropic.as_ref().map(|s| &s.credentials),
             "openai" => self.openai.as_ref().map(|s| &s.credentials),
             "ollama" => self.ollama.as_ref().map(|s| &s.credentials),
-            _ => None,
+            _ => self
+                .provider_group
+                .iter()
+                .find(|g| g.id.trim() == provider)
+                .map(|g| &g.credentials),
         }
     }
 
-    /// provider 段的段级 `model` 覆盖。
+    /// provider 段的段级 `model` 覆盖。模型组按组 id 查组级 `model`。
     fn section_model_of(&self, provider: &str) -> Option<String> {
         match provider {
             "anthropic" => self.anthropic.as_ref().and_then(|s| s.model.clone()),
             "openai" => self.openai.as_ref().and_then(|s| s.model.clone()),
             "ollama" => self.ollama.as_ref().and_then(|s| s.model.clone()),
-            _ => None,
+            _ => self
+                .provider_group
+                .iter()
+                .find(|g| g.id.trim() == provider)
+                .and_then(|g| g.model.clone()),
         }
     }
 
@@ -343,7 +415,7 @@ impl ReflectConfig {
         env_model: Option<&str>,
     ) -> Option<String> {
         let provider = self.active_provider_inner(env_provider, env_model)?;
-        let model = self.resolve_model_inner(provider, env_provider, env_model)?;
+        let model = self.resolve_model_inner(&provider, env_provider, env_model)?;
         Some(format!("{provider}/{model}"))
     }
 
@@ -447,6 +519,112 @@ fn resolve_openai_key(s: &OpenAISection) -> String {
     std::env::var(ENV_OPENAI_API_KEY).unwrap_or_default()
 }
 
+/// 池条目 label 归一:空 label 回落 `"default"`(顶层隐式条目的既有约定)。
+fn effective_label(label: &str) -> String {
+    if label.is_empty() {
+        "default".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+/// 池条目 weight 归一:`0` 回落 `1`(weighted round-robin 不接受零权重)。
+fn effective_weight(weight: u32) -> u32 {
+    if weight == 0 {
+        1
+    } else {
+        weight
+    }
+}
+
+/// 把一批凭据条目逐个构造为 `AnthropicClient` 并组装 `PoolEntry`。
+///
+/// 内置 `[anthropic]` 段与 `[[provider_group]]`(endpoint = anthropic)
+/// 共用,避免两处 client 构造漂移。
+fn build_anthropic_entries(
+    cred_configs: &[CredentialConfig],
+    default_base_url: Option<&str>,
+    timeout: Duration,
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+) -> Result<Vec<PoolEntry>, ConfigError> {
+    let mut entries = Vec::with_capacity(cred_configs.len());
+    for cfg in cred_configs {
+        let client_cfg = AnthropicConfig {
+            api_key: cfg.api_key.clone(),
+            base_url: cfg
+                .base_url
+                .clone()
+                .or_else(|| default_base_url.map(str::to_string)),
+            timeout,
+            // 段级/组级采样参数默认值(请求侧显式值优先)。
+            temperature,
+            max_tokens,
+        };
+        let client =
+            AnthropicClient::new(client_cfg).map_err(|e| ConfigError::Build(e.to_string()))?;
+        entries.push(PoolEntry {
+            client: Arc::new(client),
+            label: effective_label(&cfg.label),
+            weight: effective_weight(cfg.weight),
+        });
+    }
+    Ok(entries)
+}
+
+/// 把一批凭据条目逐个构造为 OpenAI 系 client(`responses_api` 分派
+/// Responses / Chat Completions)并组装 `PoolEntry`。内置 `[openai]` 段
+/// 与 `[[provider_group]]`(endpoint = openai)共用。
+#[allow(clippy::too_many_arguments)]
+fn build_openai_entries(
+    cred_configs: &[CredentialConfig],
+    default_base_url: Option<&str>,
+    timeout: Duration,
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+    responses_api: bool,
+    default_model: &str,
+) -> Result<Vec<PoolEntry>, ConfigError> {
+    let mut entries = Vec::with_capacity(cred_configs.len());
+    for cfg in cred_configs {
+        let base = cfg
+            .base_url
+            .clone()
+            .or_else(|| default_base_url.map(str::to_string));
+        // P2 `openai-responses`:`responses_api = true` 时用 Responses client,
+        // 否则 Chat Completions(默认,向后兼容)。
+        let client: Arc<dyn ModelClient> = if responses_api {
+            let client_cfg = OpenAIResponsesConfig {
+                api_key: cfg.api_key.clone(),
+                base_url: base,
+                timeout_secs: timeout.as_secs(),
+                model: default_model.to_string(),
+                temperature,
+                max_tokens,
+            };
+            Arc::new(
+                OpenAIResponsesClient::new(client_cfg)
+                    .map_err(|e| ConfigError::Build(e.to_string()))?,
+            )
+        } else {
+            let client_cfg = OpenAIConfig {
+                api_key: cfg.api_key.clone(),
+                base_url: base,
+                timeout,
+                temperature,
+                max_tokens,
+            };
+            Arc::new(OpenAIClient::new(client_cfg).map_err(|e| ConfigError::Build(e.to_string()))?)
+        };
+        entries.push(PoolEntry {
+            client,
+            label: effective_label(&cfg.label),
+            weight: effective_weight(cfg.weight),
+        });
+    }
+    Ok(entries)
+}
+
 /// 把 `[anthropic]` 段展开为 `CredentialPool`。
 ///
 /// 决策:
@@ -489,30 +667,13 @@ fn build_anthropic_pool(section: &AnthropicSection) -> Result<Option<CredentialP
         }]
     };
     let default_timeout = Duration::from_secs(section.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
-    let mut entries = Vec::with_capacity(cred_configs.len());
-    for cfg in &cred_configs {
-        let client_cfg = AnthropicConfig {
-            api_key: cfg.api_key.clone(),
-            base_url: cfg.base_url.clone().or_else(|| section.base_url.clone()),
-            timeout: default_timeout,
-            // 段级采样参数默认值(请求侧显式值优先)。
-            temperature: section.temperature,
-            max_tokens: section.max_tokens,
-        };
-        let client =
-            AnthropicClient::new(client_cfg).map_err(|e| ConfigError::Build(e.to_string()))?;
-        let label = if cfg.label.is_empty() {
-            "default".to_string()
-        } else {
-            cfg.label.clone()
-        };
-        let weight = if cfg.weight == 0 { 1 } else { cfg.weight };
-        entries.push(PoolEntry {
-            client: Arc::new(client),
-            label,
-            weight,
-        });
-    }
+    let entries = build_anthropic_entries(
+        &cred_configs,
+        section.base_url.as_deref(),
+        default_timeout,
+        section.temperature,
+        section.max_tokens,
+    )?;
     Ok(Some(CredentialPool { entries }))
 }
 
@@ -552,49 +713,84 @@ fn build_openai_pool(section: &OpenAISection) -> Result<Option<CredentialPool>, 
     };
     let default_timeout = Duration::from_secs(section.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
     let default_model = section.model.clone().unwrap_or_default();
-    let mut entries = Vec::with_capacity(cred_configs.len());
-    for cfg in &cred_configs {
-        let base = cfg.base_url.clone().or_else(|| section.base_url.clone());
-        // P2 `openai-responses`:`responses_api = true` 时用 Responses client,
-        // 否则 Chat Completions(默认,向后兼容)。
-        let client: Arc<dyn ModelClient> = if section.responses_api {
-            let client_cfg = OpenAIResponsesConfig {
-                api_key: cfg.api_key.clone(),
-                base_url: base,
-                timeout_secs: default_timeout.as_secs(),
-                model: default_model.clone(),
-                // 段级采样参数默认值(请求侧显式值优先)。
-                temperature: section.temperature,
-                max_tokens: section.max_tokens,
-            };
-            Arc::new(
-                OpenAIResponsesClient::new(client_cfg)
-                    .map_err(|e| ConfigError::Build(e.to_string()))?,
-            )
-        } else {
-            let client_cfg = OpenAIConfig {
-                api_key: cfg.api_key.clone(),
-                base_url: base,
-                timeout: default_timeout,
-                // 段级采样参数默认值(请求侧显式值优先)。
-                temperature: section.temperature,
-                max_tokens: section.max_tokens,
-            };
-            Arc::new(OpenAIClient::new(client_cfg).map_err(|e| ConfigError::Build(e.to_string()))?)
-        };
-        let label = if cfg.label.is_empty() {
-            "default".to_string()
-        } else {
-            cfg.label.clone()
-        };
-        let weight = if cfg.weight == 0 { 1 } else { cfg.weight };
-        entries.push(PoolEntry {
-            client,
-            label,
-            weight,
-        });
-    }
+    let entries = build_openai_entries(
+        &cred_configs,
+        section.base_url.as_deref(),
+        default_timeout,
+        section.temperature,
+        section.max_tokens,
+        section.responses_api,
+        &default_model,
+    )?;
     Ok(Some(CredentialPool { entries }))
+}
+
+/// 把 `[[provider_group]]` 条目展开为 `CredentialPool`(池名 = 组 id,
+/// 由调用方注册)。
+///
+/// 注册条件与内置段一致:有 key 或有非空 base_url(免 Key 端点也要注册);
+/// 都空 = 「用户没配这个组」,不注册。endpoint 分派 openai(含
+/// `responses_api`)/ anthropic;未知值 warn 后返回 `None` 跳过(坏值
+/// 宽松吞掉,不让整份 config 失效)。
+fn build_group_pool(group: &ProviderGroupSection) -> Result<Option<CredentialPool>, ConfigError> {
+    let cred_configs: Vec<CredentialConfig> = if !group.credentials.is_empty() {
+        group.credentials.clone()
+    } else {
+        let key = group.api_key.clone().unwrap_or_default();
+        let has_custom_endpoint = group
+            .base_url
+            .as_deref()
+            .is_some_and(|b| !b.trim().is_empty());
+        if key.is_empty() && !has_custom_endpoint {
+            return Ok(None);
+        }
+        vec![CredentialConfig {
+            label: "default".to_string(),
+            api_key: key,
+            base_url: group.base_url.clone(),
+            model: None,
+            weight: 1,
+            cooldown_override_secs: None,
+            quota: None,
+        }]
+    };
+    let default_timeout = Duration::from_secs(group.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
+    let default_model = group.model.clone().unwrap_or_default();
+    let entries = match group.endpoint.trim().to_ascii_lowercase().as_str() {
+        "openai" => build_openai_entries(
+            &cred_configs,
+            group.base_url.as_deref(),
+            default_timeout,
+            group.temperature,
+            group.max_tokens,
+            group.responses_api,
+            &default_model,
+        )?,
+        "anthropic" => build_anthropic_entries(
+            &cred_configs,
+            group.base_url.as_deref(),
+            default_timeout,
+            group.temperature,
+            group.max_tokens,
+        )?,
+        other => {
+            tracing::warn!(
+                group = %group.id,
+                endpoint = %other,
+                "模型组 endpoint 未知(可选 openai | anthropic),跳过该组"
+            );
+            return Ok(None);
+        }
+    };
+    Ok(Some(CredentialPool { entries }))
+}
+
+/// 模型组是否有可用凭据(与内置段的注册条件同口径):组内 credentials
+/// 数组非空,或组级 api_key 非空,或有显式 base_url(免 Key 端点)。
+fn group_has_credential(group: &ProviderGroupSection) -> bool {
+    !group.credentials.is_empty()
+        || group.api_key.as_deref().is_some_and(|k| !k.is_empty())
+        || group.base_url.as_deref().is_some_and(|b| !b.trim().is_empty())
 }
 
 /// 把 `[ollama]` 段 + env 展开为 `CredentialPool`。
