@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from wire import first_event, msg_types, rollout_files, rollout_thread_id
+from wire import coalesce_turn_messages, first_event, msg_types, rollout_files, rollout_thread_id
 
 
 @pytest.mark.parametrize("interleaved", [False, True], ids=["完整参数", "交错分片"])
@@ -135,7 +135,8 @@ def test_并行远程工具逆序回执并恢复对话(sandbox, serve_session, i
         while time.monotonic() < deadline and not rollout_files(sandbox.home):
             time.sleep(0.05)
         tid = rollout_thread_id(sandbox.home)
-        records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]
+        records = coalesce_turn_messages(
+            [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line])
         assistant = next(r for r in records if r.get("type") == "message" and r.get("role") == "assistant")
         blocks = assistant["content"]
         assert [b["type"] for b in blocks] == ["tool_use", "tool_use", "tool_result", "tool_result", "text"], blocks
@@ -345,7 +346,8 @@ def test_中断远程工具后迟到回执不污染下一轮(sandbox, serve_sess
         aborted = first_event(first_events, "turn_aborted")
         assert aborted is not None and aborted["msg"]["reason"]["type"] == "user_interrupt", first_events
         assert first_event(first_events, "turn_complete") is None
-        records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]
+        records = coalesce_turn_messages(
+            [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line])
         persisted = next(r for r in records if r.get("type") == "message" and r.get("role") == "assistant"
                          and r.get("turn_id") == aborted["msg"]["turn_id"])
         blocks = persisted["content"]

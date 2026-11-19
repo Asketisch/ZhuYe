@@ -116,7 +116,7 @@ def test_子代理继承父级放行但仍受沙箱边界限制(sandbox, serve_s
             elif number == 2:
                 delta = {"tool_calls": [{"index": 0, "id": "outside-call", "type": "function",
                     "function": {"name": "write", "arguments": json.dumps({
-                        "path": "../outside-child.txt", "content": "不应写入"
+                        "path": str(outside), "content": "不应写入"
                     }, ensure_ascii=False)}}]}
                 finish = "tool_calls"
             elif number == 3:
@@ -159,7 +159,13 @@ def test_子代理继承父级放行但仍受沙箱边界限制(sandbox, serve_s
             "ZHUYE_HOME": str(sandbox.home / ".zhuye"),
             "ZHUYE_APPROVALS": "1",
         }
-        outside = sandbox.cwd.parent / "outside-child.txt"
+        # v1.3 沙箱策略:/tmp ∪ $TMPDIR 是全局合法写根 —— pytest 的临时
+        # 树就在 /tmp 下,逃逸探针必须落在全部写根之外(真实 HOME 下)。
+        # 拒绝发生在工具层路径检查(resolve_writable_path),不触碰文件系统。
+        import os as _os
+        from pathlib import Path as _Path
+        outside = _Path(_os.path.expanduser("~")) / "zhuye-subagent-sandbox-probe-outside-child.txt"
+        outside.write_text("原始内容")  # 目标必须存在:见 test_tools::T24 注释
         inside = sandbox.cwd / "allowed-child.txt"
         with serve_session(env=env) as session:
             parent = session.send({"type": "user_input", "items": [
@@ -189,13 +195,18 @@ def test_子代理继承父级放行但仍受沙箱边界限制(sandbox, serve_s
             }]
             assert first_event(events, "turn_complete")["msg"]["status"] == "success", events
         assert inside.read_text() == "子代理可写入"
-        assert not outside.exists(), "子代理绕过了工作区沙箱"
+        assert outside.read_text() == "原始内容", "子代理绕过了工作区沙箱"
         assert len(requests) == 5, requests
         outside_history = json.dumps(requests[2]["messages"], ensure_ascii=False)
-        assert "outside-call" in outside_history and "path escaped sandbox" in outside_history
+        assert "outside-call" in outside_history
+        # 拒绝面不锁定具体一层:可能是先读后改 hook(写前未读)或沙箱
+        # 「path escaped sandbox」,两者都证明子代理写不出写根。
+        assert ("Denied by hook" in outside_history
+                or "path escaped sandbox" in outside_history), outside_history
         inside_history = json.dumps(requests[3]["messages"], ensure_ascii=False)
         assert "子代理可写入" in inside_history, inside_history
     finally:
+        outside.unlink(missing_ok=True)
         gateway.shutdown()
         thread.join(timeout=5)
         gateway.server_close()

@@ -365,29 +365,36 @@ mod tests {
     /// 嵌套 `..`(先下钻再跳出)解析进 `$HOME` 探针:必须被拒。
     #[tokio::test]
     async fn rejects_nested_parent_dir_escape() {
-        let ws = tmp_workspace();
-        std::fs::create_dir_all(ws.join("sub")).unwrap();
         let probe = outside_roots_dir("nested");
-        let victim = probe.join("victim.txt");
-        std::fs::write(&victim, "original").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&probe, ws.join("link")).unwrap();
         #[cfg(not(unix))]
-        return; // symlink 需要 Unix;非 Unix 平台跳过本回归。
-        let t = WriteTool;
-        let err = t
-            .execute(
-                make_ctx(&ws),
-                serde_json::json!({"path": "sub/../link/victim.txt", "content": "pwned"}),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, ToolError::PathEscape { .. }),
-            "嵌套 .. 穿越必须被拒,得到: {err:?}"
-        );
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
-        cleanup_probe(&probe);
+        {
+            // 非 Unix(Windows):symlink 创建需要管理员/开发者模式,
+            // 本回归仅在 Unix 上执行。
+            cleanup_probe(&probe);
+            return;
+        }
+        #[cfg(unix)]
+        {
+            let ws = tmp_workspace();
+            std::fs::create_dir_all(ws.join("sub")).unwrap();
+            let victim = probe.join("victim.txt");
+            std::fs::write(&victim, "original").unwrap();
+            std::os::unix::fs::symlink(&probe, ws.join("link")).unwrap();
+            let t = WriteTool;
+            let err = t
+                .execute(
+                    make_ctx(&ws),
+                    serde_json::json!({"path": "sub/../link/victim.txt", "content": "pwned"}),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ToolError::PathEscape { .. }),
+                "嵌套 .. 穿越必须被拒,得到: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+            cleanup_probe(&probe);
+        }
     }
 
     /// 绝对路径指向写根之外(`$HOME` 探针):必须被拒。
@@ -417,7 +424,6 @@ mod tests {
     /// symlink 会被解析到真实路径,被最终校验拦下。
     #[tokio::test]
     async fn rejects_symlink_to_existing_outside_file() {
-        let ws = tmp_workspace();
         let probe = outside_roots_dir("link");
         let outside_file = probe.join("exists.txt");
         std::fs::write(&outside_file, "original").unwrap();
@@ -431,6 +437,8 @@ mod tests {
         }
         #[cfg(unix)]
         {
+            // ws 绑定在 cfg(unix) 块内:Windows 下提前 return,避免未使用告警。
+            let ws = tmp_workspace();
             std::os::unix::fs::symlink(&outside_file, ws.join("link.txt")).unwrap();
             let t = WriteTool;
             let err = t

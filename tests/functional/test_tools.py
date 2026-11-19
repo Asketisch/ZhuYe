@@ -81,25 +81,43 @@ def _wait_for(path: Any, timeout: float = 10.0) -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="符号链接创建需要额外的系统权限")
 def test_T24_文件工具拒绝指向工作区外的链接(serve_session, mock_script, sandbox) -> None:
-    """读取和写入不得通过符号链接访问工作区外的文件。"""
+    """写不得通过符号链接逃出全部写根(tmp 内链接按 rename 语义落地工作区)。"""
     import json
+    import os
+    from pathlib import Path
 
     require_binary()
-    victim = sandbox.home / "outside-secret.txt"
-    victim.write_text("外部原始内容")
-    (sandbox.cwd / "outside-link").symlink_to(victim)
-    script = mock_script([
-        json.dumps({"type": "tool_call", "name": "read", "args": {"path": "outside-link"}}),
-        json.dumps({"type": "tool_call", "name": "write", "args": {"path": "outside-link", "content": "篡改"}}),
-        json.dumps({"type": "text", "text": "完成"}),
-    ])
-    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
-        events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "检查文件"}]}, timeout=DRAIN_TIMEOUT)
-    ends = [event["msg"] for event in events if event["msg"]["type"] == "tool_call_end"]
-    assert len(ends) == 2
-    assert all(end["is_error"] for end in ends)
-    assert all("外部原始内容" not in _tool_text(end) for end in ends)
-    assert victim.read_text() == "外部原始内容"
+    # v1.3 沙箱策略:workspace ∪ /tmp ∪ $TMPDIR 都是合法写根 —— pytest
+    # 临时树整体在 tmp 下,穿 symlink 读写 tmp 内路径全部放行(temp+rename
+    # 替换 symlink 本身,不穿透)。逃逸探针必须落在全部写根之外(真实 HOME
+    # 下),且**目标必须存在** —— resolve_components 只对已存在的分量做
+    # canonicalize,破损 symlink 不会解析出写根外(而是走 IO 分支)。
+    outside_target = Path(os.path.expanduser("~")) / "zhuye-t24-escape-probe.txt"
+    outside_target.write_text("外部原始内容")
+    try:
+        (sandbox.cwd / "outside-link").symlink_to(outside_target)
+        # 工具契约「先读后改」:先 read(读全盘,穿 symlink 放行)再 write,
+        # 让先读后改 hook 放行,拒绝面落在沙箱路径检查(「path escaped
+        # sandbox」)—— 这同时验证了两条策略:读全盘放行 + 写不得逃逸。
+        script = mock_script([
+            json.dumps({"type": "tool_call", "name": "read",
+                        "args": {"path": "outside-link"}}),
+            json.dumps({"type": "tool_call", "name": "write",
+                        "args": {"path": "outside-link", "content": "篡改"}}),
+            json.dumps({"type": "text", "text": "完成"}),
+        ])
+        with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+            events = session.submit(
+                {"type": "user_input", "items": [{"type": "text", "text": "检查文件"}]},
+                timeout=DRAIN_TIMEOUT)
+        ends = [event["msg"] for event in events if event["msg"]["type"] == "tool_call_end"]
+        assert len(ends) == 2
+        assert ends[0]["is_error"] is False, ends[0]
+        assert ends[1]["is_error"] is True, ends[1]
+        assert "path escaped sandbox" in _tool_text(ends[1]), ends[1]
+        assert outside_target.read_text() == "外部原始内容", "symlink 目标被穿透改写"
+    finally:
+        outside_target.unlink(missing_ok=True)
 
 
 def test_T25_用户权限随数据目录隔离(serve_session, mock_script, sandbox, monkeypatch) -> None:
