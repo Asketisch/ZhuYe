@@ -425,7 +425,7 @@ impl zhuye_tools::TaskSpawner for CoreTaskSpawner {
         &self,
         cmd: &str,
         cwd: &std::path::Path,
-        os_sandbox: Option<bool>,
+        sandbox_ctx: &zhuye_tools::BackgroundBashSandbox,
     ) -> Result<String, zhuye_protocol::ToolError> {
         // cwd 显式指定优先(工具上下文传当前工作区);否则跟随热切换句柄。
         let cwd = if cwd.as_os_str().is_empty() {
@@ -437,10 +437,18 @@ impl zhuye_tools::TaskSpawner for CoreTaskSpawner {
         // 每 turn 覆盖(Some(on))> env(from_env);严格模式 fail-closed,
         // 绝不回退裸 `sh -c`。此前后台路径完全绕过沙箱,模型可借
         // run_in_background 逃逸 OS 层限制。
-        let sandbox = match os_sandbox {
+        // workspace-write:可写目录与网络开关与前台同源 —— 此前只传
+        // 布尔,后台 bash 恒为「env 目录 + 禁网」,与前台不一致。
+        let mut sandbox = match sandbox_ctx.os_sandbox {
             Some(on) => zhuye_sandbox::OsSandbox::with_enabled(on),
             None => zhuye_sandbox::OsSandbox::from_env(),
         };
+        if !sandbox_ctx.writable_dirs.is_empty() {
+            sandbox.writable_dirs = sandbox_ctx.writable_dirs.clone();
+        }
+        if let Some(net) = sandbox_ctx.network {
+            sandbox.allow_network = net;
+        }
         sandbox
             .enforce_or_fail()
             .map_err(|reason| zhuye_protocol::ToolError::SandboxUnavailable { reason })?;

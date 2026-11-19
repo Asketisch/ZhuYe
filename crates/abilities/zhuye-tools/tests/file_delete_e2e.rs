@@ -128,28 +128,41 @@ async fn e2e_delete_without_prior_read_is_allowed() {
 
 // ── E2E:沙箱转义 ──────────────────────────────────────────────────────
 
-/// E2E 3:`../` 转义 → `PathEscape` 或 `Io`,绝对不允许删除到 workspace 外。
+/// E2E 3:`../` 转义(经符号链接解析到写根之外)→ 拒删。
+///
+/// `/tmp` 是合法写根,父目录 sibling 不再构成越界;负例用 `$HOME`
+/// 探针 + workspace 内 symlink,验证 component 归一化后仍被拦。
 #[tokio::test]
 async fn e2e_path_escape_via_dotdot_denied() {
     let ws = tmp_workspace();
-    // 在 workspace 父目录造一个"诱惑目标",确认不会被删。
-    let target = ws.parent().unwrap().join("tempting_target.txt");
+    let home = std::env::var("HOME").expect("测试需要 HOME");
+    let probe =
+        std::path::Path::new(&home).join(format!(".zhuye_del_probe_{}", std::process::id()));
+    std::fs::create_dir_all(&probe).unwrap();
+    let target = probe.join("tempting_target.txt");
     std::fs::write(&target, "should-survive").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&probe, ws.join("link")).unwrap();
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::remove_dir_all(&probe);
+        return; // symlink 需要 Unix。
+    }
 
     let q = build_queue(&ws).await;
     let r = q
         .execute_all(vec![make_call(
             "c1",
             "delete_file",
-            serde_json::json!({"path": "../tempting_target.txt"}),
+            serde_json::json!({"path": "sub/../link/tempting_target.txt"}),
         )])
         .await;
     let result = first(&r);
     assert!(result.is_error, "../ 转义应被拒绝");
-    // 错误类型:`PathEscape`(成功 canonicalize 但越界)或 `Io`(父目录不可达 / 目标不存在 / 平台差异)。
     // 关键是 target 文件**没被删**。
-    assert!(target.exists(), "../ 转义路径不能删除 workspace 外文件");
-    std::fs::remove_file(&target).ok();
+    assert!(target.exists(), "../ 转义路径不能删除写根之外文件");
+    let _ = std::fs::remove_file(ws.join("link"));
+    let _ = std::fs::remove_dir_all(&probe);
 }
 
 /// E2E 4:`/etc/passwd` 这类绝对路径 → 拒绝。

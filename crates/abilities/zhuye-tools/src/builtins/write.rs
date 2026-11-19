@@ -7,7 +7,6 @@ use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json::Value;
 use similar::TextDiff;
-use tracing::warn;
 use zhuye_protocol::PermissionMode;
 
 pub struct WriteTool;
@@ -62,38 +61,13 @@ impl Tool for WriteTool {
             })?;
 
         let path = std::path::Path::new(path_str);
-        // 逐组件解析已有路径；即使中间目录不存在，也要先规整父目录组件。
-        let canonical_workspace = ctx
-            .workspace_path()
-            .canonicalize()
-            .map_err(|e| ToolError::Io(format!("workspace: {e}")))?;
-        let mut final_path = canonical_workspace.clone();
-        for component in path.components() {
-            if component == std::path::Component::ParentDir {
-                final_path.pop();
-                continue;
-            }
-            final_path.push(component);
-            if final_path.exists() {
-                if let Ok(c) = final_path.canonicalize() {
-                    final_path = c;
-                }
-            }
-            // 否则保持原样,后续会创建它(或它的父目录)。
-        }
-        // 沙箱校验:最终路径(无论输入是绝对还是相对)必须在 workspace 内。
-        // `starts_with` 按 path component 比较,不会把 `/ws-foo` 误判为
-        // `/ws` 的子路径。
-        if !final_path.starts_with(&canonical_workspace) {
-            warn!(
-                path = path_str,
-                resolved = %final_path.display(),
-                "write: path escapes workspace, rejecting"
-            );
-            return Err(ToolError::PathEscape {
-                path: path.to_path_buf(),
-            });
-        }
+        // 写路径解析:逐组件解析(允许新建),允许根 = workspace ∪ 附加
+        // 可写目录 ∪ 临时目录,`.git` 等元数据拒绝。
+        let final_path = crate::sandbox::resolve_writable_path(
+            &ctx.workspace_path(),
+            &ctx.os_sandbox_writable,
+            path,
+        )?;
         // 固定父目录并拒绝路径替换或符号链接，再读旧内容及原子替换。
         let target = PinnedWrite::prepare(&final_path)
             .map_err(|e| ToolError::Io(format!("prepare {path_str}: {e}")))?;
@@ -171,37 +145,52 @@ mod tests {
         assert_eq!(std::fs::read_to_string(victim).unwrap(), "original");
     }
 
+    /// 写根之外的探针目录。测试工作区在 temp_dir 下,而 `/tmp` 本身是
+    /// 合法写根 —— 旧用例的 sibling 目录不再构成越界;`$HOME` 下的探针
+    /// 是唯一可靠的「写根之外」位置。
+    fn outside_roots_dir(tag: &str) -> std::path::PathBuf {
+        let home = std::env::var("HOME").expect("测试需要 HOME");
+        let dir = std::path::Path::new(&home).join(format!(
+            ".zhuye_sb_probe_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cleanup_probe(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn missing_directory_followed_by_parents_cannot_escape() {
-        let root = tempfile::tempdir().unwrap();
-        let ws = root.path().join("workspace");
-        let outside = root.path().join("outside");
-        std::fs::create_dir(&ws).unwrap();
-        std::fs::create_dir(&outside).unwrap();
-        let victim = outside.join("victim.txt");
+        let ws = tmp_workspace();
+        let probe = outside_roots_dir("missing");
+        let victim = probe.join("victim.txt");
         std::fs::write(&victim, "original").unwrap();
+        // `missing/../` 归一后指向 $HOME 下的探针文件 —— 写根之外。
+        let escaped = probe.join("missing").join("..").join("victim.txt");
         let result = WriteTool
             .execute(
                 make_ctx(&ws),
-                serde_json::json!({"path":"missing/../../outside/victim.txt", "content":"new"}),
+                serde_json::json!({"path": escaped.to_string_lossy(), "content":"new"}),
             )
             .await;
-        assert!(result.is_err(), "traversal was accepted");
-        assert_eq!(std::fs::read_to_string(victim).unwrap(), "original");
+        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+        cleanup_probe(&probe);
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn normalized_parent_cannot_hide_an_external_symlink() {
         use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir().unwrap();
-        let ws = root.path().join("workspace");
-        let outside = root.path().join("outside");
-        std::fs::create_dir(&ws).unwrap();
-        std::fs::create_dir(&outside).unwrap();
-        let victim = outside.join("victim.txt");
+        let ws = tmp_workspace();
+        let probe = outside_roots_dir("norm");
+        let victim = probe.join("victim.txt");
         std::fs::write(&victim, "original").unwrap();
-        symlink(&outside, ws.join("link")).unwrap();
+        symlink(&probe, ws.join("link")).unwrap();
         let result = WriteTool
             .execute(
                 make_ctx(&ws),
@@ -209,7 +198,8 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(ToolError::PathEscape { .. })));
-        assert_eq!(std::fs::read_to_string(victim).unwrap(), "original");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+        cleanup_probe(&probe);
     }
 
     #[tokio::test]
@@ -347,47 +337,48 @@ mod tests {
         assert!(matches!(err, ToolError::InvalidArgs { .. }));
     }
 
-    // ── 0.2 回归:相对路径不得穿越 workspace ────────────────────────
+    // ── 0.2 回归 → workspace-write 口径 ────────────────────────────
+    // `/tmp` 是合法写根:相对 `..` 走到 temp 内的 sibling 属于放行面;
+    // 越界负例一律用 `$HOME` 下的探针(见 outside_roots_dir)。
 
-    /// 回归(0.2):`write` 的沙箱校验此前被 `if path.is_absolute()` 包着,
-    /// 相对路径完全不查。而 component-walk 里 `push("..")` 真实生效,
-    /// 所以 `../../etc/passwd` 能写到 workspace 外。
+    /// 相对 `..` 穿越到 temp 内 sibling:解析后仍在写根内,放行。
     #[tokio::test]
-    async fn rejects_relative_parent_dir_escape() {
+    async fn relative_parent_dir_into_tmp_root_ok() {
         let ws = tmp_workspace();
-        let outside = ws.parent().unwrap().join("zhuye_write_escape_probe.txt");
-        let _ = std::fs::remove_file(&outside);
-        let t = WriteTool;
-        let err = t
+        let sibling = ws.parent().unwrap().join("zhuye_write_tmp_probe.txt");
+        let _ = std::fs::remove_file(&sibling);
+        WriteTool
             .execute(
                 make_ctx(&ws),
-                serde_json::json!({"path": "../zhuye_write_escape_probe.txt", "content": "pwned"}),
+                serde_json::json!({"path": "../zhuye_write_tmp_probe.txt", "content": "ok"}),
             )
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, ToolError::PathEscape { .. }),
-            "相对 .. 穿越必须被拒,得到: {err:?}"
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&sibling).unwrap(),
+            "ok",
+            "temp 内 sibling 属于写根,应写入成功"
         );
-        assert!(
-            !outside.exists(),
-            "workspace 外不得被写入: {}",
-            outside.display()
-        );
+        let _ = std::fs::remove_file(&sibling);
     }
 
-    /// 回归(0.2):嵌套 `..`(先下钻再跳出)同样必须被拒。
+    /// 嵌套 `..`(先下钻再跳出)解析进 `$HOME` 探针:必须被拒。
     #[tokio::test]
     async fn rejects_nested_parent_dir_escape() {
         let ws = tmp_workspace();
         std::fs::create_dir_all(ws.join("sub")).unwrap();
-        let outside = ws.parent().unwrap().join("zhuye_write_escape_probe2.txt");
-        let _ = std::fs::remove_file(&outside);
+        let probe = outside_roots_dir("nested");
+        let victim = probe.join("victim.txt");
+        std::fs::write(&victim, "original").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&probe, ws.join("link")).unwrap();
+        #[cfg(not(unix))]
+        return; // symlink 需要 Unix;非 Unix 平台跳过本回归。
         let t = WriteTool;
         let err = t
             .execute(
                 make_ctx(&ws),
-                serde_json::json!({"path": "sub/../../zhuye_write_escape_probe2.txt", "content": "pwned"}),
+                serde_json::json!({"path": "sub/../link/victim.txt", "content": "pwned"}),
             )
             .await
             .unwrap_err();
@@ -395,20 +386,21 @@ mod tests {
             matches!(err, ToolError::PathEscape { .. }),
             "嵌套 .. 穿越必须被拒,得到: {err:?}"
         );
-        assert!(!outside.exists());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original");
+        cleanup_probe(&probe);
     }
 
-    /// 回归(0.2):绝对路径穿越 workspace 仍须被拒(原有行为,防回归)。
+    /// 绝对路径指向写根之外(`$HOME` 探针):必须被拒。
     #[tokio::test]
     async fn rejects_absolute_path_escape() {
         let ws = tmp_workspace();
-        let outside = ws.parent().unwrap().join("zhuye_write_escape_probe3.txt");
-        let _ = std::fs::remove_file(&outside);
+        let probe = outside_roots_dir("abs");
+        let target = probe.join("pwned.txt");
         let t = WriteTool;
         let err = t
             .execute(
                 make_ctx(&ws),
-                serde_json::json!({"path": outside.to_string_lossy(), "content": "pwned"}),
+                serde_json::json!({"path": target.to_string_lossy(), "content": "pwned"}),
             )
             .await
             .unwrap_err();
@@ -416,24 +408,25 @@ mod tests {
             matches!(err, ToolError::PathEscape { .. }),
             "绝对路径穿越必须被拒,得到: {err:?}"
         );
-        assert!(!outside.exists());
+        assert!(!target.exists());
+        cleanup_probe(&probe);
     }
 
-    /// 回归(0.2):指向 workspace 外**已存在**文件的 symlink 必须被拒。
+    /// 指向写根之外**已存在**文件的 symlink 必须被拒。
     /// component-walk 对每个现存 component 做 canonicalize,所以这条
-    /// symlink 会被解析到 workspace 外的真实路径,被最终校验拦下。
+    /// symlink 会被解析到真实路径,被最终校验拦下。
     #[tokio::test]
     async fn rejects_symlink_to_existing_outside_file() {
         let ws = tmp_workspace();
-        let outside_dir = ws.parent().unwrap().join("zhuye_write_link_target");
-        std::fs::create_dir_all(&outside_dir).ok();
-        let outside_file = outside_dir.join("exists.txt");
+        let probe = outside_roots_dir("link");
+        let outside_file = probe.join("exists.txt");
         std::fs::write(&outside_file, "original").unwrap();
         #[cfg(not(unix))]
         {
             // 非 Unix(Windows):创建 symlink 需要管理员/开发者模式,
             // 本回归仅在 Unix 上执行。
             let _ = outside_file;
+            cleanup_probe(&probe);
             return;
         }
         #[cfg(unix)]
@@ -456,6 +449,7 @@ mod tests {
                 "original",
                 "symlink 目标内容不得被改写"
             );
+            cleanup_probe(&probe);
         }
     }
 

@@ -1,13 +1,13 @@
 //! `notebook_edit` — Jupyter `.ipynb` cell 级别编辑工具。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zhuye_protocol::PermissionMode;
 
-use crate::sandbox::{PinnedWrite, open_readonly, resolve_sandbox_path};
+use crate::sandbox::{PinnedWrite, open_readonly};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// Notebook cell 类型(简化)。
@@ -108,9 +108,11 @@ fn parse_cell_type(s: &str) -> Result<CellType, ToolError> {
 
 fn load_notebook(
     workspace: &Path,
+    writable: &[PathBuf],
     path_str: &str,
 ) -> Result<(Notebook, std::path::PathBuf), ToolError> {
-    let abs = resolve_sandbox_path(workspace, Path::new(path_str))?;
+    // notebook 编辑是写路径:允许根内才可改,.git 等元数据拒绝。
+    let abs = crate::sandbox::resolve_writable_path(workspace, writable, Path::new(path_str))?;
     let mut pinned =
         open_readonly(&abs).map_err(|e| ToolError::Io(format!("open {path_str}: {e}")))?;
     let mut raw = String::new();
@@ -193,7 +195,8 @@ impl Tool for NotebookEditTool {
             })?;
         match action {
             NotebookAction::List { path } => {
-                let (nb, _) = load_notebook(&ctx.workspace_path(), &path)?;
+                let (nb, _) =
+                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
                 let lines: Vec<String> = nb
                     .cells
                     .iter()
@@ -213,7 +216,8 @@ impl Tool for NotebookEditTool {
                 })
             }
             NotebookAction::Read { path, index } => {
-                let (nb, _) = load_notebook(&ctx.workspace_path(), &path)?;
+                let (nb, _) =
+                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
                 let cell = nb.cells.get(index).ok_or_else(|| ToolError::InvalidArgs {
                     message: format!("cell index {index} out of range"),
                 })?;
@@ -232,7 +236,8 @@ impl Tool for NotebookEditTool {
                 source,
                 cell_type,
             } => {
-                let (mut nb, abs) = load_notebook(&ctx.workspace_path(), &path)?;
+                let (mut nb, abs) =
+                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
                 let cell = nb
                     .cells
                     .get_mut(index)
@@ -259,7 +264,8 @@ impl Tool for NotebookEditTool {
                 source,
                 cell_type,
             } => {
-                let (mut nb, abs) = load_notebook(&ctx.workspace_path(), &path)?;
+                let (mut nb, abs) =
+                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
                 if index > nb.cells.len() {
                     return Err(ToolError::InvalidArgs {
                         message: format!("insert index {index} out of range"),
@@ -282,7 +288,8 @@ impl Tool for NotebookEditTool {
                 })
             }
             NotebookAction::Delete { path, index } => {
-                let (mut nb, abs) = load_notebook(&ctx.workspace_path(), &path)?;
+                let (mut nb, abs) =
+                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
                 if index >= nb.cells.len() {
                     return Err(ToolError::InvalidArgs {
                         message: format!("cell index {index} out of range"),

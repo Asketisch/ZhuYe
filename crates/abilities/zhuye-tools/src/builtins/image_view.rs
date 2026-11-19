@@ -6,7 +6,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::sandbox::{open_readonly, resolve_sandbox_path};
+use crate::sandbox::{open_readonly, resolve_readable_path};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// 单张图片软上限(10 MiB),超出拒绝以防 OOM。
@@ -71,7 +71,7 @@ impl Tool for ImageViewTool {
                     message: "missing 'path'".into(),
                 })?;
         let path = Path::new(path_str);
-        let abs = resolve_sandbox_path(&ctx.workspace_path(), path)?;
+        let abs = resolve_readable_path(&ctx.workspace_path(), path)?;
 
         let mut pinned =
             open_readonly(&abs).map_err(|e| ToolError::Io(format!("open {path_str}: {e}")))?;
