@@ -86,6 +86,9 @@ impl ProviderGroupSection {
 
     /// 展示名:显式 `label` 优先,缺省回退 `id`。
     pub fn display_label(&self) -> &str {
-        self.label.as_deref().filter(|l| !l.trim().is_empty()).unwrap_or(&self.id)
+        self.label
+            .as_deref()
+            .filter(|l| !l.trim().is_empty())
+            .unwrap_or(&self.id)
     }
 }
