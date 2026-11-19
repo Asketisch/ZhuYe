@@ -250,11 +250,19 @@ static SAFE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         r"^(echo|printf)\b",
         r"^(ls|cat|head|tail|wc|pwd|which|type|date|uname|file|stat|du|df|sort|uniq)\b",
         r"^(grep|rg|find|tree|jq|awk|sed)\b",
+        // 路径工具与比较器:纯解析 / 只读输出,不写任何文件。
+        r"^(basename|dirname|realpath|readlink|diff|cmp|shasum|md5sum|md5)\b",
+        // 平台元数据探查:macOS 版本 / Spotlight 属性 / 图像信息
+        // (ImageMagick identify 的主用途就是读元数据)。
+        r"^(mdls|sw_vers|identify)\b",
+        // `sips` 只放查询形态:`-g/--getProperty` 读属性;它的改写形态
+        // (`-z` 缩放 / `-s format` 转码)是主用途之一,必须留在名单外。
+        r"^sips\s+(-g\b|--getProperty\b)",
         // `xargs <readonly-cmd>` 是只读命令的标准管道收尾
         // (`find ... | xargs grep ...`),不该因为 `xargs` 不在 SAFE 列表
         // 就让整条管道降级为 Risky。xargs 后接风险命令时仍由后续 RISKY /
         // DANGEROUS 模式正常拦截。
-        r"^xargs\s+(grep|rg|find|tree|jq|awk|sed|head|tail|cat|ls|wc|sort|uniq|file|stat)\b",
+        r"^xargs\s+(grep|rg|find|tree|jq|awk|sed|head|tail|cat|ls|wc|sort|uniq|file|stat|identify|mdls|diff|basename|dirname)\b",
         r"^git\s+(status|log|diff|show|branch|remote|rev-parse|describe|stash\s+list)\b",
         r"^cargo\s+(check|test|clippy|fmt|tree|metadata)\b",
         r"^npm\s+(test|ls|view)\b",
@@ -459,6 +467,65 @@ mod tests {
         assert_eq!(
             classify_command("cargo check 2>/dev/null"),
             BashCommandClass::Safe
+        );
+    }
+
+    /// 用户实测报错现场(Plan mode):图像元数据探查链被误判 Risky 禁用。
+    /// `file` / `identify` / `sips -g` 都是只读命令 —— 整链应为 Safe。
+    #[test]
+    fn classify_image_inspection_chain_is_safe() {
+        assert_eq!(
+            classify_command(
+                "file /Users/admin/Code/CNB/ZhuYe-Family/logo.png; \
+                 identify /Users/admin/Code/CNB/ZhuYe-Family/logo.png 2>/dev/null \
+                 || sips -g pixelWidth -g pixelHeight /Users/admin/Code/CNB/ZhuYe-Family/logo.png 2>&1"
+            ),
+            BashCommandClass::Safe
+        );
+        // 各段单测:
+        assert_eq!(classify_command("identify img.png"), BashCommandClass::Safe);
+        assert_eq!(
+            classify_command("sips -g pixelWidth img.png"),
+            BashCommandClass::Safe
+        );
+        assert_eq!(
+            classify_command("sips --getProperty dpiWidth img.png"),
+            BashCommandClass::Safe
+        );
+        assert_eq!(
+            classify_command("mdls -name kMDItemKind img.png"),
+            BashCommandClass::Safe
+        );
+        assert_eq!(classify_command("sw_vers"), BashCommandClass::Safe);
+        // 路径工具与比较器:
+        assert_eq!(
+            classify_command("basename /a/b/c.rs"),
+            BashCommandClass::Safe
+        );
+        assert_eq!(classify_command("realpath ../x"), BashCommandClass::Safe);
+        assert_eq!(classify_command("diff a.rs b.rs"), BashCommandClass::Safe);
+        assert_eq!(
+            classify_command("shasum -a 256 file"),
+            BashCommandClass::Safe
+        );
+        // 管道收尾:`find | xargs identify` 同样只读。
+        assert_eq!(
+            classify_command("find . -name '*.png' | xargs identify"),
+            BashCommandClass::Safe
+        );
+    }
+
+    /// `sips` 的改写形态必须留在 Safe 之外:缩放 / 转码 / 旋转是其主用途。
+    #[test]
+    fn classify_sips_mutating_forms_stay_risky() {
+        // 未知形态(`-z` / `-s`)不含在 SAFE 名单 → 保守 Risky。
+        assert_eq!(
+            classify_command("sips -z 100 100 img.png"),
+            BashCommandClass::Risky
+        );
+        assert_eq!(
+            classify_command("sips -s format jpeg img.png --out out.jpg"),
+            BashCommandClass::Risky
         );
     }
 }
