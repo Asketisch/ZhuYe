@@ -19,6 +19,7 @@ use crate::capabilities::Capabilities;
 use crate::client::ModelClient;
 use crate::error::LlmError;
 use crate::event::ChatEvent;
+use crate::model_catalog::ModelInfo;
 use crate::request::{
     CacheControl, CacheControlKind, CacheTtl, ChatMessage, ChatRequest, ContentBlock,
     ThinkingConfig, ToolSpec,
@@ -69,6 +70,13 @@ impl AnthropicClient {
         let http = super::stream_http_client(config.timeout)?;
         Ok(Self { config, http })
     }
+}
+
+/// 拼接模型清单端点(与 chat 端点同一套版本段规则):官方
+/// `https://api.anthropic.com` → `…/v1/models`;base 已含 `/v1` 时不
+/// 重复追加(与桌面端 `build_models_url` 同口径)。
+fn models_endpoint(base: &str) -> String {
+    crate::providers::join_versioned_endpoint(base.trim_end_matches('/'), "/models")
 }
 
 #[async_trait]
@@ -173,6 +181,79 @@ impl ModelClient for AnthropicClient {
         } else {
             Ok(Box::pin(stream_sse(response, cancel)))
         }
+    }
+
+    /// 拉取 Anthropic 兼容的模型清单(`GET {base}/v1/models`)。
+    ///
+    /// 此前本 provider 走 trait 默认实现(`Ok(None)` = 无清单端点),
+    /// anthropic 格式的接入(内置段与 `[[provider_group]]` endpoint =
+    /// anthropic,含 Magpie / claude-code-router 等网关)在引擎内
+    /// **连模型清单都拿不到** —— `model = "free"` 动态值与
+    /// `zhuye models list` 对这类端点全部失效。桌面端此前用直连 HTTP
+    /// 补了这个缺口,现在引擎侧对齐,两侧口径一致。
+    ///
+    /// 语义对齐 `OpenAIClient::list_models`:
+    /// - 空 key **不发**认证头(免 Key 的本地网关);
+    /// - 404/405 → `Ok(None)`(端点不提供清单,诚实降级);
+    /// - URL 拼接复用 `join_versioned_endpoint`(base 已含 `/v1` 不重复追加,
+    ///   与桌面端 `build_models_url` 同口径)。
+    async fn list_models(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<Option<Vec<ModelInfo>>, LlmError> {
+        let base = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or(DEFAULT_BASE_URL)
+            .trim_end_matches('/');
+        let url = models_endpoint(base);
+
+        let mut req = self.http.get(&url).header("Accept", "application/json");
+        // 认证头与 chat 端点同规则:官方 API 用 x-api-key,第三方网关用
+        // Bearer(见 `stream` 内的 is_official 分派);空 key 都不发。
+        let is_official = self
+            .config
+            .base_url
+            .as_deref()
+            .map_or(true, |u| u.contains("api.anthropic.com"));
+        if !self.config.api_key.is_empty() {
+            if is_official {
+                req = req.header("x-api-key", &self.config.api_key);
+            } else {
+                req = req.header("Authorization", format!("Bearer {}", self.config.api_key));
+            }
+        }
+        req = req.header("anthropic-version", ANTHROPIC_VERSION);
+
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
+
+        let response = req.send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            // 404/405 = 该端点没有清单能力,诚实降级;其余状态是真实故障。
+            if status == reqwest::StatusCode::NOT_FOUND
+                || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+            {
+                return Ok(None);
+            }
+            let status_code = status.as_u16();
+            let headers = response.headers().clone();
+            let text = response.text().await.unwrap_or_default();
+            return Err(classify_status(status_code, &text, &headers));
+        }
+
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| LlmError::Internal(format!("model listing parse failed: {e}")))?;
+        // 响应形状与 OpenAI 兼容清单同为 `{"data":[...]}`(条目字段为
+        // id / display_name / type 等),字段探测解析器直接复用:
+        // anthropic 端点不报 context_window / pricing 时对应项为 None,
+        // 不编造。
+        Ok(Some(crate::providers::openai::parse_model_listing(&body)))
     }
 }
 
@@ -1555,6 +1636,42 @@ mod tests {
         }
         assert!(saw_json, "应产出包含 JSON 的 ContentDelta,实际: {out:?}");
         assert!(matches!(out.last(), Some(ChatEvent::MessageStop)));
+    }
+
+    /// 清单端点拼接:官方 base 补 /v1;已含 /v1 不重复追加;尾斜杠归一。
+    #[test]
+    fn models_endpoint_respects_version_segment() {
+        assert_eq!(
+            models_endpoint("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("https://gw.example.com/v1"),
+            "https://gw.example.com/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("https://gw.example.com/v1/"),
+            "https://gw.example.com/v1/models"
+        );
+    }
+
+    /// 清单解析复用 OpenAI 形状的探测解析器:anthropic 端点只报
+    /// id / display_name → 其余字段 None 不编造。
+    #[test]
+    fn 清单解析_anthropic形状条目取id() {
+        let body = serde_json::json!({
+            "data": [
+                {"type": "model", "id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"},
+                {"type": "model", "id": "claude-opus-4-1", "display_name": "Claude Opus 4.1"}
+            ],
+            "has_more": false
+        });
+        let list = crate::providers::openai::parse_model_listing(&body);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "claude-sonnet-4-5");
+        assert_eq!(list[0].context_window, None);
+        assert_eq!(list[0].is_free, None);
+        assert_eq!(list[1].id, "claude-opus-4-1");
     }
 }
 
