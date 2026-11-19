@@ -48,6 +48,7 @@
 2. **写文件走原子替换** —— 需要「完整内容替换式写入」的地方统一走 `zhuye-fs` 的原子写:先写同目录临时文件再 rename,写入任一步失败保留原文件、临时文件不残留;目标是 symlink 时写它指向的真实目标而非替换链接本身,只读目标直接拒绝。**不要引入第二份「原子写」实现**。
 3. **配置 schema 只有一个定义处** —— 配置字段结构集中在 `zhuye-config` 的 `schema/` 子模块;新增或改动配置段时,schema 与 `docs/configuration.md` 同步更新,不要在消费 crate 里另写一份解析逻辑。(zhuye-config 无独立篇,故留在本篇)
 4. **插件状态三文件各司其职** —— `installed_plugins.json` 描述「装了什么」(插件 cache 目录内),`~/.zhuye/config.toml` 的 `enabled_plugins` 描述「启用什么」,`~/.zhuye/managed-settings.json` 由企业策略 pin 住不可改的 managed 插件;三者不一致时报配置漂移。插件自身契约见 [zhuye-plugin/](zhuye-plugin/AGENTS.md)。
+5. **skill 扫描目录清单只有一个定义处** —— `zhuye-config/src/paths.rs::default_skill_dirs` 是 skill 目录链(`.zhuye/skills` ×2 + 业界通用 `.agents/skills` ×2,顺序即同名优先级)的唯一出口:两处 bootstrap(exec / m4)与 GUI 列表命令都消费它,不要在消费方自拼 skill 目录名。`.agents/skills` 是外部生态通用目录(非烛夜私有),故不走 `ZHUYE_HOME` 重定向。
 
 ## 核心文件导航
 

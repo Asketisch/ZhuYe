@@ -209,6 +209,10 @@ rankfns = "0.1"
 zhuye-bm25 = { path = "crates/abilities/zhuye-bm25" }
 # v1.0.0-rc4: `web_fetch` builtin —— HTML 转 Markdown。
 htmd        = "0.5"
+# v1.x skills.sh 市场安装:GitHub tarball 流式解包(tar+gzip,防 zip-slip)。
+# 仅 zhuye-skills 消费。
+tar         = "0.4"
+flate2      = "1"
 # 通用 lazy container(`WebSearchTool` 等延迟初始化的场景)。
 once_cell   = "1"
 # v1.9:输入侧提示注入检测(zhuye-sanitize::prompt_guard)的 SHA-256 指纹,

@@ -28,6 +28,7 @@
 
 pub mod bundled;
 pub mod catalog;
+pub mod directory;
 pub mod discovery;
 pub mod loader;
 pub mod marketplace;
@@ -36,6 +37,8 @@ pub mod scanner;
 pub mod tool;
 
 pub use bundled::{bundled_skills, merge_bundled};
+/// skills.sh 目录:sitemap 全量索引 + 本地搜索 + 官方来源标签。
+pub use directory::{OFFICIAL_OWNERS, SkillDirEntry, SkillSearchHit, fetch_index, search_entries};
 /// F58:技能长尾(锁文件统一 + CLI 帮助生成 + 输出合同 + 价值度量 + 技能链)。
 pub mod longtail;
 /// F27:技能供应链安全(锁文件 / 完整性校验 / 安装前扫描)。
@@ -43,7 +46,10 @@ pub mod supply_chain;
 pub use catalog::{ALWAYS_ON_TOOLS, SkillsCatalog, render_catalog};
 pub use discovery::{relativize, skill_matches_path, skills_for_path};
 pub use loader::{parse_skill_file, parse_skill_str};
-pub use marketplace::{install_from_github, normalize_repo};
+pub use marketplace::{
+    MarketSource, install_from_github, install_skill_from_market, normalize_market_source,
+    normalize_repo, validate_skill_dir_name,
+};
 pub use model::{SkillError, SkillMeta};
 pub use scanner::scan_skills_dirs;
 pub use supply_chain::{

@@ -104,8 +104,8 @@ pub use discovery::{
 pub use error::ConfigError;
 pub use load::{default_config_path, load_default, load_from_file, load_from_str};
 pub use paths::{
-    data_dir, data_path, data_path_or_relative, project_data_dir, project_data_path,
-    resolve_data_dir,
+    data_dir, data_path, data_path_or_relative, default_skill_dirs, project_agents_skills_dir,
+    project_data_dir, project_data_path, resolve_data_dir, user_agents_skills_dir,
 };
 /// F70:feature flag 注册表(阶段 + env/config 覆盖 + 锁定)。
 pub mod flags;
