@@ -1,12 +1,12 @@
 {
   "id": "crash_resume",
   "kind": "crash_resume",
-  "description": "首轮完成并落盘后强杀进程(模拟崩溃),--resume 恢复会话后第二轮正常完成。回归来源:崩溃恢复与审批中断时序批次(INC-004)。投影含 rollout 记录类型序列,兼验持久化兼容。",
+  "description": "首轮完成并落盘后强杀进程(模拟崩溃),--resume 恢复会话后第二轮正常完成。回归来源:崩溃恢复与审批中断时序批次(INC-004)。投影含 rollout 记录类型序列,兼验持久化兼容。已批准差异:rollout:prompt_selection_changed —— v0.1.15 之后新增的提示词选择记录类型(会话启动即落盘),属 Protocol v0 合法加变体,基线(v0.1.15)无此记录。",
   "source_incident": "INC-004",
   "checkpoint": "稳定检查点",
   "mock_script": [
     "{\"type\":\"text\",\"text\":\"稳定检查点\"}",
     "{\"type\":\"text\",\"text\":\"恢复完成\"}"
   ],
-  "approved_differences": []
+  "approved_differences": ["rollout:prompt_selection_changed"]
 }

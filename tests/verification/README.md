@@ -29,10 +29,13 @@ printf 'crates/protocol/src/lib.rs\n' | python3 tests/verification/select_reliab
    是否被采集到取决于接收线程调度,不用于事件类型差分。
 2. **Protocol v0 兼容**:候选新引入的事件类型必须逐条出现在用例的
    `approved_differences`(格式 `event:<TYPE>`);基线事件类型丢失不接受豁免。
+   rollout 记录类型(协议 `RolloutRecord` 枚举)走同口径的 `rollout:<TYPE>`
+   通道:候选新增的记录类型必须逐条批准,基线丢失一律是回归;剔除已批准的
+   新增类型后,剩余序列的顺序与条数仍严格比对。
 3. **mock 模型 + 隔离沙箱**:与能力覆盖层(`tests/functional/wire.py`)同一套
    夹具,离线可重复,不消耗模型额度。
-4. **验证器自证**:每个维度(终态/工具/审批/文件/事件类型)都有对应的注入
-   变异测试;变异必被抓、控制组必零分歧。
+4. **验证器自证**:每个维度(终态/工具/审批/文件/事件类型/rollout 记录类型)
+   都有对应的注入变异测试;变异必被抓、控制组必零分歧。
 5. **事故预期独立判定**:INC-002 要求候选触发 bash 审批且拒绝后没有 out.txt,
    即使基线有相同缺陷也会失败。两侧事件与投影分别写入输出目录的
    `baseline/` 和 `candidate/`。
@@ -58,7 +61,9 @@ python3 tests/runner.py run --task agent.contract.differential  # 需 ZHUYE_DIFF
    `git rev-parse --verify` 校验真实存在);
 3. 用例的 `source_incident` 与事故的 `case_file` 必须双向闭环;
 4. 若新用例涉及 Protocol v0 合法新增事件,在用例 `approved_differences`
-   里逐条列出,不得批量豁免;
+   里逐条列出,不得批量豁免;新增的 **rollout 记录类型** 用 `rollout:<TYPE>`
+   前缀列出(与 `event:<TYPE>` 分开,避免同名混淆);事故元数据
+   (`incidents/*.json`)的批准清单须与用例保持一致(自测校验);
 5. 更新本 README 与 `tests/COVERAGE.md`。
 
 单次事故立即补用例;只有重复出现且可由 diff 机械识别的问题才提炼为

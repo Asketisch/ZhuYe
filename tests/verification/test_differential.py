@@ -7,7 +7,8 @@
 - compare():干净控制组零分歧;注入缺陷(缺失终态、工具顺序错乱、
   审批拒绝后副作用、未批准新事件、丢失基线事件)全部必被抓;
 - approved_differences:合法新增事件经批准后不报分歧,丢失事件不可豁免;
-- 语料库自洽:用例 kind 已知、事故引用闭环、来源提交号存在。
+  rollout 记录类型走同口径的 `rollout:<TYPE>` 批准通道,顺序与条数仍严格;
+- 语料库自洽:用例 kind 已知、事故引用闭环、来源提交号存在、批准清单两侧一致。
 
 运行方式:`python3 tests/verification/test_differential.py`(仅依赖标准库)。
 """
@@ -211,6 +212,68 @@ class CompareMutantTest(unittest.TestCase):
         self.assertTrue(any("丢失基线事件类型:approval_request" in d for d in divergences))
 
 
+class CompareRolloutTest(unittest.TestCase):
+    """rollout 记录类型维度:Protocol v0 加变体的独立批准通道。
+
+    rollout 记录类型是协议 `RolloutRecord` 枚举的投影(与 wire 事件类型
+    同属「只允许加变体」范畴),但走独立的 `rollout:<TYPE>` 前缀 —— 批准
+    一个记录类型不得变成整条序列免检。
+    """
+
+    BASE_ROLLOUT = ["session_meta", "message", "token_count", "message"]
+
+    def _proj(self, rollout: list[str]) -> dict:
+        """带 rollout 记录类型投影的控制组。"""
+        return differential.project(base_events(), {}, rollout)
+
+    def test_both_sides_without_rollout_projection_no_divergence(self):
+        # 非恢复类场景两侧都不含 rollout 投影 —— 不得误报。
+        control = differential.project(base_events(), {})
+        self.assertEqual(differential.compare(control, control, []), [])
+
+    def test_new_rollout_type_with_approval_no_divergence(self):
+        base = self._proj(self.BASE_ROLLOUT)
+        cand = self._proj(["session_meta", "prompt_selection_changed"]
+                          + self.BASE_ROLLOUT[1:])
+        divergences = differential.compare(base, cand, ["rollout:prompt_selection_changed"])
+        self.assertEqual(divergences, [])
+
+    def test_unapproved_new_rollout_type_detected(self):
+        base = self._proj(self.BASE_ROLLOUT)
+        cand = self._proj(["session_meta", "prompt_selection_changed"]
+                          + self.BASE_ROLLOUT[1:])
+        divergences = differential.compare(base, cand, [])
+        self.assertTrue(any("未批准的新 rollout 记录类型:prompt_selection_changed" in d
+                            for d in divergences))
+
+    def test_lost_rollout_type_cannot_be_approved(self):
+        # 基线有而候选丢失的记录类型是回归:写进 approved_differences 也不豁免。
+        base = self._proj(["session_meta", "fork", "message"])
+        cand = self._proj(["session_meta", "message"])
+        divergences = differential.compare(base, cand, ["rollout:fork"])
+        self.assertTrue(any("丢失基线 rollout 记录类型:fork" in d for d in divergences))
+
+    def test_rollout_order_strictness_preserved(self):
+        # 批准一个新增类型不得变成「整条记录序列免检」:顺序错乱仍必被抓。
+        base = self._proj(["session_meta", "message", "token_count"])
+        cand = self._proj(["session_meta", "prompt_selection_changed",
+                           "token_count", "message"])
+        divergences = differential.compare(base, cand, ["rollout:prompt_selection_changed"])
+        self.assertTrue(any("rollout 记录类型不一致" in d for d in divergences))
+
+    def test_rollout_type_count_change_detected(self):
+        # 同类型条数变化(重复落盘)同样必被抓。
+        base = self._proj(["session_meta", "message"])
+        cand = self._proj(["session_meta", "message", "message"])
+        divergences = differential.compare(base, cand, [])
+        self.assertTrue(any("rollout 记录类型不一致" in d for d in divergences))
+
+    def test_rollout_approval_prefix_accepted_by_validate(self):
+        differential.validate_case({
+            "id": "x", "kind": "crash_resume", "description": "", "mock_script": ["{}"],
+            "approved_differences": ["rollout:prompt_selection_changed"]})
+
+
 class CorpusIntegrityTest(unittest.TestCase):
     """语料库自洽:用例与事故引用闭环,来源提交真实存在。"""
 
@@ -243,6 +306,16 @@ class CorpusIntegrityTest(unittest.TestCase):
                 (HERE / "cases" / incident["case_file"]).read_text(encoding="utf-8"))
             self.assertEqual(case.get("source_incident"), incident["id"],
                              f"{incident['id']} 与用例 {case['id']} 的反向引用不一致")
+
+    def test_incident_approved_differences_match_case(self):
+        # 事故元数据与用例的批准清单必须一致 —— 防止只改一侧导致口径失真。
+        for path in sorted((HERE / "incidents").glob("*.json")):
+            incident = json.loads(path.read_text(encoding="utf-8"))
+            case = json.loads(
+                (HERE / "cases" / incident["case_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(incident.get("approved_differences", []),
+                             case.get("approved_differences", []),
+                             f"{incident['id']} 与用例 {case['id']} 的批准清单不一致")
 
     def test_source_commits_exist_in_history(self):
         # 来源提交号必须能在本仓库历史中解析到(用 rev-parse 验证,不受

@@ -7,7 +7,7 @@
   "source_note": "test(recovery): 崩溃恢复与审批中断时序回归。回归表现:kill 后 --resume 丢失首轮已落盘历史,或恢复回合无法完成;rollout 记录类型序列漂移。",
   "case_file": "crash_resume.json",
   "trigger_paths": ["crates/runtime/**", "crates/resources/**"],
-  "oracle": "首轮检查点落盘后 kill;--resume 后第二轮 turn_complete 成功;两侧 rollout 记录类型序列一致。",
-  "approved_differences": [],
+  "oracle": "首轮检查点落盘后 kill;--resume 后第二轮 turn_complete 成功;两侧 rollout 记录类型序列一致(已批准的提示词选择记录类型除外)。",
+  "approved_differences": ["rollout:prompt_selection_changed"],
   "control": true
 }

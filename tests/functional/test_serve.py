@@ -738,6 +738,34 @@ def test_A12_prompt_selection_会话恢复(serve_session, mock_script, sandbox) 
         assert first_event(events, "prompt_list")["msg"]["selection"] == {"mode": "default"}
 
 
+def test_A12_prompt_selection_落盘记录(serve_session, mock_script, sandbox) -> None:
+    """提示词选择必须落进 rollout —— 差分验证器据此批准新增记录类型。
+
+    会话启动即落一条 `prompt_selection_changed`(`selection: null` 表示跟随
+    共享默认);`prompt_command select` 后追加一条携带实际选择。断言到字段级,
+    锁住「这条记录是刻意写的」这一前提(差分用例 crash_resume 的
+    `rollout:prompt_selection_changed` 批准项依赖于此)。
+    """
+    require_binary()
+    script = mock_script(['{"type":"text","text":"ok"}'])
+    env = {"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}
+    with serve_session(env=env) as session:
+        session.submit({"type": "user_input", "items": [{"type": "text", "text": "开始"}]})
+        time.sleep(0.8)
+        records = [r for r in rollout_records(sandbox.home)
+                   if r.get("type") == "prompt_selection_changed"]
+        assert len(records) == 1, f"会话启动应落一条提示词选择记录:{records}"
+        assert records[0]["selection"] is None, f"未选定时应跟随默认:{records[0]}"
+        session.submit({"type": "prompt_command", "action": {
+            "type": "select", "selection": {"mode": "manual", "profile": "deepseek"}}})
+        time.sleep(0.8)
+        records = [r for r in rollout_records(sandbox.home)
+                   if r.get("type") == "prompt_selection_changed"]
+        assert len(records) == 2, f"选择后应追加一条提示词选择记录:{records}"
+        assert records[-1]["selection"] == {"mode": "manual", "profile": "deepseek"}, \
+            f"落盘的选择内容不符:{records[-1]}"
+
+
 def test_A13_side_channel启动查询取消(serve_session, mock_script) -> None:
     """side-channel 三 Op:`start_side_channel` → `side_channel_started`;
     `query_side_channels` → `side_channel_status`(含该 id);

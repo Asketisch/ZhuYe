@@ -8,7 +8,8 @@
   耗时、临时路径等易变字段从不进入投影,无需逐字段归一化;
 - **Protocol v0 兼容性**:候选新引入的事件类型必须逐条出现在用例的
   `approved_differences`(格式 `event:<TYPE>`)中,不得通过忽略全部未知
-  字段来"兼容";基线有而候选丢失的事件类型一律视为分歧;
+  字段来"兼容";基线有而候选丢失的事件类型一律视为分歧。rollout 记录
+  类型走同口径的 `rollout:<TYPE>` 通道(见 `_compare_rollout_types`);
 - **复用能力覆盖层夹具**:通过 `wire.ServeSession` + mock 模型脚本驱动真实
   `serve` 二进制,输入确定性,两侧结果可比。
 
@@ -108,16 +109,14 @@ def compare(base: dict[str, Any], cand: dict[str, Any],
             approved: list[str] | None = None) -> list[str]:
     """比较两份语义投影,返回人类可读分歧列表(空列表 = 无分歧)。
 
-    `approved` 中 `event:<TYPE>` 表示批准候选新增该事件类型(Protocol v0
-    允许加变体);基线事件类型丢失始终是分歧,不接受批准豁免。
+    `approved` 中 `event:<TYPE>` 表示批准候选新增该事件类型,`rollout:<TYPE>`
+    表示批准候选新增该 rollout 记录类型(Protocol v0 允许加变体);基线
+    事件类型 / rollout 记录类型丢失始终是分歧,不接受批准豁免。
     """
     divergences: list[str] = []
     for label, key in (("回合终态", "turns"), ("回复文本", "text"),
                        ("工具调用序列", "tools"), ("审批请求序列", "approvals"),
-                       ("错误事件", "errors"), ("文件副作用", "files"),
-                       ("rollout 记录类型", "rollout_types")):
-        if key == "rollout_types" and key not in base and key not in cand:
-            continue  # 非恢复类场景不含 rollout 投影
+                       ("错误事件", "errors"), ("文件副作用", "files")):
         if base.get(key) != cand.get(key):
             divergences.append(
                 f"{label}不一致:baseline={json.dumps(base.get(key), ensure_ascii=False)}"
@@ -132,6 +131,41 @@ def compare(base: dict[str, Any], cand: dict[str, Any],
                 f"(如属 Protocol v0 合法新增,请将该用例 approved_differences 加入 \"event:{new_type}\")")
     for lost_type in sorted(base_types - cand_types):
         divergences.append(f"候选丢失基线事件类型:{lost_type}")
+    divergences.extend(_compare_rollout_types(
+        base.get("rollout_types"), cand.get("rollout_types"), approved_set))
+    return divergences
+
+
+def _compare_rollout_types(base: list[str] | None, cand: list[str] | None,
+                            approved: set[str]) -> list[str]:
+    """比较 rollout 记录类型序列(有序),返回分歧列表。
+
+    与事件类型同口径:Protocol v0 只允许**加**记录类型,候选新增的记录
+    类型必须逐条列入用例 `approved_differences`(格式 `rollout:<TYPE>`);
+    基线有而候选丢失的记录类型一律是回归,不接受豁免。
+
+    剔除已批准的新增类型后,剩余序列必须逐项一致 —— 顺序与条数都严格,
+    避免「批准一个类型」变成「整条记录序列不校验」的旁路。
+    """
+    if base is None and cand is None:
+        return []  # 非恢复类场景不含 rollout 投影
+    base_seq = list(base or [])
+    cand_seq = list(cand or [])
+    divergences: list[str] = []
+    base_set, cand_set = set(base_seq), set(cand_seq)
+    # 候选新增且已批准的记录类型:从序列比对中剔除(它们本身不是分歧)。
+    approved_new = {t for t in cand_set - base_set if f"rollout:{t}" in approved}
+    for new_type in sorted(cand_set - base_set - approved_new):
+        divergences.append(
+            f"候选引入未批准的新 rollout 记录类型:{new_type}"
+            f"(如属 Protocol v0 合法新增,请将该用例 approved_differences 加入 \"rollout:{new_type}\")")
+    for lost_type in sorted(base_set - cand_set):
+        divergences.append(f"候选丢失基线 rollout 记录类型:{lost_type}")
+    stripped = [t for t in cand_seq if t not in approved_new]
+    if stripped != base_seq:
+        divergences.append(
+            f"rollout 记录类型不一致:baseline={json.dumps(base_seq, ensure_ascii=False)}"
+            f" candidate={json.dumps(cand_seq, ensure_ascii=False)}")
     return divergences
 
 
@@ -169,8 +203,9 @@ def validate_case(case: dict[str, Any]) -> None:
     if not isinstance(case["mock_script"], list) or not case["mock_script"]:
         raise ValueError(f"mock_script 必须为非空列表:{case.get('id')}")
     for item in case.get("approved_differences", []):
-        if not item.startswith("event:"):
-            raise ValueError(f"approved_differences 只支持 event:<TYPE> 格式:{item}")
+        if not (item.startswith("event:") or item.startswith("rollout:")):
+            raise ValueError(
+                f"approved_differences 只支持 event:<TYPE> / rollout:<TYPE> 格式:{item}")
 
 
 # ── 执行器层:驱动真实二进制 ─────────────────────────────────────────────

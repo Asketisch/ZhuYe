@@ -19,6 +19,7 @@
 | `tests/live/` | 实模型演练层:真实模型下的引擎行为,默认 SKIP |
 | `tests/contracts/` | 协议契约样本(EventMsg 全变体线格式) |
 | `tests/eval/` | 评测用例与质量跑批 |
+| `tests/verification/` | 事故回放与核心语义差分:新旧二进制在同一确定性输入上对比语义投影;Protocol v0 加变体走 `event:<TYPE>` / `rollout:<TYPE>` 逐条批准 |
 | `tests/run_all.sh`、`tests/lib.sh` | 套件入口与公共助手(隔离环境 / 断言助手 / 超时) |
 | `tests/runner.py`、`tests/test_registry.py` | 按 `tests/PLAN.md` 登记任务到测试入口的统一调度器 |
 
