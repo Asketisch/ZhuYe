@@ -41,7 +41,7 @@
 | `src/registry.rs` | name → 工具的注册表(带 source 标记) |
 | `src/builtin_tools.rs` | 内置工具注册入口与计数常量 |
 | `src/queue.rs` | 工具执行队列(串行 / 并行分组) |
-| `src/sandbox.rs` | 路径沙箱(workspace-write 口径:读全盘 + 凭证拒绝;写限 `resolve_writable_path` 允许根 + `.git`/`.zhuye`/`.agents`/`.aws` 元数据只读;`resolve_sandbox_path` 旧工作区墙保留给 LSP) |
+| `src/sandbox.rs` | 路径沙箱(workspace-write 口径:读全盘 + 凭证拒绝;写限 `resolve_writable_path` 允许根 + `.git`/`.agents`/`.aws` 元数据只读;`.zhuye` 走提权子项 denylist(`PROTECTED_ZHUYE_CHILDREN`:config/sessions/cron 等),其余子树(spill/plan/worktrees/uploads)放行;`resolve_sandbox_path` 旧工作区墙保留给 LSP) |
 | `src/approval/gate.rs` | 审批门与决策路由 |
 | `src/builtins/` | 各内置工具实现(按工具分文件) |
 | `src/loop_guard.rs` | 重复调用 / 无进展的循环守卫 |
