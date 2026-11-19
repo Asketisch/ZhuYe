@@ -1,4 +1,4 @@
-**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、外部 Harness 会话导入、Computer Use、常驻 shell 会话池、git 工作流 MCP server 或外部集成 stub 时读本篇 —— 本层 8 个 crate 均无独立篇,它们的本地契约以本篇为准。
+**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、外部 Harness 会话导入、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server 或外部集成 stub 时读本篇 —— 本层 9 个 crate 均无独立篇,它们的本地契约以本篇为准。
 
 # crates/integrations/ —— 外部系统接入层
 
@@ -8,7 +8,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ## crate 职责速览表
 
-本层 8 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
+本层 9 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
 
 | crate | 一句话职责 | 本地契约在哪 |
 |---|---|---|
@@ -18,6 +18,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 | `zhuye-stream` | 流式会话后端:cron 定时 / autopilot 自动驾驶 / FIFO 队列 / 工作区同步 | 流式后端 |
 | `zhuye-import` | 外部 Harness(Claude Code / Codex / ZCode)会话与配置导入 | 会话导入 |
 | `zhuye-computer-use` | Computer Use:截屏与键鼠输入,含 a11y 寻址与动作后验 | Computer Use |
+| `zhuye-browser` | 浏览器控制:CDP 驱动本机浏览器,复用 a11y 寻址与快照绑定 | 浏览器控制 |
 | `zhuye-shell` | 常驻 shell 会话池:启动进程 / 增量读 / 写 stdin / kill | 常驻 shell |
 | `zhuye-git-tools` | git 工作流 MCP server 协议层:分支摘要 / checkpoint 快照 | git 工作流 |
 
@@ -68,6 +69,14 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 - 平台重依赖(xcap 截屏 + enigo 输入)走 `real` feature 且默认关闭;关闭时统一返回 `MediaError::Unavailable`,**不 panic**(`crates/integrations/zhuye-computer-use/src/backend.rs`、`crates/integrations/zhuye-computer-use/src/types.rs`)。
 - 权限下限为 `Prompt`(宿主审批),不得降级为静默放行。
 - `crates/integrations/zhuye-computer-use/src/a11y.rs` 负责 a11y 树寻址、快照绑定与动作后验;改动作语义要同步改这里的绑定与校验。
+
+### 浏览器控制(`zhuye-browser`)
+
+- 工具面:`browser_navigate` / `browser_snapshot` / `browser_click` / `browser_type` / `browser_press_key` / `browser_scroll` / `browser_screenshot` / `browser_close`(`crates/integrations/zhuye-browser/src/bin/zhuye-browser-server.rs` 的 `tools_json()` 统一产出)。
+- 控制通道是 **CDP over loopback**(仅 127.0.0.1/localhost/::1 + 单 target 强制校验,复用 `zhuye-computer-use::BrowserSecurity`);被控端是本机 Chrome/Edge/Chromium,隔离 profile(`zhuye_config::paths` 的 `browser-profile`),`DevToolsActivePort` 文件是桌面 browser_backend 共享的发现契约。
+- ws/网络依赖走 `real` feature 且默认关闭;关闭时统一返回 `BrowserError::Unavailable`,**不 panic**(`crates/integrations/zhuye-browser/src/backend.rs`)。
+- 快照引用绑定不得回退:`@eN` 只在取到它的快照版本内有效(`check_binding`),导航/重拍快照即失效 —— 这是 F39 的防误点核心语义。
+- 权限下限为 `Prompt`(宿主审批),不得降级为静默放行。
 
 ### 常驻 shell(`zhuye-shell`)
 

@@ -1,0 +1,40 @@
+[package]
+name = "zhuye-browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZhuYe: 浏览器控制抽象层(CDP over loopback;plugins/browser 的能力本体)"
+
+[dependencies]
+base64 = "0.23"
+async-trait        = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+zhuye-config       = { workspace = true }
+# 复用 F39 地基:a11y 快照/元素寻址/动作后验/浏览器安全约束(公开 API)。
+zhuye-computer-use = { workspace = true }
+
+# 平台/网络重依赖做成 feature(默认关)—— workspace check / CI 不拉 ws 栈;
+# `real` feature(enable)才引入 CDP 客户端,构建插件二进制时开。
+# tokio 非 optional:server bin 的 runtime 与 #[tokio::test] 常开
+# (workspace 全员本就带 tokio full,无额外拉取成本)。
+tokio             = { workspace = true }
+tokio-tungstenite = { version = "0.30", optional = true }
+futures-util      = { version = "0.3", optional = true }
+
+[features]
+default = []
+# 真实后端(Chrome DevTools Protocol over loopback WebSocket)。
+real = ["dep:tokio-tungstenite", "dep:futures-util"]
+
+[[bin]]
+name = "zhuye-browser-server"
+path = "src/bin/zhuye-browser-server.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
