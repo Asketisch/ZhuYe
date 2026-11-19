@@ -7688,7 +7688,7 @@ dependencies = [
 name = "zhuye-computer-use"
 version = "0.1.15"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "enigo",
  "image",
  "serde",
@@ -7936,7 +7936,7 @@ dependencies = [
 name = "zhuye-import"
 version = "0.1.15"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "rusqlite",
@@ -7985,7 +7985,7 @@ version = "0.1.15"
 dependencies = [
  "async-stream",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "eventsource-stream",
  "futures",
@@ -8031,7 +8031,7 @@ name = "zhuye-mcp"
 version = "0.1.15"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "parking_lot",
  "reqwest 0.13.5",
