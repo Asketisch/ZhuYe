@@ -50,12 +50,27 @@
 | `src/client.rs` | `ModelClient` trait 定义 |
 | `src/request.rs` | `ChatRequest` 及嵌套类型;`fold_system_messages` 内联 System 折叠 |
 | `src/capabilities.rs` | provider / 模型能力标志与 `ProviderKind` |
+| `src/model_catalog.rs` | 清单条目 `ModelInfo`(窗口/视觉/输出上限/思考档位,缺省即 `None`)与免费判定规则 |
+| `src/models_dev.rs` | models.dev 社区目录:跨厂商投票 + 兜底链查询 + 内嵌快照/磁盘缓存/刷新,补静态表未收录模型的四维能力 |
+| `src/output_budget.rs` | 自适应输出预算(模型输出上限 = 内置精确表 → models.dev 目录) |
+| `src/reasoning_effort.rs` | 思考强度阶梯与钳制(上限 = 内置静态表 → models.dev 目录档位映射) |
 | `src/registry.rs` | 多凭据池注册表与派位 |
 | `src/policy.rs` | 角色 → spec slot 路由策略 |
 | `src/routing.rs` | 每轮动态选模 |
 | `src/providers/` | 各 provider 实现与共享 helper |
 | `src/providers/mock.rs` | 离线 mock provider 契约 |
 | `src/quota.rs` / `src/spend.rs` | 配额追踪与成本护栏 |
+
+### 模型元数据级联(谁能给谁补缺)
+
+`provider 清单 live 披露 > 用户配置 override > 本 crate 策展静态表 > models.dev 目录` —— 目录(`models_dev.rs`)只填空缺,从不覆盖更权威的源(与 magpie 的 Decorate 语义一致):
+
+- 窗口:`context_window_for` = override → 静态表 → 目录;
+- 输出上限:`output_budget::model_output_limit` = 精确表 → 目录;
+- 思考档位:`reasoning_effort::max_effort_for_model` = 静态表 → 目录档位映射 → 保守默认;
+- 清单条目:`enrich_model_info` 用目录补 `ModelInfo` 的 `None` 字段。
+
+目录数据 = 内嵌快照(`assets/api.json.gz`,`scripts/fetch-models-dev.sh` 产出)与磁盘缓存(`$ZHUYE_HOME > $HOME/.zhuye` 下 `cache/models-dev.json`)取新;`refresh_if_stale` 由调用方显式触发,**引擎启动不联网**。快照与缓存都是原始 api.json 格式,聚合 / 投票在 Rust 加载期一处完成。
 
 ## 禁止事项
 

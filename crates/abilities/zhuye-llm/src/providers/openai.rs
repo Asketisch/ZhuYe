@@ -200,7 +200,13 @@ impl ModelClient for OpenAIClient {
 /// ⚠️ 各家端点披露的字段差别很大,这里按「能取到什么就取什么」的顺序探测:
 /// - 上下文窗口:`context_window` → `context_length` → `top_provider.context_length`;
 /// - 免费标记:`isFree` → `pricing` 全零 → `None`(交给规则判);
-/// - 思考档位:`x_ofm_efforts`。
+/// - 思考档位:`x_ofm_efforts`;
+/// - 视觉:`architecture.input_modalities` / `input_modalities` /
+///   `modalities.input` 含 `"image"`(OpenRouter 与聚合网关两种口径);
+/// - 输出上限:`max_output_tokens` → `top_provider.max_completion_tokens`。
+///
+/// 未披露的字段保持 `None`,由调用方决定是否用 models.dev 目录补齐
+/// (`crate::models_dev::enrich_model_info`)。
 ///
 /// `openai.rs` 与 `responses.rs` 共用本函数,避免两处解析漂移。
 pub(crate) fn parse_model_listing(body: &Value) -> Vec<ModelInfo> {
@@ -230,9 +236,47 @@ pub(crate) fn parse_model_listing(body: &Value) -> Vec<ModelInfo> {
                     .get("owned_by")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                supports_vision: extract_supports_vision(entry),
+                max_output_tokens: extract_max_output_tokens(entry),
             })
         })
         .collect()
+}
+
+/// 从清单条目取视觉能力:三种 modalities 口径,含 `image` 即具备;
+/// 字段全缺 → `None`(未披露,不是「不支持」)。
+fn extract_supports_vision(entry: &Value) -> Option<bool> {
+    let modalities = entry
+        .get("architecture")
+        .and_then(|a| a.get("input_modalities"))
+        .or_else(|| entry.get("input_modalities"))
+        .or_else(|| entry.get("modalities").and_then(|m| m.get("input")))?
+        .as_array()?;
+    Some(
+        modalities
+            .iter()
+            .filter_map(|v| v.as_str())
+            .any(|s| s.eq_ignore_ascii_case("image")),
+    )
+}
+
+/// 从清单条目取最大输出 token:顶层 `max_output_tokens` 优先,其次
+/// `top_provider.max_completion_tokens`(OpenRouter 形态)。
+fn extract_max_output_tokens(entry: &Value) -> Option<u32> {
+    let candidates = [
+        entry.get("max_output_tokens"),
+        entry
+            .get("top_provider")
+            .and_then(|tp| tp.get("max_completion_tokens")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if let Some(v) = candidate.as_u64() {
+            if v > 0 && v <= u32::MAX as u64 {
+                return Some(v as u32);
+            }
+        }
+    }
+    None
 }
 
 /// 从清单条目里取上下文窗口(三种字段形态依次探测)。

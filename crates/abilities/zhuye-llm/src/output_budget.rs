@@ -194,8 +194,18 @@ pub fn adaptive_max_tokens(request: &ChatRequest) -> Option<u32> {
     Some(resolve_output_budget(request, window).max_tokens)
 }
 
-/// 精确匹配已知模型和快照,避免把未知版本误判为同一输出上限。
+/// 查模型的输出 token 上限:内置精确表(快照 id,防止把未知版本误判为
+/// 同一输出上限)优先,未收录再查 models.dev 社区目录补缺(与
+/// `context_window_for` 同语义:目录只填空缺)。
 fn model_output_limit(model: &str) -> Option<u32> {
+    if let Some(v) = static_output_limit(model) {
+        return Some(v);
+    }
+    crate::models_dev::abilities_for(model).max_output_tokens
+}
+
+/// 内置精确匹配表:已知模型和快照,避免把未知版本误判为同一输出上限。
+fn static_output_limit(model: &str) -> Option<u32> {
     let model = model
         .rsplit('/')
         .next()?

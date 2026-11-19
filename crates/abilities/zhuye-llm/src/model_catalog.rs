@@ -47,6 +47,13 @@ pub struct ModelInfo {
     /// 清单条目的归属方(provider 原样透传的 `owned_by`)。
     #[serde(default)]
     pub owned_by: Option<String>,
+    /// 厂商声明的视觉输入能力。`None` = 未披露(可由
+    /// [`crate::models_dev::enrich_model_info`] 用目录补齐)。
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
+    /// 最大输出 token。`None` = 未披露(同上,可由目录补齐)。
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 impl ModelInfo {
