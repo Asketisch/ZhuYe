@@ -45,6 +45,42 @@ fn lists_session_dirs() {
     }
 }
 
+/// 同回合同角色的增量落盘分片不另计消息。
+#[test]
+fn list_sessions_counts_incremental_assistant_records_as_one_message() {
+    let dir = tempdir().unwrap();
+    let day_dir = dir.path().join("2026/06/18");
+    std::fs::create_dir_all(&day_dir).unwrap();
+    let sid = ThreadId::new();
+    let turn = TurnId::new();
+    let step = |content: serde_json::Value| {
+        serde_json::to_string(&RolloutRecord::message(
+            turn,
+            MessageRole::Assistant,
+            content,
+        ))
+        .unwrap()
+    };
+    let body = format!(
+        "{}\n{}\n{}\n",
+        serde_json::to_string(&RolloutRecord::session_meta(sid, "m")).unwrap(),
+        step(
+            serde_json::json!([{"type":"text","text":"先查"},{"type":"tool_use","id":"c","name":"grep","args":{}}])
+        ),
+        step(
+            serde_json::json!([{"type":"tool_result","call_id":"c","output":{"content":[],"is_error":false,"metadata":{},"elapsed_ms":1}}])
+        ),
+    );
+    std::fs::write(day_dir.join(format!("{sid}.jsonl")), body).unwrap();
+
+    let sessions = list_sessions(dir.path()).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0].message_count, 1,
+        "一次回合的两片 assistant 记录只计一条消息"
+    );
+}
+
 /// v1.x:`list_sessions` 应从首条 User 消息派生 `title`。`write_session`
 /// 写的 user 内容是 `json!(i)`(数字),`first_user_message_title` 对非
 /// 字符串走 `to_string().trim_matches('"')`,所以首条 `0` → title "0"。

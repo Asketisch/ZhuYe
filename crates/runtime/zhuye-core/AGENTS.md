@@ -26,6 +26,7 @@
 - **`NodeContext` 是回合级依赖的唯一装配点**：定义与组装都在 `src/submission_loop.rs`。它携带 model spec、路由策略、model registry、`HookEngine`、工具执行队列、事件通道、取消令牌、审批 gate 等。
 - **Stop hook 否决续跑链路**在 `src/graph/nodes/check_stop.rs`：节点派发 `HookEvent::Stop`，被否决时累加尝试计数、把 hook 注入的提醒投递给下一轮，并让循环回到 `PreLoop` 强制续作；只有放行才终止本轮。
 - **SessionMeta 落盘前的通告不持久化**（`src/submission_loop.rs`）：权限模式切换 / plan 派发发生在会话头未写（`meta_written=false`）时只广播内存事件，待会话头落地后按需补记 —— 保证 JSONL 物理首行是 `SessionMeta`，rollout 索引依赖此前置（索引侧的恢复兜底见 resources 层篇 `zhuye-rollout` 条目）。
+- **assistant 内容按步骤增量落盘**：`graph/nodes/mod.rs::persist_assistant_step` 在每次 `model_call` 产出（文本 + 工具调用）和每批 `tool_exec` 结果后立即写一条同 `turn_id` 的 assistant 记录。回合收尾不再整体重写，否则回填会把历史读两遍。流被取消时，已流出的半截文本由 `preserve_interrupted_text` 就地落盘。消费端 `RolloutRecord::coalesce_turn_messages` 按回合同角色把数组内容拼回一条，块顺序与旧的整体记录一致。
 - **side-channel 并发上限**由 `src/side_channel/registry.rs` 的 `MAX_CONCURRENT` 约束，它与子代理工厂的在途上限是两套独立计数器。
 - 改了节点行为或事件发射顺序，要同步 `tests/functional/` 下对应的能力用例（断言到字段级），并按根 `AGENTS.md` 的验证矩阵跑 `./tests/run_all.sh functional`。
 

@@ -305,6 +305,50 @@ fn assistant_text_after_tool_result_stays_after_result() {
 }
 
 #[test]
+fn incremental_assistant_records_coalesce_to_one_message() {
+    // 增量落盘:同 turn 的「文本 + 工具调用」与随后的「工具结果」是两条
+    // 记录。恢复时必须拼回一条,块顺序与整体落盘逐块相同。
+    let turn = TurnId::new();
+    let call = ContentBlock::ToolUse {
+        id: "c1".into(),
+        name: "grep".into(),
+        args: serde_json::json!({"q": "foo"}),
+    };
+    let records = vec![
+        RolloutRecord::message(
+            turn,
+            MessageRole::Assistant,
+            serde_json::to_value(vec![
+                ContentBlock::Text {
+                    text: "我去查一下".into(),
+                },
+                call,
+            ])
+            .unwrap(),
+        ),
+        RolloutRecord::message(
+            turn,
+            MessageRole::Assistant,
+            serde_json::to_value(vec![ContentBlock::ToolResult {
+                call_id: "c1".into(),
+                output: tool_output("3 hits"),
+            }])
+            .unwrap(),
+        ),
+    ];
+    let out = records_to_preload(&records);
+    assert_eq!(
+        out.len(),
+        2,
+        "归并后仍是一条助手消息 + 一条工具回执: {out:?}"
+    );
+    assert!(
+        matches!(&out[0], ChatMessage::Assistant(a) if a.text.as_deref() == Some("我去查一下") && a.tool_calls.len() == 1)
+    );
+    assert!(matches!(&out[1], ChatMessage::Tool(t) if t.call_id == "c1" && !t.is_error));
+}
+
+#[test]
 fn consecutive_tool_rounds_keep_their_own_results() {
     let call = ContentBlock::ToolUse {
         id: "same".into(),

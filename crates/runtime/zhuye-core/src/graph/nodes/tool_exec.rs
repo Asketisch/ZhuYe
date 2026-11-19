@@ -506,6 +506,16 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         let _ = is_error;
         state.latest_content.push(r.into_content_block());
     }
+    // 增量落盘:本批工具结果单独成一条同 turn 的 assistant 记录。
+    // 它接在本步 model_call 已落盘的「文本 + 工具调用」之后,块顺序与
+    // 改动前回合结束时的整体记录一致;消费端按 turn 归并。
+    let results: Vec<ContentBlock> = state
+        .latest_content
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        .cloned()
+        .collect();
+    super::persist_assistant_step(ctx, &results).await;
     if ctx.cancel.is_cancelled() {
         return None;
     }

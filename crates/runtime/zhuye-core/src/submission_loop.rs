@@ -771,7 +771,6 @@ pub async fn submission_loop(
                 // `graph.run().await` 会让任何审批流程死锁。
                 let turn_tx_clone = turn_tx.clone();
                 let sub_id_clone = sub_id.clone();
-                let recorder = cfg.m4.as_ref().and_then(|m| m.recorder.clone());
                 // v1.2 P1:goal / steering / telemetry 句柄 clone 进 spawned task,
                 // 供 turn 结束后自校验 + 续作。
                 let cfg_goal_clone = cfg.goal.read().clone();
@@ -940,42 +939,17 @@ pub async fn submission_loop(
                             }
                         }
 
-                        // M5/v1.2 P2:持久化 assistant 本轮完整 ContentBlocks
-                        // (Text + ToolUse + ToolResult),让 resume / fork 能无损
-                        // 回放含工具调用的对话。此前只存最后一条纯文本,工具调用
-                        // 链全丢;纯工具调用收尾的 turn(last_assistant_text 为
-                        // 空)则整条不写,导致大量 session 文件零 message。
+                        // assistant 内容已在每个步骤完成时增量落盘
+                        // (`graph::nodes::persist_assistant_step`):一次 model_call
+                        // 的文本 + 工具调用一条,一批工具结果再一条,同一 turn_id。
+                        // 这里不再整体重写 —— 重写会让下一轮回填把同一段历史
+                        // 读两遍。消费端 `records_to_preload` 按 turn 归并,
+                        // 块顺序与此前的整体记录逐块一致。
                         //
-                        // `latest_content` 含本轮最后一次 model_call 产生的
-                        // Text + ToolUse,加上 tool_exec 追加的 ToolResult。
-                        // content 用 protocol ContentBlock 数组的 JSON 序列化,
-                        // resume 端按数组反序列化还原(blocks 形态,而非裸字符串)。
-                        //
-                        // review 修复:落盘必须在发送 TurnComplete **之前** ——
-                        // 客户端收到 TurnComplete 后可立即提交下一轮 UserInput,
-                        // 下一轮的 replay() 回填若读不到最后的 assistant 记录,
-                        // 历史会缺一段(间歇性跨轮失忆)。
-                        //
-                        // v1.5 持久化保真:turn_content(已完成步骤)++
-                        // latest_content(最后一步)= 完整时序。此前多步 turn
-                        // 只落盘最后一步,中间工具调用在 resume / session
-                        // search 视角下完全丢失(实战测试实证)。
-                        if let Some(rec) = recorder {
-                            if !final_state.turn_content.is_empty()
-                                || !final_state.latest_content.is_empty()
-                            {
-                                let mut all_content = std::mem::take(&mut final_state.turn_content);
-                                all_content.extend(final_state.latest_content.iter().cloned());
-                                let _ = rec
-                                    .record(RolloutRecord::message(
-                                        turn_id,
-                                        MessageRole::Assistant,
-                                        serde_json::to_value(&all_content)
-                                            .unwrap_or(serde_json::Value::Null),
-                                    ))
-                                    .await;
-                            }
-                        }
+                        // 落盘发生在 TurnComplete **之前** 仍是硬约束:客户端
+                        // 收到 TurnComplete 后可立即提交下一轮,replay 必须已经
+                        // 读得到最后一步。增量落盘满足这一点(最后一步在
+                        // model_call / tool_exec 返回前已写完)。
 
                         // 预算耗尽且**零文本产出**时,在
                         // TurnComplete 之前显式发一条带 code 的 Error 事件。
@@ -1075,24 +1049,11 @@ pub async fn submission_loop(
                     } else if turn_cancel_clone.is_cancelled()
                         || final_state.deferred_error.is_some()
                     {
-                        // 取消或流错误可能留下部分回复及已完成的工具步骤。
-                        // 必须先落盘,再发错误或中止事件,让客户端立即续跑。
-                        if let Some(rec) = recorder {
-                            if !final_state.turn_content.is_empty()
-                                || !final_state.latest_content.is_empty()
-                            {
-                                let mut all_content = std::mem::take(&mut final_state.turn_content);
-                                all_content.extend(final_state.latest_content.iter().cloned());
-                                let _ = rec
-                                    .record(RolloutRecord::message(
-                                        turn_id,
-                                        MessageRole::Assistant,
-                                        serde_json::to_value(&all_content)
-                                            .unwrap_or(serde_json::Value::Null),
-                                    ))
-                                    .await;
-                            }
-                        }
+                        // 取消或流错误留下的部分回复,已由 model_call /
+                        // tool_exec 在中断点增量落盘(含流被取消时
+                        // `preserve_interrupted_text` 保留的半截文本)。
+                        // 这里不再整体重写,避免与已落盘的步骤重复;
+                        // 终态事件仍在落盘之后发送,客户端可立即续跑。
                         // v1.10:取消**优先于**并发错误 —— 被取消的回合即便
                         // 同时产生了耗尽 / 超时错误,终态也必须是 Cancelled
                         // (UserInterrupt / Shutdown);把用户中断记为 Failed
