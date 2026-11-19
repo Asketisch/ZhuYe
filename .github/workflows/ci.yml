@@ -173,9 +173,9 @@ jobs:
       - name: build zhuye-import (会话导入用例需要)
         run: cargo build --release -p zhuye-import
       # 这些产物缺失时对应能力用例会跳过，必须在门禁中显式构建。
-      # computer-use 不启用 real feature，以覆盖无图形环境降级。
+      # computer-use / browser 不启用 real feature，以覆盖无图形/无浏览器环境降级。
       - name: build plugin servers (插件能力用例需要)
-        run: cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-shell -p zhuye-git-tools --bins
+        run: cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-browser -p zhuye-shell -p zhuye-git-tools --bins
       - name: build mock MCP server (审批用例需要)
         run: cargo build -p zhuye-mcp
       - run: npm ci

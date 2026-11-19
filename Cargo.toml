@@ -52,6 +52,7 @@ members = [
     "crates/integrations/zhuye-stream",
     "crates/integrations/zhuye-import",
     "crates/integrations/zhuye-computer-use",
+    "crates/integrations/zhuye-browser",
     "crates/integrations/zhuye-shell",
     "crates/integrations/zhuye-git-tools",
 
@@ -145,6 +146,7 @@ zhuye-integration = { path = "crates/integrations/zhuye-integration" }
 zhuye-stream      = { path = "crates/integrations/zhuye-stream" }
 zhuye-import      = { path = "crates/integrations/zhuye-import" }
 zhuye-computer-use = { path = "crates/integrations/zhuye-computer-use" }
+zhuye-browser = { path = "crates/integrations/zhuye-browser" }
 zhuye-shell      = { path = "crates/integrations/zhuye-shell" }
 zhuye-git-tools  = { path = "crates/integrations/zhuye-git-tools" }
 

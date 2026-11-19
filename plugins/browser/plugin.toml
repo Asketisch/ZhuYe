@@ -1,0 +1,16 @@
+# Browser 插件 —— 受控浏览器(F39:CDP over loopback,元素寻址 + 快照绑定)。
+#
+# 使用前必须先构建二进制(装插件 = 授权任意代码执行;本插件可启动本地
+# 浏览器实例并驱动网页交互,请仅在信任的环境安装):
+#   ./scripts/build_browser_plugin.sh            # 默认开 real feature(CDP)
+#   zhuye plugin install plugins/browser --scope user
+#   zhuye plugin enable browser@inline
+#
+# 被控端为本机 Chrome/Edge/Chromium(可用 ZHUYE_BROWSER_EXECUTABLE 覆盖),
+# 以隔离 profile($ZHUYE_HOME/browser-profile)运行,不触碰用户主 profile;
+# 未装浏览器或构建时缺 real feature 时工具返回 Unavailable(isError),不 panic。
+name = "browser"
+version = "0.1.0"
+description = "Browser:导航 / 可及性快照 / 点击 / 填写 / 按键 / 滚动 / 截图(CDP 仅 loopback + 单 target)"
+keywords = ["browser", "cdp", "automation"]
+mcp_servers = "./.mcp.json"

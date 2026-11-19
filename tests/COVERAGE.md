@@ -86,6 +86,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11、I20–I28 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | KMS 知识库插件(install → serve --plugin → MCP 读写 → 磁盘落盘) | I12 | —(独立二进制 `zhuye-kms-server`) | — | ✅(zhuye-kms 28 例) | — |
 | Computer Use 插件(headless 降级及无效输入拒绝;真机截屏走 real feature 手动验) | I13、I23 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
+| Browser 插件(headless 降级不 panic;真机快照/点击走 real feature 手动验) | F39 | —(独立二进制 `zhuye-browser-server`) | — | ✅(降级 1 例) | — |
 | Shell 会话插件(run → read → kill 生命周期及后台子进程清理) | I14、I16 | —(独立二进制 `zhuye-shell-server`) | — | ✅(zhuye-shell 7 例) | — |
 | Git 工作流插件(分支/PR 探测 + tag checkpoint + Stop 自动 checkpoint hook 永远退出 0) | I15 | —(独立二进制 `zhuye-git-tools-server` + `zhuye-cp-hook`) | — | ✅(zhuye-git 21 例 + git-tools 11 例) | — |
 | Markdown Git 指令与字面代码隔离 | —(库接口无 serve 入口) | — | — | ✅(代码块、行内代码、链接与引用定义、转义和参数校验) | — |

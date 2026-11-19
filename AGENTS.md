@@ -20,7 +20,7 @@
 | 能力原语:模型 / 工具 / hook / 提示词 / 检索 | [crates/abilities/](crates/abilities/AGENTS.md) · [zhuye-llm/](crates/abilities/zhuye-llm/AGENTS.md) · [zhuye-tools/](crates/abilities/zhuye-tools/AGENTS.md) · [zhuye-hooks/](crates/abilities/zhuye-hooks/AGENTS.md) |
 | 资源层:配置 / 权限 / 插件 / 持久化 / 文件 | [crates/resources/](crates/resources/AGENTS.md) · [zhuye-plugin/](crates/resources/zhuye-plugin/AGENTS.md) |
 | 多 agent 编排:子代理 / 讨论 / 任务 / 流水线 / 目标 | [crates/orchestration/](crates/orchestration/AGENTS.md) |
-| 外部集成:MCP / LSP / 会话导入 / computer-use / shell / git | [crates/integrations/](crates/integrations/AGENTS.md) |
+| 外部集成:MCP / LSP / 会话导入 / computer-use / browser / shell / git | [crates/integrations/](crates/integrations/AGENTS.md) |
 | 运行时与入口:StateGraph / headless / CLI / facade / PyO3 | [crates/runtime/](crates/runtime/AGENTS.md) · [zhuye-core/](crates/runtime/zhuye-core/AGENTS.md) · [zhuye-exec/](crates/runtime/zhuye-exec/AGENTS.md) · [zhuye-cli/](crates/runtime/zhuye-cli/AGENTS.md) |
 | 构建 · 发布 · 冒烟 · 插件打包脚本 | [scripts/](scripts/AGENTS.md) |
 | 双 SDK:Python / TypeScript | [sdks/](sdks/AGENTS.md) |
@@ -144,7 +144,7 @@ make gc                                   # 清 target/debug 中 cargo 不 GC �
    | exec/serve 参数 / 退出码 / 恢复 | `crates/runtime/` + `zhuye-exec/` |
    | CLI 子命令 / 参数面 | `crates/runtime/` + `zhuye-cli/` |
    | 编排原语(子代理 / 讨论 / 流水线 / 任务 / 目标) | `crates/orchestration/`(+ 对应 crate 篇若有) |
-   | 外部集成(MCP / LSP / 导入 / computer-use / shell / git) | `crates/integrations/`(+ 对应 crate 篇若有) |
+   | 外部集成(MCP / LSP / 导入 / computer-use / browser / shell / git) | `crates/integrations/`(+ 对应 crate 篇若有) |
    | 脚本新增 / 移除 / 行为变更 | `scripts/` 速览表 |
    | SDK 公开 API / wire 语义 | `sdks/` |
    | 测试分层 / 覆盖矩阵结构 | `tests/` |

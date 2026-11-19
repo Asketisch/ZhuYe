@@ -912,6 +912,56 @@ def test_I13_computer_use插件_降级不panic(sandbox: Sandbox, mock_script, se
     assert turn_types[-1] == "turn_complete", types
 
 
+def test_F39_browser插件_降级不panic(sandbox: Sandbox, mock_script, serve_session) -> None:
+    """browser 插件(headless 构建无 real feature)→ 工具调用返回
+    Unavailable(isError 文案),**不 panic**、会话存活。
+
+    依据:crates/integrations/zhuye-browser/src/backend.rs(优雅降级)
+    + plugins/browser/。CI 无浏览器,真机路径(manual):构建 real feature
+    且本机有 Chrome/Chromium 后验证 snapshot/click 全链路。
+    """
+    b_bin = Path(ZHUYE_BIN).parent / "zhuye-browser-server"
+    if not b_bin.is_file():
+        pytest.skip(f"zhuye-browser-server 二进制不存在:{b_bin}")
+    plugin_dir = REPO_ROOT / "plugins" / "browser"
+    if not plugin_dir.is_dir():
+        pytest.skip("plugins/browser 不存在")
+    bin_dir = plugin_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shutil.copy2(b_bin, bin_dir / "zhuye-browser-server")
+
+    inst = run_cli(sandbox, "plugin", "install", str(plugin_dir), "--scope", "user")
+    assert inst.returncode == 0, inst.stderr + inst.stdout
+
+    tool = "mcp__plugin:browser@inline:browser__browser_snapshot"
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": tool, "args": {}}),
+        '{"type":"text","text":"done"}',
+    ])
+    s = serve_session(args=["--plugin", "browser@inline"], env=sandbox.mock_env(script))
+    events = s.submit({"type": "user_input", "items": [{"type": "text", "text": "打开个网页看看"}]})
+    types = [e["msg"]["type"] for e in events]
+    assert "turn_complete" in types, types
+
+    end = next(e for e in events if e["msg"]["type"] == "tool_call_end")
+    # headless 二进制(无 real feature)→ isError + Unavailable/rebuild 文案,
+    # 而非 crash / 工具不存在。
+    out_text = "".join(
+        c.get("text", "") for c in end["msg"]["output"]["content"] if isinstance(c, dict)
+    )
+    if end["msg"]["is_error"]:
+        assert "unavailable" in out_text.lower() or "rebuild" in out_text, (
+            f"降级文案异常:{out_text}"
+        )
+    else:
+        # 真机(real feature 且有浏览器)→ 快照文本含版本头与引用。
+        assert "[1]" in out_text or "@e" in out_text, out_text
+
+    # 会话存活:turn 正常收尾(terminal 是 turn_complete)。
+    turn_types = [t for t in types if t != "submission_closed"]
+    assert turn_types[-1] == "turn_complete", types
+
+
 def test_I14_shell插件_常驻会话增读与kill(sandbox: Sandbox, mock_script, serve_session) -> None:
     """shell 插件:`shell_run` 起后台会话(立即返回)→ `shell_read` 增量
     取输出 → `shell_kill` 清理。与一次性 bash 工具互补的长任务面。
