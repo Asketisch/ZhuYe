@@ -1,10 +1,14 @@
 version: 2
+# 只保留 github-actions 的版本更新。
+#
+# cargo 依赖改为手工维护(`cargo update -p <crate>` 放进既有维护窗口):
+# 本仓库有 MSRV 1.89 约束 + 45 crate workspace,自动 bump 必然编译不过,
+# 只会持续产出长期红灯的 PR(实测 33 个 PR 合并 0 个)。
+#
+# 注意:cargo 的 **安全更新** 不受此影响 —— 安全更新由仓库设置里的
+# `dependabot_security_updates` 独立开关控制,不在本文件的 `updates:` 数组内,
+# 出现 RustSec advisory 时仍会自动提 PR。
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
