@@ -78,6 +78,45 @@ pub fn project_data_path(workspace: &Path, parts: &[&str]) -> PathBuf {
     path
 }
 
+/// 用户级通用 agent skill 目录：`~/.agents/skills`。
+///
+/// 业界通用约定（skills CLI 的 "universal" 目标等十余个 agent 共用），
+/// **非烛夜私有数据目录**，故不走 `ZHUYE_HOME` 重定向、直接取 `$HOME`。
+/// 取不到 home 时返回 `None`，调用方跳过该目录即可（不要 panic）。
+pub fn user_agents_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".agents").join("skills"))
+}
+
+/// 工作区级通用 agent skill 目录：`<workspace>/.agents/skills`。
+///
+/// 与 [`user_agents_skills_dir`] 同约定，作用域为当前工作区；随仓库
+/// 分发（可入 VCS），供烛夜与其他 agent（Cursor / Codex 等）共享技能。
+pub fn project_agents_skills_dir(workspace: &Path) -> PathBuf {
+    workspace.join(".agents").join("skills")
+}
+
+/// 默认 skill 扫描目录清单（优先级从高到低，同名 skill 先者胜）：
+///
+/// 1. `<workspace>/.zhuye/skills` —— 烛夜工作区级；
+/// 2. `<workspace>/.agents/skills` —— 业界通用 agent 目录（跨 agent 互操作）；
+/// 3. `~/.zhuye/skills` —— 烛夜用户级（`ZHUYE_HOME` 可重定向）；
+/// 4. `~/.agents/skills` —— 业界通用 agent 目录（用户级）。
+///
+/// bootstrap（exec / m4 两处）与 GUI 列表命令都必须以此清单为唯一
+/// 来源，否则运行时 catalog 与 GUI 各看一套目录。
+pub fn default_skill_dirs(workspace: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        project_data_path(workspace, &["skills"]),
+        project_agents_skills_dir(workspace),
+        // 取不到 home 时回落相对 `.zhuye/skills`，与 data_path_or_relative 口径一致。
+        data_path_or_relative(&["skills"]),
+    ];
+    if let Some(d) = user_agents_skills_dir() {
+        dirs.push(d);
+    }
+    dirs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +179,32 @@ mod tests {
         );
     }
 
+    /// skill 目录清单:四目录固定优先级,`.zhuye` 在前、`.agents` 在后。
+    /// `default_skill_dirs` 读进程 env(data_path_or_relative 内部),
+    /// 必须持 ENV_LOCK 与改 env 的测试串行。
+    #[test]
+    fn default_skill_dirs_priority_order() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let ws = Path::new("/ws");
+        let dirs = default_skill_dirs(ws);
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/ws/.zhuye/skills"),
+                PathBuf::from("/ws/.agents/skills"),
+                data_path_or_relative(&["skills"]),
+                user_agents_skills_dir().unwrap(),
+            ],
+            "顺序即同名优先级:工作区 .zhuye > 工作区 .agents > 用户 .zhuye > 用户 .agents"
+        );
+        // 通用目录与烛夜目录同名并存的场景由调用方(扫描链)按序去重,
+        // 这里只锁清单本身。
+        assert_eq!(
+            project_agents_skills_dir(ws),
+            PathBuf::from("/ws/.agents/skills")
+        );
+    }
+
     /// 锁纪律的**结构门禁**(确定性,不靠调度采样)。
     ///
     /// 竞态回归无法用单条行为用例锁定(依赖线程调度,压测只能概率放大),
@@ -160,9 +225,10 @@ mod tests {
         let guard = concat!("let _guard = ", "ENV_LOCK.lock()");
         assert_eq!(
             paths_src.matches(guard).count(),
-            2,
-            "paths.rs 恰好两个测试读进程 env(data_path_appends_subdirectories \
-             与 relative_fallback_keeps_the_same_dir_name),都必须持 ENV_LOCK;\
+            3,
+            "paths.rs 恰好三个测试读进程 env(data_path_appends_subdirectories \
+             与 relative_fallback_keeps_the_same_dir_name 与 \
+             default_skill_dirs_priority_order),都必须持 ENV_LOCK;\
              新增读 env 测试时同步补锁并更新此断言"
         );
     }

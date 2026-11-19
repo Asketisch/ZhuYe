@@ -98,11 +98,16 @@ pub fn build_default_m4_with_prompts(
     // ── Skills ────────────────────────────────────────────────
     // 配置加载上提到此处:skills 开关与 compactor 都读同一份 config。
     let cfg = zhuye_config::load_default();
-    let ws_skills = workspace.join(".zhuye").join("skills");
-    let home_skills = user_data_dir.join("skills");
-    let skill_dirs: Vec<&std::path::Path> = vec![&ws_skills, &home_skills];
+    // 目录清单唯一来源 `default_skill_dirs`(workspace × {.zhuye,.agents} +
+    // home × 同,含业界通用 agent 目录,顺序即同名优先级)—— 与 exec
+    // bootstrap 同源,运行时 RescanExtensions 重扫同一份清单。
+    let skill_dirs_owned = zhuye_config::default_skill_dirs(workspace);
+    let skill_dir_refs: Vec<&std::path::Path> = skill_dirs_owned
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let skills_catalog = SkillsCatalog::new();
-    skills_catalog.scan(&skill_dirs);
+    skills_catalog.scan(&skill_dir_refs);
     // 内置 skill 包(15 项编码技能)**默认关闭**,`[active] bundled_skills
     // = true` 显式开启 —— 与 exec bootstrap 路径语义一致,框架层不向会话
     // 注入应用层偏好的目录死文本。
@@ -187,7 +192,7 @@ pub fn build_default_m4_with_prompts(
         file_recovery,
         subagent_registry,
         prompt_dirs,
-        skill_dirs: vec![ws_skills, home_skills],
+        skill_dirs: skill_dirs_owned,
         bundled_skills: zhuye_config::load_default().active.bundled_skills,
     }
 }

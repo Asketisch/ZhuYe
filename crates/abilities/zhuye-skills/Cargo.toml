@@ -19,6 +19,9 @@ tracing            = { workspace = true }
 globset            = { workspace = true }
 # v1.11 桌面#1:Skill 市场安装(GitHub contents API 拉取 SKILL.md)。
 reqwest            = { workspace = true }
+# skills.sh 生态安装:GitHub tarball 流式解包(多文件 skill 目录提取)。
+tar                = { workspace = true }
+flate2             = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

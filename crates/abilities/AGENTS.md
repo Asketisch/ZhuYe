@@ -15,7 +15,7 @@
 | `zhuye-tools` | `Tool` trait、内置工具注册表、工具执行队列 | [zhuye-tools/](zhuye-tools/AGENTS.md) |
 | `zhuye-hooks` | `HookEngine`、hook 事件与决策协议、shell hook | [zhuye-hooks/](zhuye-hooks/AGENTS.md) |
 | `zhuye-bm25` | BM25 相关性排序内核 | 并入本篇 |
-| `zhuye-skills` | SKILL.md 扫描、加载与技能激活 | 并入本篇 |
+| `zhuye-skills` | SKILL.md 扫描、加载与技能激活;skill 市场安装(GitHub 单仓 + skills.sh 目录生态 tarball 整目录)与 skills.sh 目录索引/本地搜索 | 并入本篇 |
 | `zhuye-memory` | 三 scope 持久记忆与检索 | 并入本篇 |
 | `zhuye-agent-def` | Markdown + frontmatter 的 agent 定义解析 | 并入本篇 |
 | `zhuye-prompt` | 提示词模板装配、provider 提示词资源、三态方案选择（default / auto / manual）与上游来源维护 | 并入本篇 |

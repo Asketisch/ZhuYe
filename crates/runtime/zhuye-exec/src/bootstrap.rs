@@ -167,14 +167,16 @@ pub(crate) fn bootstrap_m4(
     let active_def = apply_active_tool_filter(active_def, cfg);
     let active_def = Arc::new(active_def);
 
-    // Skills:扫描 workspace + home skill 目录。
-    let ws_skills = workspace.join(".zhuye").join("skills");
-    let home_skills = user_data_dir.join("skills");
-    let skill_dirs: Vec<&std::path::Path> = vec![&ws_skills, &home_skills];
+    // Skills:扫描默认目录清单(workspace × {.zhuye,.agents} + home × 同)
+    // —— 唯一来源 `zhuye_config::default_skill_dirs`,顺序即同名优先级;
+    // `.agents/skills` 为业界通用 agent 目录(跨 agent 互操作)。
+    let skill_dirs_owned = zhuye_config::default_skill_dirs(workspace);
+    let skill_dirs: Vec<&std::path::Path> = skill_dirs_owned
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let skills_catalog = SkillsCatalog::new();
     skills_catalog.scan(&skill_dirs);
-    // owned 目录序进 M4Deps:运行时 RescanExtensions 与 bootstrap 同源
-    // (scan 结束后 move,免 clone)。
     // 内置 skill 包(15 项编码技能,编译期嵌入)**默认关闭**:框架层不向
     // 会话注入应用层偏好的目录死文本,`[active] bundled_skills = true` 显式
     // 开启。同名 skill 以文件目录扫描结果优先(`merge_bundled` 内部
@@ -183,9 +185,6 @@ pub(crate) fn bootstrap_m4(
         zhuye_skills::merge_bundled(&skills_catalog);
     }
     let skills_catalog = Arc::new(skills_catalog);
-    // owned 目录序进 M4Deps:运行时 RescanExtensions 与 bootstrap 同源
-    // (scan 结束后 move,免 clone)。
-    let skill_dirs_owned = vec![ws_skills, home_skills];
 
     // 注册 `load_skill` 工具。
     // v1.3:走 `register_runtime_tool`,触发 Runtime 源的 `Prompt` 安全
