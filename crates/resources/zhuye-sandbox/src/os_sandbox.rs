@@ -223,16 +223,16 @@ impl OsSandbox {
     /// 网络边界**按 backend 如实报告**:Landlock 的 `handled_access_net`
     /// 恒为 0(ABI v1 无网络限制原语,需 v4+ 且本实现未启用),所以
     /// Linux 上"网络:拒绝"是虚假宣传 —— 此前无条件按 `allow_network`
-    /// 打印,会让运维误以为出站被拦住。Seatbelt 才会真发
-    /// `(deny network*)`。
+    /// 打印,会让运维误以为出站被拦住。Seatbelt 关网时仍放行 localhost
+    /// 与 Unix socket,报告为「仅本机」。
     pub fn status_line(&self) -> String {
         let net = match self.status() {
-            // Seatbelt 真发 (deny network*),如实反映 allow_network。
+            // Seatbelt 真拦出站(默认放行 localhost / Unix socket)。
             OsSandboxStatus::Seatbelt => {
                 if self.allow_network {
                     "网络:允许".to_string()
                 } else {
-                    "网络:拒绝".to_string()
+                    "网络:仅本机(localhost+Unix socket)".to_string()
                 }
             }
             // Landlock:handled_access_net = 0,网络不受本沙箱约束。
@@ -241,7 +241,7 @@ impl OsSandbox {
                 if self.allow_network {
                     "网络:允许".to_string()
                 } else {
-                    "网络:拒绝".to_string()
+                    "网络:仅本机(localhost+Unix socket)".to_string()
                 }
             }
         };
@@ -353,11 +353,15 @@ impl OsSandbox {
     /// 策略:
     /// - `deny` 为默认(显式 allow 才放行)。
     /// - 允许写:workspace + `writable_dirs` + `$TMPDIR` + `/private/var/folders`
-    ///   (macOS 真实 tempdir)。
+    ///   (macOS 真实 tempdir);**顶层 `.git` / `.zhuye` 保持只读**(改 hook
+    ///   与配置是常见提权面,deny 规则置于末尾优先)。
     /// - 允许读:全盘(`(allow file-read*)`)—— 编译 / 分析常需读系统头与
     ///   依赖,限制读会大面积破坏可用性。写受限是核心安全边界。
-    /// - 允许进程:posix_spawn / fork / exec(子进程继承沙箱)。
-    /// - 网络:`allow_network` 控制(`(allow network*)` / deny)。
+    /// - 允许进程:`(allow process-exec)` 不限目录(子进程继承沙箱;
+    ///   Xcode 的 git / 工作区构建产物不在四个固定 bin 目录里)。
+    /// - 网络:`allow_network` 控制。开启 = `(allow network*)`;关闭 =
+    ///   拒出站,但放行 localhost(bind/inbound/outbound)与 Unix socket
+    ///   —— 本地 IPC(数据库 / docker / LSP server)是常见合法依赖。
     /// - **显式 deny** `(deny file-write*)` 到系统敏感路径作为兜底,即使
     ///   上面 allow 有遗漏也挡 `rm -rf /`。
     #[cfg(target_os = "macos")]
@@ -373,6 +377,8 @@ impl OsSandbox {
         for d in &self.writable_dirs {
             allow_write.push(d.to_string_lossy().into_owned());
         }
+        // 元数据保护根(workspace + 额外目录的顶层 .git / .zhuye)。
+        let meta_roots: Vec<String> = allow_write.clone();
         // 临时目录(macOS tempdir 通常在 /private/var/folders 或 /tmp)。
         allow_write.push("/private/var/folders".to_string());
         allow_write.push("/tmp".to_string());
@@ -391,12 +397,20 @@ impl OsSandbox {
         let net_rule = if self.allow_network {
             "(allow network*)".to_string()
         } else {
-            "(deny network*)".to_string()
+            // 拒出站,放行本机回环与 Unix socket(本地 IPC)。
+            // 其余网络操作由顶部 (deny default) 兜底拒绝。
+            "(allow network-bind (local ip \"*:*\"))
+            (allow network-inbound (local ip \"localhost:*\"))
+            (allow network-outbound (remote ip \"localhost:*\"))
+            (allow system-socket (socket-domain AF_UNIX))
+            (allow network-bind (local unix-socket))
+            (allow network-outbound (remote unix-socket))"
+                .to_string()
         };
         let net_label = if self.allow_network {
             "允许"
         } else {
-            "拒绝"
+            "仅本机(localhost + Unix socket)"
         };
 
         // subpath 按字面路径匹配,不展开星号;必须为真实用户目录生成规则。
@@ -442,6 +456,21 @@ impl OsSandbox {
             .collect::<Vec<_>>()
             .join("\n            ");
 
+        // 元数据只读:workspace 与额外目录的顶层 `.git` / `.zhuye`。
+        // deny 置于 allow 之后(Seatbelt 后匹配优先),嵌套 `.git`
+        // (submodule)由文件工具层的分量检查兜底。
+        let meta_readonly = meta_roots
+            .iter()
+            .flat_map(|root| [format!("{root}/.git"), format!("{root}/.zhuye")])
+            .map(|path| {
+                format!(
+                    "(deny file-write* (subpath {}))",
+                    serde_json::to_string(&path).expect("路径字符串可序列化")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n            ");
+
         format!(
             "(version 1)
             (deny default)
@@ -458,15 +487,15 @@ impl OsSandbox {
             (allow file-write* (path \"/dev/null\"))
             ;; 网络:{net_label}
             {net_rule}
-            ;; 进程:允许 spawn/fork/exec(子进程继承沙箱)
+            ;; 进程:允许 spawn/fork/exec,不限目录(子进程继承本沙箱;
+            ;; Xcode 的 git / 工作区构建产物不在固定 bin 目录里)。
             (allow process-fork)
-            (allow process-exec (subpath \"/usr/bin\"))
-            (allow process-exec (subpath \"/bin\"))
-            (allow process-exec (subpath \"/usr/local/bin\"))
-            (allow process-exec (subpath \"/opt/homebrew/bin\"))
+            (allow process-exec)
             ;; 信号 / 系统调用基础
             (allow sysctl-read)
             (allow process-info* (target self))
+            ;; 元数据只读:顶层 .git / .zhuye(改 hook 与配置是提权面)。
+            {meta_readonly}
             ;; 显式兜底:系统关键目录写一律拒(防 rm -rf / 即便上面有遗漏)
             (deny file-write* (subpath \"/usr\"))
             (deny file-write* (subpath \"/bin\"))
@@ -1107,7 +1136,7 @@ mod tests {
             "应如实标注网络不受约束: {line}"
         );
 
-        // Seatbelt 真发 (deny network*),allow_network = false 时应称拒绝。
+        // Seatbelt 真拦出站,allow_network = false 时称「仅本机」。
         let sb = OsSandbox {
             enabled: true,
             writable_dirs: Vec::new(),
@@ -1115,7 +1144,7 @@ mod tests {
             strict: true,
             backend: OsSandboxStatus::Seatbelt,
         };
-        assert!(sb.status_line().contains("网络:拒绝"));
+        assert!(sb.status_line().contains("网络:仅本机"));
 
         // Seatbelt + allow_network = true → 允许。
         let sb_net = OsSandbox {
@@ -1223,8 +1252,28 @@ mod tests {
         assert!(prof.contains("(deny file-write* (subpath \"/System\"))"));
         // workspace 必须在 allow file-write 列表。
         assert!(prof.contains("/Users/x/project"));
-        // 网络默认拒。
-        assert!(prof.contains("(deny network*)"));
+        // 网络默认只放本机:localhost / Unix socket 有 allow,无整段
+        // allow,也无整段 deny(其余网络由 deny default 兜底)。
+        assert!(prof.contains("(allow network-outbound (remote ip \"localhost:*\"))"));
+        assert!(prof.contains("(allow network-outbound (remote unix-socket))"));
+        assert!(!prof.contains("(allow network*)"));
+        assert!(!prof.contains("(deny network*)"));
+        // 元数据只读:workspace 顶层 .git / .zhuye 拒写。
+        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/project/.git\"))"));
+        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/project/.zhuye\"))"));
+        // 进程执行不限目录(子进程继承沙箱)。
+        assert!(prof.contains("(allow process-exec)\n"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_profile_full_network_and_extra_dirs() {
+        let mut s = OsSandbox::enabled(vec![PathBuf::from("/Users/x/extra")]);
+        s.allow_network = true;
+        let prof = s.seatbelt_profile(Path::new("/Users/x/p"));
+        assert!(prof.contains("(allow network*)"));
+        // 额外可写目录的顶层 .git 同样拒写。
+        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/extra/.git\"))"));
     }
 
     #[cfg(target_os = "macos")]

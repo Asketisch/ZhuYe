@@ -367,7 +367,11 @@ impl Tool for BashTool {
                 ),
                 None => cmd.clone(),
             };
-            let task_id = spawner.spawn_bash(&bg_cmd, &ctx.workspace_path(), ctx.os_sandbox)?;
+            let task_id = spawner.spawn_bash(
+                &bg_cmd,
+                &ctx.workspace_path(),
+                &crate::tool::BackgroundBashSandbox::from_context(&ctx),
+            )?;
             return Ok(ToolOutput {
                 content: vec![zhuye_protocol::ContentBlock::text(format!(
                     "[background task {task_id} started] 命令已在后台执行;完成结果将在下一个回合边界自动注入,也可用 background_status 查询。"

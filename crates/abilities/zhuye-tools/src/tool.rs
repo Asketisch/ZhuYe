@@ -256,6 +256,31 @@ pub struct BackgroundTaskInfo {
     pub result: Option<String>,
 }
 
+/// 后台 bash 的沙箱上下文 —— 前台 BashTool 消费的同源配置切片。
+///
+/// 此前 `spawn_bash` 只拿到 `os_sandbox` 布尔,可写目录与网络开关
+/// 传不进来:后台 bash 恒为「env 派生目录 + 禁网」,与前台不一致。
+#[derive(Debug, Clone, Default)]
+pub struct BackgroundBashSandbox {
+    /// 每 turn 的 OS 沙箱覆盖(`ToolContext.os_sandbox`)。
+    pub os_sandbox: Option<bool>,
+    /// 额外可写目录(`[sandbox].writable_dirs` + 工作区附加目录)。
+    pub writable_dirs: Vec<PathBuf>,
+    /// 出站网络开关(`[sandbox].allow_network`);`None` = 跟随 env。
+    pub network: Option<bool>,
+}
+
+impl BackgroundBashSandbox {
+    /// 从工具上下文切出后台 bash 所需的沙箱配置。
+    pub fn from_context(ctx: &ToolContext) -> Self {
+        Self {
+            os_sandbox: ctx.os_sandbox,
+            writable_dirs: ctx.os_sandbox_writable.clone(),
+            network: ctx.os_sandbox_network,
+        }
+    }
+}
+
 /// v1.5 R2:后台任务生成器 —— 由宿主(core)实现,工具侧只发请求。
 /// 实现方负责:进程生命周期、输出捕获(限量)、结果投递(turn 边界
 /// 注入 / 状态查询)。会话级取消令牌由实现方持有(后台任务存活期
@@ -263,15 +288,16 @@ pub struct BackgroundTaskInfo {
 pub trait TaskSpawner: Send + Sync + std::fmt::Debug {
     /// 后台执行一条 shell 命令,立即返回任务 id。
     ///
-    /// `os_sandbox` 为每 turn 的 OS 沙箱覆盖(`ToolContext.os_sandbox`):
-    /// `None` = 跟随 env,`Some(on)` = 强制开/关。实现方必须与前台
-    /// BashTool 同等对待 —— 沙箱启用且严格时 fail-closed,否则后台路径
-    /// 会成为绕过 OS 沙箱的逃逸口(review 修复)。
+    /// `sandbox` 为每 turn 的 OS 沙箱覆盖与配置切片
+    /// (`BackgroundBashSandbox::from_context`)。实现方必须与前台
+    /// BashTool 同等对待 —— 沙箱启用且严格时 fail-closed,可写目录与
+    /// 网络与前台同源,否则后台路径会成为绕过 OS 沙箱的逃逸口
+    /// (review 修复)。
     fn spawn_bash(
         &self,
         cmd: &str,
         cwd: &std::path::Path,
-        os_sandbox: Option<bool>,
+        sandbox: &BackgroundBashSandbox,
     ) -> Result<String, ToolError>;
 
     /// 全部任务快照。

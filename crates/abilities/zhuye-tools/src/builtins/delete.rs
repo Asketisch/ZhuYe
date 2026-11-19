@@ -4,7 +4,7 @@
 //!
 //! - **权限模型**:`required_permission = PermissionMode::Prompt` —— 删除
 //!   不可逆,由 `ToolExecutionQueue` 触发 `ApprovalGate` 模态框让用户确认。
-//! - **沙箱**:`resolve_sandbox_path` 先 canonicalize + 校验 in-workspace,
+//! - **沙箱**:`resolve_writable_path` 校验写允许根并保护元数据,
 //!   转义路径返回 `ToolError::PathEscape`,与 read/write/edit 共用同一基线。
 //! - **不加入 `WRITE_TOOLS` 白名单**:`ReadBeforeEditHook` 不拦截
 //!   `delete_file` —— 删除不可逆,**不依赖文件内容知识**(`Prompt` 权限门
@@ -17,7 +17,7 @@
 //!
 //! ## TOCTOU
 //!
-//! `metadata` 预检与 `resolve_sandbox_path` 之间,以及后者与 `remove_file`
+//! `metadata` 预检与写路径解析之间,以及后者与 `remove_file`
 //! 之间存在 TOCTOU 窗口。对单用户 workspace 可接受 —— 唯一竞争者是 agent
 //! 自身(并发 write/edit 同一路径),已被 `Prompt` 权限门 + `cancel` token
 //! 兜底。多租户文件系统隔离不在 v1 假设内。
@@ -29,7 +29,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::field;
 
-use crate::sandbox::resolve_sandbox_path;
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 use zhuye_protocol::PermissionMode;
 
@@ -108,7 +107,7 @@ impl Tool for DeleteTool {
         // 用未 canonicalize 的路径做 `metadata` —— `metadata` 跟随 symlink
         // 并解析 `..`,足以区分"目录 vs 文件 vs 不存在"。这里没有沙箱
         // 风险(我们只读 metadata,不暴露内容),真正的 in-workspace 校验
-        // 由下面的 `resolve_sandbox_path` 兜底。
+        // 由下面的写路径解析兜底。
         match fs::metadata(&in_workspace) {
             Ok(m) if m.is_dir() => {
                 return Err(ToolError::InvalidArgs {
@@ -130,9 +129,14 @@ impl Tool for DeleteTool {
             _ => {} // 文件存在且非目录 / 其他 IO 错误留给后面 `remove_file` 兜底
         }
 
-        // ── 沙箱校验:canonicalize + in-workspace ──────────────────────
-        // 此处失败一律 `Io`(workspace 不可达)或 `PathEscape`(转义)。
-        let final_path = resolve_sandbox_path(&ctx.workspace_path(), raw_path)?;
+        // ── 沙箱校验:写允许根 + 元数据保护 ──────────────────────────
+        // 此处失败为 `Io`(workspace 不可达)、`PathEscape`(转义)或
+        // `PermissionDenied`(.git 等元数据)。
+        let final_path = crate::sandbox::resolve_writable_path(
+            &ctx.workspace_path(),
+            &ctx.os_sandbox_writable,
+            raw_path,
+        )?;
         span.record("path", final_path.to_string_lossy().as_ref());
 
         // ── 删除 ──────────────────────────────────────────────────────

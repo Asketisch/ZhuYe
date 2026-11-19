@@ -74,7 +74,7 @@ impl Tool for GrepTool {
         // 会遍历整个文件系统并把匹配行内容(含绝对路径)吐给模型。
         // 现在与 read / write / edit 一样过沙箱;输出也改成相对路径。
         let root: PathBuf = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => crate::sandbox::resolve_sandbox_dir(&ctx.workspace_path(), Path::new(p))?,
+            Some(p) => crate::sandbox::resolve_readable_dir(&ctx.workspace_path(), Path::new(p))?,
             None => ctx.workspace_path(),
         };
         let use_bm25 = args
@@ -404,41 +404,56 @@ mod tests {
 
     // ── 0.6 回归:path 参数沙箱化 ─────────────────────────────────
 
-    /// 回归(0.6):`path` 指向 workspace 外必须被拒。
+    /// 回归(0.6 → workspace-write):`path` 搜索根解析经过沙箱。
     /// 修复前 grep 的 `path` 直接喂给 `WalkBuilder::new(root)`,
-    /// `{"pattern": "x", "path": "/"}` 会遍历整个文件系统并把匹配行
-    /// 内容(含绝对路径)吐给模型 —— `read` 虽然还会拒读,但内容已经在
-    /// 工具输出里泄露了。
+    /// `{"pattern": "x", "path": "/"}` 会不加区分地遍历整个文件系统;
+    /// 现在全盘可读但凭证目录拒绝。
     #[tokio::test]
-    async fn rejects_path_outside_workspace() {
+    async fn searches_path_outside_workspace_but_denies_credentials() {
+        // workspace-write 口径:搜索根不再限 workspace(全盘可读),
+        // 但凭证目录拒绝。
         let ws = tmp_workspace();
         let outside = ws.parent().unwrap().join("zhuye_grep_outside_probe");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), "SUPER_SECRET_TOKEN\n").unwrap();
         let t = GrepTool;
-        let err = t
+        let out = t
             .execute(
                 make_ctx(&ws),
                 serde_json::json!({"pattern": "SECRET", "path": outside.to_string_lossy()}),
             )
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, ToolError::PathEscape { .. }),
-            "workspace 外的 path 必须被拒,得到: {err:?}"
-        );
-        // 相对穿越同样要拒。
-        let err2 = t
+            .unwrap();
+        assert!(!out.is_error, "workspace 外的搜索根应放行: {out:?}");
+        // 相对穿越同样放行(解析后仍是可读路径)。
+        let out2 = t
             .execute(
                 make_ctx(&ws),
                 serde_json::json!({"pattern": "SECRET", "path": "../zhuye_grep_outside_probe"}),
             )
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err2, ToolError::PathEscape { .. }),
-            "相对穿越必须被拒,得到: {err2:?}"
-        );
+            .unwrap();
+        assert!(!out2.is_error);
+
+        // 凭证目录:PermissionDenied。
+        let ssh_dir = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .ok()
+            .filter(|home| home.join(".ssh").is_dir())
+            .map(|home| home.join(".ssh"));
+        if let Some(ssh_dir) = ssh_dir {
+            let err = t
+                .execute(
+                    make_ctx(&ws),
+                    serde_json::json!({"pattern": "ANY", "path": ssh_dir.to_string_lossy()}),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ToolError::PermissionDenied { .. }),
+                "凭证目录必须拒绝: {err:?}"
+            );
+        }
     }
 
     /// 回归(0.6):workspace 内的子目录 path 仍须放行。

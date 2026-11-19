@@ -255,7 +255,7 @@ impl AstTool {
             CompiledPattern::Text(needle) => {
                 // text: 走文件系统,可省 path(默认 workspace),include/max_results 可选。
                 let root = match args.get("path").and_then(|v| v.as_str()) {
-                    Some(p) => zhuye_tools::sandbox::resolve_sandbox_path(
+                    Some(p) => zhuye_tools::sandbox::resolve_readable_path(
                         &ctx.workspace_path(),
                         Path::new(p),
                     )?,
@@ -280,7 +280,7 @@ impl AstTool {
                             "ast search: kind:/regex: 模式必须指定 'path'(单文件);pattern = {pattern_raw:?}"
                         ),
                     })?;
-                let abs = zhuye_tools::sandbox::resolve_sandbox_path(
+                let abs = zhuye_tools::sandbox::resolve_readable_path(
                     &ctx.workspace_path(),
                     Path::new(path_str),
                 )?;
@@ -404,8 +404,11 @@ impl AstTool {
         }
 
         // 路径 sandbox + 读源 + parse + apply_replace + 写盘。
-        let abs =
-            zhuye_tools::sandbox::resolve_sandbox_path(&ctx.workspace_path(), Path::new(path_str))?;
+        let abs = zhuye_tools::sandbox::resolve_writable_path(
+            &ctx.workspace_path(),
+            &ctx.os_sandbox_writable,
+            Path::new(path_str),
+        )?;
         let source =
             fs::read_to_string(&abs).map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
         let lang = self
@@ -509,8 +512,11 @@ impl AstTool {
             }
         }
 
-        let abs =
-            zhuye_tools::sandbox::resolve_sandbox_path(&ctx.workspace_path(), Path::new(path_str))?;
+        let abs = zhuye_tools::sandbox::resolve_writable_path(
+            &ctx.workspace_path(),
+            &ctx.os_sandbox_writable,
+            Path::new(path_str),
+        )?;
         let source =
             fs::read_to_string(&abs).map_err(|e| ToolError::Io(format!("read {path_str}: {e}")))?;
         let (new_source, unified_diff, count) =

@@ -50,7 +50,7 @@ impl Tool for GlobTool {
         let root: PathBuf = match args.get("path").and_then(|v| v.as_str()) {
             // 0.6:`path` 此前未做 workspace 包含校验,直接喂给
             // `WalkBuilder::new(root)` —— 与 grep 同样的信息泄露面。
-            Some(p) => crate::sandbox::resolve_sandbox_dir(&ctx.workspace_path(), Path::new(p))?,
+            Some(p) => crate::sandbox::resolve_readable_dir(&ctx.workspace_path(), Path::new(p))?,
             None => ctx.workspace_path(),
         };
 
@@ -187,39 +187,33 @@ mod tests {
 
     // ── 0.6 回归:path 参数沙箱化 ─────────────────────────────────
 
-    /// 回归(0.6):`path` 指向 workspace 外必须被拒。
-    /// 修复前 glob 的 `path` 直接喂给 `WalkBuilder::new(root)`,
-    /// 遍历整个文件系统并把绝对路径吐给模型。
+    /// 回归(0.6 → workspace-write):`path` 搜索根解析经过沙箱。
+    /// 修复前 glob 的 `path` 直接遍历整个文件系统;现在全盘可读,
+    /// 凭证目录拒绝。
     #[tokio::test]
-    async fn rejects_path_outside_workspace() {
+    async fn searches_path_outside_workspace() {
         let ws = tmp_workspace();
         let outside = ws.parent().unwrap().join("zhuye_glob_outside_probe");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.rs"), "").unwrap();
         let t = GlobTool;
-        let err = t
+        let out = t
             .execute(
                 make_ctx(&ws),
                 serde_json::json!({"pattern": "*.rs", "path": outside.to_string_lossy()}),
             )
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, ToolError::PathEscape { .. }),
-            "workspace 外的 path 必须被拒,得到: {err:?}"
-        );
-        // 相对穿越同样要拒。
-        let err2 = t
+            .unwrap();
+        assert!(!out.is_error, "workspace 外的搜索根应放行: {out:?}");
+        // 相对穿越解析后仍是可读路径,同样放行。
+        let out2 = t
             .execute(
                 make_ctx(&ws),
                 serde_json::json!({"pattern": "*.rs", "path": "../zhuye_glob_outside_probe"}),
             )
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err2, ToolError::PathEscape { .. }),
-            "相对穿越必须被拒,得到: {err2:?}"
-        );
+            .unwrap();
+        assert!(!out2.is_error);
     }
 
     /// 回归(0.6):不存在的 path 应给 InvalidArgs 而非裸 Io 错误。

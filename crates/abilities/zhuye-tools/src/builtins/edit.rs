@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use similar::TextDiff;
 
-use crate::sandbox::{PinnedWrite, resolve_sandbox_path};
+use crate::sandbox::PinnedWrite;
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 use zhuye_protocol::PermissionMode;
 
@@ -70,7 +70,13 @@ impl Tool for EditTool {
             })?;
 
         let path = std::path::Path::new(path_str);
-        let abs = resolve_sandbox_path(&ctx.workspace_path(), path)?;
+        // 写路径:允许根 = workspace ∪ 附加可写目录 ∪ 临时目录;.git 等
+        // 元数据拒绝。
+        let abs = crate::sandbox::resolve_writable_path(
+            &ctx.workspace_path(),
+            &ctx.os_sandbox_writable,
+            path,
+        )?;
         // 固定父目录后读取与替换，防止检查后替换目录项或符号链接。
         let target = PinnedWrite::prepare(&abs)
             .map_err(|e| ToolError::Io(format!("prepare {path_str}: {e}")))?;

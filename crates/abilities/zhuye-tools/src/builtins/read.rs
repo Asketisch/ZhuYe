@@ -7,7 +7,7 @@ use std::io::{Read, Seek, SeekFrom};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::sandbox::{open_readonly, resolve_sandbox_path};
+use crate::sandbox::{open_readonly, resolve_readable_path};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// 二进制检测嗅探字节上限。
@@ -98,7 +98,7 @@ impl Tool for ReadTool {
             .map(|n| (n.min(MAX_LINE_INDEX as u64)) as usize);
 
         let path = std::path::Path::new(path_str);
-        let abs = resolve_sandbox_path(&ctx.workspace_path(), path)?;
+        let abs = resolve_readable_path(&ctx.workspace_path(), path)?;
 
         // 二进制嗅探。
         let mut sniff = vec![0u8; BINARY_SNIFF_BYTES];
@@ -263,18 +263,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_path_outside_workspace() {
+    async fn reads_path_outside_workspace() {
+        // workspace-write 口径:读全盘放行(编译/分析需读系统文件),
+        // 只拒凭证路径。
         let ws = tmp_workspace();
         let t = ReadTool;
-        let err = t
-            .execute(make_ctx(&ws), serde_json::json!({"path": "/etc/passwd"}))
+        let out = t
+            .execute(make_ctx(&ws), serde_json::json!({"path": "/etc/hosts"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+    }
+
+    #[tokio::test]
+    async fn rejects_credential_path() {
+        let ws = tmp_workspace();
+        let ssh_dir = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .ok()
+            .filter(|home| home.join(".ssh").is_dir());
+        let Some(ssh_dir) = ssh_dir else {
+            // 无 ~/.ssh 的环境跳过(极少见)。
+            return;
+        };
+        let err = ReadTool
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path": ssh_dir.join(".ssh").to_string_lossy()}),
+            )
             .await
             .unwrap_err();
-        // /etc/passwd 在 macOS 上存在,但位于临时目录之外(应被沙箱拒绝)。
-        assert!(matches!(
-            err,
-            ToolError::PathEscape { .. } | ToolError::Io(_)
-        ));
+        assert!(
+            matches!(err, ToolError::PermissionDenied { .. }),
+            "凭证路径必须拒绝: {err:?}"
+        );
     }
 
     #[tokio::test]
