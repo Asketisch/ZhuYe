@@ -4,7 +4,9 @@
 //!   系统头与依赖,限制读会大面积破坏可用性;仅拒绝用户主目录下的
 //!   凭证路径(SSH 密钥 / 钥匙串 / 云凭证等,与 OS 沙箱同口径)。
 //! - **写 / 改 / 删**:允许根 = workspace ∪ 额外可写目录(`writable_dirs`)
-//!   ∪ `/tmp` ∪ `$TMPDIR`;根内的 `.git` / `.zhuye` / `.agents` / `.aws`
+//!   ∪ `/tmp` ∪ `$TMPDIR`;根内的 `.git` / `.agents` / `.aws` 任意层,
+//!   以及 `.zhuye` 之下的提权面子集(config / sessions / cron 等,
+//!   见 [`PROTECTED_ZHUYE_CHILDREN`] denylist)
 //!   元数据目录保持只读(读不受影响)—— 改 hook / 配置是常见提权面。
 //! - [`resolve_sandbox_path`](旧的工作区墙)保留给 LSP 等仍按工作区
 //!   收敛的集成。
@@ -42,9 +44,29 @@ const SENSITIVE_READ_SUFFIXES: [&str; 12] = [
 ];
 
 /// 写保护的工作区元数据分量:出现在路径任意一层即拒绝写 / 改 / 删。
-/// `.git`(含 hooks)、`.zhuye`(会话与计划)、`.agents`、`.aws` 都是
-/// 「改了就能借宿主身份提权」的位置;读仍允许,`git status` 不受影响。
-const PROTECTED_WRITE_COMPONENTS: [&str; 4] = [".git", ".zhuye", ".agents", ".aws"];
+/// `.git`(含 hooks)、`.agents`、`.aws` 都是「改了就能借宿主身份提权」
+/// 的位置;`.zhuye` 单独走 [`PROTECTED_ZHUYE_CHILDREN`] 的 denylist。
+/// 读仍允许,`git status` 不受影响。
+const PROTECTED_WRITE_COMPONENTS: [&str; 3] = [".git", ".agents", ".aws"];
+
+/// `.zhuye` 之下的写保护子项(denylist):会话历史 / 配置 / 权限规则 /
+/// 计划任务等「改了就能借宿主身份提权或污染未来上下文」的位置。
+/// 反例(放行):`spill`(v1.11 大输出落盘)、`plan`(PlanWrite 草稿)、
+/// `worktrees`(side-channel 工作树)、`uploads`(附件暂存)等引擎托管
+/// 的工作数据 —— 枚举式豁免已被 CI 证伪(A23 / plan / spill 三连误伤),
+/// 保护面收敛到真正的提权清单。新引擎工作目录默认可写;新提权面进本表。
+const PROTECTED_ZHUYE_CHILDREN: [&str; 10] = [
+    "config.toml",
+    "permissions.toml",
+    "remote-hosts.json",
+    "sessions",
+    "cron",
+    "prompt_history.jsonl",
+    "workspaces.json",
+    "quota-state.json",
+    "session-notes",
+    "autopilot",
+];
 
 /// 候选用户主目录:当前 `$HOME` + (macOS) `/Users` 下的真实用户目录。
 /// 与 `seatbelt_profile` 的 homes 枚举同口径。
@@ -179,9 +201,9 @@ fn writable_roots(workspace: &Path, extra_writable: &[PathBuf]) -> Vec<PathBuf> 
 /// 写 / 改 / 删路径解析。
 ///
 /// 最终路径(含尚不存在的新建文件)必须落在 [`writable_roots`] 之内,
-/// 否则 `PathEscape`;路径任意一层是 `.git` / `.zhuye` / `.agents` /
-/// `.aws` 分量则拒绝(读不受影响)。文件不存在不报错,由调用方的
-/// 打开 / 创建步骤自行处理。
+/// 否则 `PathEscape`;路径任意一层是 `.git` / `.agents` / `.aws` 分量,
+/// 或落在 `.zhuye` 的提权子项([`PROTECTED_ZHUYE_CHILDREN`])之下则拒绝
+/// (读不受影响)。文件不存在不报错,由调用方的打开 / 创建步骤自行处理。
 pub fn resolve_writable_path(
     workspace: &Path,
     extra_writable: &[PathBuf],
@@ -202,13 +224,7 @@ pub fn resolve_writable_path(
             path: path.to_path_buf(),
         });
     }
-    if let Some(component) = final_path.components().find_map(|c| {
-        let name = c.as_os_str().to_string_lossy().into_owned();
-        PROTECTED_WRITE_COMPONENTS
-            .iter()
-            .any(|p| *p == name)
-            .then_some(name)
-    }) {
+    if let Some(component) = find_protected_component(&final_path) {
         warn!(
             path = %final_path.display(),
             "write: 工作区元数据目录拒绝写入"
@@ -221,6 +237,39 @@ pub fn resolve_writable_path(
         });
     }
     Ok(final_path)
+}
+
+/// 找出路径中受写保护的元数据分量。
+///
+/// `.git` / `.agents` / `.aws` 出现在任意一层即拒绝;`.zhuye` 例外 ——
+/// 其下的 `worktrees` 子树(side-channel / worktree 任务的工作目录)与
+/// `plan` 子树(PlanWrite 草稿)是引擎托管的合法写入目标,不是「改了
+/// 就能借宿主身份提权」的元数据,放行。
+fn find_protected_component(final_path: &Path) -> Option<String> {
+    let names: Vec<String> = final_path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    for (idx, name) in names.iter().enumerate() {
+        if name != ".zhuye" {
+            // `.git` / `.agents` / `.aws` 任意一层出现即拒绝(提权面)。
+            if PROTECTED_WRITE_COMPONENTS.contains(&name.as_str()) {
+                return Some(name.clone());
+            }
+            continue;
+        }
+        // `.zhuye` 反转为 denylist:只保护明确的提权面(配置 / 权限 /
+        // 会话历史 / 计划任务等),其余子树(spill / plan / worktrees /
+        // uploads 等引擎托管的工作数据)放行。枚举式豁免(worktrees /
+        // plan)已被证伪 —— spill(v1.11)是第三个被误伤的引擎写入点,
+        // 与其追着新工作目录打补丁,不如把保护面收敛到真正的提权清单。
+        if let Some(next) = names.get(idx + 1) {
+            if PROTECTED_ZHUYE_CHILDREN.contains(&next.as_str()) {
+                return Some(format!("{name}/{next}"));
+            }
+        }
+    }
+    None
 }
 
 /// 把 `path` 解析到 `workspace` 下,确保结果位于 workspace 内。
@@ -454,6 +503,47 @@ mod tests {
         ));
         // .gitignore 不受影响(整名比较,不是前缀)。
         assert!(resolve_writable_path(&inner, &[], Path::new(".gitignore")).is_ok());
+        teardown(&inner);
+    }
+
+    /// v1.3 回归:`.zhuye` 元数据默认拒写,但其下的 `worktrees`(side-channel
+    /// 工作树)与 `plan`(PlanWrite 草稿)是引擎托管的工作数据,必须放行 ——
+    /// 否则 A23 side-channel 与 plan 草稿落盘全被沙箱挡掉(CI 实证)。
+    /// `sessions` 等其余子树保持拒绝。
+    #[test]
+    fn zhuye_worktrees_and_plan_writable_but_sessions_denied() {
+        let inner = setup();
+
+        // worktrees / plan:放行(新建文件路径,无需真实存在)。
+        assert!(
+            resolve_writable_path(
+                &inner,
+                &[],
+                Path::new(".zhuye/worktrees/side/side-output.txt")
+            )
+            .is_ok()
+        );
+        assert!(resolve_writable_path(&inner, &[], Path::new(".zhuye/plan/draft.md")).is_ok());
+
+        // sessions / 根下散文件:拒绝(会话与配置是提权面)。
+        assert!(matches!(
+            resolve_writable_path(&inner, &[], Path::new(".zhuye/sessions/2026/x.jsonl")),
+            Err(ToolError::PermissionDenied { .. })
+        ));
+        assert!(matches!(
+            resolve_writable_path(&inner, &[], Path::new(".zhuye/config.toml")),
+            Err(ToolError::PermissionDenied { .. })
+        ));
+
+        // 深层 worktree(多层嵌套)同样放行。
+        assert!(
+            resolve_writable_path(
+                &inner,
+                &[],
+                Path::new(".zhuye/worktrees/feature-a/deep/nested/file.txt")
+            )
+            .is_ok()
+        );
         teardown(&inner);
     }
 

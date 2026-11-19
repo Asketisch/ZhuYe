@@ -471,6 +471,52 @@ impl OsSandbox {
             .collect::<Vec<_>>()
             .join("\n            ");
 
+        // `.zhuye` 三明治:deny 整树 → allow 整树 → deny 提权子项。
+        // `.zhuye` 下大部分子树是引擎托管的工作数据(spill / plan /
+        // worktrees / uploads…),枚举豁免已被 CI 证伪(A23 / plan / spill
+        // 三连误伤),改为整树放行 + 显式 deny 提权子项。规则顺序依赖
+        // Seatbelt 后匹配优先:最终命中 = 最后一条匹配规则。
+        // 与 zhuye-tools::sandbox 的 PROTECTED_ZHUYE_CHILDREN 同口径
+        // (两处手工同步 —— 文件工具的精细拒绝在工具层,本表兜底 bash
+        // 重定向这类不经文件工具的写入)。
+        const PROTECTED_ZHUYE_CHILDREN: [&str; 10] = [
+            "config.toml",
+            "permissions.toml",
+            "remote-hosts.json",
+            "sessions",
+            "cron",
+            "prompt_history.jsonl",
+            "workspaces.json",
+            "quota-state.json",
+            "session-notes",
+            "autopilot",
+        ];
+        let zhuye_allow = meta_roots
+            .iter()
+            .map(|root| {
+                format!(
+                    "(allow file-write* (subpath {}))",
+                    serde_json::to_string(&format!("{root}/.zhuye")).expect("路径字符串可序列化")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n            ");
+        let zhuye_child_denies = meta_roots
+            .iter()
+            .flat_map(|root| {
+                PROTECTED_ZHUYE_CHILDREN
+                    .iter()
+                    .map(move |child| format!("{root}/.zhuye/{child}"))
+            })
+            .map(|path| {
+                format!(
+                    "(deny file-write* (subpath {}))",
+                    serde_json::to_string(&path).expect("路径字符串可序列化")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n            ");
+
         format!(
             "(version 1)
             (deny default)
@@ -496,6 +542,10 @@ impl OsSandbox {
             (allow process-info* (target self))
             ;; 元数据只读:顶层 .git / .zhuye(改 hook 与配置是提权面)。
             {meta_readonly}
+            ;; .zhuye 工作数据整树放行(spill / plan / worktrees /
+            ;; uploads 等),随后显式 deny 提权子项(后匹配优先)。
+            {zhuye_allow}
+            {zhuye_child_denies}
             ;; 显式兜底:系统关键目录写一律拒(防 rm -rf / 即便上面有遗漏)
             (deny file-write* (subpath \"/usr\"))
             (deny file-write* (subpath \"/bin\"))
@@ -829,6 +879,20 @@ mod landlock {
         // as_path(此前直接 iter() 产出 &PathBuf,类型不匹配编译失败)。
         for dir in std::iter::once(workspace).chain(writable.iter().map(|p| p.as_path())) {
             add_path_beneath_rule(ruleset_fd, dir, ACCESS_FS_WRITE_ONLY);
+        }
+
+        // 2a. 元数据豁免:`.zhuye` 本身不在 allow 名单(会话 / 配置是
+        // 提权面,保持默认拒绝),但其下的 `worktrees`(side-channel
+        // 工作树)与 `plan`(PlanWrite 草稿)是引擎托管的工作数据 ——
+        // Landlock 规则彼此独立、按路径放行,直接补这两条 allow。
+        // 与 Seatbelt profile 的 meta_exceptions 同口径。
+        for dir in std::iter::once(workspace).chain(writable.iter().map(|p| p.as_path())) {
+            add_path_beneath_rule(
+                ruleset_fd,
+                &dir.join(".zhuye/worktrees"),
+                ACCESS_FS_WRITE_ONLY,
+            );
+            add_path_beneath_rule(ruleset_fd, &dir.join(".zhuye/plan"), ACCESS_FS_WRITE_ONLY);
         }
 
         // 2b. /dev/null:shell 里 `cmd 2>/dev/null` / `cmd >/dev/null` 是高频
@@ -1274,6 +1338,35 @@ mod tests {
         assert!(prof.contains("(allow network*)"));
         // 额外可写目录的顶层 .git 同样拒写。
         assert!(prof.contains("(deny file-write* (subpath \"/Users/x/extra/.git\"))"));
+    }
+
+    /// v1.3 回归:`.zhuye` 三明治 —— 整树放行(spill / plan / worktrees /
+    /// uploads 等引擎托管工作数据),提权子项(config / sessions / cron…)
+    /// 在其后显式 deny。枚举豁免已被 CI 证伪(A23 / plan / spill 三连误伤)。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_profile_zhuye_sandwich_allows_working_data_denies_privileged() {
+        let s = OsSandbox::enabled(vec![PathBuf::from("/Users/x/extra")]);
+        let prof = s.seatbelt_profile(Path::new("/Users/x/p"));
+        // workspace 根:deny(.zhuye) → allow(.zhuye) → deny 提权子项,
+        // 顺序即语义(Seatbelt 后匹配优先)。
+        let deny_zhuye = prof
+            .find("(deny file-write* (subpath \"/Users/x/p/.zhuye\"))")
+            .expect("缺少 .zhuye 整树 deny");
+        let allow_zhuye = prof
+            .find("(allow file-write* (subpath \"/Users/x/p/.zhuye\"))")
+            .expect("缺少 .zhuye 整树 allow(工作数据)");
+        assert!(allow_zhuye > deny_zhuye, "allow 必须在 deny 之后覆盖");
+        let deny_sessions = prof
+            .find("(deny file-write* (subpath \"/Users/x/p/.zhuye/sessions\"))")
+            .expect("缺少提权子项 deny(sessions)");
+        assert!(
+            deny_sessions > allow_zhuye,
+            "子项 deny 必须在整树 allow 之后"
+        );
+        // 额外目录同样成对出现。
+        assert!(prof.contains("(allow file-write* (subpath \"/Users/x/extra/.zhuye\"))"));
+        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/extra/.zhuye/sessions\"))"));
     }
 
     #[cfg(target_os = "macos")]
