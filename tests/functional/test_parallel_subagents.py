@@ -6,7 +6,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from wire import first_event, rollout_files
+from wire import coalesce_turn_messages, first_event, rollout_files
 
 
 def test_并行子代理混合成功失败并汇总给父代理(sandbox, serve_session) -> None:
@@ -112,7 +112,9 @@ def test_并行子代理混合成功失败并汇总给父代理(sandbox, serve_s
         assert tool_results["parallel-good"] == "慢速结果", tool_results
         assert "子代理请求被拒绝" in tool_results["parallel-bad"], tool_results
         records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]
-        assistant = next(record for record in records
+        # v1.3 增量落盘:同回合的多条 assistant 分片先按 turn_id 归并
+        # (与消费端 coalesce_turn_messages 同语义),再断言整回合块序。
+        assistant = next(record for record in coalesce_turn_messages(records)
                          if record.get("role") == "assistant" and "parallel-good" in str(record.get("content")))
         block_types = [block["type"] for block in assistant["content"]]
         assert block_types == ["tool_use", "tool_use", "tool_result", "tool_result", "text"], assistant

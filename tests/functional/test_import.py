@@ -29,7 +29,7 @@ from typing import Any
 
 import pytest
 
-from wire import Sandbox, ZHUYE_BIN, rollout_files, rollout_records, run_cli
+from wire import last_assistant_message, Sandbox, ZHUYE_BIN, rollout_files, rollout_records, run_cli
 
 pytestmark = pytest.mark.usefixtures("sandbox")
 
@@ -502,9 +502,10 @@ def test_I8_导入会话_resume_续跑(sandbox: Sandbox, mock_script) -> None:
     assert len(recs) > before, "resume 应在同一文件追加"
     metas = [r for r in recs if r["type"] == "session_meta"]
     assert all(m["session_id"] == tid for m in metas), [m["session_id"] for m in metas]
-    # 续跑 turn 的回复落盘(assistant 追加)。
-    assert recs[-1]["type"] == "message" and recs[-1]["role"] == "assistant"
-    assert "续跑回复" in json.dumps(recs[-1]["content"], ensure_ascii=False)
+    # 续跑 turn 的回复落盘(assistant 追加)。v1.3 增量落盘后尾部还有
+    # token_count 等收尾记录 —— 归并后取最后一条 assistant 消息断言。
+    last_msg = last_assistant_message(recs)
+    assert "续跑回复" in json.dumps(last_msg["content"], ensure_ascii=False)
 
 
 # ── I9 三个 CLI 开关端到端 ───────────────────────────────────────────────

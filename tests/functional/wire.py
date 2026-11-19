@@ -407,6 +407,46 @@ def rollout_records(home: Path) -> list[dict[str, Any]]:
     return out
 
 
+def coalesce_turn_messages(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把增量落盘的 assistant 记录按 turn_id 拼回整条(镜像消费端语义)。
+
+    v1.3 起 assistant 内容按步骤增量落盘:一次回合产生多条
+    `type=message / role=assistant` 记录(每步一条,同 turn_id),尾部
+    还可能跟 `token_count` 等收尾记录。消费端(`RolloutRecord::
+    coalesce_turn_messages`)按 turn_id 把 assistant 分片按序拼回第一条,
+    user 消息关闭该回合的归并;本函数镜像同一语义,供功能测试断言
+    「回合最终形态」而不是「某一步的分片」。
+    """
+    out: list[dict[str, Any]] = []
+    heads: dict[str, int] = {}
+    for record in records:
+        if record.get("type") == "message":
+            turn_id = record.get("turn_id")
+            if record.get("role") == "user":
+                if turn_id:
+                    heads.pop(turn_id, None)
+                out.append(record)
+                continue
+            if record.get("role") == "assistant" and isinstance(record.get("content"), list):
+                if turn_id and turn_id in heads:
+                    out[heads[turn_id]]["content"].extend(record["content"])
+                    continue
+                if turn_id:
+                    heads[turn_id] = len(out)
+                out.append(record)
+                continue
+        out.append(record)
+    return out
+
+
+def last_assistant_message(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """归并后取最后一条 assistant 消息(忽略 token_count 等收尾记录)。"""
+    merged = coalesce_turn_messages(records)
+    matches = [r for r in merged if r.get("type") == "message" and r.get("role") == "assistant"]
+    assert matches, f"归并后没有 assistant 消息:{merged[-3:] if merged else records[-3:]}"
+    return matches[-1]
+
+
 def rollout_thread_id(home: Path) -> str:
     """从**文件名**取 thread id。
 
