@@ -3,6 +3,7 @@
 //! ## 子模块拆分
 //!
 //! - [`provider`] —— 各 provider 段(`AnthropicSection` / `OpenAISection` / `OllamaSection`) + `CredentialConfig`
+//! - [`provider_group`] —— 模型组(`[[provider_group]]`,命名 provider 条目)
 //! - [`agent`] —— 路由 / 子代理 / 协调器 / 压缩 / token 预算
 //! - [`discovery`] —— 模型清单发现(`[model_discovery]` 段)
 //! - [`notifications`] —— 通知 / 遥测 / 分析
@@ -18,6 +19,7 @@ pub mod notifications;
 pub mod permission_syntax;
 pub mod plugins;
 pub mod provider;
+pub mod provider_group;
 
 pub use integrations::ACP_DEFAULT_BIND;
 
@@ -41,6 +43,7 @@ pub use plugins::{PluginMarketplaceConfig, PluginMarketplaceKind, PluginsSection
 pub use provider::{
     AnthropicSection, CredentialConfig, OllamaSection, OpenAISection, QuotaConfig, QuotaSource,
 };
+pub use provider_group::ProviderGroupSection;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -66,6 +69,12 @@ pub struct ReflectConfig {
     pub openai: Option<OpenAISection>,
     #[serde(default)]
     pub ollama: Option<OllamaSection>,
+    /// 模型组(`[[provider_group]]`):命名 provider 条目,组 id 即模型
+    /// spec 前缀(`<id>/<model>`),组 id 直接注册为 registry 池名。
+    /// 内置三段保持原样;两者并存,`[active].provider` 既可写内置名
+    /// 也可写组 id。
+    #[serde(default)]
+    pub provider_group: Vec<ProviderGroupSection>,
     #[serde(default)]
     pub compact: CompactSection,
     #[serde(default)]
@@ -278,6 +287,7 @@ impl Default for ReflectConfig {
             anthropic: None,
             openai: None,
             ollama: None,
+            provider_group: Vec::new(),
             compact: CompactSection::default(),
             token_budget: None,
             sandbox: SandboxSection::default(),

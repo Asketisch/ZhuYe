@@ -71,7 +71,7 @@ fn target_provider(cfg: &ReflectConfig, explicit: Option<&str>) -> anyhow::Resul
     if let Some(p) = explicit.map(str::trim).filter(|p| !p.is_empty()) {
         return Ok(p.to_string());
     }
-    cfg.active_provider().map(str::to_string).ok_or_else(|| {
+    cfg.active_provider().ok_or_else(|| {
         anyhow::anyhow!("no active provider: set [active] provider in config, or pass --provider")
     })
 }
@@ -231,7 +231,7 @@ pub async fn doctor_summary(cfg: &ReflectConfig, registry: &ModelRegistry) -> Op
         .as_ref()
         .and_then(|d| d.timeout_secs)
         .unwrap_or(zhuye_config::DEFAULT_DISCOVERY_TIMEOUT_SECS);
-    match fetch_catalog(registry, provider, timeout_secs).await {
+    match fetch_catalog(registry, &provider, timeout_secs).await {
         Ok(catalog) => {
             let rules: FreeModelRules = cfg
                 .model_discovery

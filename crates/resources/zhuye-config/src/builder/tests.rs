@@ -164,7 +164,7 @@ fn active_provider_canonicalizes_ollama_aliases() {
         ollama: Some(OllamaSection::default()),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None), Some("ollama"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("ollama"));
 
     // alias `"local"` 也被 canonicalize。
     let cfg = ReflectConfig {
@@ -175,14 +175,14 @@ fn active_provider_canonicalizes_ollama_aliases() {
         ollama: Some(OllamaSection::default()),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None), Some("ollama"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("ollama"));
 }
 
 #[test]
 fn active_provider_falls_back_to_ollama_when_section_present() {
     // 没显式 `active.provider` → 但有 `[ollama]` 段 → fall-back 选 ollama。
     let cfg = cfg_with_ollama(Some("qwen2.5:7b"));
-    assert_eq!(cfg.active_provider_inner(None, None), Some("ollama"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("ollama"));
 }
 
 #[test]
@@ -445,7 +445,7 @@ fn keyless_openai_with_base_url_is_active_provider() {
         }),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None), Some("openai"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("openai"));
 }
 
 /// v1.10 功能5:**免 Key 的 Anthropic 兼容端点也要注册** —— 显式
@@ -469,7 +469,7 @@ fn keyless_anthropic_with_base_url_registers_pool() {
         "免 Key 的 Anthropic 兼容端点(显式 base_url)必须注册"
     );
     // 也能推出 active provider(与注册条件同口径)。
-    assert_eq!(cfg.active_provider_inner(None, None), Some("anthropic"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
 }
 
 /// v1.10 功能5:anthropic 既没 key 也没 base_url → 仍不注册。
@@ -521,13 +521,13 @@ fn active_provider_explicit_in_toml() {
         }),
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None), Some("openai"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("openai"));
 }
 
 #[test]
 fn active_provider_falls_back_to_first_nonempty() {
     let cfg = cfg_with_anthropic("sk-a");
-    assert_eq!(cfg.active_provider_inner(None, None), Some("anthropic"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
 }
 
 #[test]
@@ -539,7 +539,7 @@ fn active_provider_canonicalizes_aliases() {
         },
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None), Some("anthropic"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
 
     let cfg = ReflectConfig {
         active: ActiveSection {
@@ -548,7 +548,7 @@ fn active_provider_canonicalizes_aliases() {
         },
         ..Default::default()
     };
-    assert_eq!(cfg.active_provider_inner(None, None), Some("openai"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("openai"));
 }
 
 #[test]
@@ -914,22 +914,22 @@ fn mcp_server_configs_results_are_sorted_by_name() {
 fn mock_provider_opt_in_paths_and_model_resolution() {
     let cfg = ReflectConfig::default();
     // `ZHUYE_PROVIDER=mock` 显式 opt-in。
-    assert_eq!(cfg.active_provider_inner(Some("mock"), None), Some("mock"));
-    assert_eq!(cfg.active_provider_inner(Some("MOCK"), None), Some("mock"));
+    assert_eq!(cfg.active_provider_inner(Some("mock"), None).as_deref(), Some("mock"));
+    assert_eq!(cfg.active_provider_inner(Some("MOCK"), None).as_deref(), Some("mock"));
     // `ZHUYE_MODEL` 完整 spec / 裸 mock 均可 opt-in。
     assert_eq!(
-        cfg.active_provider_inner(None, Some("mock/mock-1")),
+        cfg.active_provider_inner(None, Some("mock/mock-1")).as_deref(),
         Some("mock")
     );
     assert_eq!(
-        cfg.active_provider_inner(None, Some(" mock ")),
+        cfg.active_provider_inner(None, Some(" mock ")).as_deref(),
         Some("mock")
     );
     // 非 mock 的 ZHUYE_MODEL 不触发(回退后续优先级链)。
     assert_eq!(cfg.active_provider_inner(None, Some("gpt-4o")), None);
     // provider 优先于 model。
     assert_eq!(
-        cfg.active_provider_inner(Some("anthropic"), Some("mock/mock-1")),
+        cfg.active_provider_inner(Some("anthropic"), Some("mock/mock-1")).as_deref(),
         Some("anthropic")
     );
     // model 解析:剥前缀 / 裸 mock 回退内置 mock model(mock 是显式
@@ -953,10 +953,10 @@ fn mock_provider_opt_in_paths_and_model_resolution() {
 fn mock_not_active_for_real_provider_config() {
     let cfg = cfg_with_anthropic("sk-a");
     assert_eq!(
-        cfg.active_provider_inner(Some("anthropic"), None),
+        cfg.active_provider_inner(Some("anthropic"), None).as_deref(),
         Some("anthropic")
     );
-    assert_eq!(cfg.active_provider_inner(None, None), Some("anthropic"));
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("anthropic"));
 }
 
 // ── v1.5 review:`[routing] max_attempts` 配置透传 ────────────────
@@ -985,4 +985,219 @@ fn routing_max_attempts_from_toml() {
     // 整个 `[routing]` 段缺省 → 缺省 10。
     let cfg_none = cfg_with_anthropic("sk-a");
     assert_eq!(cfg_none.routing_policy().max_attempts, 10);
+}
+
+// ── 模型组([[provider_group]]) ────────────────────────────────────
+
+use crate::schema::ProviderGroupSection;
+
+fn group(id: &str, endpoint: &str, base_url: &str) -> ProviderGroupSection {
+    ProviderGroupSection {
+        id: id.into(),
+        endpoint: endpoint.into(),
+        base_url: Some(base_url.into()),
+        ..Default::default()
+    }
+}
+
+/// openai 格式的组以组 id 为池名注册;`[active].provider` 直接写组 id。
+#[test]
+fn provider_group_registers_pool_under_group_id() {
+    let cfg = ReflectConfig {
+        active: ActiveSection {
+            provider: Some("my-glm".into()),
+            ..Default::default()
+        },
+        provider_group: vec![group("my-glm", "openai", "https://open.bigmodel.cn/api/paas/v4")],
+        ..Default::default()
+    };
+    let r = cfg.to_registry_with_env(None, None).unwrap();
+    assert!(r.get("my-glm").is_some(), "组 id 应注册为池名");
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("my-glm"),
+        "[active].provider = 组 id 应直接解析为该组"
+    );
+}
+
+/// anthropic 格式的组同样按组 id 注册(走 AnthropicClient)。
+#[test]
+fn provider_group_anthropic_endpoint_registers_pool() {
+    let cfg = ReflectConfig {
+        provider_group: vec![group(
+            "magpie",
+            "anthropic",
+            "http://127.0.0.1:3425",
+        )],
+        ..Default::default()
+    };
+    let r = cfg.to_registry_with_env(None, None).unwrap();
+    assert!(r.get("magpie").is_some());
+    // 无 [active].provider 时首个有凭据的组作为隐式 active。
+    assert_eq!(cfg.active_provider_inner(None, None).as_deref(), Some("magpie"));
+}
+
+/// 组级 model 写入 spec:`<组id>/<model>`。
+#[test]
+fn provider_group_resolved_model_spec_uses_group_prefix() {
+    let mut g = group("my-glm", "openai", "https://open.bigmodel.cn/api/paas/v4");
+    g.model = Some("GLM-5.3-Flash".into());
+    let cfg = ReflectConfig {
+        provider_group: vec![g],
+        ..Default::default()
+    };
+    assert_eq!(
+        cfg.resolved_model_spec_with_env(None, None),
+        Some("my-glm/GLM-5.3-Flash".to_string())
+    );
+}
+
+/// 免 Key 组(空 api_key + base_url)也要注册,语义与内置段同口径。
+#[test]
+fn provider_group_keyless_with_base_url_registers() {
+    let mut g = group("free-pool", "openai", "https://free.example.test");
+    g.api_key = Some(String::new());
+    let cfg = ReflectConfig {
+        provider_group: vec![g],
+        ..Default::default()
+    };
+    let r = cfg.to_registry_with_env(None, None).unwrap();
+    assert!(r.get("free-pool").is_some());
+}
+
+/// 既没 key 也没 base_url 的组不注册(用户没配,不造空池)。
+#[test]
+fn provider_group_without_credential_not_registered() {
+    let cfg = ReflectConfig {
+        provider_group: vec![ProviderGroupSection {
+            id: "empty".into(),
+            endpoint: "openai".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let r = cfg.to_registry_with_env(None, None).unwrap();
+    assert!(r.get("empty").is_none());
+    assert_eq!(cfg.active_provider_inner(None, None), None);
+}
+
+/// 非法 id(与内置段名冲突 / 含 '/')与未知 endpoint 都跳过并 warn,
+/// 不阻断其余组与内置段的注册。
+#[test]
+fn provider_group_invalid_entries_skipped() {
+    let cfg = ReflectConfig {
+        provider_group: vec![
+            group("anthropic", "openai", "https://a.example.test"),
+            group("a/b", "openai", "https://b.example.test"),
+            group("weird", "grpc", "https://c.example.test"),
+            group("good", "openai", "https://d.example.test"),
+        ],
+        ..Default::default()
+    };
+    let r = cfg.to_registry_with_env(None, None).unwrap();
+    assert!(r.get("anthropic").is_none(), "与内置段名冲突的组不注册");
+    assert!(r.get("a/b").is_none(), "含 '/' 的组 id 不注册");
+    assert!(r.get("weird").is_none(), "未知 endpoint 的组不注册");
+    assert!(r.get("good").is_some(), "合法组不受影响");
+}
+
+/// 组间重复 id:先出现的注册,后出现的跳过(同名池覆盖保护)。
+#[test]
+fn provider_group_duplicate_id_first_wins() {
+    let cfg = ReflectConfig {
+        provider_group: vec![
+            group("dup", "openai", "https://first.example.test"),
+            group("dup", "anthropic", "https://second.example.test"),
+        ],
+        ..Default::default()
+    };
+    let r = cfg.to_registry_with_env(None, None).unwrap();
+    let client = r.get("dup").expect("首个同名组应注册");
+    assert_eq!(client.name(), "openai", "先出现者胜出");
+}
+
+/// 组内多凭据池 + 钉住:`[active].credential` 命中组内条目时,
+/// 条目 model 优先于组级 model。
+#[test]
+fn provider_group_pin_credential_and_entry_model() {
+    let mut g = group("my-glm", "openai", "https://open.bigmodel.cn/api/paas/v4");
+    g.model = Some("group-model".into());
+    g.credentials = vec![CredentialConfig {
+        label: "backup".into(),
+        api_key: "sk-b".into(),
+        model: Some("entry-model".into()),
+        ..Default::default()
+    }];
+    let cfg = ReflectConfig {
+        active: ActiveSection {
+            provider: Some("my-glm".into()),
+            credential: Some("backup".into()),
+            ..Default::default()
+        },
+        provider_group: vec![g.clone()],
+        ..Default::default()
+    };
+    assert_eq!(
+        cfg.resolved_model_spec_with_env(None, None),
+        Some("my-glm/entry-model".to_string()),
+        "被钉住条目的 model 优先于组级 model"
+    );
+    // 未钉住 → 组级 model。
+    let cfg_unpinned = ReflectConfig {
+        provider_group: vec![g],
+        ..Default::default()
+    };
+    assert_eq!(
+        cfg_unpinned.resolved_model_spec_with_env(None, None),
+        Some("my-glm/group-model".to_string())
+    );
+}
+
+/// TOML 解析:嵌套 `[[provider_group.credentials]]` 挂到最后一个组条目,
+/// 与既有 `[[<provider>.credentials]]` 同一机制。
+#[test]
+fn provider_group_toml_round_trip_with_credentials() {
+    let toml = r#"
+        [active]
+        provider = "my-glm"
+        credential = "backup"
+
+        [[provider_group]]
+        id = "my-glm"
+        endpoint = "openai"
+        base_url = "https://open.bigmodel.cn/api/paas/v4"
+        model = "group-model"
+
+        [[provider_group.credentials]]
+        label = "backup"
+        api_key = "sk-b"
+        model = "entry-model"
+    "#;
+    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    assert_eq!(cfg.provider_group.len(), 1);
+    assert_eq!(cfg.provider_group[0].credentials.len(), 1);
+    assert_eq!(
+        cfg.resolved_model_spec_with_env(None, None),
+        Some("my-glm/entry-model".to_string())
+    );
+}
+
+/// 组 id 与其他组 id / 内置段名互不遮蔽:`[active].provider` 写内置名时
+/// 即使存在同名前缀的组也按内置段解析(canonical 名单优先)。
+#[test]
+fn provider_group_never_shadows_builtin_names() {
+    let cfg = ReflectConfig {
+        openai: Some(OpenAISection {
+            api_key: Some("sk-o".into()),
+            model: Some("gpt-test".into()),
+            ..Default::default()
+        }),
+        provider_group: vec![group("openai-suffix", "openai", "https://x.example.test")],
+        ..Default::default()
+    };
+    assert_eq!(
+        cfg.active_provider_inner(None, None).as_deref(),
+        Some("openai"),
+        "内置段存在时优先于组 fallback"
+    );
 }
