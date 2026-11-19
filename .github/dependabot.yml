@@ -14,3 +14,14 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 3
+  # TS SDK 的 npm 依赖:只收补丁与次版本。major 升级需要人工改代码
+  # (实测 vitest 1→5 / vite→8 要求 @types/node >=22.12.0,与项目当前的
+  # ^20.11.0 冲突,CI 必红),一律交给维护窗口手工处理。
+  - package-ecosystem: "npm_and_yarn"
+    directory: "/sdks/typescript"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
