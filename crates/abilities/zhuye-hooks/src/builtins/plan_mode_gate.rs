@@ -66,6 +66,17 @@ pub fn default_read_only_allowlist() -> Vec<String> {
         "image_view".into(),
         "background_status".into(),
         "read_skill_resource".into(),
+        // 用户交互工具:零副作用(不改文件、不改外部状态,只阻塞等用户
+        // 回执),语义上"读"的是用户意见。Plan 模式恰恰是最该问的场景 ——
+        // 语言 / 主题 / 栏目这类关键决策替用户定了,plan 批准就变成走过场。
+        // 此前白名单漏掉它们,模型在 Plan 模式提问会被本 gate 直接 deny,
+        // 只能一路自查自答。
+        // - ask_user_question:结构化提问(2-4 选项)
+        // - ask_user:自由文本输入
+        // - request_human_input:多轮人工输入
+        "ask_user_question".into(),
+        "ask_user".into(),
+        "request_human_input".into(),
     ]
 }
 
@@ -298,6 +309,24 @@ mod tests {
                     .unwrap(),
                 HookDecision::Allow,
                 "{tool} 应该在 Plan mode 白名单内"
+            );
+        }
+    }
+
+    /// 用户交互工具在 Plan mode 必须可用:零副作用,且 plan 的关键决策
+    /// (语言 / 主题 / 栏目)本就该问用户而不是模型自查自答。
+    /// 用户实测现场(session 009c5609):Plan 模式下 agent 一路调研直接
+    /// 产出计划,零提问 —— 即便模型想问,gate 也会把 ask_user* 拒掉。
+    #[tokio::test]
+    async fn plan_mode_allows_user_interaction_tools() {
+        let h = PlanModeGate::default_mode();
+        for tool in ["ask_user_question", "ask_user", "request_human_input"] {
+            assert_eq!(
+                h.handle(&pre_event(tool, PermissionMode::Plan))
+                    .await
+                    .unwrap(),
+                HookDecision::Allow,
+                "{tool} 是零副作用的用户交互工具,Plan mode 应放行"
             );
         }
     }
