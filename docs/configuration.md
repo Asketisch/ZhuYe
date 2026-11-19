@@ -44,6 +44,39 @@ reasoning_effort = "high"                     # 思考强度:low|medium|high|max
 
 anthropic 段同样支持免 key 本地网关（`api_key = ""` + 显式 `base_url`，如 LM Studio）。
 
+## 模型组（`[[provider_group]]`）
+
+内置 `[anthropic]` / `[openai]` / `[ollama]` 三段之外,还可以添加**任意多个命名模型组** —— 每组自带线格式 + base_url + api_key,组 id 直接注册为凭证池名,模型 spec 前缀 = 组 id：
+
+```toml
+[[provider_group]]
+id = "bigmodel"                 # 组 id = 模型 spec 前缀(<id>/<model>)。
+                                # 必填、唯一、不含 '/';不得与内置段名
+                                # (anthropic/openai/ollama/mock)冲突 ——
+                                # 违例时跳过该组并 warn,不阻断其余配置
+label = "智谱 GLM"               # 展示名(缺省用 id)
+endpoint = "openai"             # 线格式:openai | anthropic
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+api_key = ""                    # 免 key 端点留空(不发认证头)
+model = "GLM-5.3-Flash"         # 组默认模型;同样支持 "free" 动态值
+responses_api = false           # openai 线格式可切 /v1/responses
+timeout_secs = 300
+
+[[provider_group]]              # 组内多凭据池(高级):嵌套数组与
+id = "magpie"                   # [[<provider>.credentials]] 同机制
+endpoint = "anthropic"
+base_url = "http://127.0.0.1:3425"
+
+[[provider_group.credentials]]
+label = "backup"
+api_key = "..."
+```
+
+`[active].provider` 既可写内置段名也可写组 id;热重载、冷却 failover、
+`model = "free"` 清单发现、`zhuye models list --provider <组id>` 全部
+对组生效。anthropic 格式的端点(含网关)在引擎内同样支持模型清单拉取
+(`GET {base}/v1/models`)。
+
 改完不用重启进程，配置监听器会热重载。
 
 ## 环境变量

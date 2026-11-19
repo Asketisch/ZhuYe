@@ -46,7 +46,7 @@ pub async fn run(check_network: bool, dump_config: bool) -> anyhow::Result<()> {
     if check_network {
         if let Some(provider) = cfg.active_provider() {
             println!("[network] checking provider '{provider}' (best-effort)...");
-            probe_provider_network(&cfg, provider);
+            probe_provider_network(&cfg, &provider);
         } else {
             println!("{WARN} provider  no [active].provider set; would skip network probe");
         }

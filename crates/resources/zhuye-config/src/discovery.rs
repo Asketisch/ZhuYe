@@ -216,7 +216,7 @@ pub async fn resolve_dynamic_model(
     let Some(provider) = cfg.active_provider() else {
         return Ok(None);
     };
-    let Some(model) = cfg.resolve_model(provider) else {
+    let Some(model) = cfg.resolve_model(&provider) else {
         return Ok(None);
     };
     if !is_dynamic_model(&model) {
@@ -235,7 +235,7 @@ pub async fn resolve_dynamic_model(
     let timeout_secs = section
         .timeout_secs
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_SECS);
-    let catalog = fetch_catalog(registry, provider, timeout_secs).await?;
+    let catalog = fetch_catalog(registry, &provider, timeout_secs).await?;
     let picked = pick_free_model(&catalog, &section)?;
     tracing::info!(
         provider = %provider,
