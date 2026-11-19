@@ -82,8 +82,10 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
     let mut out = String::new();
     let mut turn_counter: usize = 0;
     let mut session_meta_emitted = false;
+    // 同回合同角色的增量落盘分片先拼回一条,预览里一次对话只占一个 Turn。
+    let records = RolloutRecord::coalesce_turn_messages(records);
 
-    for rec in records {
+    for rec in &records {
         match rec {
             RolloutRecord::SessionMeta {
                 session_id,
@@ -306,8 +308,8 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
         }
     }
 
-    // 头部 + footer 包裹
-    let body = wrap_header(records, out);
+    // 头部 + footer 包裹。records 在循环前被归并成 Vec,这里借回切片。
+    let body = wrap_header(&records, out);
 
     if body.chars().count() > MAX_MARKDOWN_CHARS {
         // 截断到 N - footer_len,留 footer 位置,避免「截完内容后
@@ -374,7 +376,9 @@ pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
     out.push_str(&format!("# ZhuYe session `{id}`\n\n"));
     let mut session_meta_emitted = false;
     let mut count: usize = 0;
-    for r in records {
+    // 与预览导出同一归并:增量落盘的分片不另起 Turn。
+    let records = RolloutRecord::coalesce_turn_messages(records);
+    for r in &records {
         match r {
             RolloutRecord::SessionMeta { model, .. } => {
                 if !session_meta_emitted {

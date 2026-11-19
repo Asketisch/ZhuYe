@@ -21,6 +21,7 @@ use zhuye_protocol::{
 use super::nudge::MAX_AUTO_CONTINUATIONS;
 use super::retry::{RetryAction, classify_action, error_code, outcome_code, retry_backoff_ms};
 use crate::graph::GraphNode;
+use crate::graph::nodes::persist_assistant_step;
 use crate::graph::state::AgentState;
 use crate::submission_loop::NodeContext;
 use zhuye_recovery::recovery_meta_to_messages;
@@ -692,6 +693,10 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             args: args.clone(),
         });
     }
+    // 增量落盘:本步(文本 + 工具调用)立刻进 rollout,不等回合结束。
+    // 回合未结束(plan 审批阻塞 / 中断)时,解析 session 文件也能复现
+    // 助手历史。同 turn 的后续步骤继续追加,消费端按 turn 归并。
+    persist_assistant_step(ctx, &state.latest_content).await;
     // 注意:此前 `cached_tokens` 误累加了 `cache_write_tokens`(复制粘贴 bug),
     // 与下方 `session_usage` 正确使用的 `usage.cached_tokens` 分叉 —— 导致
     // `TurnComplete.usage`(走 total_usage)与预算统计(session_usage)的
@@ -779,11 +784,17 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                 .await;
         }
     }
-    if let Some(limit) = *ctx.token_budget.read() {
-        if ctx.session_usage.read().total_tokens as u64 >= limit {
-            state.budget_exceeded = true;
-            return None;
-        }
+    let budget_exceeded = ctx
+        .token_budget
+        .read()
+        .is_some_and(|limit| ctx.session_usage.read().total_tokens as u64 >= limit);
+    if budget_exceeded {
+        // 预算在本步产出**之后**才判定超限:本步文本已经发给客户端,
+        // 必须先落盘再结束,否则中断路径看不到它。锁在 await 前释放,
+        // 否则 parking_lot 的 guard 会让整个回合任务不再是 Send。
+        persist_assistant_step(ctx, &state.latest_content).await;
+        state.budget_exceeded = true;
+        return None;
     }
     let bare_model = model.split_once('/').map_or(model.as_str(), |(_, m)| m);
     let cost_usd = zhuye_llm::providers::price(bare_model, &usage);

@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use zhuye_protocol::{MemoryOp, MessageRole, ModelUsage, RolloutRecord, SessionStats, ThreadId};
+use zhuye_protocol::{
+    MemoryOp, MessageRole, ModelUsage, RolloutRecord, SessionStats, ThreadId, TurnId,
+};
 
 /// 单会话完整统计(按模型拆分 + 工具调用/压缩次数 + 缓存分段)。
 ///
@@ -172,6 +174,11 @@ struct StatsAccumulator {
     non_blank: usize,
     /// 遇到的 SessionMeta 行数(每份文件一份;message_count 要减掉)。
     meta_lines: usize,
+    /// 同回合 assistant 消息的后续分片行数(增量落盘;message_count 也要减掉)。
+    continuation_lines: usize,
+    /// 本文件里当前归并段已计过一条 assistant 记录的回合。
+    /// 用户消息关闭对应回合;跨文件不延续。
+    open_assistant_turns: std::collections::HashSet<TurnId>,
     tool_calls: u64,
     compactions: u64,
     /// v1.x:各次压缩 before/after token 估算之和(压缩省量统计)。
@@ -194,6 +201,8 @@ impl StatsAccumulator {
     fn scan_body(&mut self, body: &str) {
         // 文件级回退模型:本文件首行 SessionMeta 的 model。
         let mut file_meta_model: Option<String> = None;
+        // 归并不跨文件:轮转边界两侧即使同 turn,也按各自文件计数。
+        self.open_assistant_turns.clear();
         for line in body.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -220,11 +229,20 @@ impl StatsAccumulator {
                     }
                 }
                 RolloutRecord::Message {
-                    role: MessageRole::Assistant,
+                    turn_id,
+                    role,
                     content,
-                    ..
                 } => {
-                    self.tool_calls = self.tool_calls.saturating_add(count_tool_uses(&content));
+                    if role == MessageRole::User {
+                        self.open_assistant_turns.remove(&turn_id);
+                    } else if role == MessageRole::Assistant && content.is_array() {
+                        if !self.open_assistant_turns.insert(turn_id) {
+                            self.continuation_lines = self.continuation_lines.saturating_add(1);
+                        }
+                    }
+                    if role == MessageRole::Assistant {
+                        self.tool_calls = self.tool_calls.saturating_add(count_tool_uses(&content));
+                    }
                 }
                 RolloutRecord::Compaction {
                     before_tokens,
@@ -321,7 +339,10 @@ impl StatsAccumulator {
             session_id: self.session_id.unwrap_or_default(),
             model: self.model.unwrap_or_default(),
             started_at: self.started_at.unwrap_or_else(Utc::now),
-            message_count: self.non_blank.saturating_sub(self.meta_lines),
+            message_count: self
+                .non_blank
+                .saturating_sub(self.meta_lines)
+                .saturating_sub(self.continuation_lines),
             tool_calls: self.tool_calls,
             compactions: self.compactions,
             compaction_before_tokens: self.compaction_before_tokens,
@@ -440,9 +461,46 @@ mod tests {
 
         assert_eq!(stats.session_id, sid);
         assert_eq!(stats.model, "openai/gpt-4o");
-        // 6 行 - 1 行 meta = 5。
+        // 6 行 - 1 行 meta = 5。两条 assistant 分属不同回合,不归并。
         assert_eq!(stats.message_count, 5);
         assert_eq!(stats.tool_calls, 3);
+
+        // 同回合同角色的后续分片不另计消息,但工具调用仍然逐条累计。
+        let turn = TurnId::new();
+        let step = |blocks: Vec<ContentBlock>| {
+            serde_json::to_string(&RolloutRecord::Message {
+                turn_id: turn,
+                role: MessageRole::Assistant,
+                content: serde_json::to_value(&blocks).unwrap(),
+            })
+            .unwrap()
+        };
+        let coalesced_dir = write_session(
+            sid,
+            &[
+                meta_line(sid, "openai/gpt-4o"),
+                step(vec![ContentBlock::ToolUse {
+                    id: "a".into(),
+                    name: "bash".into(),
+                    args: serde_json::json!({}),
+                }]),
+                step(vec![ContentBlock::ToolResult {
+                    call_id: "a".into(),
+                    output: zhuye_protocol::ToolOutput {
+                        content: vec![],
+                        is_error: false,
+                        metadata: serde_json::json!({}),
+                        elapsed_ms: 1,
+                    },
+                }]),
+            ],
+        );
+        let coalesced = session_stats(coalesced_dir.path(), sid).expect("session should be found");
+        assert_eq!(
+            coalesced.message_count, 1,
+            "一次回合的两片 assistant 记录只计一条消息"
+        );
+        assert_eq!(coalesced.tool_calls, 1);
         assert_eq!(stats.compactions, 0);
         // 总量:input 600 / output 250 / total 850。
         assert_eq!(stats.input_tokens, 600);

@@ -291,10 +291,53 @@ fn walk_with_discussion(
     Ok(())
 }
 
+/// 统计可并入本回合已有 assistant 记录的后续分片行数。
+///
+/// 口径与 `RolloutRecord::coalesce_turn_messages` 相同:数组内容的
+/// assistant 记录,在该回合当前归并段里已经出现过一条时不另计。用户消息
+/// 关闭当前归并段(其后的 assistant 分片另计),整段字符串的旧记录另计。
+/// 审计记录不打断计数。解析失败的行保持原口径。
+fn count_turn_continuations(body: &str) -> usize {
+    let mut open_turns = std::collections::HashSet::new();
+    let mut continuations = 0usize;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<RolloutRecord>(trimmed) else {
+            continue;
+        };
+        match record {
+            RolloutRecord::Message {
+                turn_id,
+                role: MessageRole::User,
+                ..
+            } => {
+                open_turns.remove(&turn_id);
+            }
+            RolloutRecord::Message {
+                turn_id,
+                role: MessageRole::Assistant,
+                content,
+            } if content.is_array() => {
+                if !open_turns.insert(turn_id) {
+                    continuations += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    continuations
+}
+
 fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
     let body = std::fs::read_to_string(path).ok()?;
     let first = body.lines().next()?;
     let non_blank_lines = body.lines().filter(|l| !l.trim().is_empty()).count();
+    // 同一次回合的 assistant 内容按步骤拆成多条记录。侧栏的消息数按
+    // 回合计,不按落盘分片计,否则一次工具调用会让计数虚高。
+    let continuation_lines = count_turn_continuations(&body);
     // v1.x:扫描首条 User 消息文本,派生会话标题(零额外 I/O —— body 已在内存)。
     let title = first_user_message_title(&body);
     // v1.x:聚合 TokenCount 记录(token 累计 + cost 求和)。
@@ -314,7 +357,9 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
             session_id,
             model,
             started_at,
-            message_count: non_blank_lines.saturating_sub(1),
+            message_count: non_blank_lines
+                .saturating_sub(1)
+                .saturating_sub(continuation_lines),
             title,
             input_tokens,
             output_tokens,
@@ -349,7 +394,9 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
                 session_id,
                 model,
                 started_at,
-                message_count: non_blank_lines.saturating_sub(1),
+                message_count: non_blank_lines
+                    .saturating_sub(1)
+                    .saturating_sub(continuation_lines),
                 title,
                 input_tokens,
                 output_tokens,
@@ -377,7 +424,7 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
             session_id: meta.session_id,
             model: meta.model,
             started_at: meta.started_at,
-            message_count: non_blank_lines,
+            message_count: non_blank_lines.saturating_sub(continuation_lines),
             title,
             input_tokens,
             output_tokens,

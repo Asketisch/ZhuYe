@@ -27,8 +27,11 @@ use zhuye_protocol::RolloutRecord;
 pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
     let mut messages: Vec<ChatMessage> = Vec::new();
     let mut last_summary: Option<String> = None;
+    // 增量落盘让一次回合有多条 assistant 记录。先按 turn 拼回一条,
+    // 模型看到的块顺序才与「回合结束整体落盘」的旧格式一致。
+    let records = RolloutRecord::coalesce_turn_messages(records);
 
-    for r in records {
+    for r in &records {
         match r {
             RolloutRecord::Message {
                 turn_id: _,

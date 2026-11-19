@@ -331,6 +331,56 @@ impl RolloutRecord {
         }
     }
 
+    /// 把同一次回合的增量 assistant 记录归并成一条。
+    ///
+    /// assistant 内容按步骤增量落盘,同一次回合会有多条数组内容的
+    /// `Message`(文本 + 工具调用一条,工具结果再一条)。内容按写入顺序
+    /// 拼回该回合第一条 assistant 记录,与「回合结束时整体写一条」的
+    /// 旧格式逐块相同。中间的审计记录(token 计数、压缩)不打断归并,
+    /// 并保持原位。
+    ///
+    /// 只归并 assistant。用户消息会关闭该回合当前的归并头:steer 插话
+    /// 与它后面的工具结果同属一个回合,但插话在结果之前,把结果拼回去
+    /// 会颠倒顺序。插话之后的 assistant 分片另起一条。整段字符串的旧
+    /// 记录不参与归并。
+    pub fn coalesce_turn_messages(records: &[Self]) -> Vec<Self> {
+        let mut out: Vec<Self> = Vec::with_capacity(records.len());
+        let mut heads: std::collections::HashMap<TurnId, usize> = std::collections::HashMap::new();
+        for record in records {
+            match record {
+                Self::Message {
+                    turn_id,
+                    role: MessageRole::User,
+                    ..
+                } => {
+                    heads.remove(turn_id);
+                    out.push(record.clone());
+                }
+                Self::Message {
+                    turn_id,
+                    role: MessageRole::Assistant,
+                    content: serde_json::Value::Array(extra),
+                } => {
+                    if let Some(&index) = heads.get(turn_id) {
+                        let Self::Message {
+                            content: serde_json::Value::Array(base),
+                            ..
+                        } = &mut out[index]
+                        else {
+                            unreachable!("登记的归并头一定是数组内容的 assistant 消息");
+                        };
+                        base.extend(extra.iter().cloned());
+                    } else {
+                        heads.insert(*turn_id, out.len());
+                        out.push(record.clone());
+                    }
+                }
+                _ => out.push(record.clone()),
+            }
+        }
+        out
+    }
+
     /// `SessionMeta` 的便捷构造函数。
     pub fn session_meta(session_id: ThreadId, model: impl Into<String>) -> Self {
         RolloutRecord::SessionMeta {
@@ -810,6 +860,81 @@ mod tests {
         assert_eq!(info.output_tokens, 0);
         assert_eq!(info.total_tokens, 0);
         assert_eq!(info.cost_usd, None, "missing cost_usd → None");
+    }
+
+    #[test]
+    fn coalesce_turn_messages_joins_same_turn_array_content_in_order() {
+        let turn = TurnId::new();
+        let other = TurnId::new();
+        let records = vec![
+            RolloutRecord::message(
+                turn,
+                MessageRole::Assistant,
+                serde_json::json!([{"type":"text","text":"先查"},{"type":"tool_use","id":"c1","name":"grep","args":{}}]),
+            ),
+            RolloutRecord::TokenCount {
+                turn_id: turn,
+                usage: Default::default(),
+                cost_usd: None,
+                model: None,
+                provider: None,
+                at: Utc::now(),
+            },
+            RolloutRecord::message(
+                turn,
+                MessageRole::Assistant,
+                serde_json::json!([{"type":"tool_result","call_id":"c1","output":{"content":[],"is_error":false,"metadata":{},"elapsed_ms":1}}]),
+            ),
+            RolloutRecord::message(other, MessageRole::User, serde_json::json!("下一问")),
+        ];
+        let merged = RolloutRecord::coalesce_turn_messages(&records);
+        assert_eq!(merged.len(), 3, "审计记录隔开后仍归并,下一条用户消息独立");
+        let steered = vec![
+            RolloutRecord::message(
+                turn,
+                MessageRole::Assistant,
+                serde_json::json!([{"type":"tool_use","id":"c2","name":"bash","args":{}}]),
+            ),
+            RolloutRecord::message(
+                turn,
+                MessageRole::User,
+                serde_json::json!([{"type":"text","text":"先别跑"}]),
+            ),
+            RolloutRecord::message(
+                turn,
+                MessageRole::Assistant,
+                serde_json::json!([{"type":"tool_result","call_id":"c2","output":{"content":[],"is_error":false,"metadata":{},"elapsed_ms":1}}]),
+            ),
+        ];
+        assert_eq!(
+            RolloutRecord::coalesce_turn_messages(&steered).len(),
+            3,
+            "用户插话之后的 assistant 记录不能拼回插话之前,否则工具结果会跑到插话前面"
+        );
+        match &merged[0] {
+            RolloutRecord::Message { content, .. } => {
+                let blocks = content.as_array().expect("归并后仍是数组");
+                assert_eq!(blocks.len(), 3);
+                assert_eq!(blocks[0]["text"], "先查");
+                assert_eq!(blocks[1]["type"], "tool_use");
+                assert_eq!(blocks[2]["type"], "tool_result");
+            }
+            other => panic!("expected message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn coalesce_turn_messages_keeps_legacy_string_records_separate() {
+        let turn = TurnId::new();
+        let records = vec![
+            RolloutRecord::message(turn, MessageRole::Assistant, serde_json::json!("第一段")),
+            RolloutRecord::message(turn, MessageRole::Assistant, serde_json::json!("第二段")),
+        ];
+        assert_eq!(
+            RolloutRecord::coalesce_turn_messages(&records).len(),
+            2,
+            "旧的整段字符串记录不能被拼在一起"
+        );
     }
 
     #[tokio::test]

@@ -564,6 +564,66 @@ async fn full_link_turn_lifecycle_with_tool_loop() {
 
 // ── 2. 多轮对话 × rollout 持久化 × 每轮回填 ──────────────────────
 
+/// 全链路(持久化):带工具的回合在**工具还没返回**时,rollout 里已经有
+/// assistant 记录。此前 assistant 只在回合结束整体落盘,回合卡在审批或
+/// 被中断时,解析 session 文件复现不出助手历史。
+#[tokio::test]
+async fn full_link_assistant_record_lands_before_turn_ends() {
+    let recorder = Arc::new(InMemoryRecorder::default());
+    let compactor = Arc::new(Compactor::new(
+        CompactorConfig {
+            summarize_after: false,
+            ..Default::default()
+        },
+        Arc::new(CannedSummarizer {
+            text: String::new(),
+            fail: true,
+        }),
+    ));
+    // 第一段脚本发起工具调用后不再给后续脚本:工具执行完模型无输出,
+    // 回合会停。断言放在工具开始事件处,此时回合一定还没结束。
+    let client = ScriptedClient::new(vec![tool_call_script(
+        "c1",
+        "echo",
+        serde_json::json!({"text": "ping"}),
+    )]);
+    let cfg = AgentConfig::new("scripted/m1", Path::new("."))
+        .with_m4(make_m4(Some(recorder.clone()), compactor));
+    let thread = build_scripted_thread("scripted", cfg, client);
+
+    let mut handle = thread.submit(sub("live", user_input("run echo"))).await;
+    let saw_tool = timeout(Duration::from_secs(5), async {
+        while let Some(event) = handle.next().await {
+            if matches!(event.msg, EventMsg::ToolCallBegin(_)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("等待工具开始事件超时");
+    assert!(saw_tool, "模型发起的工具调用必须出现在事件流里");
+
+    let records = recorder.0.lock().clone();
+    let assistant = records.iter().find(|record| {
+        matches!(
+            record,
+            RolloutRecord::Message {
+                role: MessageRole::Assistant,
+                ..
+            }
+        )
+    });
+    let Some(RolloutRecord::Message { content, .. }) = assistant else {
+        panic!("工具尚未返回时 rollout 必须已经有 assistant 记录: {records:?}");
+    };
+    let blocks = content.as_array().expect("增量记录是内容数组");
+    assert!(
+        blocks.iter().any(|block| block["type"] == "tool_use"),
+        "已落盘的记录必须含本次工具调用: {blocks:?}"
+    );
+}
+
 /// 全链路(持久化):recorder 在位 → 第 1 轮落盘(SessionMeta / user /
 /// assistant / TokenCount)→ 第 2 轮经 replay 回填,第二次模型请求
 /// 包含第 1 轮的 user 与 assistant 文本 —— 跨轮记忆不丢。
@@ -652,6 +712,7 @@ async fn full_link_multi_turn_rollout_replay() {
         })
         .count();
     assert_eq!(user_msgs, 2, "两轮 user 消息均落盘");
+    // 纯文本回合每步一条 assistant 记录,两轮即两条。
     assert_eq!(assistant_msgs, 2, "两轮 assistant 消息均落盘");
     assert!(
         records

@@ -26,3 +26,39 @@ pub use model_call::model_call;
 pub use nudge::{maybe_inject_progress_nudge, url_host};
 pub use pre_loop::pre_loop;
 pub use tool_exec::tool_exec;
+
+use zhuye_protocol::{ContentBlock, MessageRole, RolloutRecord};
+
+use crate::submission_loop::NodeContext;
+
+/// 把本步已完成的 assistant 内容增量落盘。
+///
+/// 之前 assistant 消息只在**回合结束**时整体写一条。回合未结束(阻塞在 plan
+/// 审批、被中断、进程退出)时,JSONL 里没有任何 assistant 记录,解析
+/// session 文件复现不出助手历史。现在每个已完成步骤(一次 model_call 的
+/// 文本 + 工具调用,或一批工具结果)立即以**同一 turn_id** 追加一条 assistant
+/// 记录。
+///
+/// 消费端按 turn 归并:`records_to_preload` 把同 turn 的连续 assistant 记录
+/// 拼成一条,块顺序与改动前的整体落盘逐块一致。回合收尾**不再**写
+/// 一次整体记录, 否则历史会被重复回填。
+///
+/// best-effort:写失败只记日志,不阻断回合。空块不写。
+pub(crate) async fn persist_assistant_step(ctx: &NodeContext, blocks: &[ContentBlock]) {
+    if blocks.is_empty() {
+        return;
+    }
+    let Some(recorder) = ctx.recorder.as_ref() else {
+        return;
+    };
+    if let Err(error) = recorder
+        .record(RolloutRecord::message(
+            ctx.turn_id,
+            MessageRole::Assistant,
+            serde_json::to_value(blocks).unwrap_or(serde_json::Value::Null),
+        ))
+        .await
+    {
+        tracing::warn!(error = %error, "incremental assistant rollout record failed");
+    }
+}

@@ -142,7 +142,10 @@ pub async fn process_stream_events(
             let next = tokio::select! {
                 biased;
                 _ = ctx.cancel.cancelled() => {
-                    preserve_interrupted_text(state, &mut text_buf);
+                    if let Some(block) = preserve_interrupted_text(state, &mut text_buf) {
+                        crate::graph::nodes::persist_assistant_step(ctx, std::slice::from_ref(&block))
+                            .await;
+                    }
                     return Err(RetryAction::GiveUp);
                 },
                 next = tokio::time::timeout_at(deadline, s.next()) => next,
@@ -172,8 +175,12 @@ pub async fn process_stream_events(
         tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => {
-                // 终态由 submission loop 在落盘之后统一发送,避免重复。
-                preserve_interrupted_text(state, &mut text_buf);
+                // 终态由 submission loop 统一发送。已流出的文本在这里落盘:
+                // GiveUp 后 model_call 直接返回,走不到正常收尾的落盘点。
+                if let Some(block) = preserve_interrupted_text(state, &mut text_buf) {
+                    crate::graph::nodes::persist_assistant_step(ctx, std::slice::from_ref(&block))
+                        .await;
+                }
                 return Err(RetryAction::GiveUp);
             }
             evt = s.next() => {
@@ -320,7 +327,11 @@ pub async fn process_stream_events(
         if has_visible_output && matches!(action, RetryAction::GiveUp) {
             // 不可重试错误(4xx / 取消 / 上下文超限):可见增量无法撤回,
             // 保留已输出文本并结束本轮,由调用方决定是否续跑(原有行为)。
-            preserve_interrupted_text(state, &mut text_buf);
+            // 文本随即落盘:本分支返回后 model_call 直接结束,不会再写记录。
+            if let Some(block) = preserve_interrupted_text(state, &mut text_buf) {
+                crate::graph::nodes::persist_assistant_step(ctx, std::slice::from_ref(&block))
+                    .await;
+            }
             tried.push(TriedCredential {
                 label: label.to_string(),
                 outcome: outcome_code(&e).to_string(),
@@ -409,13 +420,20 @@ pub async fn process_stream_events(
 }
 
 /// 保留已发送给客户端的文本,供中断后的持久化与恢复使用。
-fn preserve_interrupted_text(state: &mut AgentState, text: &mut String) {
-    if !text.is_empty() {
-        state.turn_content.append(&mut state.latest_content);
-        state.latest_content.push(ContentBlock::Text {
-            text: std::mem::take(text),
-        });
+///
+/// 返回本步新保留的文本块。调用方必须把它增量落盘:流被取消时
+/// `model_call` 直接返回,不会走到正常收尾的落盘点,而回合结束路径
+/// 不再整体重写 assistant 记录。
+fn preserve_interrupted_text(state: &mut AgentState, text: &mut String) -> Option<ContentBlock> {
+    if text.is_empty() {
+        return None;
     }
+    state.turn_content.append(&mut state.latest_content);
+    let block = ContentBlock::Text {
+        text: std::mem::take(text),
+    };
+    state.latest_content.push(block.clone());
+    Some(block)
 }
 
 /// 由重试动作推 `StreamError.retry_in_ms` / `AgentMessageReset.retry_in_ms`:
