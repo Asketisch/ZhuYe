@@ -55,8 +55,9 @@
 |---|---|
 | `zhuye-fs/src/lib.rs` | 数据目录解析与原子写实现 |
 | `zhuye-config/src/schema/mod.rs` | 配置数据结构定义处 |
+| `zhuye-config/src/schema/provider_group.rs` | 模型组(`[[provider_group]]`)schema:命名 provider 条目,组 id 即模型 spec 前缀与池名 |
 | `zhuye-config/src/watch.rs` | 配置热重载监听 |
-| `zhuye-config/src/builder/` | 配置 → ModelRegistry 的装配 |
+| `zhuye-config/src/builder/` | 配置 → ModelRegistry 的装配(内置三段 + 模型组共.entries helper;非法/重复组 id warn 跳过) |
 | `zhuye-plugin/src/manager/mod.rs` | 插件安装 / 卸载与状态记账 |
 | `zhuye-rollout/src/lib.rs` | JSONL rollout 落盘与轮转 |
 | `zhuye-rollout/src/index/mod.rs` | 会话索引:`list_sessions` 只读每文件首行(按 session 去重);首行非 SessionMeta 时在前缀窗口与轮转副本中恢复。`message_count` 把同回合同角色的增量落盘分片计为一条消息 |

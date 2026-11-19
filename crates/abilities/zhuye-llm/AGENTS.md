@@ -15,6 +15,7 @@
 - provider 对外声明的能力走 `capabilities.rs` 的 `Capabilities` 标志位(`tool_use` / `prompt_caching` / `extended_thinking` / `vision` / `json_mode` / `system_blocks`)。**`zhuye-core` 据此决定是否注入 cache breakpoint、是否启用 extended thinking、是否发送多块 system prompt** —— 标志填错,行为会在上层静默走偏。
 - provider 身份用强类型的 `ProviderKind` 表达(`Anthropic` / `OpenAI` / `Ollama` / `Custom`),不要退回字符串比较。
 - 多凭据场景走 `registry.rs` 的 `ModelRegistry`(name → `CredentialPool`,加权轮询 + cooldown 过滤),单凭据元数据在 `credential.rs`,冷却状态在 `cooldown.rs`。
+- 端点有模型清单 API 的 provider 必须实现 `ModelClient::list_models`(trait 默认 `Ok(None)` = 诚实降级「无清单端点」):openai / responses / ollama / anthropic 均已实现(anthropic 走 `GET {base}/v1/models`,认证头与 chat 同规则)。**404/405 返回 `Ok(None)`、其余状态如实报错**;清单发现(`zhuye-config::discovery`)依赖本能力做 `model = "free"` 解析与 `zhuye models list`,GUI 侧展示清单另有直连实现,新增/改动时两侧口径要保持一致。
 
 ### 2. 内联 System 消息折叠是发 wire 前的硬步骤
 
