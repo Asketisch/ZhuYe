@@ -44,7 +44,8 @@ pub use event::ChatEvent;
 pub use model_catalog::{DEFAULT_ALWAYS_FREE, DEFAULT_FREE_ID_PATTERNS, FreeModelRules, ModelInfo};
 pub use models_dev::{
     CACHE_TTL_SECS, DevCatalog, LEAST_WINDOW, MODELS_DEV_URL, ModelAbilities, abilities_for,
-    enrich_model_info, install_catalog, refresh, refresh_if_stale,
+    enrich_model_info, install_catalog, refresh, refresh_if_stale, with_snapshot_catalog,
+    with_test_catalog,
 };
 pub use policy::{Role, RoutingPolicy, SpecSlot};
 pub use providers::{

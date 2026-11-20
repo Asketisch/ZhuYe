@@ -431,6 +431,26 @@ fn read_cache(path: &Path) -> Option<(i64, DevCatalog)> {
     Some((env.fetched_at, catalog))
 }
 
+/// 测试钩子:持目录测试锁,把进程内目录恢复为**内嵌快照**,再运行
+/// `f`。其他 crate 的单测(reasoning_effort 等)会向这个进程级全局装
+/// 极简 fixture 且不恢复 —— 桌面侧断言真实目录的测试若与之并发
+/// (Windows 调度实证),会读到 fixture 而误报;持锁后互斥,恢复后
+/// 断言与执行顺序无关。
+pub fn with_snapshot_catalog<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = catalog_test_lock().lock().unwrap();
+    *global_catalog().write() = DevCatalog::parse_api(&decode_snapshot()).unwrap_or_default();
+    f()
+}
+
+/// 测试钩子:持目录测试锁并安装 `catalog`,再运行 `f` —— 与
+/// [`with_snapshot_catalog`] 及其他持锁测试互斥,fixture 不再被并发
+/// 重置(进程内并发测试互相覆盖的同一竞态,Windows 调度实证)。
+pub fn with_test_catalog<R>(catalog: DevCatalog, f: impl FnOnce() -> R) -> R {
+    let _guard = catalog_test_lock().lock().unwrap();
+    *global_catalog().write() = catalog;
+    f()
+}
+
 /// 查 `model_spec` 的目录能力(进程级懒加载;空目录 = 全未知)。
 pub fn abilities_for(model_spec: &str) -> ModelAbilities {
     global_catalog().read().get(model_spec)
@@ -530,7 +550,8 @@ pub fn enrich_model_info(info: &mut ModelInfo) {
 /// 测试辅助:目录全局是进程级共享,所有 install_catalog 的单测
 /// (本模块与 reasoning_effort)用这把锁互斥,避免并行用例互相覆盖
 /// (与 `context_window::override_test_lock` 同一模式)。
-#[cfg(test)]
+/// 不再 cfg(test):`with_snapshot_catalog` 测试钩子在依赖构建
+/// (桌面端单测)下也要持这把锁。
 pub(crate) fn catalog_test_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
