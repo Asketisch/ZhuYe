@@ -28,8 +28,12 @@ zhuye plugin enable <清单名>@inline
 | [`git-tools/`](git-tools/) | `git-tools` | git 工作流:分支 / PR / diff 探测 + checkpoint 快照 + Stop 自动 checkpoint(需先构建二进制) |
 | [`shell/`](shell/) | `shell` | 常驻 shell 会话池:启动进程 / 增量读输出 / 写 stdin / kill(需先构建二进制) |
 | [`harness-import/`](harness-import/) | `harness-import` | 导入外部 Harness(Claude Code / Codex / ZCode)历史会话;一键导入其他本地 agent 的模型 / MCP 配置(需先构建二进制) |
-| [`goal-queue/`](goal-queue/) | `goal-queue` | 目标模式(goal 工具)+ FIFO 队列模式(queue 工具;纯声明) |
+| [`goal-queue/`](goal-queue/) | `goal-queue` | 目标模式(goal 工具)+ FIFO 队列模式(queue 工具;门控型,默认关) |
 | [`kms/`](kms/) | `kms` | 本地 Markdown 知识库:多 wiki 分页 + grep 检索 + dream 固化(需先构建二进制) |
+| [`web-search/`](web-search/) | `web-search` | `web_search` 工具(Brave API;门控型,**默认开**) |
+| [`notebook/`](notebook/) | `notebook` | `notebook_edit` 工具(Jupyter cell 编辑;门控型,**默认开**) |
+| [`verify-hooks/`](verify-hooks/) | `verify-hooks` | verification / test_runner 校验双 hook 的插件启用路径(门控型,默认关,双路径) |
+| [`lsp/`](lsp/) | `lsp` | LSP 集成粗粒度开关与文档(门控型;激活由 `[lsp_servers]` 配置驱动) |
 
 ⚠️ **目录名与清单名不必相同**:manifest 的 `name` 必填,并用于构成
 插件 id(`name@marketplace` 的 `<name>` 部分)。以 `plugin-demo` 为例,

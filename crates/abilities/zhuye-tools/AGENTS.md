@@ -15,11 +15,13 @@
 
 | 同步点 | 落点 |
 |---|---|
-| 计数常量 | `src/builtin_tools.rs` 的 `BUILTIN_TOOL_COUNT` |
-| 计数断言 | 同文件 `tests` 模块的 `registers_the_full_builtin_set`,断言注册后的工具名数量 |
+| 计数常量 | `src/builtin_tools.rs` 的 `BUILTIN_TOOL_COUNT`(全开门控时的总数)与 `UNGATED_BUILTIN_TOOL_COUNT`(无条件数) |
+| 计数断言 | 同文件 `tests` 模块的 `registers_the_full_builtin_set` / `gates_off_skip_plugin_tools_only` |
 | 权威清单 | `docs/tools-and-hooks.md` §2「内置工具契约」的名称与用途表 |
 
-注册入口是 `register_builtin_tools`,它统一注册核心内置工具;该清单只是**核心注册清单**,不是运行时可见工具的全集(编排 / cron / 插件 / MCP / SDK 远程工具会另外注册)。
+注册入口是 `register_builtin_tools`(全开,等价 `register_builtin_tools_with_gates(_, _, _, BundledToolGates::all_on())`),它统一注册核心内置工具;该清单只是**核心注册清单**,不是运行时可见工具的全集(编排 / cron / 插件 / MCP / SDK 远程工具会另外注册)。
+
+**门控型插件工具**:web_search(web-search 插件)/ notebook_edit(notebook 插件)默认开,注册行在 `register_builtin_tools_with_gates` 内由 `BundledToolGates` 包裹 —— 关闭 = 不进注册表(区别于 `[active].disallowed_tools` 的可见性过滤)。判定不来自本 crate:装配层用 `zhuye_plugin::bundled_tool_gates(enabled, disabled)` 构造门(插件名 → 工具的映射只在该函数维护)。
 
 ### 2. AST 工具由调用方注入,不得反向依赖
 

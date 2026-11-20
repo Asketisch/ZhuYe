@@ -197,6 +197,8 @@ max-iteration 安全阀兜底防止无限续跑。
 
 发给 LLM 的工具 schema 由 `ToolRegistry::list_specs()` 产出后再经 PreLoop
 过滤 —— 未注册或被裁剪的工具**根本不进 prompt**。核心内置工具共 **27 个**
+= 25 无条件 + 2 门控插件工具(`web_search` / `notebook_edit`,默认开,可经
+`[plugins].disabled_plugins` 整体禁用,禁用后不进注册表)
 (`builtin_tools.rs`,三条路径 exec / serve / lib facade 共用这一份注册
 清单):`echo`、`bash`、`background_status`、`read`、`write`、`edit`、
 `delete_file`、`grep`、`glob`、`EnterPlanMode`、`ExitPlanMode`、
