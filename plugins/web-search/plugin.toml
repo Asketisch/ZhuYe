@@ -1,0 +1,23 @@
+# web_search 门控插件 —— Brave Search API 的 Web 搜索工具。
+#
+# 形态:门控型(goal-queue 先例)—— 工具本体(web_search)留在引擎
+# crate(zhuye-tools),注册与否由本插件的启用状态决定。**默认开启**
+# (BUNDLED_PLUGIN_DEFAULTS 表),即升级用户行为不变:工具名 web_search、
+# 审批下限 Auto、默认可用性均保持原样。
+#
+# 关闭(二选一,粒度不同):
+# - 插件级(推荐):zhuye plugin disable web-search@inline
+#   → 工具不进注册表(tools 面消失、tool_search 搜不到、调用 tool
+#     not found);等价于把 "web-search@inline" 写进
+#     ~/.zhuye/config.toml 的 [plugins].disabled_plugins。
+# - 工具名级:[active] disallowed_tools = ["web_search"]
+#   → 工具仍注册,仅 LLM 不可见(可见性过滤层)。
+#
+# 安装(为了 plugin enable / 命令挂载;门控判定不依赖安装):
+#   zhuye plugin install plugins/web-search --scope user
+#   zhuye plugin enable web-search@inline
+name = "web-search"
+version = "0.1.0"
+description = "web_search 工具(Brave Search API):Web 搜索,默认开启;可整体禁用或仅对 LLM 隐藏"
+keywords = ["web-search", "search", "brave", "gated"]
+commands = "./commands"
