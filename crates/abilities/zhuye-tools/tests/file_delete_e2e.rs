@@ -134,36 +134,44 @@ async fn e2e_delete_without_prior_read_is_allowed() {
 /// 探针 + workspace 内 symlink,验证 component 归一化后仍被拦。
 #[tokio::test]
 async fn e2e_path_escape_via_dotdot_denied() {
-    let ws = tmp_workspace();
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .expect("测试需要 HOME 或 USERPROFILE");
-    let probe =
-        std::path::Path::new(&home).join(format!(".zhuye_del_probe_{}", std::process::id()));
-    std::fs::create_dir_all(&probe).unwrap();
-    let target = probe.join("tempting_target.txt");
-    std::fs::write(&target, "should-survive").unwrap();
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&probe, ws.join("link")).unwrap();
+    let probe = {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .expect("测试需要 HOME 或 USERPROFILE");
+        let dir =
+            std::path::Path::new(&home).join(format!(".zhuye_del_probe_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("tempting_target.txt");
+        std::fs::write(&target, "should-survive").unwrap();
+        dir
+    };
     #[cfg(not(unix))]
     {
+        // 非 Unix(Windows):symlink 创建需要管理员/开发者模式,
+        // 本回归仅在 Unix 上执行。提前清理探针并 return —— 后续
+        // 主体收进 cfg(unix) 块,Windows 下不编译,不留 unreachable。
         let _ = std::fs::remove_dir_all(&probe);
-        return; // symlink 需要 Unix。
     }
+    #[cfg(unix)]
+    {
+        let ws = tmp_workspace();
+        std::os::unix::fs::symlink(&probe, ws.join("link")).unwrap();
 
-    let q = build_queue(&ws).await;
-    let r = q
-        .execute_all(vec![make_call(
-            "c1",
-            "delete_file",
-            serde_json::json!({"path": "sub/../link/tempting_target.txt"}),
-        )])
-        .await;
-    let result = first(&r);
-    assert!(result.is_error, "../ 转义应被拒绝");
-    // 关键是 target 文件**没被删**。
-    assert!(target.exists(), "../ 转义路径不能删除写根之外文件");
-    let _ = std::fs::remove_file(ws.join("link"));
+        let q = build_queue(&ws).await;
+        let r = q
+            .execute_all(vec![make_call(
+                "c1",
+                "delete_file",
+                serde_json::json!({"path": "sub/../link/tempting_target.txt"}),
+            )])
+            .await;
+        let result = first(&r);
+        assert!(result.is_error, "../ 转义应被拒绝");
+        // 关键是 target 文件**没被删**。
+        let target = probe.join("tempting_target.txt");
+        assert!(target.exists(), "../ 转义路径不能删除写根之外文件");
+        let _ = std::fs::remove_file(ws.join("link"));
+    }
     let _ = std::fs::remove_dir_all(&probe);
 }
 
