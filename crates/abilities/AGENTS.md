@@ -23,7 +23,6 @@
 | `zhuye-recovery` | 上下文恢复(元消息收集与回填) | 并入本篇 |
 | `zhuye-notes` | 会话级增量笔记 | 并入本篇 |
 | `zhuye-sanitize` | 密钥脱敏叶 crate | 并入本篇 |
-| `zhuye-kms` | 基于 grep 的本地知识库 wiki | 并入本篇 |
 | `zhuye-eval` | 固定评测集与自动打分 | 并入本篇 |
 
 「并入本篇」= 该 crate 规模不足以独立成篇,它的本地契约留在本篇(见下方通用规则)。
@@ -38,7 +37,7 @@
 ## 跨层边界
 
 - 本层的公共契约一律取自 `zhuye-protocol`;本层不定义协议类型。
-- 本层向 resources 层取**少量、方向明确**的依赖:配置解析(`zhuye-config`:hooks / kms / notes / prompt)与文件原语(`zhuye-fs`:llm / memory / tools),以及 `zhuye-tools` 用到的 `zhuye-git` / `zhuye-permissions` / `zhuye-rollout` / `zhuye-sandbox`。
+- 本层向 resources 层取**少量、方向明确**的依赖:配置解析(`zhuye-config`:hooks / notes / prompt)与文件原语(`zhuye-fs`:llm / memory / tools),以及 `zhuye-tools` 用到的 `zhuye-git` / `zhuye-permissions` / `zhuye-rollout` / `zhuye-sandbox`。
 - 反向(resources → abilities)只出现在少数特例:`zhuye-ast`、`zhuye-wasm`、`zhuye-plugin` 分别依赖 `zhuye-tools` / `zhuye-hooks`。**因此本层不得反向依赖这三个 crate**,否则成环 —— 已知反依赖约束见 [zhuye-tools/](zhuye-tools/AGENTS.md)。
 - 本层不感知 runtime / orchestration:编排顺序、headless 生命周期、CLI 参数面都在上层。
 

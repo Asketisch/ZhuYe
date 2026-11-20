@@ -78,10 +78,10 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
 | 层 | Crate | 职责 |
 |----|-------|------|
 | `protocol/` | zhuye-protocol | Submission / Op / EventMsg / Item + RolloutRecorder trait。所有层的公共契约 |
-| `abilities/` | llm, tools, bm25, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, kms, eval | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、BM25 检索、HookEngine、压缩 escalation、本地知识库 wiki、评测等 |
+| `abilities/` | llm, tools, bm25, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, eval | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、BM25 检索、HookEngine、压缩 escalation、评测等 |
 | `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, audit, secrets, ast, fs, git, wasm | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索、审计、加密密钥存储、共享文件原语、git 能力族、WASM 组件插件宿主 |
 | `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队/squad、DAG 流水线、目标模式、side-channel(zhuye-core) |
-| `integrations/` | mcp, lsp, integration, stream, import, computer-use, shell, git-tools | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端(含 cron / autopilot)、外部 Harness 会话导入、Computer Use、常驻 shell 会话池、git 工作流 MCP server(后四者是 `plugins/*` 的能力核心,不进 SDK facade) |
+| `integrations/` | mcp, lsp, integration, stream, import, computer-use, shell, git-tools, kms | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端(含 cron / autopilot)、外部 Harness 会话导入、Computer Use、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki(后五者是 `plugins/*` 的能力核心,不进 SDK facade) |
 | `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(百余个 re-exports + Builder)、PyO3 绑定 |
 
 ### 核心数据流
