@@ -393,6 +393,17 @@ impl ZhuyeBuilder {
         if hooks_cfg.enabled.is_none() {
             hooks_cfg.enabled = Some(Vec::new());
         }
+        // verify-hooks 门控插件(默认关):插件启用 = 显式启用 verification
+        // / test_runner(双路径,与 exec 同一判定;见 headless 装配注释)。
+        if zhuye_plugin::bundled_plugin_enabled(
+            "verify-hooks",
+            self.plugins
+                .as_deref()
+                .unwrap_or(&app_cfg.plugins.enabled_plugins),
+            &app_cfg.plugins.disabled_plugins,
+        ) {
+            hooks_cfg.enable_hook_names(&["verification", "test_runner"]);
+        }
         let hook_engine: Arc<zhuye_hooks::HookEngine> = Arc::new(hooks_cfg.build_engine());
         // B6:注入 hook 注册进引擎(名字即 `Hook::name()`,可按名启停)。
         for h in &self.extra_hooks {
@@ -483,6 +494,17 @@ impl ZhuyeBuilder {
         let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_reflect_section(&app_cfg.hooks);
         if hooks_cfg.enabled.is_none() {
             hooks_cfg.enabled = Some(Vec::new());
+        }
+        // verify-hooks 门控插件(默认关):插件启用 = 显式启用 verification
+        // / test_runner(双路径,与 exec 同一判定)。
+        if zhuye_plugin::bundled_plugin_enabled(
+            "verify-hooks",
+            self.plugins
+                .as_deref()
+                .unwrap_or(&app_cfg.plugins.enabled_plugins),
+            &app_cfg.plugins.disabled_plugins,
+        ) {
+            hooks_cfg.enable_hook_names(&["verification", "test_runner"]);
         }
         let hook_engine: Arc<zhuye_hooks::HookEngine> = Arc::new(hooks_cfg.build_engine());
         // B6:注入 hook 注册进引擎(与 build 同款)。

@@ -304,6 +304,16 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     if args.hooks_explicit_only && hooks_cfg.enabled.is_none() {
         hooks_cfg.enabled = Some(Vec::new());
     }
+    // verify-hooks 门控插件(默认关):插件启用 = 显式启用 verification /
+    // test_runner 两个内置 hook(双路径:config [hooks] 显式列出 OR 插件
+    // 启用;注入在 explicit-only 收紧之后,保证 serve / 嵌入场景同样生效)。
+    if zhuye_plugin::bundled_plugin_enabled(
+        "verify-hooks",
+        &resolve_enabled_plugins(args, &initial_cfg),
+        &initial_cfg.plugins.disabled_plugins,
+    ) {
+        hooks_cfg.enable_hook_names(&["verification", "test_runner"]);
+    }
     let hook_engine: Arc<zhuye_hooks::HookEngine> = Arc::new(hooks_cfg.build_engine());
 
     // 1. ModelRegistry(env 兜底;v1.3 起 `ZHUYE_MODEL=mock` 可离线注册

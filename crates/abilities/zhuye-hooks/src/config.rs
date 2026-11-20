@@ -136,6 +136,23 @@ impl HooksConfig {
         }
     }
 
+    /// 门控型 verify-hooks 插件路径(双路径之一):把内置 hook 短名并进
+    /// enabled 列表 —— 与「config `[hooks]` 显式列出」等价,对 serve /
+    /// 嵌入场景的 explicit-only 收紧同样生效。`enabled == None`
+    /// (全部启用语义)时无需动。
+    ///
+    /// 装配层在插件启用时调用:`enable_hook_names(&["verification",
+    /// "test_runner"])`。
+    pub fn enable_hook_names(&mut self, names: &[&str]) {
+        if let Some(list) = &mut self.enabled {
+            for n in names {
+                if !list.iter().any(|x| x == n) {
+                    list.push((*n).to_string());
+                }
+            }
+        }
+    }
+
     /// 从本配置构建 `HookEngine`。未启用或未知的 hook 不会被注册。
     pub fn build_engine(&self) -> HookEngine {
         let engine = HookEngine::new();
@@ -286,6 +303,38 @@ mod tests {
         };
         let engine = cfg.build_engine();
         assert_eq!(engine.len(), 5); // still 5 default-registered; config didn't restrict
+    }
+
+    /// verify-hooks 门控插件路径:enable_hook_names 把名字并进 enabled
+    /// 列表(幂等),None(全部启用)语义不受影响。
+    #[test]
+    fn enable_hook_names_merges_into_enabled_list() {
+        // explicit-only 收紧后(空列表)注入 → 两个 hook 被注册。
+        let mut cfg = HooksConfig {
+            enabled: Some(Vec::new()),
+            ..Default::default()
+        };
+        cfg.enable_hook_names(&["verification", "test_runner"]);
+        assert_eq!(
+            cfg.enabled.as_deref(),
+            Some(&["verification".to_string(), "test_runner".to_string()][..])
+        );
+        // 幂等:重复注入不重复追加。
+        cfg.enable_hook_names(&["verification", "test_runner"]);
+        assert_eq!(cfg.enabled.as_ref().map(|v| v.len()), Some(2));
+
+        // 已有其他名字时合并保留。
+        let mut cfg = HooksConfig {
+            enabled: Some(vec!["search_budget".into()]),
+            ..Default::default()
+        };
+        cfg.enable_hook_names(&["verification"]);
+        assert_eq!(cfg.enabled.as_deref().map(|v| v.len()), Some(2));
+
+        // None(全部启用语义)注入后仍为 None(已全启用,无需显式列出)。
+        let mut cfg = HooksConfig::default();
+        cfg.enable_hook_names(&["verification"]);
+        assert!(cfg.enabled.is_none());
     }
 
     #[test]
