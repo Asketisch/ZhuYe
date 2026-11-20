@@ -159,13 +159,13 @@ def test_子代理继承父级放行但仍受沙箱边界限制(sandbox, serve_s
             "ZHUYE_HOME": str(sandbox.home / ".zhuye"),
             "ZHUYE_APPROVALS": "1",
         }
-        # v1.3 沙箱策略:/tmp ∪ $TMPDIR 是全局合法写根 —— pytest 的临时
-        # 树就在 /tmp 下,逃逸探针必须落在全部写根之外(真实 HOME 下)。
-        # 拒绝发生在工具层路径检查(resolve_writable_path),不触碰文件系统。
-        import os as _os
+        # v1.3 沙箱策略:/tmp ∪ $TMPDIR 是全局合法写根,且 functional 套件
+        # 会把 HOME 沙箱化到 /tmp 下(run_all.sh)—— 任何 tmp/HOME 探针都
+        # 不构成越界(CI 实证)。探针用系统 hosts 文件:稳定存在于全部
+        # 写根之外、无需创建;拒绝发生在工具层路径检查。
         from pathlib import Path as _Path
-        outside = _Path(_os.path.expanduser("~")) / "zhuye-subagent-sandbox-probe-outside-child.txt"
-        outside.write_text("原始内容")  # 目标必须存在:见 test_tools::T24 注释
+        outside = _Path("/etc/hosts")
+        outside_before = outside.read_text()
         inside = sandbox.cwd / "allowed-child.txt"
         with serve_session(env=env) as session:
             parent = session.send({"type": "user_input", "items": [
@@ -195,7 +195,7 @@ def test_子代理继承父级放行但仍受沙箱边界限制(sandbox, serve_s
             }]
             assert first_event(events, "turn_complete")["msg"]["status"] == "success", events
         assert inside.read_text() == "子代理可写入"
-        assert outside.read_text() == "原始内容", "子代理绕过了工作区沙箱"
+        assert outside.read_text() == outside_before, "子代理绕过了工作区沙箱"
         assert len(requests) == 5, requests
         outside_history = json.dumps(requests[2]["messages"], ensure_ascii=False)
         assert "outside-call" in outside_history
@@ -206,7 +206,6 @@ def test_子代理继承父级放行但仍受沙箱边界限制(sandbox, serve_s
         inside_history = json.dumps(requests[3]["messages"], ensure_ascii=False)
         assert "子代理可写入" in inside_history, inside_history
     finally:
-        outside.unlink(missing_ok=True)
         gateway.shutdown()
         thread.join(timeout=5)
         gateway.server_close()

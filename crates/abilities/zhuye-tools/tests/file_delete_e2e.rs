@@ -135,7 +135,9 @@ async fn e2e_delete_without_prior_read_is_allowed() {
 #[tokio::test]
 async fn e2e_path_escape_via_dotdot_denied() {
     let ws = tmp_workspace();
-    let home = std::env::var("HOME").expect("测试需要 HOME");
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .expect("测试需要 HOME 或 USERPROFILE");
     let probe =
         std::path::Path::new(&home).join(format!(".zhuye_del_probe_{}", std::process::id()));
     std::fs::create_dir_all(&probe).unwrap();

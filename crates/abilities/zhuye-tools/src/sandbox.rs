@@ -424,7 +424,9 @@ mod tests {
         let inner = setup();
         // $HOME/.ssh 是凭证目录:直接以该目录为读目标(存在即触发,
         // 不依赖某个具体的密钥文件存在)。
-        let home = std::env::var("HOME").expect("测试需要 HOME");
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .expect("测试需要 HOME 或 USERPROFILE");
         let ssh_dir = Path::new(&home).join(".ssh");
         if ssh_dir.is_dir() {
             let result = resolve_readable_path(&inner, &ssh_dir);
@@ -438,7 +440,9 @@ mod tests {
 
     /// 写根之外的探针目录(temp 自身是写根,负例必须用 $HOME)。
     fn probe_outside_roots(tag: &str) -> PathBuf {
-        let home = std::env::var("HOME").expect("测试需要 HOME");
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .expect("测试需要 HOME 或 USERPROFILE");
         let dir = Path::new(&home).join(format!(
             ".zhuye_sb_unit_probe_{}_{}",
             tag,
