@@ -617,6 +617,8 @@ pub(crate) fn transport_mirror_from_runtime(
 /// v0.5: 启动 LSP server 集合并注册 `lsp` 工具。
 ///
 /// 流程(完全镜像 `bootstrap_m6`):
+/// 0. `lsp_plugin_disabled` = lsp 门控插件显式禁用(`[plugins]
+///    .disabled_plugins` 含 "lsp")→ 整体关闭(见函数体注释)。
 /// 1. 校验 `[lsp_servers]` 配置,失败 → warn + 整段跳过。
 /// 2. 构造 `LspConnectionManager` + 内置 mpsc channel `internal_tx` →
 ///    `LspLifecycleEvent`,由后台 task 转成
@@ -630,7 +632,17 @@ pub(crate) async fn bootstrap_lsp(
     initial_cfg: &zhuye_config::ReflectConfig,
     event_tx: tokio::sync::mpsc::Sender<zhuye_protocol::Event>,
     tools: Arc<ToolRegistry>,
+    lsp_plugin_disabled: bool,
 ) -> Option<Arc<LspConnectionManager>> {
+    // lsp 门控插件(默认关):激活始终需要 `[lsp_servers]` 定义(config
+    // 路径,语义不变);插件承载**粗粒度开关** —— 显式禁用
+    // (`[plugins].disabled_plugins` 含 "lsp")时即使有配置也整体关闭
+    // (lsp 工具不注册、server 不启动)。插件启用是无独立效果的显式
+    // 表态(无 [lsp_servers] 定义时本函数同样因空配置返回 None)。
+    if lsp_plugin_disabled {
+        tracing::info!("lsp plugin explicitly disabled; skipping LSP bootstrap");
+        return None;
+    }
     let configs = match initial_cfg.lsp_server_configs() {
         Ok(c) if c.is_empty() => return None,
         Ok(c) => c,

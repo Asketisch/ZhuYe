@@ -1078,7 +1078,14 @@ pub async fn bootstrap_normal(
 
     // MCP / LSP bootstrap(失败仅 warn,不阻塞主流程)。
     let mcp_manager = bootstrap_m6(&initial_cfg, reload_tx.clone()).await;
-    let _lsp_manager = bootstrap_lsp(&initial_cfg, reload_tx.clone(), tools.clone()).await;
+    let _lsp_manager = bootstrap_lsp(
+        &initial_cfg,
+        reload_tx.clone(),
+        tools.clone(),
+        // lsp 门控插件粗粒度开关:显式禁用即整体关闭(config 语义不变)。
+        initial_cfg.plugins.is_disabled("lsp"),
+    )
+    .await;
 
     // 插件 runtime —— 挂载 enabled_plugins 能力。
     let mcp_for_plugins = mcp_manager.clone().unwrap_or_else(|| {
@@ -1400,7 +1407,14 @@ pub async fn bootstrap_resumed(
     tracing::info!("resume path: registered PlanModeGate + agents_md + recall + read_before_edit");
     // resume 也跑 MCP bootstrap,方便继续使用之前挂的 MCP server。
     let mcp_manager = bootstrap_m6(&initial_cfg, reload_tx.clone()).await;
-    let _lsp_manager = bootstrap_lsp(&initial_cfg, reload_tx.clone(), tools.clone()).await;
+    let _lsp_manager = bootstrap_lsp(
+        &initial_cfg,
+        reload_tx.clone(),
+        tools.clone(),
+        // lsp 门控插件粗粒度开关:显式禁用即整体关闭(config 语义不变)。
+        initial_cfg.plugins.is_disabled("lsp"),
+    )
+    .await;
     // 插件 runtime —— resume 与普通分支同权:挂载 enabled_plugins。
     // resume 分支历史上没有 reload drainer(事件静默丢弃),插件
     // `PluginLoaded` 事件同样无消费者,传 `None` 静默。
