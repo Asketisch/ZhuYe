@@ -29,6 +29,10 @@ pub mod state;
 
 // ── 公共 re-export ────────────────────────────────────────────────────
 
+pub use bundled::{
+    BUNDLED_PLUGIN_DEFAULTS, bundled_plugin_default_on, bundled_plugin_enabled, bundled_tool_gates,
+    is_bundled_plugin,
+};
 pub use capabilities::{
     CapabilityError, LoadedPlugin,
     agents::LoadedAgent,
@@ -37,7 +41,6 @@ pub use capabilities::{
     mcp::{LoadedMcpServer, McpSource, McpTransportKind},
     skills::LoadedSkill,
 };
-pub use bundled::{BUNDLED_PLUGIN_DEFAULTS, bundled_plugin_default_on, bundled_plugin_enabled, bundled_tool_gates};
 pub use commands_registry::{CommandRegistry, ExpandError, expand_command, expand_user_input};
 pub use dependency::{DepResolver, ResolvedDep};
 pub use errors::{PluginError, Result};

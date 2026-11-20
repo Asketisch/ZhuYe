@@ -39,10 +39,14 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 
 ## §2 内置工具契约
 
-核心内置工具共 27 个(`BUILTIN_TOOL_COUNT`),`register_builtin_tools` 统一注册,
+核心内置工具共 27 个(`BUILTIN_TOOL_COUNT` = 25 无条件 + 2 门控插件工具,门控
+关闭时为 `UNGATED_BUILTIN_TOOL_COUNT` = 25),`register_builtin_tools` 统一注册,
 实现在 `crates/abilities/zhuye-tools/src/builtins/`(`ast` 由调用方注入,
-`memory` 在 `zhuye-exec`,见下)。27 个是核心注册清单 —— 编排 / cron /
-插件 / MCP / SDK 远程工具还会再注册,不是运行时可见工具的全集。
+`memory` 在 `zhuye-exec`,见下)。核心注册清单 = 25 个无条件 + 2 个门控
+插件工具(`web_search` / `notebook_edit`,默认开,可经
+`[plugins].disabled_plugins` 整体禁用 —— 见 features.md「三层工具管控」)
+—— 编排 / cron / 插件 / MCP / SDK 远程工具还会再注册,不是运行时可见
+工具的全集。
 名字分两派:**计划 / worktree 一族是 PascalCase**,其余是 snake_case。
 
 | 工具 | 用途 |
@@ -54,13 +58,13 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 | `delete_file` | 删文件(不删目录) |
 | `glob` | 按 pattern 列文件,按 mtime 倒序 |
 | `grep` | 正则搜索;`rank=bm25` 时按 BM25 相关性重排 |
-| `notebook_edit` | `.ipynb` 单元的增删改查 |
+| `notebook_edit` | `.ipynb` 单元的增删改查(门控:notebook 插件,默认开) |
 | `memory` | 持久记忆读写:list / read / write / remove(`## <key>` 条目块,project / user 双 scope;写 Prompt、读 Auto)。存 `MEMORY.md`,与 pre_loop 注入同源 |
 | `image_view` | 把本地图片作为多模态内容块返回 |
 | `echo` | 原样回显入参(纯函数,可并发) |
 | `brief` | 把附件 / 长上下文摘要成 briefing 块 |
 | `web_fetch` | 抓 URL,正文转 Markdown |
-| `web_search` | Brave Search,返回标题 / 链接 / 摘要 |
+| `web_search` | Brave Search,返回标题 / 链接 / 摘要(门控:web-search 插件,默认开) |
 | `ask_user` | 自由文本提问,阻塞当前轮;`secret=true` 时答案脱敏 |
 | `ask_user_question` | 1-4 个结构化问题 × 2-4 个选项,阻塞当前轮 |
 | `request_human_input` | 跨进程持久化的人工输入,每 500ms 轮询 |

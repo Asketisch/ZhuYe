@@ -103,19 +103,33 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
 
 **新功能**或 **bug 修复**提交前,必须逐条走完:
 
-1. **形态判断(内置 vs 插件)** —— 新能力动手实现前,先判断能否以插件形式承载,
-   不要默认直接写进 Rust crate:
-   - 插件有六类能力槽:commands / 子代理 / hooks / skills / MCP servers /
-     WASM 工具(manifest 权威在 `crates/resources/zhuye-plugin/src/manifest.rs`,
-     开发指南见 `docs/plugin-dev-guide.md`);
-   - **优先插件**:外部系统接入、领域特定、可选启停、第三方可能定制的能力,
-     用插件形态落地,不进核心 crate;先例:`zhuye-computer-use` / `zhuye-shell` /
-     `zhuye-git-tools` / `zhuye-import` 虽以 integrations 层 crate 实现,但作为
-     `plugins/*` 的能力本体挂载、不进 SDK facade;
-   - **才允许内置**:引擎机制(协议 / StateGraph / 持久化 / 权限)、SDK 门面
-     必需的原语、性能关键的通用工具;先例:多 agent 编排属引擎内建
-     (见 `docs/features.md`);
-   - 拿不准时先做插件;确需内置时,把判断理由写进 commit message 或 PR 描述。
+1. **形态判断(主循环 vs 插件)** —— **所有功能开发**(新能力、既有能力的
+   扩展 / 行为变更、bug 修复引入新行为)动手实现前,必须先回答两问,
+   答案写进 commit message 或 PR 描述:
+   - **第一问:是否属于主循环?** 该能力是否为 Submission 消费 →
+     StateGraph(PreLoop → ModelCall → ToolExec → CheckStop)流转必需的
+     引擎机制(协议 Op/EventMsg/Item、状态转移、审批与权限、持久化回放、
+     上下文治理、ToolExecutionQueue)?非主循环而允许内置的例外仅两类:
+     SDK 门面必需的原语、性能关键的通用工具(先例:多 agent 编排,
+     见 `docs/features.md`);
+   - **第二问:能否以插件形式存在?** 插件能力槽:commands / 子代理 /
+     hooks / skills / MCP servers / WASM 工具(manifest 权威在
+     `crates/resources/zhuye-plugin/src/manifest.rs`,开发指南见
+     `docs/plugin-dev-guide.md`);
+   - 决策矩阵:
+
+     | 第一问(主循环?) | 第二问(槽可承载?) | 形态 |
+     |---|---|---|
+     | 是(或属两类内置例外) | — | 内置,理由写进 commit / PR |
+     | 否 | 能 | **必须插件**(外部接入 / 领域特定 / 可启停 / 第三方可定制);先例:`zhuye-computer-use` / `zhuye-shell` / `zhuye-git-tools` / `zhuye-import` / `zhuye-kms` 作为 `plugins/*` 能力本体挂载、不进 SDK facade |
+     | 否 | 能,但须保持原工具名 / 审批 / 默认行为(外部用法零影响) | **门控型插件**:能力本体留引擎 crate,注册由插件启用状态门控(判定单一事实源 `zhuye-plugin::bundled_plugin_enabled`,默认开关表 `BUNDLED_PLUGIN_DEFAULTS`);先例:`goal-queue`、`web-search`、`notebook`、`verify-hooks`、`lsp` |
+     | 否 | 不能(需引擎内部状态) | goal-queue 式引擎侧特例装配,或先扩展插件系统再承载;理由必须写明 |
+
+   - 拿不准时先做插件。
+   - **门控型与三层过滤的关系**:注册门控(插件级,`[plugins]
+     .disabled_plugins`,工具不进注册表)→ 可见性过滤(工具名级,
+     `[active] tools` / `disallowed_tools`,LLM 不可见)→ 执行期审批
+     (权限规则 / floor);三层正交,不要混用入口。
    判断口径与 `docs/features.md` 的「默认启用 / 需配置 / 需插件」三段结构对齐。
 2. **能力覆盖脚本同步** —— 判断本次改动是否需要新增 / 更新能力覆盖用例:
    - 改了 agent 能力(serve 协议 Op / EventMsg / 内置工具 / 审批 / 编排 /

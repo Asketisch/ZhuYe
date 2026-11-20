@@ -79,6 +79,30 @@ api_key = "..."
 
 改完不用重启进程，配置监听器会热重载。
 
+## 工具管控(三层)
+
+工具的「关」有三个正交入口,粒度从粗到细(详见
+[features.md](features.md)「三层工具管控」):
+
+```toml
+[plugins]
+enabled_plugins  = ["git-tools@inline"]   # 启用权威表(name@marketplace 全名)
+disabled_plugins = ["web-search@inline"]  # 门控插件显式禁用(见下)
+
+[active]
+tools             = []                    # 工具白名单:非空时 LLM 可见工具集 ∩
+disallowed_tools  = ["web_search"]        # 工具黑名单:LLM 可见工具集排除 ∪
+```
+
+| 层 | 入口 | 效果 |
+|---|---|---|
+| 装配期·注册门控 | `[plugins].disabled_plugins` | **插件级**:门控插件(web-search / notebook 等默认开插件)的工具不进注册表 —— `tool_search` 搜不到、调用报 tool not found。等价命令:`zhuye plugin disable <id>` |
+| 定义期·可见性过滤 | `[active] tools` / `disallowed_tools` | **工具名级**:工具已注册,仅 LLM 不可见(可与 `.zhuye/agents/*.md` frontmatter 组合) |
+| 执行期·审批 | 权限规则 / floor | **操作级**:决定能否执行 |
+
+门控插件的启用判定**不热重载**(与插件挂载的热重载不同),变更后重启
+会话生效。
+
 ## 环境变量
 
 | 变量 | 干什么 |

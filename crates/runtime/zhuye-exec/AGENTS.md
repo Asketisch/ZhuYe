@@ -27,6 +27,7 @@ headless 与 serve 的共享装配层：读参数、bootstrap 会话、把协议
 - **`--prompt-profile` 三态提示词方案**（`ExecArgs::prompt_profile` + `src/lib.rs` 的 `apply_prompt_profile`）：取值 `default` / `auto` / 方案标识，映射 `PromptSelection` 后在会话装配前以一条 `Op::PromptCommand { Select }` 提交生效；与 resume 输入不互斥，仅设定本会话的提示词选择。方案库与来源登记见 abilities 层篇 `zhuye-prompt` 条目。
 - **`PLAN_MODE_EXIT_CODE`**（`src/lib.rs`）：`--plan-mode` 下计划未产出时的退出码，`docs/PLAN_MODE.md` 对它有明文承诺，改它要同步文档与依赖该码值的调用方脚本。
 - **hooks 启用口径**由 `HeadlessArgs::hooks_explicit_only`（`src/headless.rs`）决定：serve 侧收紧为 `true`（内置 hook 需在配置段显式列出才启用），exec / 库侧保持 `false`（未配置即全部启用）。
+- **门控型 bundled 插件的装配接线**（`src/headless.rs` `bootstrap_common`）与 hooks 收紧共用同一插件判定源：builtin 注册经 `zhuye_plugin::bundled_tool_gates(enabled, disabled)` 构造 `BundledToolGates` 传入 `register_builtin_tools_with_gates`（web-search / notebook 默认开，关闭 = 不注册）；verify-hooks 插件启用时在 explicit-only 收紧之后 `enable_hook_names` 注入；`bootstrap_lsp` 的 `lsp_plugin_disabled` 参数承载 lsp 插件粗粒度开关。goal-queue 的 gate（`wire_goal_queue_plugin`）判定同样委托 `zhuye_plugin::bundled_plugin_enabled`。
 - **telemetry 与 activity 开关**：sink 由 `src/runtime_config.rs` 的 `build_telemetry_sink` 构造；activity 审计是否落 `~/.zhuye/activity/activity.jsonl` 由配置段的 `activity` 开关决定（父开关 `enabled` 关闭时一并关闭）。
 - 改了参数面或事件形状，同步 `docs/cli.md` 的子命令总览表与 `tests/functional/` 下的能力用例。
 
