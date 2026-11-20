@@ -66,13 +66,13 @@ fn load_registry() -> anyhow::Result<(ReflectConfig, Arc<ModelRegistry>)> {
     Ok((cfg, registry))
 }
 
-/// 解析目标 provider:显式参数 > 配置里的 active provider。
+/// 解析目标 provider(实为**模型组 id**):显式参数 > 配置里的活跃组。
 fn target_provider(cfg: &ReflectConfig, explicit: Option<&str>) -> anyhow::Result<String> {
     if let Some(p) = explicit.map(str::trim).filter(|p| !p.is_empty()) {
         return Ok(p.to_string());
     }
-    cfg.active_provider().ok_or_else(|| {
-        anyhow::anyhow!("no active provider: set [active] provider in config, or pass --provider")
+    cfg.active_group().ok_or_else(|| {
+        anyhow::anyhow!("no active model group: set [active] group in config, or pass --provider")
     })
 }
 
@@ -225,7 +225,7 @@ pub async fn pick(args: PickArgs) -> anyhow::Result<i32> {
 
 /// 供 `zhuye doctor` 复用:检查清单可拉取性与免费模型数量。
 pub async fn doctor_summary(cfg: &ReflectConfig, registry: &ModelRegistry) -> Option<String> {
-    let provider = cfg.active_provider()?;
+    let provider = cfg.active_group()?;
     let timeout_secs = cfg
         .model_discovery
         .as_ref()

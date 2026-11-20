@@ -236,7 +236,7 @@ mod tests {
     async fn watcher_detects_file_change() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[active]\nprovider = \"anthropic\"\n").unwrap();
+        fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
         let initial = ReflectConfig::default();
         let watcher = ConfigWatcher::spawn(path.clone(), initial).unwrap();
@@ -244,7 +244,7 @@ mod tests {
         // 改文件。
         fs::write(
             &path,
-            "[active]\nprovider = \"openai\"\n[openai]\napi_key = \"sk-new\"\n",
+            "[active]\ngroup = \"openai\"\n\n[[model_group]]\nid = \"openai\"\nendpoint = \"openai\"\napi_key = \"sk-new\"\n",
         )
         .unwrap();
 
@@ -252,15 +252,15 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(600)).await;
 
         let cfg = watcher.current();
-        assert_eq!(cfg.active.provider.as_deref(), Some("openai"));
-        assert_eq!(cfg.openai.unwrap().api_key.as_deref(), Some("sk-new"));
+        assert_eq!(cfg.active.group.as_deref(), Some("openai"));
+        assert_eq!(cfg.model_group[0].api_key.as_deref(), Some("sk-new"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn invalid_reload_keeps_previous_value() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[active]\nprovider = \"anthropic\"\n").unwrap();
+        fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
         let initial = ReflectConfig::default();
         let watcher = ConfigWatcher::spawn(path.clone(), initial).unwrap();
@@ -271,14 +271,14 @@ mod tests {
 
         // 默认初始值应当保留(因为 reload 失败)。
         let cfg = watcher.current();
-        assert!(cfg.active.provider.is_none());
+        assert!(cfg.active.group.is_none());
     }
 
     #[tokio::test]
     async fn drain_once_helper_loads_new_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[active]\nprovider = \"anthropic\"\n").unwrap();
+        fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
         let (fs_tx, fs_rx) = mpsc::channel::<()>();
         let (cfg_tx, mut cfg_rx) = watch::channel(ReflectConfig::default());
@@ -299,7 +299,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 
         let cfg = cfg_rx.borrow_and_update().clone();
-        assert_eq!(cfg.active.provider.as_deref(), Some("openai"));
+        assert_eq!(cfg.active.group.as_deref(), Some("openai"));
         drop(cfg_rx); // suppress unused warning
     }
 
@@ -323,7 +323,7 @@ mod tests {
     async fn poll_fallback_catches_change() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[active]\nprovider = \"anthropic\"\n").unwrap();
+        fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
         let initial = ReflectConfig::default();
         // 50ms poll 间隔 —— 走 spawn_with_poll 显式 override。
@@ -334,7 +334,7 @@ mod tests {
         // 改文件(模拟 reload 触发场景)。
         fs::write(
             &path,
-            "[active]\nprovider = \"openai\"\n[openai]\napi_key = \"sk-poll\"\n",
+            "[active]\ngroup = \"openai\"\n\n[[model_group]]\nid = \"openai\"\nendpoint = \"openai\"\napi_key = \"sk-poll\"\n",
         )
         .unwrap();
 
@@ -342,8 +342,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let cfg = watcher.current();
-        assert_eq!(cfg.active.provider.as_deref(), Some("openai"));
-        assert_eq!(cfg.openai.unwrap().api_key.as_deref(), Some("sk-poll"));
+        assert_eq!(cfg.active.group.as_deref(), Some("openai"));
+        assert_eq!(cfg.model_group[0].api_key.as_deref(), Some("sk-poll"));
     }
 
     /// Polling 路径检测到变更时不会重复 send 同一配置(hash dedup)。
@@ -355,7 +355,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         // 初始文件 = openai;但 channel initial = default —— 第一次 poll 必触发 send。
-        fs::write(&path, "[active]\nprovider = \"openai\"\n").unwrap();
+        fs::write(&path, "[active]\ngroup = \"openai\"\n").unwrap();
 
         let initial = ReflectConfig::default();
         // 关键:把 watcher 绑到变量,否则 `.subscribe()` 后临时 drop,后台 task 被取消。
@@ -373,7 +373,7 @@ mod tests {
 
         // 此时应有 1 个 unread send(openai cfg);drain 掉。
         let _ = rx.changed().await;
-        assert_eq!(rx.borrow().active.provider.as_deref(), Some("openai"));
+        assert_eq!(rx.borrow().active.group.as_deref(), Some("openai"));
         let _ = rx.borrow_and_update();
 
         // 再等几个 poll tick(文件未改),`changed()` 应一直等待(hash dedup 生效)。

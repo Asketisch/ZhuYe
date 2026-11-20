@@ -3,16 +3,19 @@
 //! 原则:**只增不改** —— 已有 provider 凭证(label 去重)、已有 MCP 同名
 //! 条目一律跳过;不动 `[active]`。
 //!
-//! 关于用户手写的段级单值 `api_key` / `base_url`:运行时 builder 的规则是
-//! 「`credentials` 数组非空 → **只用数组**,否则才 wrap 段级单值」,因此
-//! 往一个只有单值的段追加 `[[credentials]]` 会让用户原有的端点与 key 在
-//! 运行时**静默失效**。合并前先把这类单值 wrap 成 `label = "default"` 的
-//! 显式条目(文本层新增一条,语义层等价),再追加导入项。
+//! 关于用户手写的组级单值 `api_key` / `base_url`:运行时 builder 的规则是
+//! 「`credentials` 数组非空 → **只用数组**,否则才 wrap 组级单值」,因此
+//! 往一个只有单值的组追加 `[[model_group.credentials]]` 会让用户原有的
+//! 端点与 key 在运行时**静默失效**。合并前先把这类单值 wrap 成
+//! `label = "default"` 的显式条目(文本层新增一条,语义层等价),再追加导入项。
+//!
+//! 导入落点:按兼容面进两个固定模型组(`anthropic` / `openai`)的
+//! `credentials` 数组 —— v2 起模型组是唯一的接入单元,没有「固定段」可落。
 
 use std::path::Path;
 
 use zhuye_config::{
-    AnthropicSection, CredentialConfig, McpServerEntry, McpTransport, OpenAISection, ReflectConfig,
+    CredentialConfig, McpServerEntry, McpTransport, ModelGroupSection, ReflectConfig,
 };
 
 use super::{ImportedAgentConfig, ImportedMcpTransport};
@@ -40,20 +43,36 @@ impl MergeReport {
     }
 }
 
-/// label 在两个 provider 段的 credentials 里是否已存在。
+/// 导入落地的两个固定模型组 id(按兼容面分)。
+const GROUP_ANTHROPIC: &str = "anthropic";
+const GROUP_OPENAI: &str = "openai";
+
+/// label 在两个固定模型组的 credentials 里是否已存在。
 fn label_exists(cfg: &ReflectConfig, label: &str) -> bool {
-    let in_anthropic = cfg
-        .anthropic
-        .as_ref()
-        .is_some_and(|s| s.credentials.iter().any(|c| c.label == label));
-    let in_openai = cfg
-        .openai
-        .as_ref()
-        .is_some_and(|s| s.credentials.iter().any(|c| c.label == label));
-    in_anthropic || in_openai
+    [GROUP_ANTHROPIC, GROUP_OPENAI]
+        .iter()
+        .any(|id| group_of(cfg, id).is_some_and(|g| g.credentials.iter().any(|c| c.label == label)))
 }
 
-/// 往某 provider 段追加导入条目前,对该段 legacy 单值形态的处置决策。
+/// 按 id 取模型组(trim 后精确匹配)。
+fn group_of<'a>(cfg: &'a ReflectConfig, id: &str) -> Option<&'a ModelGroupSection> {
+    cfg.model_group.iter().find(|g| g.id.trim() == id)
+}
+
+/// 按 id 取模型组,不存在则**新建**一个(带对应 endpoint 的固定 id 组)。
+fn group_mut<'a>(cfg: &'a mut ReflectConfig, id: &str) -> &'a mut ModelGroupSection {
+    if let Some(pos) = cfg.model_group.iter().position(|g| g.id.trim() == id) {
+        return &mut cfg.model_group[pos];
+    }
+    cfg.model_group.push(ModelGroupSection {
+        id: id.to_string(),
+        endpoint: id.to_string(),
+        ..Default::default()
+    });
+    cfg.model_group.last_mut().expect("刚 push 的组")
+}
+
+/// 往某模型组追加导入条目前,对该组 legacy 单值形态的处置决策。
 enum SectionPlan {
     /// 直接追加(数组已非空,或段完全未配置)。
     Append,
@@ -66,7 +85,7 @@ enum SectionPlan {
 
 /// 决策依据:运行时 builder 「数组非空 → 只用数组,否则 wrap 单值(含 env
 /// 回落)」。详见模块头注释。
-fn plan_for_section(
+fn plan_for_group(
     credentials: &[CredentialConfig],
     api_key: Option<&str>,
     base_url: Option<&str>,
@@ -125,38 +144,27 @@ pub fn merge_into_config(cfg: &mut ReflectConfig, imported: &ImportedAgentConfig
             cooldown_override_secs: None,
             quota: None,
         };
-        let section_name = if p.anthropic_compatible {
-            "anthropic"
+        let group_id = if p.anthropic_compatible {
+            GROUP_ANTHROPIC
         } else {
-            "openai"
+            GROUP_OPENAI
         };
-        // 两段结构不同,这里取出共同需要的三元组做决策,再分别写回。
-        let (plan, wrapped) = if p.anthropic_compatible {
-            let s = cfg.anthropic.get_or_insert_with(AnthropicSection::default);
-            let plan =
-                plan_for_section(&s.credentials, s.api_key.as_deref(), s.base_url.as_deref());
+        // 两组结构相同,这里取出共同需要的三元组做决策,再分别写回。
+        let (plan, wrapped) = {
+            let g = group_mut(cfg, group_id);
+            let plan = plan_for_group(&g.credentials, g.api_key.as_deref(), g.base_url.as_deref());
             let wrapped = wrapped_default(
-                s.api_key.as_deref(),
-                s.base_url.as_deref(),
-                s.model.as_deref(),
-            );
-            (plan, wrapped)
-        } else {
-            let s = cfg.openai.get_or_insert_with(OpenAISection::default);
-            let plan =
-                plan_for_section(&s.credentials, s.api_key.as_deref(), s.base_url.as_deref());
-            let wrapped = wrapped_default(
-                s.api_key.as_deref(),
-                s.base_url.as_deref(),
-                s.model.as_deref(),
+                g.api_key.as_deref(),
+                g.base_url.as_deref(),
+                g.model.as_deref(),
             );
             (plan, wrapped)
         };
         match plan {
             SectionPlan::SkipUnsafe => {
                 report.warnings.push(format!(
-                    "{agent}: 跳过 {}(目标 [{section_name}] 段只有 base_url、api_key 为空——\
-                     key 可能来自环境变量,追加 [[{section_name}.credentials]] 会让其失效;\
+                    "{agent}: 跳过 {}(目标模型组 {group_id} 只有 base_url、api_key 为空——\
+                     key 可能来自环境变量,追加 [[model_group.credentials]] 会让其失效;\
                      请先手动改成 credentials 数组形态再导入)",
                     p.label
                 ));
@@ -165,8 +173,8 @@ pub fn merge_into_config(cfg: &mut ReflectConfig, imported: &ImportedAgentConfig
             }
             SectionPlan::WrapThenAppend => {
                 report.warnings.push(format!(
-                    "[{section_name}] 原有单值 api_key/base_url 已 wrap 为 \
-                     [[{section_name}.credentials]] label=\"default\",避免被导入条目遮蔽"
+                    "模型组 {group_id} 原有单值 api_key/base_url 已 wrap 为 \
+                     [[model_group.credentials]] label=\"default\",避免被导入条目遮蔽"
                 ));
                 push_credential(cfg, p.anthropic_compatible, wrapped);
             }
@@ -203,19 +211,14 @@ pub fn merge_into_config(cfg: &mut ReflectConfig, imported: &ImportedAgentConfig
     report
 }
 
-/// 按兼容面把一条凭证追加到对应段的 `credentials` 数组。
+/// 按兼容面把一条凭证追加到对应模型组的 `credentials` 数组。
 fn push_credential(cfg: &mut ReflectConfig, anthropic_compatible: bool, cred: CredentialConfig) {
-    if anthropic_compatible {
-        cfg.anthropic
-            .get_or_insert_with(AnthropicSection::default)
-            .credentials
-            .push(cred);
+    let group_id = if anthropic_compatible {
+        GROUP_ANTHROPIC
     } else {
-        cfg.openai
-            .get_or_insert_with(OpenAISection::default)
-            .credentials
-            .push(cred);
-    }
+        GROUP_OPENAI
+    };
+    group_mut(cfg, group_id).credentials.push(cred);
 }
 
 /// IR transport → config 表项。
@@ -375,7 +378,7 @@ mod tests {
         assert_eq!(report.providers_added.len(), 2);
         assert_eq!(report.mcp_added, vec!["fetch".to_string()]);
 
-        let openai = cfg.openai.as_ref().unwrap();
+        let openai = group_of(&cfg, GROUP_OPENAI).unwrap();
         assert_eq!(openai.credentials.len(), 1);
         assert_eq!(openai.credentials[0].label, "imported:opencode:deepseek");
         assert_eq!(
@@ -387,7 +390,7 @@ mod tests {
             Some("deepseek-chat")
         );
 
-        let anthropic = cfg.anthropic.as_ref().unwrap();
+        let anthropic = group_of(&cfg, GROUP_ANTHROPIC).unwrap();
         assert_eq!(anthropic.credentials.len(), 1);
         assert_eq!(anthropic.credentials[0].api_key, "", "免 key 端点空串保留");
         assert_eq!(
@@ -414,7 +417,7 @@ mod tests {
         assert_eq!(report2.providers_skipped.len(), 2);
         assert_eq!(report2.mcp_skipped, vec!["fetch".to_string()]);
         // 不重复插入。
-        assert_eq!(cfg.openai.as_ref().unwrap().credentials.len(), 1);
+        assert_eq!(group_of(&cfg, GROUP_OPENAI).unwrap().credentials.len(), 1);
         assert_eq!(cfg.mcp_servers.servers.len(), 1);
     }
 
@@ -447,7 +450,7 @@ mod tests {
         write_target(&path, &cfg).unwrap();
         let loaded = load_target(&path).unwrap();
         assert_eq!(
-            loaded.openai.as_ref().unwrap().credentials[0].label,
+            group_of(&loaded, GROUP_OPENAI).unwrap().credentials[0].label,
             "imported:opencode:deepseek"
         );
         assert!(loaded.mcp_servers.servers.contains_key("fetch"));
@@ -466,7 +469,7 @@ mod tests {
         }
         // 缺失文件 → Default(首次使用)。
         let fresh = load_target(&dir.path().join("none.toml")).unwrap();
-        assert!(fresh.openai.is_none());
+        assert!(fresh.model_group.is_empty());
     }
 
     /// P0 回归:目标文件存在但解析失败必须硬失败,而不是降级为 Default 后
@@ -502,16 +505,18 @@ mod tests {
     #[test]
     fn 合并_legacy单值key先wrap再追加() {
         let mut cfg = ReflectConfig {
-            openai: Some(OpenAISection {
+            model_group: vec![ModelGroupSection {
+                id: GROUP_OPENAI.into(),
+                endpoint: GROUP_OPENAI.into(),
                 api_key: Some("sk-user-own".into()),
                 base_url: Some("https://my.gateway/v1".into()),
                 model: Some("gpt-x".into()),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         let report = merge_into_config(&mut cfg, &imported());
-        let creds = &cfg.openai.as_ref().unwrap().credentials;
+        let creds = &group_of(&cfg, GROUP_OPENAI).unwrap().credentials;
         assert_eq!(creds.len(), 2, "wrap 的 default + 导入条目");
         assert_eq!(creds[0].label, "default");
         assert_eq!(creds[0].api_key, "sk-user-own");
@@ -536,16 +541,18 @@ mod tests {
     #[test]
     fn 合并_仅base_url的legacy段跳过不破坏() {
         let mut cfg = ReflectConfig {
-            openai: Some(OpenAISection {
+            model_group: vec![ModelGroupSection {
+                id: GROUP_OPENAI.into(),
+                endpoint: GROUP_OPENAI.into(),
                 api_key: None,
                 base_url: Some("https://env-key.gateway/v1".into()),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         let report = merge_into_config(&mut cfg, &imported());
         // openai 侧导入项被跳过;anthropic 侧照常。
-        assert!(cfg.openai.as_ref().unwrap().credentials.is_empty());
+        assert!(group_of(&cfg, GROUP_OPENAI).unwrap().credentials.is_empty());
         assert!(
             report
                 .providers_skipped

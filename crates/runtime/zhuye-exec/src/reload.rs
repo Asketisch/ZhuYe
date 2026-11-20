@@ -265,16 +265,16 @@ pub async fn handle_reload(
         );
     }
 
-    // v1.x 功能 1:`[subagent_providers]` 段变更 → 重建 child registry。
+    // v1.x 功能 1:`[subagent_models]` 段变更 → 重建 child registry。
     // 后续 `spawn()` 拿新 registry(独立 base_url + api_key + model)。
     // `None` = 清除独立凭证,回退父子共享(向后兼容)。
-    if sections_changed.iter().any(|s| s == "subagent_providers") {
+    if sections_changed.iter().any(|s| s == "subagent_models") {
         if let Some(f) = factory {
             let child_reg = new_cfg.to_child_registry().map(Arc::new);
             f.set_child_registry(child_reg.clone());
             tracing::info!(
                 has_child_registry = child_reg.is_some(),
-                "config reload: subagent_providers updated"
+                "config reload: subagent_models updated"
             );
         }
     }
@@ -348,14 +348,10 @@ pub(crate) fn diff_sections(
     if old.active != new.active {
         out.push("active".to_string());
     }
-    if old.anthropic != new.anthropic {
-        out.push("anthropic".to_string());
-    }
-    if old.openai != new.openai {
-        out.push("openai".to_string());
-    }
-    if old.ollama != new.ollama {
-        out.push("ollama".to_string());
+    // 模型组(`[[model_group]]`)是唯一的模型接入单元 —— 组变化(新增 /
+    // 删除 / 改端点或凭据)统一报 "model_group"。
+    if old.model_group != new.model_group {
+        out.push("model_group".to_string());
     }
     if old.compact != new.compact {
         out.push("compact".to_string());

@@ -532,7 +532,11 @@ mod tests {
         // 落盘字段级校验。
         let body = std::fs::read_to_string(&output).unwrap();
         let cfg: zhuye_config::ReflectConfig = toml::from_str(&body).unwrap();
-        let anth = cfg.anthropic.as_ref().unwrap();
+        let anth = cfg
+            .model_group
+            .iter()
+            .find(|g| g.id == "anthropic")
+            .expect("导入应落到 anthropic 模型组");
         assert_eq!(anth.credentials.len(), 1);
         assert_eq!(anth.credentials[0].label, "imported:claude-code:anthropic");
         assert_eq!(anth.credentials[0].api_key, "sk-ant-x");

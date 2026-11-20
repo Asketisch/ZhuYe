@@ -14,23 +14,25 @@ use zhuye_protocol::{
 };
 use zhuye_tools::ToolRegistry;
 
-/// v0.3.1: 加 `[ollama]` 段 → `diff_sections` 报告 `"ollama"`,
+/// 加一个模型组 → `diff_sections` 报告 `"model_group"`,
 /// `ConfigReloaded.sections_changed` 命中 reload 测试断言。
 #[test]
-fn diff_sections_includes_ollama_when_section_added() {
-    use zhuye_config::schema::OllamaSection;
+fn diff_sections_includes_model_group_when_group_added() {
+    use zhuye_config::ModelGroupSection;
     let old = zhuye_config::ReflectConfig::default();
     let new = zhuye_config::ReflectConfig {
-        ollama: Some(OllamaSection {
+        model_group: vec![ModelGroupSection {
+            id: "ollama".into(),
+            endpoint: "ollama".into(),
             model: Some("qwen2.5:7b".into()),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
     let changed = diff_sections_for_test(&old, &new);
     assert!(
-        changed.contains(&"ollama".to_string()),
-        "ollama should be reported, got {changed:?}"
+        changed.contains(&"model_group".to_string()),
+        "model_group should be reported, got {changed:?}"
     );
 }
 
@@ -67,22 +69,24 @@ fn ephemeral_tasks_field_is_bool_with_default_false() {
     assert!(!assert_field(&off));
 }
 
-/// 仅改 `[ollama].model` → 只报 `"ollama"`,不污染其它 section。
+/// 仅改模型组的 `model` → 只报 `"model_group"`,不污染其它 section。
 #[test]
-fn diff_sections_only_ollama_changes() {
-    use zhuye_config::schema::OllamaSection;
+fn diff_sections_only_model_group_changes() {
+    use zhuye_config::ModelGroupSection;
     let old = zhuye_config::ReflectConfig {
-        ollama: Some(OllamaSection {
+        model_group: vec![ModelGroupSection {
+            id: "ollama".into(),
+            endpoint: "ollama".into(),
             model: Some("llama3.2".into()),
             keep_alive_secs: Some(300),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
     let mut new = old.clone();
-    new.ollama.as_mut().unwrap().model = Some("qwen2.5:7b".into());
+    new.model_group[0].model = Some("qwen2.5:7b".into());
     let changed = diff_sections_for_test(&old, &new);
-    assert_eq!(changed, vec!["ollama".to_string()]);
+    assert_eq!(changed, vec!["model_group".to_string()]);
 }
 
 fn sess() -> Event {
@@ -267,7 +271,7 @@ async fn handle_reload_returns_err_when_channel_closed() {
 
 // ── v0.2.2: handle_reload 模型/Provider 热重载测试 ──────────────────
 
-/// `[anthropic].model` 字段变更后,`handle_reload` 写入 agent_cfg.model。
+/// 模型组的 `model` 字段变更后,`handle_reload` 写入 agent_cfg.model。
 /// 这是核心路径:用户编辑 TOML 改 model,下一个 turn 自动用新值。
 #[tokio::test]
 async fn handle_reload_updates_agent_config_model_when_section_changes() {
@@ -279,23 +283,25 @@ async fn handle_reload_updates_agent_config_model_when_section_changes() {
     // SAFETY: 单线程 tokio 测试;断言 env-无关路径。
     unsafe { std::env::remove_var("ZHUYE_MODEL") };
     use std::sync::Arc;
-    use zhuye_config::{ActiveSection, AnthropicSection};
+    use zhuye_config::{ActiveSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut _rx) = mpsc::channel::<Event>(4);
     let old_cfg = zhuye_config::ReflectConfig {
         active: ActiveSection {
-            provider: Some("anthropic".into()),
+            group: Some("anthropic".into()),
             ..Default::default()
         },
-        anthropic: Some(AnthropicSection {
+        model_group: vec![ModelGroupSection {
+            id: "anthropic".into(),
+            endpoint: "anthropic".into(),
             api_key: Some("sk-a".into()),
             model: Some("claude-3-5-sonnet-latest".into()),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
     let mut new_cfg = old_cfg.clone();
-    new_cfg.anthropic.as_mut().unwrap().model = Some("claude-3-haiku-20240307".into());
+    new_cfg.model_group[0].model = Some("claude-3-haiku-20240307".into());
     let path = std::path::PathBuf::from("/tmp/test.toml");
     let agent_cfg = AgentConfig::new("anthropic/claude-3-5-sonnet-latest", "/tmp");
     let result = handle_reload(
@@ -325,27 +331,29 @@ async fn handle_reload_updates_agent_config_model_when_section_changes() {
     }
 }
 
-/// 仅 `[anthropic].api_key` 变(model 字段不动)→ 不动 `AgentConfig.model`。
+/// 仅模型组的 `api_key` 变(model 字段不动)→ 不动 `AgentConfig.model`。
 #[tokio::test]
 async fn handle_reload_does_not_touch_model_when_credentials_change() {
     use std::sync::Arc;
-    use zhuye_config::{ActiveSection, AnthropicSection};
+    use zhuye_config::{ActiveSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut _rx) = mpsc::channel::<Event>(4);
     let old_cfg = zhuye_config::ReflectConfig {
         active: ActiveSection {
-            provider: Some("anthropic".into()),
+            group: Some("anthropic".into()),
             ..Default::default()
         },
-        anthropic: Some(AnthropicSection {
+        model_group: vec![ModelGroupSection {
+            id: "anthropic".into(),
+            endpoint: "anthropic".into(),
             api_key: Some("sk-old".into()),
             model: Some("claude-3-5-sonnet-latest".into()),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
     let mut new_cfg = old_cfg.clone();
-    new_cfg.anthropic.as_mut().unwrap().api_key = Some("sk-new".into());
+    new_cfg.model_group[0].api_key = Some("sk-new".into());
     let path = std::path::PathBuf::from("/tmp/test.toml");
     let agent_cfg = AgentConfig::new("anthropic/claude-3-5-sonnet-latest", "/tmp");
     let result = handle_reload(
@@ -375,26 +383,30 @@ async fn handle_reload_does_not_touch_model_when_credentials_change() {
 #[tokio::test]
 async fn handle_reloaded_event_lists_only_changed_sections() {
     use std::sync::Arc;
-    use zhuye_config::{ActiveSection, AnthropicSection, CompactSection};
+    use zhuye_config::{ActiveSection, CompactSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut rx) = mpsc::channel::<Event>(4);
     let old_cfg = zhuye_config::ReflectConfig {
         active: ActiveSection {
-            provider: Some("anthropic".into()),
+            group: Some("anthropic".into()),
             ..Default::default()
         },
-        anthropic: Some(AnthropicSection {
+        model_group: vec![ModelGroupSection {
+            id: "anthropic".into(),
+            endpoint: "anthropic".into(),
             api_key: Some("sk-a".into()),
             ..Default::default()
-        }),
+        }],
         compact: CompactSection {
             trigger_tokens: Some(10_000),
         },
         ..Default::default()
     };
     let mut new_cfg = old_cfg.clone();
-    // 改 openai section + compact section;保留 anthropic 不动。
-    new_cfg.openai = Some(zhuye_config::OpenAISection {
+    // 改模型组 + compact section;保留 anthropic 组不动。
+    new_cfg.model_group.push(ModelGroupSection {
+        id: "openai".into(),
+        endpoint: "openai".into(),
         api_key: Some("sk-o".into()),
         ..Default::default()
     });
@@ -422,9 +434,8 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
     let mut found_reloaded = false;
     while let Some(ev) = rx.recv().await {
         if let EventMsg::ConfigReloaded(cr) = ev.msg {
-            assert!(cr.sections_changed.contains(&"openai".to_string()));
+            assert!(cr.sections_changed.contains(&"model_group".to_string()));
             assert!(cr.sections_changed.contains(&"compact".to_string()));
-            assert!(!cr.sections_changed.contains(&"anthropic".to_string()));
             assert!(!cr.sections_changed.contains(&"active".to_string()));
             found_reloaded = true;
             break;
@@ -433,43 +444,41 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
     assert!(found_reloaded, "ConfigReloaded event should have arrived");
 }
 
-/// `[active].provider` 切换 + 模型变更 → `agent_cfg.model` 整体翻面。
+/// `[active].group` 切换 + 模型变更 → `agent_cfg.model` 整体翻面。
 #[tokio::test]
-async fn handle_reload_swaps_active_provider_spec() {
+async fn handle_reload_swaps_active_group_spec() {
     use std::sync::Arc;
-    use zhuye_config::{ActiveSection, AnthropicSection, OpenAISection};
+    use zhuye_config::{ActiveSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut _rx) = mpsc::channel::<Event>(4);
     let old_cfg = zhuye_config::ReflectConfig {
         active: ActiveSection {
-            provider: Some("anthropic".into()),
+            group: Some("anthropic".into()),
             ..Default::default()
         },
-        anthropic: Some(AnthropicSection {
+        model_group: vec![ModelGroupSection {
+            id: "anthropic".into(),
+            endpoint: "anthropic".into(),
             api_key: Some("sk-a".into()),
             model: Some("claude-3-5-sonnet-latest".into()),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
-    let mut new_cfg = zhuye_config::ReflectConfig {
+    let new_cfg = zhuye_config::ReflectConfig {
         active: ActiveSection {
-            provider: Some("openai".into()),
+            group: Some("openai".into()),
             ..Default::default()
         },
-        openai: Some(OpenAISection {
+        model_group: vec![ModelGroupSection {
+            id: "openai".into(),
+            endpoint: "openai".into(),
             api_key: Some("sk-o".into()),
             model: Some("gpt-4o".into()),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
-    // 保证 openai 也满足 active_provider 的回退
-    new_cfg.openai = Some(OpenAISection {
-        api_key: Some("sk-o".into()),
-        model: Some("gpt-4o".into()),
-        ..Default::default()
-    });
     let path = std::path::PathBuf::from("/tmp/test.toml");
     let agent_cfg = AgentConfig::new("anthropic/claude-3-5-sonnet-latest", "/tmp");
     handle_reload(
@@ -511,7 +520,7 @@ async fn handle_reload_applies_coordinator_section() {
         ThreadId::new(),
         "openai/gpt-4o",
         registry.clone(),
-        None, // child_registry: will be set by caller if subagent_providers configured
+        None, // child_registry: will be set by caller if subagent_models configured
         tools.clone(),
         CancellationToken::new(),
         None,
