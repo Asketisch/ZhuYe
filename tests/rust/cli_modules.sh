@@ -297,8 +297,9 @@ cli_modules_models() {
     # 12a. 无 provider → 明确报错(不是空清单)
     # env -u:runner 门禁会给本进程设 ZHUYE_MODEL=mock(mock 显式 opt-in,
     # 优先级高于 TOML),不剔除则 active provider 恒为 mock,本用例必假失败。
+    # 配置模型 v2:报错文案改为「无活跃模型组」。
     env -u ZHUYE_MODEL "$ZHUYE_BIN" models list > mdl.txt 2>&1
-    tcase "models list 无 provider 时报错" grep -q "no active provider" mdl.txt
+    tcase "models list 无 provider 时报错" grep -q "no active model group" mdl.txt
 
     # 12b. provider 不支持清单端点 / 端点不可达 → 明确报错 + 退出码 2
     cat > "$HOME/.zhuye/config.toml" <<'EOF'

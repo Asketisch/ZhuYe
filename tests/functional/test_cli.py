@@ -411,7 +411,8 @@ def test_C10_login四provider与脱敏(sandbox) -> None:
     p = run_cli(sandbox, "login", "--provider", "anthropic", "--api-key", "sk-ant-test-12345678")
     assert p.returncode == 0, p.stderr
     assert "Config saved to" in p.stdout
-    assert "[anthropic]" in run_cli(sandbox, "config", "show").stdout
+    # 配置模型 v2:login 写 `[[model_group]] id=...`,不再是 v1 固定段头。
+    assert 'id = "anthropic"' in run_cli(sandbox, "config", "show").stdout
 
     p = run_cli(sandbox, "login", "--provider", "openai", "--api-key", "sk-oai-test-12345678")
     assert p.returncode == 0, p.stderr
@@ -759,7 +760,7 @@ def test_C17_workspace_update_doctor_lsp_security(sandbox) -> None:
     assert "network probe skipped" in p.stdout
     p = run_cli(sandbox, "doctor", "--check-network", env={"ZHUYE_MODEL": "mock"})
     assert p.returncode == 0, p.stderr
-    assert "[network]" in p.stdout and "checking provider" in p.stdout
+    assert "[network]" in p.stdout and "checking model group" in p.stdout
 
     p = run_cli(sandbox, "lsp", "list")
     assert "no [lsp_servers" in p.stdout
