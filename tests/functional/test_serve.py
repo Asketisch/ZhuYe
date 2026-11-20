@@ -548,16 +548,35 @@ def test_A8b_plan审批_工具路径全链路(serve_session, mock_script) -> Non
         sid = s.send(
             {"type": "user_input", "items": [{"type": "text", "text": "draft the plan"}]}
         )
-        state: dict[str, Any] = {"approved": False}
+        state: dict[str, Any] = {"approved": False, "reinforced": False, "plan_id": None}
 
         def _on_event(ev: dict[str, Any]) -> None:
             m = ev.get("msg", {})
-            if m.get("type") == "plan_ready" and not state["approved"]:
+            kind = m.get("type")
+            if kind == "plan_ready" and not state["approved"]:
                 state["approved"] = True
+                state["plan_id"] = m["plan_id"]
                 s.send(
                     {
                         "type": "plan_approval",
                         "id": m["plan_id"],
+                        "choice": "auto_mode",
+                    }
+                )
+            elif (
+                state["approved"]
+                and not state["reinforced"]
+                and kind in ("agent_message_delta", "token_count")
+            ):
+                # 慢管道下审批回执(permission_mode_changed / plan_approved)
+                # 若在 turn 通道积压瞬间被丢,turn 会未等审批落地就续跑
+                # —— 首个续跑事件(后续 token / 增量文本)即补发审批。
+                # 服务端幂等:审批已落地时查无 waiter,安全丢弃。
+                state["reinforced"] = True
+                s.send(
+                    {
+                        "type": "plan_approval",
+                        "id": state["plan_id"],
                         "choice": "auto_mode",
                     }
                 )

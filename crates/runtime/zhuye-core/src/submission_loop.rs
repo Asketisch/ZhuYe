@@ -1956,6 +1956,26 @@ fn fan_out_session(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {
     }
 }
 
+/// 关键事件的可靠会话广播:与 [`fan_out_session`] 同样的「全订阅者」
+/// 语义,但订阅者通道满时**等待容量**(单订阅者上限 5s)而不是静默
+/// 丢弃。
+///
+/// 仅供低频语义事件(权限模式切换 / plan 审批回执 / plan 拒绝)使用
+/// —— 这类事件一旦丢失,客户端权限状态漂移、审批提示条永不关闭
+/// (CI 慢管道下曾实测 turn 事件积压瞬间 `PermissionModeChanged` /
+/// `PlanApproved` 被 [`fan_out_session`] 的 `try_send` 静默丢弃,
+/// 功能测试 `test_A8b_plan审批_工具路径全链路` 据此失败)。高频事件
+/// (token_count / delta)继续走 [`fan_out_session`] 的 fire-and-forget,
+/// 避免慢消费者反向阻塞图推进。接收端已关闭时 `send` 立即返回 Err,
+/// 不会因订阅者退出而悬挂。
+async fn fan_out_session_reliable(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {
+    let senders = subs.lock().clone();
+    for tx in senders {
+        let payload = ev.clone();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(payload)).await;
+    }
+}
+
 /// v1.x:best-effort 把一条 [`RolloutRecord`] 落进 session JSONL。
 ///
 /// 与 `submission_loop` 里 user/assistant 消息落盘同款写法:从 `cfg.m4.recorder`
@@ -2077,13 +2097,14 @@ async fn apply_plan_approval_choice(
                 // 提示条靠 `PlanApproved` 事件关闭(TUI 不做乐观关闭),
                 // 缺了它提示条会挂死。
                 if matches!(direction, PlanDirection::Exit) {
-                    fan_out_session(
+                    fan_out_session_reliable(
                         session_subs,
                         &Event::new(
                             sub_id,
                             EventMsg::PlanApproved(PlanApprovedEvent { plan_id }),
                         ),
-                    );
+                    )
+                    .await;
                 }
                 return;
             }
@@ -2106,19 +2127,21 @@ async fn apply_plan_approval_choice(
                     to: target_mode,
                 }),
             );
-            fan_out_session(session_subs, &ev);
+            // 关键回执:丢失会让客户端权限状态漂移,必须可靠投递。
+            fan_out_session_reliable(session_subs, &ev).await;
             // Exit 方向(ExitPlanMode 审批)补发 `PlanApproved`:TUI 的
             // plan_approval 提示条不乐观关闭,靠此事件「关闭提示条 + 推
             // ✓ Plan approved 确认行」同帧完成。协议里该事件早已定义
             // (与 PlanRejected 配对),此前引擎从未 emit —— 确认行是死代码。
             if matches!(direction, PlanDirection::Exit) {
-                fan_out_session(
+                fan_out_session_reliable(
                     session_subs,
                     &Event::new(
                         sub_id,
                         EventMsg::PlanApproved(PlanApprovedEvent { plan_id }),
                     ),
-                );
+                )
+                .await;
             }
             tracing::info!(
                 plan_id = %plan_id,
@@ -2148,7 +2171,8 @@ async fn apply_plan_approval_choice(
                         reason: reject_reason,
                     }),
                 );
-                fan_out_session(session_subs, &ev);
+                // 审批拒绝回执同样关键:丢失会让 TUI 的 plan modal 挂死。
+                fan_out_session_reliable(session_subs, &ev).await;
             }
             PlanDirection::Enter => {
                 tracing::info!(
