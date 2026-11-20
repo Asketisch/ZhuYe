@@ -1,0 +1,26 @@
+# verify-hooks 门控插件 —— verification / test_runner 两个内置 hook 的
+# 插件化开启路径。
+#
+# 形态:门控型(goal-queue 先例)—— hook 本体留在引擎 crate
+# (zhuye-hooks),默认关(与原语义一致:config [hooks] 未显式列出 =
+# 不启用)。**双路径启用**(任一即可):
+#   1. config 路径(原有,不变):~/.zhuye/config.toml [hooks]
+#      enabled = ["verification", "test_runner"]
+#   2. 插件路径(新增):zhuye plugin install plugins/verify-hooks
+#      && zhuye plugin enable verify-hooks@inline
+#      → 装配层把两个 hook 名并进 enabled 列表(等价于路径 1,
+#        对 serve / SDK 嵌入场景的 explicit-only 收紧同样生效)
+#
+# 两个 hook 的行为:
+# - verification(Stop):turn 结束前跑校验命令(默认 cargo test,
+#   [hooks.verification].test_command 可配),失败否决本轮结束
+# - test_runner(PostToolUse):检测 bash 输出中的测试失败特征,
+#   注入 system-reminder 提醒模型修复
+#
+# 插件参数仍走 [hooks.verification] / [hooks.test_runner] 段配置,
+# 插件只决定「是否启用」,不复制配置面。
+name = "verify-hooks"
+version = "0.1.0"
+description = "校验双 hook:Stop 前跑测试命令否决未通过轮次 + bash 输出失败特征检测提醒"
+keywords = ["verify", "test", "hook", "gated"]
+commands = "./commands"

@@ -14,6 +14,7 @@
 //! 绑定共用同一套挂载入口;[`commands_registry`] 承载插件 slash 命令的
 //! 注册与用户输入展开。
 
+pub mod bundled;
 pub mod capabilities;
 pub mod commands_registry;
 pub mod dependency;
@@ -28,6 +29,10 @@ pub mod state;
 
 // ── 公共 re-export ────────────────────────────────────────────────────
 
+pub use bundled::{
+    BUNDLED_PLUGIN_DEFAULTS, bundled_plugin_default_on, bundled_plugin_enabled, bundled_tool_gates,
+    is_bundled_plugin,
+};
 pub use capabilities::{
     CapabilityError, LoadedPlugin,
     agents::LoadedAgent,
