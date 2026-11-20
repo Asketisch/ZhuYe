@@ -103,7 +103,21 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
 
 **新功能**或 **bug 修复**提交前,必须逐条走完:
 
-1. **能力覆盖脚本同步** —— 判断本次改动是否需要新增 / 更新能力覆盖用例:
+1. **形态判断(内置 vs 插件)** —— 新能力动手实现前,先判断能否以插件形式承载,
+   不要默认直接写进 Rust crate:
+   - 插件有六类能力槽:commands / 子代理 / hooks / skills / MCP servers /
+     WASM 工具(manifest 权威在 `crates/resources/zhuye-plugin/src/manifest.rs`,
+     开发指南见 `docs/plugin-dev-guide.md`);
+   - **优先插件**:外部系统接入、领域特定、可选启停、第三方可能定制的能力,
+     用插件形态落地,不进核心 crate;先例:`zhuye-computer-use` / `zhuye-shell` /
+     `zhuye-git-tools` / `zhuye-import` 虽以 integrations 层 crate 实现,但作为
+     `plugins/*` 的能力本体挂载、不进 SDK facade;
+   - **才允许内置**:引擎机制(协议 / StateGraph / 持久化 / 权限)、SDK 门面
+     必需的原语、性能关键的通用工具;先例:多 agent 编排属引擎内建
+     (见 `docs/features.md`);
+   - 拿不准时先做插件;确需内置时,把判断理由写进 commit message 或 PR 描述。
+   判断口径与 `docs/features.md` 的「默认启用 / 需配置 / 需插件」三段结构对齐。
+2. **能力覆盖脚本同步** —— 判断本次改动是否需要新增 / 更新能力覆盖用例:
    - 改了 agent 能力(serve 协议 Op / EventMsg / 内置工具 / 审批 / 编排 /
      持久化 / 重连恢复 / CLI 能力面)
      → 必须在 `tests/functional/` 有对应用例,断言到**字段级**
@@ -112,7 +126,7 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
    - 能力覆盖用例**只写在 `tests/functional/`** —— 不要在 SDK 测试里重复写
      协议/能力断言;`tests/rust/*.sh` 是 CLI **参数面**的老套件,新增能力
      不往里加(能力面统一用 Python 写)。
-2. **SDK 测试与发布文档同步** —— 改了协议 / SDK 公开行为 / 事件形状时,**两个 SDK
+3. **SDK 测试与发布文档同步** —— 改了协议 / SDK 公开行为 / 事件形状时,**两个 SDK
    都要看**:
    - Python SDK:`sdks/python/tests/`(纯逻辑,mock serve)与
      `tests/sdk-python/`(真二进制绑定层);
@@ -127,10 +141,10 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
      源码提取 Op 全集,自动校验双 README 与双类型层(`zhuye/protocol.py` /
      `src/protocol.ts`)收录齐全 —— 文档落后协议会在 `check` / `tag`
      发布前直接失败。
-3. **覆盖矩阵同步** —— `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表随改动
+4. **覆盖矩阵同步** —— `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表随改动
    更新:新增能力补一行;移除能力移到「未覆盖项」并写明原因;发现的 SDK 缺陷
    记入「已知缺陷」。
-4. **AGENTS.md 分层索引同步** —— 修改或新增代码时,对应的 AGENTS.md(该 crate 篇、
+5. **AGENTS.md 分层索引同步** —— 修改或新增代码时,对应的 AGENTS.md(该 crate 篇、
    其所在层篇、根导航表)必须同步更新;契约 / 同步点 / 禁止事项变化即改对应篇,
    导航目标增删即改根表。按下表定位:
 
@@ -150,8 +164,8 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
    | 测试分层 / 覆盖矩阵结构 | `tests/` |
 
    拿不准改哪篇时,至少更新该改动所在层篇与根导航表,确保索引不失真。
-5. **验证** —— 按下方「验证矩阵」跑对应命令,全绿再提交。
-6. **注释与提交信息** —— 注释一律中文;commit 用 `type(scope): 描述`
+6. **验证** —— 按下方「验证矩阵」跑对应命令,全绿再提交。
+7. **注释与提交信息** —— 注释一律中文;commit 用 `type(scope): 描述`
    conventional 风格。
 
 ## 验证矩阵(按改动范围选跑)
