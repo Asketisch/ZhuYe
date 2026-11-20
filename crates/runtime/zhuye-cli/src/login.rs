@@ -1,8 +1,10 @@
 //! `zhuye login` — 把 provider 凭据写入 `~/.zhuye/config.toml`。
 //!
 //! v0.4 起这是真实现(替代 v0.3 的 stub):
-//! - 读 `~/.zhuye/config.toml`(缺失用 `Default`),改对应 provider section 的
+//! - 读 `~/.zhuye/config.toml`(缺失用 `Default`),改对应**模型组**的
 //!   `api_key`,整段 TOML 序列化回写。
+//! - v2 起模型组(`[[model_group]]`)是唯一的接入单元 —— 凭据写进同名
+//!   id 的模型组(不存在则新建)。
 //! - 交互模式(`--api-key` 缺失):从 stdin 读一行,trim。
 //! - 长度 < 8 且无 `--force` 时 warn 但接受;`""` 一律拒绝。
 //! - 写完打印保存路径,提示用户跑 `zhuye exec` 或独立 Zhuye-TUI 启动。
@@ -47,12 +49,12 @@ pub fn run(provider: &str, api_key: Option<String>, force: bool) -> anyhow::Resu
     // 3. 加载当前 config(缺失 / 解析失败回退 Default)。
     let mut cfg = load_default();
 
-    // 4. 改对应 section。
+    // 4. 改对应模型组的 api_key。
     apply_key(&mut cfg, &provider, api_key);
 
-    // 5. 把 [active].provider 设为该 provider(若是首次配置)。
-    if cfg.active.provider.is_none() {
-        cfg.active.provider = Some(provider.clone());
+    // 5. 把 [active].group 设为该组(若是首次配置)。
+    if cfg.active.group.is_none() {
+        cfg.active.group = Some(provider.clone());
     }
 
     // 6. 序列化回 TOML 写盘。
@@ -79,26 +81,18 @@ fn normalize_provider(p: &str) -> Option<String> {
     }
 }
 
-/// 把 key 写入对应 section(缺失则新建)。
+/// 把 key 写入同名 id 的模型组(缺失则新建,endpoint 与 id 同名)。
 fn apply_key(cfg: &mut ReflectConfig, provider: &str, key: String) {
-    match provider {
-        "anthropic" => {
-            let mut sec = cfg.anthropic.clone().unwrap_or_default();
-            sec.api_key = Some(key);
-            cfg.anthropic = Some(sec);
-        }
-        "openai" => {
-            let mut sec = cfg.openai.clone().unwrap_or_default();
-            sec.api_key = Some(key);
-            cfg.openai = Some(sec);
-        }
-        "ollama" => {
-            let mut sec = cfg.ollama.clone().unwrap_or_default();
-            sec.api_key = Some(key);
-            cfg.ollama = Some(sec);
-        }
-        _ => unreachable!("normalize_provider already filtered"),
+    if let Some(pos) = cfg.model_group.iter().position(|g| g.id.trim() == provider) {
+        cfg.model_group[pos].api_key = Some(key);
+        return;
     }
+    cfg.model_group.push(zhuye_config::ModelGroupSection {
+        id: provider.to_string(),
+        endpoint: provider.to_string(),
+        api_key: Some(key),
+        ..Default::default()
+    });
 }
 
 /// 从 stdin 读一行(交互模式);trim 末尾换行。
@@ -140,13 +134,13 @@ pub fn write_config_to(cfg: &ReflectConfig, path: &Path) -> anyhow::Result<PathB
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use zhuye_config::AnthropicSection;
+    use zhuye_config::ModelGroupSection;
 
     fn tmp_home() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
     }
 
-    /// 写入 [anthropic].api_key 后能从文件读回。
+    /// 写入 anthropic 模型组的 api_key 后能从文件读回。
     #[test]
     fn login_writes_anthropic_key_to_config_file() {
         let tmp = tmp_home();
@@ -164,8 +158,10 @@ mod tests {
 
         // 反向校验:load_from_file 能读回。
         let back = zhuye_config::load_from_file(&path).unwrap();
+        assert_eq!(back.model_group.len(), 1);
+        assert_eq!(back.model_group[0].id, "anthropic");
         assert_eq!(
-            back.anthropic.as_ref().unwrap().api_key.as_deref(),
+            back.model_group[0].api_key.as_deref(),
             Some("sk-test-anthropic")
         );
     }
@@ -174,16 +170,18 @@ mod tests {
     #[test]
     fn login_appends_to_existing_section() {
         let mut cfg = ReflectConfig {
-            anthropic: Some(AnthropicSection {
+            model_group: vec![ModelGroupSection {
+                id: "anthropic".into(),
+                endpoint: "anthropic".into(),
                 api_key: Some("sk-old".into()),
                 base_url: Some("https://api.anthropic.com".into()),
                 model: Some("claude-3-5-sonnet-latest".into()),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         apply_key(&mut cfg, "anthropic", "sk-new".into());
-        let a = cfg.anthropic.as_ref().unwrap();
+        let a = &cfg.model_group[0];
         assert_eq!(a.api_key.as_deref(), Some("sk-new"));
         assert_eq!(a.base_url.as_deref(), Some("https://api.anthropic.com"));
         assert_eq!(a.model.as_deref(), Some("claude-3-5-sonnet-latest"));
@@ -242,7 +240,7 @@ mod tests {
         assert_eq!(normalize_provider("unknown").as_deref(), None);
     }
 
-    /// openai 和 ollama section 也能写。
+    /// openai 和 ollama 模型组也能写。
     #[test]
     fn login_supports_openai_and_ollama() {
         let tmp = tmp_home();
@@ -254,14 +252,11 @@ mod tests {
         write_config_to(&cfg, &path).unwrap();
 
         let back = zhuye_config::load_from_file(&path).unwrap();
-        assert_eq!(
-            back.openai.as_ref().unwrap().api_key.as_deref(),
-            Some("sk-openai-key")
-        );
-        assert_eq!(
-            back.ollama.as_ref().unwrap().api_key.as_deref(),
-            Some("sk-ollama-key")
-        );
+        assert_eq!(back.model_group.len(), 2);
+        let openai = back.model_group.iter().find(|g| g.id == "openai").unwrap();
+        assert_eq!(openai.api_key.as_deref(), Some("sk-openai-key"));
+        let ollama = back.model_group.iter().find(|g| g.id == "ollama").unwrap();
+        assert_eq!(ollama.api_key.as_deref(), Some("sk-ollama-key"));
     }
 
     /// 序列化 roundtrip:mcp_servers + hooks + compact 全保留。
