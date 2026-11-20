@@ -520,7 +520,7 @@ async fn handle_reload_applies_coordinator_section() {
         ThreadId::new(),
         "openai/gpt-4o",
         registry.clone(),
-        None, // child_registry: will be set by caller if subagent_providers configured
+        None, // child_registry: will be set by caller if subagent_models configured
         tools.clone(),
         CancellationToken::new(),
         None,

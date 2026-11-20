@@ -385,7 +385,7 @@ pub(crate) fn bootstrap_m5(
     m4: &zhuye_core::config::M4Deps,
     initial_cfg: &zhuye_config::ReflectConfig,
 ) -> Arc<SubAgentFactory> {
-    // v1.x 功能 1:从 `[subagent_providers]` 段构建独立 child registry,
+    // v1.x 功能 1:从 `[subagent_models]` 段构建独立 child registry,
     // 让 subagent 用独立的 base_url + api_key + model。`None` = 父子共享。
     let child_registry: Option<SharedModelRegistry> =
         initial_cfg.to_child_registry().map(|reg| Arc::new(reg));

@@ -98,6 +98,12 @@ fn absorb_legacy_sections(cfg: &mut ReflectConfig, legacy: &mut LegacySections) 
     {
         cfg.active.group = Some(p.to_string());
     }
+    // v1 的 `[subagent_providers]` → `[subagent_models]`(仅当新段未设)。
+    if cfg.subagent_models.is_none()
+        && let Some(sec) = legacy.subagent_providers.take()
+    {
+        cfg.subagent_models = Some(sec);
+    }
     if legacy.anthropic.is_none() && legacy.openai.is_none() && legacy.ollama.is_none() {
         return;
     }

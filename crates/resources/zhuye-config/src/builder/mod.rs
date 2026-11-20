@@ -422,13 +422,13 @@ impl ReflectConfig {
         .with_role(Role::Main)
     }
 
-    /// 从 `[subagent_providers]` 段构建独立的 `ModelRegistry`。
+    /// 从 `[subagent_models]` 段构建独立的 `ModelRegistry`。
     ///
     /// - 若整个 section 缺省 → 返回 `None`,保持默认行为(父子共享 registry)。
     /// - 若任意子 provider 有可用凭证 → 构建并注册到 child registry,返回 `Some(reg)`。
     /// - 所有子 provider 都无凭证 → 返回 `None`。
     pub fn to_child_registry(&self) -> Option<ModelRegistry> {
-        let section = self.subagent_providers.as_ref()?;
+        let section = self.subagent_models.as_ref()?;
 
         let r = ModelRegistry::new();
         let mut any_registered = false;

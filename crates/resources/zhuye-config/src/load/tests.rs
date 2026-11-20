@@ -207,6 +207,38 @@ group = "my-glm"
     assert_eq!(cfg.active.group.as_deref(), Some("my-glm"));
 }
 
+/// v1 的 `[subagent_providers]` 段读入后落到 `[subagent_models]`。
+#[test]
+fn legacy_subagent_providers_section_migrates() {
+    let toml = r#"
+[subagent_providers.anthropic]
+api_key = "sk-sub"
+model = "claude-haiku"
+"#;
+    let cfg = load_from_str(toml).unwrap();
+    let sec = cfg.subagent_models.as_ref().expect("子代理段应迁移过来");
+    let anth = sec.anthropic.as_ref().expect("anthropic 子段");
+    assert_eq!(anth.api_key.as_deref(), Some("sk-sub"));
+    assert_eq!(anth.model.as_deref(), Some("claude-haiku"));
+    let rendered = toml::to_string(&cfg).unwrap();
+    assert!(rendered.contains("[subagent_models.anthropic]"));
+    assert!(!rendered.contains("subagent_providers"));
+}
+
+/// 配置面(TOML)里不再出现 "provider" 字样 —— v2 的模型接入只有模型组。
+///
+/// 结构门禁:新增任何 TOML 可见字段时若带 "provider" 字样,本测试
+/// 立即失败(v1 的 `[subagent_providers]` 已改名 `[subagent_models]`)。
+#[test]
+fn toml_surface_has_no_provider_key() {
+    let cfg = ReflectConfig::default();
+    let rendered = toml::to_string(&cfg).unwrap();
+    assert!(
+        !rendered.contains("provider"),
+        "配置面不得出现 provider 字样,got:\n{rendered}"
+    );
+}
+
 #[test]
 fn parses_compact_section() {
     let toml = r#"

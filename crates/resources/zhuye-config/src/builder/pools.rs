@@ -336,7 +336,7 @@ fn build_ollama_entries(
 
 // ── 子代理独立凭证池 ────────────────────────────────────────────
 
-/// 把 `[subagent_providers.anthropic]` 段展开为 `CredentialPool`,
+/// 把 `[subagent_models.anthropic]` 段展开为 `CredentialPool`,
 /// 语义与主组一致但使用 subagent section(不回退 env)。
 pub(crate) fn build_subagent_anthropic_pool(
     section: &AnthropicSubagentSection,
@@ -380,7 +380,7 @@ pub(crate) fn build_subagent_anthropic_pool(
     Ok(Some(CredentialPool { entries }))
 }
 
-/// 把 `[subagent_providers.openai]` 段展开为 `CredentialPool`
+/// 把 `[subagent_models.openai]` 段展开为 `CredentialPool`
 /// (不回退 env)。
 pub(crate) fn build_subagent_openai_pool(
     section: &OpenAISubagentSection,
@@ -424,7 +424,7 @@ pub(crate) fn build_subagent_openai_pool(
     Ok(Some(CredentialPool { entries }))
 }
 
-/// 把 `[subagent_providers.ollama]` 段展开为 `CredentialPool`
+/// 把 `[subagent_models.ollama]` 段展开为 `CredentialPool`
 /// (不回退 env)。
 pub(crate) fn build_subagent_ollama_pool(
     section: &OllamaSubagentSection,

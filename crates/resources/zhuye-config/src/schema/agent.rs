@@ -2,7 +2,7 @@
 //!
 //! 包含:
 //! - `RoutingSection` / `SpecSlotConfig`
-//! - `SubagentProvidersSection` / `SubagentSpecConfig`
+//! - `SubagentModelsSection` / `SubagentSpecConfig`
 //! - `CoordinatorSection` / `CompactSection` / `TokenBudgetSection`
 
 use serde::{Deserialize, Serialize};
@@ -81,11 +81,14 @@ impl ComplexityRoutes {
     }
 }
 
-// ── 子代理 provider 配置 ──────────────────────────────────────
+// ── 子代理模型端点配置 ────────────────────────────────────────
 
-/// `[subagent_providers]` 段。
+/// `[subagent_models]` 段 —— 子代理专用的模型端点(与主配置相互独立)。
+///
+/// v1 的段名是 `[subagent_providers]`;v2 起配置面不再使用 "provider"
+/// 语汇,段名改为 `[subagent_models]`(旧段名仍能读入,由 v1→v2 迁移接管)。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct SubagentProvidersSection {
+pub struct SubagentModelsSection {
     #[serde(default)]
     pub anthropic: Option<AnthropicSubagentSection>,
     #[serde(default)]

@@ -114,7 +114,7 @@ pub(crate) fn build_telemetry_sink(
 /// v1.x 功能 7:遍历 config 所有 provider(anthropic/openai/ollama)的
 /// credentials,收集声明了 `quota` 的条目,注册到 `QuotaTracker`。
 /// 任一 provider 有 quota 声明 → 返回 `Some(tracker)`;全无 → `None`(向后兼容)。
-/// v1 暂忽略 subagent_providers(subagent 配额切换后续迭代)。
+/// v1 暂忽略 subagent_models(subagent 配额切换后续迭代)。
 pub(crate) fn build_quota_tracker(cfg: &zhuye_config::ReflectConfig) -> Option<SharedQuotaTracker> {
     use std::sync::Arc as StdArc;
     use zhuye_config::QuotaSource;
