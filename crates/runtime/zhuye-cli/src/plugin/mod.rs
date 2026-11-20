@@ -211,7 +211,8 @@ pub fn info(id_str: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `zhuye plugin enable <id>` —— 写 ReflectConfig.plugins.enabled_plugins。
+/// `zhuye plugin enable <id>` —— 写 ReflectConfig.plugins.enabled_plugins;
+/// 若此前被显式禁用(默认开的门控插件),同时从 disabled_plugins 移除。
 pub fn enable(id_str: &str) -> anyhow::Result<()> {
     let (mgr, mut cfg) = load_manager_and_config()?;
     let id = parse_id(id_str)?;
@@ -222,8 +223,19 @@ pub fn enable(id_str: &str) -> anyhow::Result<()> {
         ));
     }
     let key = id.to_string();
+    let mut changed = false;
     if !cfg.plugins.enabled_plugins.iter().any(|p| p == &key) {
-        cfg.plugins.enabled_plugins.push(key);
+        cfg.plugins.enabled_plugins.push(key.clone());
+        changed = true;
+    }
+    // 门控插件可能先被 disable(进了 disabled_plugins)再 enable ——
+    // 从禁用表移除,恢复默认/启用语义。
+    let before_disabled = cfg.plugins.disabled_plugins.len();
+    cfg.plugins.disabled_plugins.retain(|p| p != &key);
+    if cfg.plugins.disabled_plugins.len() != before_disabled {
+        changed = true;
+    }
+    if changed {
         save_config(&cfg)?;
     }
     println!("enabled {id} (added to config.toml#plugins.enabled_plugins)");
@@ -231,20 +243,28 @@ pub fn enable(id_str: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `zhuye plugin disable <id>` —— 从 enabled_plugins 移除。
+/// `zhuye plugin disable <id>` —— 从 enabled_plugins 移除;对默认开的
+/// 门控插件(bundled,如 web-search / notebook)同时写入 disabled_plugins
+/// —— 仅移出 enabled 对它们是 no-op(默认开不依赖 enabled 列表)。
 pub fn disable(id_str: &str) -> anyhow::Result<()> {
     let (_mgr, mut cfg) = load_manager_and_config()?;
     let id = parse_id(id_str)?;
     let key = id.to_string();
     let before = cfg.plugins.enabled_plugins.len();
     cfg.plugins.enabled_plugins.retain(|p| p != &key);
-    if cfg.plugins.enabled_plugins.len() == before {
-        // 没动 → 也提示一下,免得用户以为是 bug。
-        println!("{id} was not in config.toml#plugins.enabled_plugins (no-op)");
-        return Ok(());
+    let removed_from_enabled = cfg.plugins.enabled_plugins.len() != before;
+    // 门控插件写入显式禁用表(幂等)。
+    let was_disabled = cfg.plugins.disabled_plugins.iter().any(|p| p == &key);
+    if !was_disabled {
+        cfg.plugins.disabled_plugins.push(key.clone());
     }
     save_config(&cfg)?;
-    println!("disabled {id} (removed from config.toml#plugins.enabled_plugins)");
+    if removed_from_enabled {
+        println!("disabled {id} (removed from enabled_plugins)");
+    } else {
+        // 门控插件默认开:不依赖 enabled 列表,走 disabled_plugins。
+        println!("disabled {id} (added to config.toml#plugins.disabled_plugins)");
+    }
     println!("Restart `zhuye exec` to unload capabilities.");
     Ok(())
 }
@@ -269,12 +289,13 @@ pub fn uninstall(id_str: &str, scope: PluginScope, yes: bool) -> anyhow::Result<
     mgr.uninstall(&id, scope)
         .with_context(|| format!("uninstall failed for {id}"))?;
 
-    // 同时从 enabled_plugins 中清理。
+    // 同时从 enabled_plugins / disabled_plugins 中清理。
     let mut cfg = load_default();
     let key = id.to_string();
-    let before = cfg.plugins.enabled_plugins.len();
+    let before = cfg.plugins.enabled_plugins.len() + cfg.plugins.disabled_plugins.len();
     cfg.plugins.enabled_plugins.retain(|p| p != &key);
-    if cfg.plugins.enabled_plugins.len() != before {
+    cfg.plugins.disabled_plugins.retain(|p| p != &key);
+    if cfg.plugins.enabled_plugins.len() + cfg.plugins.disabled_plugins.len() != before {
         save_config(&cfg)?;
     }
     println!("uninstalled {id}");
