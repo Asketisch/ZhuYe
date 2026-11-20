@@ -43,6 +43,7 @@ pub mod builder;
 pub mod discovery;
 pub mod error;
 pub mod load;
+pub mod migration;
 pub mod paths;
 pub mod schema;
 pub mod watch;

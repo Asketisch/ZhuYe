@@ -407,8 +407,8 @@ O11–O16 组集成链路(原 `tests/rust/integrations.sh` 44 断言迁入):
   `session_configured.context_window_size == 307200`(字段级);
 - **V4 覆盖表归一化**:`[context_windows] "Mock" = 204800` 对模型
   `mock/mock-1` 前缀命中,且 per-model 条目优先于 `[model].context_window`;
-- **V5 空 key**:`[anthropic] api_key=""` 无 base_url → 未配置(对照);
-  加显式 `base_url` → doctor 识别 active provider 为 anthropic;
+- **V5 空 key**:anthropic 模型组 `api_key=""` 无 base_url → 未配置(对照);
+  加显式 `base_url` → doctor 识别活跃组为 anthropic;
 - **V6 插件门控对照**:未启用 goal-queue → `queue` 工具 tool not found;
 - **V7 队列全链路**:plugin install + enable → mock 调 `queue add/start`
   成功 → 任务落 `~/.zhuye/queue/<thread_id>.json`(id / prompt / name
@@ -719,8 +719,8 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 - **P-11**:流式请求收到非 SSE 响应(HTTP 200 普通 JSON)→ provider 显式
   返回 `LlmError::Provider`(带 content-type 与响应体预览)→
   `EventMsg::Error`,不再伪装成「模型没说话」(wiremock 回归)。
-- **P-12**:provider 段新增 `temperature` / `max_tokens` 配置项
-  (`[openai]` / `[anthropic]` / `[ollama]`;Responses 映射为
+- **P-12**:模型组新增 `temperature` / `max_tokens` 配置项
+  (endpoint = openai / anthropic / ollama;Responses 映射为
   `max_output_tokens`,Ollama 映射为 `options.num_predict`),请求侧
   显式值优先(wiremock 回归)。
 - **P-13**:迭代预算 / token 预算耗尽且零文本 → 引擎显式发

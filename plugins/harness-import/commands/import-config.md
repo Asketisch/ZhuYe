@@ -15,5 +15,5 @@ description: 一键导入其他本地 agent(Claude Code / Codex / Gemini / openc
    的模型暂无对应 provider、坏文件被跳过等)。
 3. 导入是**增量合并**:不覆盖用户已有的 provider / MCP 配置,重复执行
    幂等。提醒用户:导入的凭证在 `~/.zhuye/config.toml` 的
-   `[[anthropic.credentials]]` / `[[openai.credentials]]`,可用
-   `zhuye config set active.provider <名字>` 切换激活 provider。
+   `anthropic` / `openai` 模型组内(`[[model_group.credentials]]`),可用
+   `zhuye config set active.group <组 id>` 切换激活模型组。
