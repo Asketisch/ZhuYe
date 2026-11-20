@@ -342,7 +342,10 @@ impl ZhuyeBuilder {
     /// `AgentThread::new + AgentConfig::with_m4(default_m4_deps)` 走底层 API。
     pub fn build(self) -> Result<Zhuye, BuilderError> {
         let registry = build_registry_from_env(&self.model)?;
-        let tools = default_tool_registry();
+        // v1.x(WP13):app_cfg 提前加载 —— 门控型 bundled 插件工具的注册
+        // 门要与 exec 路径同源判定(默认开插件空配置下保持注册)。
+        let app_cfg = zhuye_config::load_default();
+        let tools = default_tool_registry(bundled_gates_for(&app_cfg, self.plugins.as_deref()));
         // B6:嵌入方注入点 —— 自定义工具(Runtime floor)/ hook / skills
         // 目录。与 build_async 同权(两条路径能力面一致)。
         for t in &self.extra_tools {
@@ -384,7 +387,7 @@ impl ZhuyeBuilder {
         // sanitizer 与 hook_engine 恒 None,[sanitize] 配置在库路径是死信、
         // Plan mode 的 PlanModeGate 也无从注册。hook 策略与 build_async
         // 一致:config [hooks] 未显式列出 = 不启用内置 hook(嵌入场景从紧)。
-        let app_cfg = zhuye_config::load_default();
+        // (app_cfg 已在上方提前加载,供注册门判定。)
         let sanitizer = build_sanitizer(app_cfg.sanitize.as_ref());
         let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_reflect_section(&app_cfg.hooks);
         if hooks_cfg.enabled.is_none() {
@@ -447,7 +450,10 @@ impl ZhuyeBuilder {
     ///   mcp_servers 能力落点)。
     pub async fn build_async(self) -> Result<Zhuye, BuilderError> {
         let registry = build_registry_from_env(&self.model)?;
-        let tools = default_tool_registry();
+        // app_cfg 提前加载 —— 门控型 bundled 插件工具的注册门要与 exec
+        // 路径同源判定(默认开插件空配置下保持注册,外部用法零影响)。
+        let app_cfg = zhuye_config::load_default();
+        let tools = default_tool_registry(bundled_gates_for(&app_cfg, self.plugins.as_deref()));
         // B6:嵌入方注入点(与 build 同款,两条路径能力面一致)。
         for t in &self.extra_tools {
             tools.register_with_source_floor(zhuye_tools::ToolSource::Runtime, Arc::clone(t));
@@ -473,7 +479,7 @@ impl ZhuyeBuilder {
 
         // HookEngine:插件 shell hooks 与内置 hook 的共同落点。嵌入场景
         // 未显式配置的内置 hook 不启用(见方法 doc)。
-        let app_cfg = zhuye_config::load_default();
+        // (app_cfg 已在上方提前加载,供注册门判定。)
         let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_reflect_section(&app_cfg.hooks);
         if hooks_cfg.enabled.is_none() {
             hooks_cfg.enabled = Some(Vec::new());
@@ -1010,12 +1016,32 @@ fn build_sanitizer(
     }
 }
 
-fn default_tool_registry() -> Arc<ToolRegistry> {
-    // v1.x:内置清单收编至 `zhuye_exec::register_builtin_tools`(exec /
+/// 门控型 bundled 插件工具门 —— 与 exec headless 同一判定源
+/// (`zhuye_plugin::bundled_tool_gates`)。`explicit` 是 Builder 的
+/// `with_plugins` 显式覆盖(语义同 serve `--plugin`:显式列表不隐含
+/// 关闭默认开插件,关闭走 `[plugins].disabled_plugins`)。
+fn bundled_gates_for(
+    app_cfg: &zhuye_config::ReflectConfig,
+    explicit: Option<&[String]>,
+) -> zhuye_tools::BundledToolGates {
+    let enabled: Vec<String> = explicit
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| app_cfg.plugins.enabled_plugins.clone());
+    zhuye_plugin::bundled_tool_gates(&enabled, &app_cfg.plugins.disabled_plugins)
+}
+
+fn default_tool_registry(gates: zhuye_tools::BundledToolGates) -> Arc<ToolRegistry> {
+    // v1.x:内置清单收编至 `zhuye_tools::register_builtin_tools`(exec /
     // serve / lib facade 三条路径共用,消除此前的双份漂移 —— 门面曾缺
-    // AskUser / ToolSearch / Checkpoint 等 9 个工具)。
+    // AskUser / ToolSearch / Checkpoint 等 9 个工具)。门控型 bundled
+    // 插件工具(web-search / notebook)按插件状态决定是否注册。
     let tools = Arc::new(ToolRegistry::default());
-    zhuye_tools::register_builtin_tools(&tools, None, Arc::new(zhuye_ast::AstTool::new()));
+    zhuye_tools::register_builtin_tools_with_gates(
+        &tools,
+        None,
+        Arc::new(zhuye_ast::AstTool::new()),
+        gates,
+    );
     tools
 }
 
@@ -1218,7 +1244,7 @@ mod tests {
         let expected = apply_sandbox_config(AgentConfig::new("mock", dir.path()), &config);
         let factory = build_side_channel_factory(
             registry,
-            default_tool_registry(),
+            default_tool_registry(zhuye_tools::BundledToolGates::all_on()),
             &config,
             expected.permission_mode.clone(),
             false,
@@ -1349,7 +1375,7 @@ mod tests {
         // 与 exec / serve 共用)。全量 27 个(含 AskUser / ToolSearch /
         // Checkpoint / Rewind 等此前门面缺失的 9 个,以及 bash 后台任务
         // 配套的 background_status)。
-        let r = default_tool_registry();
+        let r = default_tool_registry(zhuye_tools::BundledToolGates::all_on());
         let names = r.list();
         assert_eq!(
             names.len(),
@@ -1434,7 +1460,7 @@ mod tests {
         let t = Arc::new(AgentThread::new(
             AgentConfig::new("mock", Path::new(".")),
             build_registry_from_env("mock").unwrap(),
-            default_tool_registry(),
+            default_tool_registry(zhuye_tools::BundledToolGates::all_on()),
             None,
             None,
         ));
@@ -1502,7 +1528,7 @@ mod tests {
     /// 本测试三件套同时断言,任一漏注册即失败,防回归。
     #[test]
     fn default_tool_registry_includes_plan_mode_tools() {
-        let r = default_tool_registry();
+        let r = default_tool_registry(zhuye_tools::BundledToolGates::all_on());
         let names = r.list();
         assert!(
             names.iter().any(|n| n == "PlanWrite"),

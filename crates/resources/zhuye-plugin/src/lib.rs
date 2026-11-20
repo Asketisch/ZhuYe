@@ -14,6 +14,7 @@
 //! 绑定共用同一套挂载入口;[`commands_registry`] 承载插件 slash 命令的
 //! 注册与用户输入展开。
 
+pub mod bundled;
 pub mod capabilities;
 pub mod commands_registry;
 pub mod dependency;
@@ -36,6 +37,7 @@ pub use capabilities::{
     mcp::{LoadedMcpServer, McpSource, McpTransportKind},
     skills::LoadedSkill,
 };
+pub use bundled::{BUNDLED_PLUGIN_DEFAULTS, bundled_plugin_default_on, bundled_plugin_enabled, bundled_tool_gates};
 pub use commands_registry::{CommandRegistry, ExpandError, expand_command, expand_user_input};
 pub use dependency::{DepResolver, ResolvedDep};
 pub use errors::{PluginError, Result};
