@@ -222,9 +222,11 @@ fn partial_eq_detects_timeout_change() {
 // ── Ollama 段(v0.3.1)─────────────────────────────────────────
 
 #[test]
-fn parses_full_ollama_section() {
+fn parses_full_ollama_model_group() {
     let toml = r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
         base_url = "http://192.168.1.5:11434"
         api_key = "sk-local"
         model = "qwen2.5:7b"
@@ -234,7 +236,7 @@ fn parses_full_ollama_section() {
         timeout_secs = 120
     "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    let o = cfg.ollama.as_ref().expect("ollama section");
+    let o = cfg.model_group.first().expect("ollama 模型组");
     assert_eq!(o.base_url.as_deref(), Some("http://192.168.1.5:11434"));
     assert_eq!(o.api_key.as_deref(), Some("sk-local"));
     assert_eq!(o.model.as_deref(), Some("qwen2.5:7b"));
@@ -245,13 +247,15 @@ fn parses_full_ollama_section() {
 }
 
 #[test]
-fn parses_minimal_ollama_section_with_all_none_fields() {
-    // 仅声明 `[ollama]`,所有字段都缺省 → 全 None,builder 走兜底。
+fn parses_minimal_model_group_with_all_none_fields() {
+    // 仅声明 id / endpoint,所有可选字段都缺省 → 全 None,builder 走兜底。
     let toml = r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
     "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    let o = cfg.ollama.as_ref().expect("ollama section");
+    let o = cfg.model_group.first().expect("模型组");
     assert!(o.base_url.is_none());
     assert!(o.api_key.is_none());
     assert!(o.model.is_none());
@@ -262,31 +266,35 @@ fn parses_minimal_ollama_section_with_all_none_fields() {
 }
 
 #[test]
-fn partial_eq_detects_ollama_section_change() {
-    // 改 keep_alive_secs → partial_eq 不等 → diff_sections 报 "ollama"。
+fn partial_eq_detects_model_group_change() {
+    // 改 keep_alive_secs → partial_eq 不等 → diff_sections 报组名。
     let a: ReflectConfig = toml::from_str(
         r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
         model = "llama3.2"
         keep_alive_secs = 300
         "#,
     )
     .unwrap();
     let mut b = a.clone();
-    b.ollama.as_mut().unwrap().keep_alive_secs = Some(600);
-    assert_ne!(a.ollama, b.ollama);
+    b.model_group[0].keep_alive_secs = Some(600);
+    assert_ne!(a.model_group, b.model_group);
 }
 
 #[test]
-fn unknown_ollama_keys_ignored() {
+fn unknown_model_group_keys_ignored() {
     // 容忍策略:未知字段不报错(v0.4 strict 模式留待)。
     let toml = r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
         model = "llama3.2"
         future_field = "ignored"
         "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    assert!(cfg.ollama.is_some());
+    assert_eq!(cfg.model_group.len(), 1);
 }
 
 #[test]
