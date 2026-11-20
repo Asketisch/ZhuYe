@@ -60,13 +60,16 @@ watch:
 clean:
 	cargo clean
 
-## gc: 清掉 debug 里 cargo 不会自动 GC 的旧中间产物
-## (incremental/.fingerprint 是 30+ GB 的元凶). 主二进制和 .rlib 保留,
-## 下次 cargo build 只需补全缺失依赖。日常开发循环使用。
+## gc: 清掉 cargo 不会自动 GC 的旧中间产物。
+## incremental 是 30+ GB 的元凶:dev 已关增量不再产生,但 release-fast
+## (incremental=true)与交叉 target(target/<triple>/{debug,release}/)仍会
+## 无界累积,故清理面覆盖整个 target/。.fingerprint 是另一大头。
+## 主二进制和 .rlib 保留,下次 cargo build 只需补全缺失依赖。日常开发循环使用。
 gc:
-	rm -rf target/debug/incremental target/debug/.fingerprint
+	rm -rf target/*/incremental target/*/*/incremental
+	rm -rf target/debug/.fingerprint
 	rm -rf target/debug/examples
-	@echo "✅ removed target/debug/{incremental,.fingerprint,examples}"
+	@echo "✅ removed target/**/incremental + debug/{.fingerprint,examples}"
 
 ## gc-deep: 同 gc,再清空 deps 里所有 *.o/*.d/旧 .rlib。下次构建接近冷构建,
 ## 但能多释放 ~10-15 GB。仅当磁盘告警时使用。
@@ -91,5 +94,5 @@ help:
 	@echo "  check-fast    - cargo check 单 crate:make check-fast C=<crate>"
 	@echo "  watch         - 文件变更自动 check(需 cargo-watch)"
 	@echo "  clean         - 移除全部构建产物(cargo clean)"
-	@echo "  gc            - 清 incremental/.fingerprint/examples(-30GB),保留 .rlib"
+	@echo "  gc            - 清全部 profile 的 incremental + debug/.fingerprint/examples,保留 .rlib"
 	@echo "  gc-deep       - 同 gc,再清 deps(-15GB,下次近冷构建)"
