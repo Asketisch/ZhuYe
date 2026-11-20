@@ -30,12 +30,19 @@
 - `loader::register` / `loader::unregister` 负责真接到各 registry(工具 / hook / MCP / 技能 / 子代理 / 命令表)。
 - 能力类别共六类:五个 loader 文件(`capabilities/agents.rs`、`commands.rs`、`hooks.rs`、`mcp.rs`、`skills.rs`)+ WASM 组件工具(manifest `[[wasm_tools]]`,扫描在 `capabilities/mod.rs`,进程内实例化在 `loader.rs`;未启用 `wasm` feature 时跳过并告警)。
 
+### 4. 门控型 bundled 插件的判定单一事实源在 `src/bundled.rs`
+
+- 门控型(根 AGENTS.md 形态判断决策矩阵第三行):能力本体留引擎 crate,注册与否由插件启用状态决定 —— 用于「默认开启且必须保持原工具名 / 审批 / 行为」的能力(外部用法零影响)。
+- `bundled_plugin_enabled(name, enabled, disabled)`:显式禁用 > 显式启用 > `BUNDLED_PLUGIN_DEFAULTS` 默认开关;`bundled_tool_gates(enabled, disabled)` 是「插件名 → builtin 工具门」映射的**唯一维护处**,新增门控插件时同步默认表与该函数。
+- 判定不依赖插件安装(纯名字比对),也**不热重载**(与 `reload_plugins` 的挂载热重载不同);goal-queue 的引擎侧 gate 同样委托此判定。
+
 ## 核心文件导航
 
 | 文件 | 一句话职责 |
 |---|---|
 | `src/manifest.rs` | manifest schema 唯一权威 |
 | `src/identifier.rs` | `PluginId` / `MarketplaceName` 标识符 |
+| `src/bundled.rs` | 门控型 bundled 插件判定与工具门构造(单一事实源) |
 | `src/manager/mod.rs` | 安装 / 卸载与状态记账 |
 | `src/state.rs` | 持久化状态模型与 scope |
 | `src/capabilities/` | 五类能力的纯函数扫描器 |

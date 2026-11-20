@@ -1046,9 +1046,10 @@ fn bundled_gates_for(
     app_cfg: &zhuye_config::ReflectConfig,
     explicit: Option<&[String]>,
 ) -> zhuye_tools::BundledToolGates {
-    let enabled: Vec<String> = explicit
-        .map(<[String]>::to_vec)
-        .unwrap_or_else(|| app_cfg.plugins.enabled_plugins.clone());
+    let enabled: Vec<String> = explicit.map_or_else(
+        || app_cfg.plugins.enabled_plugins.clone(),
+        <[String]>::to_vec,
+    );
     zhuye_plugin::bundled_tool_gates(&enabled, &app_cfg.plugins.disabled_plugins)
 }
 

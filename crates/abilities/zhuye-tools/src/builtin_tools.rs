@@ -221,11 +221,22 @@ mod tests {
     #[test]
     fn gates_off_skip_plugin_tools_only() {
         let tools = Arc::new(ToolRegistry::default());
-        register_builtin_tools_with_gates(&tools, None, Arc::new(FakeAst), BundledToolGates::default());
+        register_builtin_tools_with_gates(
+            &tools,
+            None,
+            Arc::new(FakeAst),
+            BundledToolGates::default(),
+        );
         let names = tools.list();
         assert_eq!(names.len(), UNGATED_BUILTIN_TOOL_COUNT, "got {names:?}");
-        assert!(!names.iter().any(|n| n == "web_search"), "门控关闭后不应注册 web_search");
-        assert!(!names.iter().any(|n| n == "notebook_edit"), "门控关闭后不应注册 notebook_edit");
+        assert!(
+            !names.iter().any(|n| n == "web_search"),
+            "门控关闭后不应注册 web_search"
+        );
+        assert!(
+            !names.iter().any(|n| n == "notebook_edit"),
+            "门控关闭后不应注册 notebook_edit"
+        );
         // 关键引擎工具不受门控影响。
         for kept in ["echo", "bash", "read", "web_fetch", "checkpoint"] {
             assert!(names.iter().any(|n| n == kept), "门控不应影响 {kept}");

@@ -31,8 +31,12 @@ install / enable / marketplace / troubleshooting see
 | [`git-tools/`](git-tools/) | `git-tools` | git workflow: branch / PR / diff probing + checkpoint snapshots + Stop auto-checkpoint (build the binary first) |
 | [`shell/`](shell/) | `shell` | Resident shell session pool: launch processes / read output incrementally / write stdin / kill (build the binary first) |
 | [`harness-import/`](harness-import/) | `harness-import` | Imports external Harness (Claude Code / Codex / ZCode) conversation history; one-click import of another local agent's model / MCP config (build the binary first) |
-| [`goal-queue/`](goal-queue/) | `goal-queue` | Goal mode (the goal tool) + FIFO queue mode (the queue tool; pure declaration) |
+| [`goal-queue/`](goal-queue/) | `goal-queue` | Goal mode (the goal tool) + FIFO queue mode (the queue tool; gated form, off by default) |
 | [`kms/`](kms/) | `kms` | Local Markdown knowledge base: multi-wiki pagination + grep search + dream consolidation (build the binary first) |
+| [`web-search/`](web-search/) | `web-search` | The `web_search` tool (Brave API; gated form, **on by default**) |
+| [`notebook/`](notebook/) | `notebook` | The `notebook_edit` tool (Jupyter cell editing; gated form, **on by default**) |
+| [`verify-hooks/`](verify-hooks/) | `verify-hooks` | Plugin enable path for the verification / test_runner hook pair (gated, off by default, dual path) |
+| [`lsp/`](lsp/) | `lsp` | LSP integration coarse switch and docs (gated; activation is driven by `[lsp_servers]` config) |
 
 ⚠️ **The directory name and the manifest name need not be the same**:
 the manifest's `name` is required and is used to form the plugin id

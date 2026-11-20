@@ -392,8 +392,7 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     // 的可见性过滤)。门控判定与插件挂载列表同源(--plugin 显式覆盖)。
     let plugin_enabled_ids = resolve_enabled_plugins(args, &initial_cfg);
     let plugin_disabled_ids = initial_cfg.plugins.disabled_plugins.clone();
-    let gates =
-        zhuye_plugin::bundled_tool_gates(&plugin_enabled_ids, &plugin_disabled_ids);
+    let gates = zhuye_plugin::bundled_tool_gates(&plugin_enabled_ids, &plugin_disabled_ids);
     zhuye_tools::register_builtin_tools_with_gates(
         &tools,
         ask_uq_max,
@@ -1847,7 +1846,10 @@ mod goal_queue_tests {
             &["demo@inline".to_string(), "goal-queue@user".to_string()],
             &empty
         ));
-        assert!(!goal_queue_plugin_enabled(&["demo@inline".to_string()], &empty));
+        assert!(!goal_queue_plugin_enabled(
+            &["demo@inline".to_string()],
+            &empty
+        ));
         assert!(!goal_queue_plugin_enabled(&[], &empty));
         // 前缀相似但不相等,不命中。
         assert!(!goal_queue_plugin_enabled(

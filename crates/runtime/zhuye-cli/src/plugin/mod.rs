@@ -243,9 +243,11 @@ pub fn enable(id_str: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `zhuye plugin disable <id>` —— 从 enabled_plugins 移除;对默认开的
-/// 门控插件(bundled,如 web-search / notebook)同时写入 disabled_plugins
-/// —— 仅移出 enabled 对它们是 no-op(默认开不依赖 enabled 列表)。
+/// `zhuye plugin disable <id>` —— 从 enabled_plugins 移除;**仅对门控型
+/// bundled 插件**(web-search / notebook / goal-queue 等,查
+/// `is_bundled_plugin`)同时写入 disabled_plugins —— 对默认开插件仅移出
+/// enabled 是 no-op(默认开不依赖 enabled 列表)。marketplace / 第三方
+/// 插件保持旧语义:只从 enabled 移除,不留禁用痕迹。
 pub fn disable(id_str: &str) -> anyhow::Result<()> {
     let (_mgr, mut cfg) = load_manager_and_config()?;
     let id = parse_id(id_str)?;
@@ -253,17 +255,28 @@ pub fn disable(id_str: &str) -> anyhow::Result<()> {
     let before = cfg.plugins.enabled_plugins.len();
     cfg.plugins.enabled_plugins.retain(|p| p != &key);
     let removed_from_enabled = cfg.plugins.enabled_plugins.len() != before;
-    // 门控插件写入显式禁用表(幂等)。
-    let was_disabled = cfg.plugins.disabled_plugins.iter().any(|p| p == &key);
-    if !was_disabled {
-        cfg.plugins.disabled_plugins.push(key.clone());
+    // 仅门控插件写入显式禁用表(幂等);非门控插件写禁用表没有判定
+    // 消费方,只会在卸载后的 config dump 里留残迹。
+    let added_to_disabled = if zhuye_plugin::is_bundled_plugin(id.name()) {
+        if !cfg.plugins.disabled_plugins.iter().any(|p| p == &key) {
+            cfg.plugins.disabled_plugins.push(key);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if removed_from_enabled || added_to_disabled {
+        save_config(&cfg)?;
     }
-    save_config(&cfg)?;
-    if removed_from_enabled {
+    if added_to_disabled {
+        // 门控插件默认开:不依赖 enabled 列表,靠 disabled_plugins 关闭。
+        println!("disabled {id} (added to config.toml#plugins.disabled_plugins)");
+    } else if removed_from_enabled {
         println!("disabled {id} (removed from enabled_plugins)");
     } else {
-        // 门控插件默认开:不依赖 enabled 列表,走 disabled_plugins。
-        println!("disabled {id} (added to config.toml#plugins.disabled_plugins)");
+        println!("{id} was not in config.toml#plugins.enabled_plugins (no-op)");
     }
     println!("Restart `zhuye exec` to unload capabilities.");
     Ok(())

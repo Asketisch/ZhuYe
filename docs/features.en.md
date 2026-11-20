@@ -32,18 +32,66 @@ all go through the same `ToolExecutionQueue`.
 
 ## Core Built-in Tools (default)
 
-The engine ships with **27 core built-in tools** (a single registration list in `zhuye-tools`, shared by
-the exec / serve / lib facade paths):
+The engine ships with **25 unconditional core built-in tools plus 2 gated plugin tools** (a single
+registration list in `zhuye-tools`, shared by the exec / serve / lib facade paths):
+
+Unconditional (25):
 
 `echo`, `bash`, `background_status`, `read`, `write`, `edit`, `delete_file`, `grep`, `glob`,
 `EnterPlanMode`, `ExitPlanMode`, `PlanWrite`, `EnterWorktree`, `ExitWorktree`, `ast`, `web_fetch`,
-`web_search`, `ask_user_question`, `ask_user`, `request_human_input`, `tool_search`, `image_view`,
-`notebook_edit`, `brief`, `get_context_remaining`, `checkpoint`, `rewind`.
+`ask_user_question`, `ask_user`, `request_human_input`, `tool_search`, `image_view`,
+`brief`, `get_context_remaining`, `checkpoint`, `rewind`.
+
+Gated plugin tools (on by default; can be disabled wholesale — see "Three-Layer Tool Control" below):
+
+- `web_search` — the `web-search` plugin (Brave Search API; key via the `[web_search]` section,
+  Auto approval);
+- `notebook_edit` — the `notebook` plugin (Jupyter cell-level editing, integrated with the
+  read_before_edit hook).
 
 Note: this is the **core registration list, not the full set** — orchestration, cron, and plugins can
 register more tools. The tool schema sent to the LLM is trimmed by PreLoop (see architecture.md §5);
 unregistered or trimmed tools never enter the prompt. `bash` runs in the OS sandbox by default (see
 "Security Gates").
+
+## Three-Layer Tool Control
+
+There are three orthogonal "off" entries, from coarse to fine:
+
+| Layer | Entry | Effect |
+|---|---|---|
+| Assembly · registration gate | `[plugins].disabled_plugins` (plugin-level) | The tool is **not registered**: `tool_search` cannot find it, calls get tool not found; this is how the default-on gated plugins (web-search / notebook) are turned off |
+| Definition · visibility filter | `[active] tools` / `[active].disallowed_tools` (tool-name-level) | The tool stays registered but is **invisible to the LLM** (allowlist ∩ / blocklist ∪, composable with agent-file frontmatter) |
+| Execution · approval | permission rules / floors (operation-level) | Decides whether a call may run; `bash` defaults to Prompt, `web_search` to Auto |
+
+The gated-plugin enable judgment and default table live in `zhuye-plugin`
+(`BUNDLED_PLUGIN_DEFAULTS` / `bundled_plugin_enabled`; explicit disable > explicit
+enable > default). The judgment is **not hot-reloaded** — restart the session
+after changing it.
+
+## Form-Judgment Conclusions (not pluginized)
+
+Per the root AGENTS.md "form judgment (main loop vs plugin)" iron rule, the
+capabilities **kept built-in** and why:
+
+- File family / bash family / Plan-mode trio / ask_user family / `tool_search` /
+  `get_context_remaining` — main-loop essentials (StateGraph flow, approval
+  side-channel, context governance depend on them directly);
+- `checkpoint` / `rewind` / worktree tools — depend on the engine recorder and
+  rollout truncation (engine-internal state via ToolContext); the workspace-side
+  snapshot already ships in the git-tools plugin — the builtin pair carries the
+  conversation-rewind semantics, and the two do not mix;
+- `brief` / `image_view` — pure-local generic conveniences (`image_view` returns
+  a multimodal ContentBlock, which plugin tool output cannot carry);
+- `ast` — heavy tree-sitter dependency; evolves via a feature gate rather than
+  pluginization;
+- vendor quota providers (Kimi / Zhipu / Minimax / Zenmux) — in-process
+  ModelRegistry machinery re-exported by the SDK facade;
+- the `langfuse_tracker` hook — the plugin hook slots (shell / WASM) cannot
+  carry OTLP/HTTP export; requires extending the plugin hook form first
+  (on the roadmap);
+- `zhuye-eval` — a standalone evaluation tool (the `zhuye-eval-score` binary),
+  not an agent-runtime capability; not pluginized.
 
 ## Multiple LLM Providers (default)
 
@@ -111,13 +159,20 @@ provide un-bypassable audit records and at-rest key protection. Note: auditing c
 ## Integrations (requires configuration)
 
 - **MCP client** (`zhuye-mcp`) — stdio / streamable-http transports;
-- **LSP** (`zhuye-lsp`) — language server integration;
+- **LSP** (`zhuye-lsp`) — language server integration; activation is driven by
+  `[lsp_servers]` config (semantics unchanged), with the `lsp` gated plugin
+  carrying a **coarse switch** (explicit disable turns it fully off — see
+  [plugins/lsp/](../plugins/lsp/));
 - **Computer-use** (`zhuye-computer-use`) — screenshot / keyboard-mouse,
 gated by the `real` feature (default is mock; real operations require explicitly enabling the feature);
 - **Git capability family** (`zhuye-git` / `zhuye-git-tools`) —
 checkpoint / rewind (tag-based snapshots, still reachable after rewinding) + branch / PR probing;
 - **WASM component plugin host** (`zhuye-wasm`) — Wasmtime component
-model, multi-language plugin runtime; 30s deadline, no fs / network / env inheritance.
+model, multi-language plugin runtime; 30s deadline, no fs / network / env inheritance;
+- **Verification hook pair** (`verification` / `test_runner`) — off by default;
+  enable via either equivalent path: list them explicitly in config `[hooks]
+  enabled`, or install and enable the `verify-hooks` gated plugin (see
+  [plugins/verify-hooks/](../plugins/verify-hooks/)).
 
 ## Persistence and Recovery (default)
 

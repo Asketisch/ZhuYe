@@ -41,6 +41,15 @@ pub fn bundled_plugin_default_on(name: &str) -> bool {
         .is_some_and(|(_, on)| *on)
 }
 
+/// 该名字是否登记为门控型 bundled 插件。
+///
+/// CLI `plugin disable` 只对 bundled 插件写 `disabled_plugins`(对
+/// marketplace / 第三方插件保持旧语义:仅从 enabled 列表移除,不留
+/// 禁用痕迹)—— 否则卸载后的 config dump 会出现无意义的残留条目。
+pub fn is_bundled_plugin(name: &str) -> bool {
+    BUNDLED_PLUGIN_DEFAULTS.iter().any(|(n, _)| *n == name)
+}
+
 /// 门控型 bundled 插件的统一启用判定。
 ///
 /// `enabled` / `disabled` 通常来自 `resolve_enabled_plugins` 与
@@ -50,8 +59,7 @@ pub fn bundled_plugin_enabled(name: &str, enabled: &[String], disabled: &[String
     if disabled.iter().any(|id| id.split('@').next() == Some(name)) {
         return false;
     }
-    enabled.iter().any(|id| id.split('@').next() == Some(name))
-        || bundled_plugin_default_on(name)
+    enabled.iter().any(|id| id.split('@').next() == Some(name)) || bundled_plugin_default_on(name)
 }
 
 /// 由插件启用/禁用列表构造 builtin 工具注册门(exec / serve / lib
