@@ -28,19 +28,63 @@
 
 ## 核心内置工具(默认)
 
-引擎自带 **27 个核心内置工具**(`zhuye-tools` 的单一注册清单,exec / serve /
-lib 门面三条路径共用):
+引擎自带 **25 个无条件核心内置工具 + 2 个门控插件工具**(`zhuye-tools`
+的单一注册清单,exec / serve / lib 门面三条路径共用):
+
+无条件注册(25):
 
 `echo`、`bash`、`background_status`、`read`、`write`、`edit`、`delete_file`、
 `grep`、`glob`、`EnterPlanMode`、`ExitPlanMode`、`PlanWrite`、
-`EnterWorktree`、`ExitWorktree`、`ast`、`web_fetch`、`web_search`、
+`EnterWorktree`、`ExitWorktree`、`ast`、`web_fetch`、
 `ask_user_question`、`ask_user`、`request_human_input`、`tool_search`、
-`image_view`、`notebook_edit`、`brief`、`get_context_remaining`、
+`image_view`、`brief`、`get_context_remaining`、
 `checkpoint`、`rewind`。
+
+门控插件工具(默认开,可整体禁用,见下方「三层工具管控」):
+
+- `web_search` —— `web-search` 插件(Brave Search API;`[web_search]` 段配
+  key,审批 Auto);
+- `notebook_edit` —— `notebook` 插件(Jupyter cell 级编辑,与
+  read_before_edit hook 联动)。
 
 注意:这是**核心注册清单,不是全集** —— 编排、cron、插件可再注册其他工具。
 发给 LLM 的工具 schema 会经 PreLoop 裁剪(见 architecture.md §5),未注册
 或被裁剪的工具不进 prompt。`bash` 默认跑在系统沙箱里(见「安全闸门」)。
+
+## 三层工具管控
+
+工具的「关」有三个正交入口,粒度从粗到细:
+
+| 层 | 入口 | 效果 |
+|---|---|---|
+| 装配期·注册门控 | `[plugins].disabled_plugins`(插件级) | 工具**不进注册表**:`tool_search` 搜不到、调用 tool not found;默认开的门控插件(web-search / notebook)关闭走这里 |
+| 定义期·可见性过滤 | `[active] tools` / `[active].disallowed_tools`(工具名级) | 工具已注册,仅 **LLM 不可见**(白名单 ∩ / 黑名单 ∪,可与 agent 文件 frontmatter 组合) |
+| 执行期·审批 | 权限规则 / floor(操作级) | 决定能否执行;`bash` 默认 Prompt,`web_search` 默认 Auto |
+
+门控插件的启用判定与默认开关表:`zhuye-plugin` 的
+`BUNDLED_PLUGIN_DEFAULTS` / `bundled_plugin_enabled`(显式禁用 > 显式启用
+> 默认开关)。判定不热重载,变更后重启会话生效。
+
+## 形态判断结论(不插件化清单)
+
+按根 AGENTS.md「形态判断(主循环 vs 插件)」铁律逐项过审后,**保留内置**
+的能力与理由:
+
+- 文件族 / bash 族 / Plan mode 三件 / ask_user 族 / `tool_search` /
+  `get_context_remaining` —— 主循环必需(StateGraph 流转、审批 side-channel、
+  上下文治理直接依赖);
+- `checkpoint` / `rewind` / worktree 工具 —— 依赖引擎 recorder 与 rollout
+  截断(经 ToolContext 的引擎内部状态),且 workspace 侧快照已由 git-tools
+  插件提供,内置版承载「会话回退」语义,二者不混;
+- `brief` / `image_view` —— 纯本地通用便利工具(`image_view` 返回多模态
+  ContentBlock,插件工具输出无法承载);
+- `ast` —— tree-sitter 重依赖,后续按 feature-gate 演进而非插件化;
+- 厂商 quota provider(Kimi / Zhipu / Minimax / Zenmux)—— ModelRegistry
+  进程内机制,SDK 门面 re-export 依赖;
+- `langfuse_tracker` hook —— 插件 hook 槽(shell / WASM)无法承载
+  OTLP/HTTP 上报,需先扩展插件 hook 形态(列路线图);
+- `zhuye-eval` —— 独立评测工具(`zhuye-eval-score` 二进制),非 agent
+  运行时能力,不插件化。
 
 ## 多 LLM provider(默认)
 
@@ -102,13 +146,18 @@ side-channel 让用户发起的并发 agent 与主轮次并行互不干扰(由 `
 ## 集成(需配置)
 
 - **MCP 客户端**(`zhuye-mcp`)—— stdio / streamable-http 两种传输;
-- **LSP**(`zhuye-lsp`)—— 语言服务器集成;
+- **LSP**(`zhuye-lsp`)—— 语言服务器集成;激活由 `[lsp_servers]` 配置驱动
+  (语义不变),另有 `lsp` 门控插件承载**粗粒度开关**(显式禁用即整体
+  关闭,见 [plugins/lsp/](../plugins/lsp/));
 - **computer-use**(`zhuye-computer-use`)—— 截屏 / 键鼠,`real` feature
   门控(默认 mock,真实操作需显式启用 feature);
 - **git 能力族**(`zhuye-git` / `zhuye-git-tools`)—— checkpoint / rewind(打
   tag 的快照,回退之后依然可达)+ 分支 / PR 探测;
 - **WASM 组件插件宿主**(`zhuye-wasm`)—— Wasmtime 组件模型,多语言插件运行
-  时;30s deadline,无 fs / 网络 / env 继承。
+  时;30s deadline,无 fs / 网络 / env 继承;
+- **校验双 hook**(`verification` / `test_runner`)—— 默认关;启用走双路径
+  (等价):config `[hooks] enabled` 显式列出,或安装启用 `verify-hooks`
+  门控插件(见 [plugins/verify-hooks/](../plugins/verify-hooks/))。
 
 ## 持久化与恢复(默认)
 

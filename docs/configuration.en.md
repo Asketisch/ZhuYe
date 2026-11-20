@@ -106,6 +106,30 @@ Anthropic-format endpoints (including gateways) support catalog fetching
 
 No process restart after edits — the config watcher hot-reloads.
 
+## Tool Control (three layers)
+
+There are three orthogonal "off" entries, from coarse to fine (see
+[features.md](features.md) "Three-Layer Tool Control" for details):
+
+```toml
+[plugins]
+enabled_plugins  = ["git-tools@inline"]   # authoritative enable list (name@marketplace)
+disabled_plugins = ["web-search@inline"]  # explicit disable of gated plugins (see below)
+
+[active]
+tools             = []                    # allowlist: non-empty intersects the LLM-visible set
+disallowed_tools  = ["web_search"]        # blocklist: excludes from the LLM-visible set
+```
+
+| Layer | Entry | Effect |
+|---|---|---|
+| Assembly · registration gate | `[plugins].disabled_plugins` | **Plugin-level**: gated-plugin tools (web-search / notebook, on by default) are **not registered** — `tool_search` cannot find them, calls get tool not found. Equivalent command: `zhuye plugin disable <id>` |
+| Definition · visibility filter | `[active] tools` / `disallowed_tools` | **Tool-name-level**: the tool stays registered but is invisible to the LLM (composable with `.zhuye/agents/*.md` frontmatter) |
+| Execution · approval | permission rules / floors | **Operation-level**: decides whether a call may run |
+
+The gated-plugin enable judgment is **not hot-reloaded** (unlike plugin
+mounting); restart the session after changing it.
+
 ## Environment Variables
 
 | Variable | Purpose |

@@ -94,6 +94,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | Git checkpoint 标签失败与回退安全快照 | I15、T20(子目录快照、干净提交可回退、安全快照失败停止) | — | — | ✅(拒绝回退、保留普通提交及子目录回退恢复) | — |
 | 插件 Hook 持久化禁用及恢复 | C8 | — | — | ✅(延迟注册及重新注册) | — |
 | 插件显式加载(`serve --plugin` 覆盖 config) | I7 | — | K9(Python)/ K10(TS,plugins) | — | — |
+| 门控型 bundled 插件(默认态零变化金测试 / disabled_plugins 注册门控 / disallowed_tools 分层叠加 / verify-hooks 双路径 Stop 否决续作) | G1–G4(`test_gated_plugins.py`) | — | — | ✅(zhuye-plugin bundled 3 例 + zhuye-tools builtin 门控 2 例 + zhuye-hooks enable_hook_names 1 例 + headless goal_queue 判定 2 例) | — |
 | Python SDK 选项位置参数兼容性 | — | — | ✅(原参数顺序及新增插件选项的 SDK 单测) | — | — |
 | TS prompt 本地超时 | —(仅客户端行为) | — | ✅(慢握手、慢写入、并发及迟到事件、非法超时值) | — | — |
 | Rust Builder 旧版 `with_defaults` 构造链、取消和会话订阅 | —(库接口无 serve 入口) | — | — | ✅(公开接口集成测试;mock 离线运行构造、线程 ID、取消与订阅用例) | — |

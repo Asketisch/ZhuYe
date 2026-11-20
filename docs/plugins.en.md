@@ -37,7 +37,7 @@ installed does not mean active; you must enable.
 
 ## Plugins bundled in the repo
 
-The repo ships 7 plugins, all under the [`plugins/`](../plugins/)
+The repo ships 11 plugins, all under the [`plugins/`](../plugins/)
 directory (conventions in its README). The "id" column below is the full
 `name@marketplace` name used for enabling / uninstalling; for local
 installs the marketplace is always `inline`:
@@ -49,8 +49,30 @@ installs the marketplace is always `inline`:
 | [`git-tools/`](../plugins/git-tools/) | `git-tools` | `git-tools@inline` | git workflow: branch / PR / diff probing + checkpoint snapshots + Stop auto-checkpoint (build the binary first) |
 | [`shell/`](../plugins/shell/) | `shell` | `shell@inline` | Resident shell session pool: launch background processes, read output incrementally, write to stdin, kill — good for REPL / dev servers (build the binary first) |
 | [`harness-import/`](../plugins/harness-import/) | `harness-import` | `harness-import@inline` | Imports external harness (Claude Code / Codex / ZCode) conversation history; one-click import of another local agent's model / MCP config (build the binary first) |
-| [`goal-queue/`](../plugins/goal-queue/) | `goal-queue` | `goal-queue@inline` | Goal mode + FIFO queue mode: enabling registers the `goal` / `queue` tools and starts the queue driver (pure declaration) |
+| [`goal-queue/`](../plugins/goal-queue/) | `goal-queue` | `goal-queue@inline` | Goal mode + FIFO queue mode: enabling registers the `goal` / `queue` tools and starts the queue driver (gated form, off by default) |
 | [`kms/`](../plugins/kms/) | `kms` | `kms@inline` | Local Markdown knowledge base: multi-wiki pagination + grep search + insight consolidation (dream) (build the binary first) |
+| [`web-search/`](../plugins/web-search/) | `web-search` | `web-search@inline` | The `web_search` tool (Brave API). **Gated, on by default**; disable removes the tool from the registry (unlike `[active].disallowed_tools`, which only hides it) |
+| [`notebook/`](../plugins/notebook/) | `notebook` | `notebook@inline` | The `notebook_edit` tool (Jupyter cell editing). **Gated, on by default** |
+| [`verify-hooks/`](../plugins/verify-hooks/) | `verify-hooks` | `verify-hooks@inline` | Plugin enable path for the `verification` / `test_runner` hook pair. **Gated, off by default** (dual path: equivalent to listing them in config `[hooks] enabled`) |
+| [`lsp/`](../plugins/lsp/) | `lsp` | `lsp@inline` | **Coarse switch** and docs for the LSP integration: activation is always driven by `[lsp_servers]` config; disable turns it fully off. Gated |
+
+### Gated plugins
+
+goal-queue / web-search / notebook / verify-hooks / lsp are **gated**
+plugins: the capability body stays in an engine crate (keeping the original
+tool name / approval / behavior — zero external-usage impact), and whether
+it registers is decided by the plugin's enable state. The single source of
+truth is `zhuye-plugin`'s `bundled_plugin_enabled` (default table
+`BUNDLED_PLUGIN_DEFAULTS`).
+
+- **On by default** (web-search / notebook): with empty config, behavior is
+  identical to before pluginization; turn off via `zhuye plugin disable
+  <id>@inline` or config `[plugins].disabled_plugins` (the tool leaves the
+  registry and `tool_search` cannot find it);
+- **Off by default** (goal-queue / verify-hooks / lsp): enabling is
+  equivalent to the original explicit config path (lsp additionally needs
+  `[lsp_servers]` definitions);
+- the judgment is not hot-reloaded; restart the session after changing it.
 
 ⚠️ Note that `plugin-demo`'s directory name is `plugin-demo`, but its
 manifest says `name = "demo"` — **the directory name and the manifest name
@@ -65,8 +87,8 @@ has 5; definitions in `crates/runtime/zhuye-cli/src/main.rs`):
 | Command | Arguments / flags | Effect |
 |---|---|---|
 | `install` | `<path or name@marketplace>` `--scope <managed\|user\|project\|local>` | Install. A local path is copied into the cache and registered (default `user` scope; locally installed ids are `name@inline`); ids containing `@` go through a registered marketplace path (including the dependency closure) |
-| `enable` | `<id>` | Add the id to the enabled list (requires it to be **installed** first; otherwise `NotInstalled` is reported) |
-| `disable` | `<id>` | Remove from the enabled list (installed files are not deleted; if not in the list this is a no-op) |
+| `enable` | `<id>` | Add the id to the enabled list (requires it to be **installed** first; otherwise `NotInstalled` is reported); also removes it from `disabled_plugins` if previously disabled |
+| `disable` | `<id>` | Remove from the enabled list and write into `disabled_plugins` (installed files are not deleted) — for default-on gated plugins (web-search / notebook) this is the only effective way to turn them off |
 | `uninstall` | `<id>` `--scope` `--yes` | Double delete: `installed_plugins.json` and the enabled list; default y/N interactive confirmation, `--yes` skips it; `--scope` must match the install scope; the managed scope refuses uninstall (enterprise pin) |
 | `list` | — | Table of installed plugins, joined with enabled state (`enabled` / `installed`) |
 | `info` | `<id>` | Single-plugin metadata: scope / version / install_path / timestamps / enabled state |
