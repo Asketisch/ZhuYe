@@ -1,0 +1,19 @@
+# LSP 门控插件 —— 语言服务器集成(lsp 工具)的粗粒度开关与文档载体。
+#
+# 形态:门控型(goal-queue 先例)—— LSP 本体(zhuye-lsp crate +
+# exec 装配)留在引擎,激活**始终需要 [lsp_servers] 配置**(config
+# 路径,语义不变;没有 server 定义时插件启用也无事可做)。本插件
+# 承载:
+# - 粗粒度开关:zhuye plugin disable lsp@inline(或 config
+#   [plugins].disabled_plugins 含 "lsp")→ 即使 [lsp_servers] 有配置
+#   也整体关闭(lsp 工具不注册、server 不启动);
+# - /lsp 命令与使用文档(见 commands/)。
+#
+# 插件启用(enable)是无独立效果的显式表态;server 定义仍走
+# ~/.zhuye/config.toml 的 [lsp_servers.<name>] 段(command / args /
+# languages 等),CLI `zhuye lsp add` 可代写。
+name = "lsp"
+version = "0.1.0"
+description = "语言服务器集成(lsp 工具:定义/引用/诊断/hover):配置驱动激活,插件承载整体开关与文档"
+keywords = ["lsp", "language-server", "gated"]
+commands = "./commands"

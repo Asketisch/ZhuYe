@@ -21,7 +21,6 @@ members = [
     "crates/abilities/zhuye-recovery",
     "crates/abilities/zhuye-notes",
     "crates/abilities/zhuye-sanitize",
-    "crates/abilities/zhuye-kms",
     "crates/abilities/zhuye-eval",
 
     # ── resources ── 配置/权限/插件/可观测性
@@ -55,6 +54,9 @@ members = [
     "crates/integrations/zhuye-browser",
     "crates/integrations/zhuye-shell",
     "crates/integrations/zhuye-git-tools",
+    # kms:本地知识库 wiki,plugins/kms 的能力本体(plugins/* 能力核心
+    # 不进 SDK facade,与 computer-use/shell/git-tools/import 同款归位)。
+    "crates/integrations/zhuye-kms",
 
     # ── runtime ── 运行时与入口
     # 注:zhuye-tui 已拆分至独立仓库 Reflect-TUI(https://cnb.cool/Demon1019/Reflect-CLI),
@@ -115,7 +117,7 @@ zhuye-compact    = { path = "crates/abilities/zhuye-compact" }
 zhuye-recovery   = { path = "crates/abilities/zhuye-recovery" }
 zhuye-notes      = { path = "crates/abilities/zhuye-notes" }
 zhuye-sanitize   = { path = "crates/abilities/zhuye-sanitize" }
-zhuye-kms        = { path = "crates/abilities/zhuye-kms" }
+zhuye-kms        = { path = "crates/integrations/zhuye-kms" }
 zhuye-eval       = { path = "crates/abilities/zhuye-eval" }
 
 # ── resources ── 配置/权限/插件/可观测性

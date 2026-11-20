@@ -83,11 +83,12 @@ pub fn resolve_enabled_plugins(
 pub const GOAL_QUEUE_PLUGIN: &str = "goal-queue";
 
 /// enabled 列表里的条目形如 `goal-queue@inline` / `goal-queue@user`,
-/// 取 `@` 前的名字比对。
-pub fn goal_queue_plugin_enabled(enabled: &[String]) -> bool {
-    enabled
-        .iter()
-        .any(|id| id.split('@').next() == Some(GOAL_QUEUE_PLUGIN))
+/// 取 `@` 前的名字比对。判定委托 `zhuye_plugin::bundled_plugin_enabled`
+/// (goal-queue 在 bundled 默认表中登记为默认关,显式启用才开;
+/// `[plugins].disabled_plugins` 显式禁用同样生效 —— 与其余门控插件
+/// 共用同一套语义)。
+pub fn goal_queue_plugin_enabled(enabled: &[String], disabled: &[String]) -> bool {
+    zhuye_plugin::bundled_plugin_enabled(GOAL_QUEUE_PLUGIN, enabled, disabled)
 }
 
 /// v1.10 功能2:`goal-queue` 插件启用时注册 `queue` / `goal` 工具并启动
@@ -97,12 +98,13 @@ pub fn goal_queue_plugin_enabled(enabled: &[String]) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn wire_goal_queue_plugin(
     enabled: &[String],
+    disabled: &[String],
     tools: &Arc<ToolRegistry>,
     thread: &Arc<AgentThread>,
     goal_slot: Arc<parking_lot::RwLock<Option<Arc<zhuye_goal::GoalController>>>>,
     thread_id: zhuye_protocol::ThreadId,
 ) {
-    if !goal_queue_plugin_enabled(enabled) {
+    if !goal_queue_plugin_enabled(enabled, disabled) {
         return;
     }
     // 队列:完成信号走 per-turn 事件监视(出队时经 `AgentThread::submit`
@@ -302,6 +304,16 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     if args.hooks_explicit_only && hooks_cfg.enabled.is_none() {
         hooks_cfg.enabled = Some(Vec::new());
     }
+    // verify-hooks 门控插件(默认关):插件启用 = 显式启用 verification /
+    // test_runner 两个内置 hook(双路径:config [hooks] 显式列出 OR 插件
+    // 启用;注入在 explicit-only 收紧之后,保证 serve / 嵌入场景同样生效)。
+    if zhuye_plugin::bundled_plugin_enabled(
+        "verify-hooks",
+        &resolve_enabled_plugins(args, &initial_cfg),
+        &initial_cfg.plugins.disabled_plugins,
+    ) {
+        hooks_cfg.enable_hook_names(&["verification", "test_runner"]);
+    }
     let hook_engine: Arc<zhuye_hooks::HookEngine> = Arc::new(hooks_cfg.build_engine());
 
     // 1. ModelRegistry(env 兜底;v1.3 起 `ZHUYE_MODEL=mock` 可离线注册
@@ -375,7 +387,19 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         .as_ref()
         .and_then(|s| s.resolved())
         .map(|r| r.max_questions as u32);
-    zhuye_tools::register_builtin_tools(&tools, ask_uq_max, Arc::new(zhuye_ast::AstTool::new()));
+    // 门控型 bundled 插件(web-search / notebook 等)按插件启用状态
+    // 决定是否注册;默认开插件在空配置下保持注册(外部用法零影响),
+    // 关闭走 `[plugins].disabled_plugins`(区别于 [active].disallowed_tools
+    // 的可见性过滤)。门控判定与插件挂载列表同源(--plugin 显式覆盖)。
+    let plugin_enabled_ids = resolve_enabled_plugins(args, &initial_cfg);
+    let plugin_disabled_ids = initial_cfg.plugins.disabled_plugins.clone();
+    let gates = zhuye_plugin::bundled_tool_gates(&plugin_enabled_ids, &plugin_disabled_ids);
+    zhuye_tools::register_builtin_tools_with_gates(
+        &tools,
+        ask_uq_max,
+        Arc::new(zhuye_ast::AstTool::new()),
+        gates,
+    );
 
     // task 系统:默认 FileTaskStore 持久化,`--ephemeral-*` / HOME 缺失
     // 时降级内存后端。
@@ -1054,7 +1078,14 @@ pub async fn bootstrap_normal(
 
     // MCP / LSP bootstrap(失败仅 warn,不阻塞主流程)。
     let mcp_manager = bootstrap_m6(&initial_cfg, reload_tx.clone()).await;
-    let _lsp_manager = bootstrap_lsp(&initial_cfg, reload_tx.clone(), tools.clone()).await;
+    let _lsp_manager = bootstrap_lsp(
+        &initial_cfg,
+        reload_tx.clone(),
+        tools.clone(),
+        // lsp 门控插件粗粒度开关:显式禁用即整体关闭(config 语义不变)。
+        initial_cfg.plugins.is_disabled("lsp"),
+    )
+    .await;
 
     // 插件 runtime —— 挂载 enabled_plugins 能力。
     let mcp_for_plugins = mcp_manager.clone().unwrap_or_else(|| {
@@ -1111,6 +1142,7 @@ pub async fn bootstrap_normal(
     // v1.10 功能2:goal + 队列模式(goal-queue 插件门控;未启用 no-op)。
     wire_goal_queue_plugin(
         &enabled_plugins,
+        &initial_cfg.plugins.disabled_plugins,
         &tools.clone(),
         &thread,
         goal_slot,
@@ -1375,7 +1407,14 @@ pub async fn bootstrap_resumed(
     tracing::info!("resume path: registered PlanModeGate + agents_md + recall + read_before_edit");
     // resume 也跑 MCP bootstrap,方便继续使用之前挂的 MCP server。
     let mcp_manager = bootstrap_m6(&initial_cfg, reload_tx.clone()).await;
-    let _lsp_manager = bootstrap_lsp(&initial_cfg, reload_tx.clone(), tools.clone()).await;
+    let _lsp_manager = bootstrap_lsp(
+        &initial_cfg,
+        reload_tx.clone(),
+        tools.clone(),
+        // lsp 门控插件粗粒度开关:显式禁用即整体关闭(config 语义不变)。
+        initial_cfg.plugins.is_disabled("lsp"),
+    )
+    .await;
     // 插件 runtime —— resume 与普通分支同权:挂载 enabled_plugins。
     // resume 分支历史上没有 reload drainer(事件静默丢弃),插件
     // `PluginLoaded` 事件同样无消费者,传 `None` 静默。
@@ -1416,6 +1455,7 @@ pub async fn bootstrap_resumed(
     // v1.10 功能2:resume 分支与 normal 同权(goal-queue 插件门控)。
     wire_goal_queue_plugin(
         &resolve_enabled_plugins(args, &initial_cfg),
+        &initial_cfg.plugins.disabled_plugins,
         &tools.clone(),
         &thread,
         goal_slot,
@@ -1798,20 +1838,35 @@ mod goal_queue_tests {
 
     #[test]
     fn 门控按插件名匹配任意scope后缀() {
+        let empty: Vec<String> = vec![];
         assert!(goal_queue_plugin_enabled(
-            &["goal-queue@inline".to_string()]
+            &["goal-queue@inline".to_string()],
+            &empty
         ));
-        assert!(goal_queue_plugin_enabled(&[
-            "demo@inline".to_string(),
-            "goal-queue@user".to_string(),
-        ]));
-        assert!(!goal_queue_plugin_enabled(&["demo@inline".to_string()]));
-        assert!(!goal_queue_plugin_enabled(&[]));
+        assert!(goal_queue_plugin_enabled(
+            &["demo@inline".to_string(), "goal-queue@user".to_string()],
+            &empty
+        ));
+        assert!(!goal_queue_plugin_enabled(
+            &["demo@inline".to_string()],
+            &empty
+        ));
+        assert!(!goal_queue_plugin_enabled(&[], &empty));
         // 前缀相似但不相等,不命中。
-        assert!(!goal_queue_plugin_enabled(&[
-            "goal-queue2@inline".to_string()
-        ]));
+        assert!(!goal_queue_plugin_enabled(
+            &["goal-queue2@inline".to_string()],
+            &empty
+        ));
         assert_eq!(GOAL_QUEUE_PLUGIN, "goal-queue");
+    }
+
+    /// 显式禁用最强:即使 enabled 里也关(与 bundled 统一判定一致)。
+    #[test]
+    fn 显式禁用优先于启用() {
+        assert!(!goal_queue_plugin_enabled(
+            &["goal-queue@inline".to_string()],
+            &["goal-queue@user".to_string()]
+        ));
     }
 }
 

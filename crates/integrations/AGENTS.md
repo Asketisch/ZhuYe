@@ -1,4 +1,4 @@
-**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、外部 Harness 会话导入、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server 或外部集成 stub 时读本篇 —— 本层 9 个 crate 均无独立篇,它们的本地契约以本篇为准。
+**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、外部 Harness 会话导入、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki 或安全扫描/通知时读本篇 —— 本层 10 个 crate 均无独立篇,它们的本地契约以本篇为准。
 
 # crates/integrations/ —— 外部系统接入层
 
@@ -8,19 +8,20 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ## crate 职责速览表
 
-本层 9 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
+本层 10 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
 
 | crate | 一句话职责 | 本地契约在哪 |
 |---|---|---|
 | `zhuye-mcp` | MCP 客户端:把外部 MCP server 的 tool / resource / prompt 接入工具注册表 | MCP 客户端 |
 | `zhuye-lsp` | LSP 客户端:以单一 `lsp` 工具承载 definition / references / hover | LSP 客户端 |
-| `zhuye-integration` | 外部集成 stub 集合:本地网关 / 工单 / 通知 / 安全扫描 / 语音 | 外部集成 |
+| `zhuye-integration` | 安全扫描(cargo audit 包装)与 Webhook 通知 | 外部集成 |
 | `zhuye-stream` | 流式会话后端:cron 定时 / autopilot 自动驾驶 / FIFO 队列 / 工作区同步 | 流式后端 |
 | `zhuye-import` | 外部 Harness(Claude Code / Codex / ZCode)会话与配置导入 | 会话导入 |
 | `zhuye-computer-use` | Computer Use:截屏与键鼠输入,含 a11y 寻址与动作后验 | Computer Use |
 | `zhuye-browser` | 浏览器控制:CDP 驱动本机浏览器,复用 a11y 寻址与快照绑定 | 浏览器控制 |
 | `zhuye-shell` | 常驻 shell 会话池:启动进程 / 增量读 / 写 stdin / kill | 常驻 shell |
 | `zhuye-git-tools` | git 工作流 MCP server 协议层:分支摘要 / checkpoint 快照 | git 工作流 |
+| `zhuye-kms` | 本地知识库 wiki(grep 检索 + dream 固化),`plugins/kms` 的能力本体 | KMS 知识库 |
 
 ## 本层本地契约
 
@@ -45,7 +46,8 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ### 外部集成(`zhuye-integration`)
 
-- 模块:`gateway`(本地 LLM 网关)、`ide_and_local`、`issues`(工单)、`notifications`(Webhook stub)、`security_scan`(cargo audit 包装)、`security_scan_v2`(全库扫描 + SARIF)、`voice`(本地语音回路)。
+- 模块:`notifications`(Webhook 通知)、`security_scan`(cargo audit 包装);消费方是 `zhuye-cli`(`security` 子命令 / `doctor` 探测)。
+- 历史上的 stub 模块(F45 gateway / F36 issues / F41 voice / F66-68 ide_and_local / F60 security_scan_v2)零调用方已删除;需要时按「形态判断」以插件形态重新承载,不要回填 stub。
 - 本 crate 不依赖任何 `zhuye-*` 内部 crate,只吃 serde / tokio;新增子能力按模块切开,不要堆进 `lib.rs`。
 
 ### 流式后端(`zhuye-stream`)
@@ -90,9 +92,15 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 - 工具清单与 schema 由 `tools_json()` 统一产出;新增工具只改这一处。
 - 协议版本同样用常量 `PROTOCOL_VERSION` 声明。
 
+### KMS 知识库(`zhuye-kms`)
+
+- 本地 Markdown 知识库 wiki:grep 检索(`search`)+ dream 固化(`dream`);数据落 `~/.zhuye/kms/`。
+- 交付形态是独立二进制 `zhuye-kms-server`(MCP stdio),由 `plugins/kms` 挂载;不进 SDK facade(与其他 plugins/* 能力本体同款)。
+- 自 abilities 层归位而来(2026-11):crate 定位与 computer-use / shell / git-tools / import 一致 —— integrations 层的能力本体 crate。
+
 ## 层内依赖约定
 
-- 本层 8 个 crate **互不依赖**:要组合能力由上层(runtime)接线,不要在层内互相 import。
+- 本层 crate 原则上**互不依赖**:要组合能力由上层(runtime)接线,不要在层内互相 import。已知例外(复用安全基线,不引入业务耦合):`zhuye-browser` → `zhuye-computer-use`(复用 `BrowserSecurity` 回环校验)、`zhuye-git-tools` → `zhuye-git`(resources 层能力族)。
 - 统一向下依赖:`zhuye-protocol`(协议类型)、`zhuye-config`(配置与运行目录)、`zhuye-tools`(工具注册表),以及按需的 `zhuye-fs` / `zhuye-git` / `zhuye-rollout`。
 - 依赖只允许从上往下流;本层不得依赖 `runtime` 层的任何 crate(含 `zhuye` 门面与 `zhuye-cli`)。
 - `orchestration` 与本层互不依赖,只共同依赖 `abilities` / `resources` / `protocol`。
@@ -101,7 +109,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 - wire 变体只在 `crates/protocol/zhuye-protocol` 定义;本层不得自定义协议变体,需要新能力先在协议层加变体。
 - 对外暴露的能力走 `Tool` trait 并注册进工具注册表,不要绕过注册表直接调用。
-- `zhuye-import` / `zhuye-computer-use` / `zhuye-shell` / `zhuye-git-tools` 是 `plugins/*` 的能力本体:按插件形态挂载,不进 SDK facade。
+- `zhuye-import` / `zhuye-computer-use` / `zhuye-shell` / `zhuye-git-tools` / `zhuye-kms` 是 `plugins/*` 的能力本体:按插件形态挂载,不进 SDK facade。
 - `zhuye-stream` 的 `cron` / `autopilot` / `queue` 属引擎内建能力(由 `zhuye` 门面再导出),与插件形态分开处理。
 
 ## 本层通用规则
