@@ -192,14 +192,14 @@ pub(crate) fn build_quota_tracker(cfg: &zhuye_config::ReflectConfig) -> Option<S
             }
         }
     };
-    if let Some(s) = &cfg.anthropic {
-        register_provider("anthropic", &s.credentials);
-    }
-    if let Some(s) = &cfg.openai {
-        register_provider("openai", &s.credentials);
-    }
-    if let Some(s) = &cfg.ollama {
-        register_provider("ollama", &s.credentials);
+    // 模型组是唯一的接入单元 —— 逐组注册其凭据的配额声明。
+    // 池名 = 组 id(与 registry 的池名口径一致)。
+    for group in &cfg.model_group {
+        let id = group.id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        register_provider(id, &group.credentials);
     }
     if any { Some(tracker) } else { None }
 }

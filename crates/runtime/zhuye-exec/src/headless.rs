@@ -312,9 +312,10 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         .map_err(|e| anyhow::anyhow!("failed to build provider from config: {e}"))?;
     // 无 provider / 无显式 model 都要 fail-fast 且报因可读 —— 不再回落
     // 内置默认模型名(打向第三方兼容端点只会得到难诊断的远端错误)。
-    if initial_cfg.active_provider().is_none() {
+    if initial_cfg.active_group().is_none() {
         anyhow::bail!(
-            "no provider configured: set [active] in {} or OPENAI_API_KEY/ANTHROPIC_API_KEY env, or ZHUYE_MODEL=mock",
+            "no model group configured: declare a [[model_group]] and set [active].group in {}, \
+             or set OPENAI_API_KEY/ANTHROPIC_API_KEY env, or ZHUYE_MODEL=mock",
             config_path.display()
         );
     }
@@ -326,8 +327,8 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         .map_err(|e| anyhow::anyhow!("failed to resolve model: {e}"))?
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no model configured for the active provider: set [<provider>].model \
-                 or a [[<provider>.credentials]].model entry in {} (or ZHUYE_MODEL env)",
+                "no model configured for the active model group: set the group's model \
+                 or a [[model_group.credentials]].model entry in {} (or ZHUYE_MODEL env)",
                 config_path.display()
             )
         })?;

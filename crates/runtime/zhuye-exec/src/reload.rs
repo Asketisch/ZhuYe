@@ -348,14 +348,10 @@ pub(crate) fn diff_sections(
     if old.active != new.active {
         out.push("active".to_string());
     }
-    if old.anthropic != new.anthropic {
-        out.push("anthropic".to_string());
-    }
-    if old.openai != new.openai {
-        out.push("openai".to_string());
-    }
-    if old.ollama != new.ollama {
-        out.push("ollama".to_string());
+    // 模型组(`[[model_group]]`)是唯一的模型接入单元 —— 组变化(新增 /
+    // 删除 / 改端点或凭据)统一报 "model_group"。
+    if old.model_group != new.model_group {
+        out.push("model_group".to_string());
     }
     if old.compact != new.compact {
         out.push("compact".to_string());

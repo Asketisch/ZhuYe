@@ -766,7 +766,7 @@ fn build_registry_from_env(
     let registry = Arc::new(ModelRegistry::new());
     let mut any = false;
     // 离线 mock provider(显式 opt-in,免 key、零网络)——
-    // 判定口径与 `zhuye-config` 的 `active_provider_inner` 对齐。
+    // 判定口径与 `zhuye-config` 的 `active_group_inner` 对齐。
     //
     // 此前门面完全不认识 mock:`ZHUYE_MODEL=mock` 的 example 与离线集成
     // 脚本一律撞上「set OPENAI_API_KEY」,离线场景根本跑不起来(e2e 只能
@@ -851,7 +851,7 @@ fn build_registry_from_env(
 
 /// 判定是否应使用离线 mock provider。
 ///
-/// 口径与 `zhuye-config` 的 `active_provider_inner` 对齐:
+/// 口径与 `zhuye-config` 的 `active_group_inner` 对齐:
 /// - `ZHUYE_PROVIDER=mock` / `fake`;
 /// - `ZHUYE_MODEL` 为 `mock` 或 `mock/...`;
 /// - 显式传入的 model spec 为 `mock` 或 `mock/...`。
