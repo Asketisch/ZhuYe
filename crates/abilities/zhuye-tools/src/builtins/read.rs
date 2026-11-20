@@ -265,11 +265,20 @@ mod tests {
     #[tokio::test]
     async fn reads_path_outside_workspace() {
         // workspace-write 口径:读全盘放行(编译/分析需读系统文件),
-        // 只拒凭证路径。
+        // 只拒凭证路径。探针用各平台必有的系统 hosts 文件(Windows
+        // 没有 /etc,CI 实证 unwrap panic)。
+        let hosts = if cfg!(windows) {
+            std::path::PathBuf::from(r"C:\Windows\System32\drivers\etc\hosts")
+        } else {
+            std::path::PathBuf::from("/etc/hosts")
+        };
         let ws = tmp_workspace();
         let t = ReadTool;
         let out = t
-            .execute(make_ctx(&ws), serde_json::json!({"path": "/etc/hosts"}))
+            .execute(
+                make_ctx(&ws),
+                serde_json::json!({"path": hosts.to_string_lossy()}),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);

@@ -149,7 +149,11 @@ mod tests {
     /// 合法写根 —— 旧用例的 sibling 目录不再构成越界;`$HOME` 下的探针
     /// 是唯一可靠的「写根之外」位置。
     fn outside_roots_dir(tag: &str) -> std::path::PathBuf {
-        let home = std::env::var("HOME").expect("测试需要 HOME");
+        // Windows 无 HOME 环境变量(CI 实证:expect 直接 panic),回退
+        // USERPROFILE;下同。
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .expect("测试需要 HOME 或 USERPROFILE");
         let dir = std::path::Path::new(&home).join(format!(
             ".zhuye_sb_probe_{}_{}",
             tag,
