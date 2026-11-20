@@ -246,14 +246,16 @@ parking_lot = "0.12"
 # v1.x WASM 插件宿主(组件模型;C2):features 裁剪 —— 只要运行时 +
 # 组件模型 + Cranelift 编译器 + async(epoch 中断计时)。default 的
 # cache/gc/wat/profiling 等不进依赖面,控制二进制体积。
-wasmtime = { version = "=36.0.20", default-features = false, features = [
+# 36.0.22:RUSTSEC-2026-0569/0566/0571/0587(wasmtime Caller panic /
+# wasi 内存增长 / http h2 堆用量 / Windows 沙箱逃逸)的修复版本。
+wasmtime = { version = "=36.0.22", default-features = false, features = [
     "async", "cranelift", "component-model", "runtime",
 ] }
 # WASI 实现(wasip2 组件规范隐式 import wasi:io/poll;宿主 linker 必须提供)。
 # 版本锁定 36:兼容 guest 侧 wit-bindgen 0.40(产 wasi 0.2.3 组件)——
 # 组件模型接口版本要求精确匹配,宿主与社区组件的 wasi 小版本必须一致;
 # 组合见 wit/README.md 的「工具链矩阵」。
-wasmtime-wasi = { version = "=36.0.20", default-features = false }
+wasmtime-wasi = { version = "=36.0.22", default-features = false }
 # v1.0.0-rc3:`read_before_edit` hook 测试可控 mtime 漂移。
 filetime    = "0.2"
 
