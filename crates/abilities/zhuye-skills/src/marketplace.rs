@@ -413,6 +413,10 @@ fn extract_skill_dir_from_tarball(
             tracing::warn!(path = %raw_str, "tarball 条目路径非 UTF-8,已跳过");
             continue;
         };
+        // Windows 上 PathBuf 的字符串形态是反斜杠分隔;下方布局探测与
+        // SKILL.md 定位全部按 tar 条目语义的 `/` 比较(`strip_suffix` /
+        // `rsplit_once` 等),这里统一归一,避免 Windows 下整目录识别失效。
+        let rel = rel.replace('\\', "/");
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut buf)
             .map_err(|e| SkillError::Fetch(format!("tarball 读文件失败: {e}")))?;
