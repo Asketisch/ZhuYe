@@ -1190,7 +1190,7 @@ fn model_group_pin_credential_and_entry_model() {
             credential: Some("backup".into()),
             ..Default::default()
         },
-        model_group: vec![g.clone()],
+        model_group: vec![g],
         ..Default::default()
     };
     assert_eq!(
