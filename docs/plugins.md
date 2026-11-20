@@ -32,7 +32,7 @@
 
 ## 仓库内置插件
 
-仓库自带 7 个插件,集中在 [`plugins/`](../plugins/) 目录(约定见其
+仓库自带 11 个插件,集中在 [`plugins/`](../plugins/) 目录(约定见其
 README)。下表中的「id」是启用 / 卸载时用的 `name@marketplace` 全名;
 本地安装时 marketplace 固定为 `inline`:
 
@@ -43,8 +43,26 @@ README)。下表中的「id」是启用 / 卸载时用的 `name@marketplace` 全
 | [`git-tools/`](../plugins/git-tools/) | `git-tools` | `git-tools@inline` | git 工作流:分支 / PR / diff 探测 + checkpoint 快照 + Stop 自动 checkpoint(需先构建二进制) |
 | [`shell/`](../plugins/shell/) | `shell` | `shell@inline` | 常驻 shell 会话池:后台启动进程、增量读输出、写 stdin、kill,适合 REPL / dev server(需先构建二进制) |
 | [`harness-import/`](../plugins/harness-import/) | `harness-import` | `harness-import@inline` | 导入外部 harness(Claude Code / Codex / ZCode)历史会话;一键导入其他本地 agent 的模型 / MCP 配置(需先构建二进制) |
-| [`goal-queue/`](../plugins/goal-queue/) | `goal-queue` | `goal-queue@inline` | 目标模式 + FIFO 队列模式:启用后注册 `goal` / `queue` 工具并启动队列 driver(纯声明) |
+| [`goal-queue/`](../plugins/goal-queue/) | `goal-queue` | `goal-queue@inline` | 目标模式 + FIFO 队列模式:启用后注册 `goal` / `queue` 工具并启动队列 driver(门控型,默认关) |
 | [`kms/`](../plugins/kms/) | `kms` | `kms@inline` | 本地 Markdown 知识库:多 wiki 分页 + grep 检索 + 洞见固化(dream)(需先构建二进制) |
+| [`web-search/`](../plugins/web-search/) | `web-search` | `web-search@inline` | `web_search` 工具(Brave API)。**门控型,默认开**;disable 即工具不注册(区别于 `[active].disallowed_tools` 仅隐藏) |
+| [`notebook/`](../plugins/notebook/) | `notebook` | `notebook@inline` | `notebook_edit` 工具(Jupyter cell 级编辑)。**门控型,默认开** |
+| [`verify-hooks/`](../plugins/verify-hooks/) | `verify-hooks` | `verify-hooks@inline` | `verification` / `test_runner` 校验双 hook 的插件启用路径。**门控型,默认关**(双路径:与 config `[hooks] enabled` 等价) |
+| [`lsp/`](../plugins/lsp/) | `lsp` | `lsp@inline` | LSP 集成的**粗粒度开关**与文档载体:激活始终由 `[lsp_servers]` 配置驱动;disable 即整体关闭。**门控型** |
+
+### 门控型插件
+
+goal-queue / web-search / notebook / verify-hooks / lsp 是**门控型**插件:
+能力本体留在引擎 crate(保持原工具名 / 审批 / 行为,外部用法零影响),
+注册与否由插件启用状态决定,判定单一事实源是 `zhuye-plugin` 的
+`bundled_plugin_enabled`(默认开关表 `BUNDLED_PLUGIN_DEFAULTS`)。
+
+- **默认开**(web-search / notebook):空配置下与插件化之前完全一致;
+  关闭走 `zhuye plugin disable <id>@inline` 或 config
+  `[plugins].disabled_plugins`(工具不进注册表,`tool_search` 搜不到);
+- **默认关**(goal-queue / verify-hooks / lsp):enable 后等价于原有
+  config 路径显式启用(lsp 的激活另需 `[lsp_servers]` 定义);
+- 判定不热重载,变更后重启会话生效。
 
 ⚠️ 注意 `plugin-demo` 的目录名是 `plugin-demo`,但 manifest 的
 `name = "demo"` —— **目录名与清单名可以不同,插件 id 以清单
@@ -59,8 +77,8 @@ README)。下表中的「id」是启用 / 卸载时用的 `name@marketplace` 全
 | 命令 | 参数 / 旗标 | 作用 |
 |---|---|---|
 | `install` | `<路径或 name@marketplace>` `--scope <managed\|user\|project\|local>` | 安装。本地路径复制到 cache 并登记(默认 `user` scope,本地安装的 id 为 `name@inline`);含 `@` 的 id 走已注册 marketplace 路径(含依赖闭包) |
-| `enable` | `<id>` | 把 id 加入启用列表(要求**先安装**;未装报 `NotInstalled`) |
-| `disable` | `<id>` | 从启用列表移除(不删安装文件;不在列表则提示 no-op) |
+| `enable` | `<id>` | 把 id 加入启用列表(要求**先安装**;未装报 `NotInstalled`);若此前在 `disabled_plugins` 里会一并移除 |
+| `disable` | `<id>` | 从启用列表移除并写入 `disabled_plugins`(不删安装文件)—— 对默认开的门控插件(web-search / notebook)这是唯一有效关闭方式 |
 | `uninstall` | `<id>` `--scope` `--yes` | 双删:`installed_plugins.json` 与启用列表;默认 y/N 交互确认,`--yes` 跳过;`--scope` 须与安装时一致;managed scope 拒绝卸载(企业 pin) |
 | `list` | — | 表格列出已装插件,联表启用状态(`enabled` / `installed`) |
 | `info` | `<id>` | 单插件元数据:scope / version / install_path / 时间戳 / 启用状态 |

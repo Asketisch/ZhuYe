@@ -41,7 +41,10 @@ pub use approval::{
 };
 pub use bash_command::{BASH_COMMAND_KEYS, resolve_bash_command};
 pub use bm25::{Bm25Hit, rank_lines, tokenize};
-pub use builtin_tools::{BUILTIN_TOOL_COUNT, register_builtin_tools};
+pub use builtin_tools::{
+    BUILTIN_TOOL_COUNT, BundledToolGates, UNGATED_BUILTIN_TOOL_COUNT, register_builtin_tools,
+    register_builtin_tools_with_gates,
+};
 pub use builtins::bash::{BashCommandClass, classify_command};
 pub use checkpoint_tool::{CheckpointTool, RewindTool};
 pub use loop_guard::{GuardDecision, LoopGuard, LoopGuardConfig};
