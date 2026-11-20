@@ -48,6 +48,7 @@
 2. **提示词文案外置** —— 面向模型的文案不写死在 Rust 代码里:按 provider 拆成 `crates/abilities/zhuye-prompt/prompts/` 下的 Markdown 文件。改文案改文件,不动逻辑;新增 provider 提示词同时在该目录补文件。上游来源与固定版本登记在同目录 `sources.json`(repository / revision / sha256 / 适配模型);`scripts/check_prompt_sources.py` 对比固定版与上游分支并产出审核报告,由 CI `.github/workflows/prompt-sources.yml` 调用 —— 更新文案时同步登记来源,否则审核报告会出现指纹漂移。
 3. **检索只此一份** —— BM25 相关性排序由 `zhuye-bm25` 提供,`zhuye-tools`(grep 的 `rank=bm25`)、`zhuye-memory`、`zhuye-notes` 共用。新增消费方直接依赖它,不要在消费方另写一套打分逻辑。
 4. **记忆存储契约**(zhuye-memory 无独立篇,故留在本篇)—— 持久记忆分 project / user / session 三 scope:project 落 `{workspace}/.zhuye/agent-memory/{agent_type}/MEMORY.md`(可入 VCS 共享),user 落 `~/.zhuye/agent-memory/{agent_type}/MEMORY.md`,session 仅在内存中。注入记忆的字符上限由 `MAX_MEMORY_INJECT_CHARS` 定义;改存储位置或 scope 语义要同步调用方。
+5. **新能力先过形态判断** —— 向本层新增工具 / hook / 能力原语前,先走根 `AGENTS.md` 开发流程检查表第 1 步「形态判断(内置 vs 插件)」:能用插件槽承载的(MCP server / WASM 工具 / skill / command / hook)不加进本层,本层只收引擎必需的原子能力。
 
 ## 核心文件导航
 
