@@ -67,7 +67,7 @@ fn stub_factory(manager: Arc<TaskManager>) -> Arc<SubAgentFactory> {
         ThreadId::new(),
         "openai/gpt-4o",
         registry,
-        None, // child_registry: will be set by caller if subagent_providers configured
+        None, // child_registry: will be set by caller if subagent_models configured
         parent_tools,
         CancellationToken::new(),
         None,

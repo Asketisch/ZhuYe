@@ -114,7 +114,7 @@ pub(crate) fn build_telemetry_sink(
 /// v1.x 功能 7:遍历 config 所有 provider(anthropic/openai/ollama)的
 /// credentials,收集声明了 `quota` 的条目,注册到 `QuotaTracker`。
 /// 任一 provider 有 quota 声明 → 返回 `Some(tracker)`;全无 → `None`(向后兼容)。
-/// v1 暂忽略 subagent_providers(subagent 配额切换后续迭代)。
+/// v1 暂忽略 subagent_models(subagent 配额切换后续迭代)。
 pub(crate) fn build_quota_tracker(cfg: &zhuye_config::ReflectConfig) -> Option<SharedQuotaTracker> {
     use std::sync::Arc as StdArc;
     use zhuye_config::QuotaSource;
@@ -192,14 +192,14 @@ pub(crate) fn build_quota_tracker(cfg: &zhuye_config::ReflectConfig) -> Option<S
             }
         }
     };
-    if let Some(s) = &cfg.anthropic {
-        register_provider("anthropic", &s.credentials);
-    }
-    if let Some(s) = &cfg.openai {
-        register_provider("openai", &s.credentials);
-    }
-    if let Some(s) = &cfg.ollama {
-        register_provider("ollama", &s.credentials);
+    // 模型组是唯一的接入单元 —— 逐组注册其凭据的配额声明。
+    // 池名 = 组 id(与 registry 的池名口径一致)。
+    for group in &cfg.model_group {
+        let id = group.id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        register_provider(id, &group.credentials);
     }
     if any { Some(tracker) } else { None }
 }

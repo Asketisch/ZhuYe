@@ -213,10 +213,10 @@ mod tests {
     /// 局部、或新增/删掉持锁点,本测试立即失败。
     #[test]
     fn env_lock_discipline_is_structurally_enforced() {
-        let load_src = include_str!("load.rs");
+        let load_src = include_str!("load/tests.rs");
         assert!(
             load_src.contains("crate::paths::ENV_LOCK.lock()"),
-            "load.rs 的 env 改写测试必须持 crate 级 paths::ENV_LOCK \
+            "load/tests.rs 的 env 改写测试必须持 crate 级 paths::ENV_LOCK \
              (函数局部锁锁不住其他模块的 env 读者,见 ENV_LOCK 文档)"
         );
         let paths_src = include_str!("paths.rs");

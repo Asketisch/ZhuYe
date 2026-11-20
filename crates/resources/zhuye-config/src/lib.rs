@@ -1,26 +1,29 @@
 //! `zhuye-config` — 统一 TOML 配置加载 + 热重载。
 //!
 //! M7 起取代 `zhuye-hooks::config::HooksConfig` 的单一职责，
-//! 把 provider / compact / hooks 配置集中到 `~/.zhuye/config.toml`。
+//! 把模型 / compact / hooks 配置集中到 `~/.zhuye/config.toml`。
 //!
 //! ## 模块
 //! - [`schema`] —— 数据结构 (`ReflectConfig` 及各 section)
-//! - [`load`] —— 单次同步加载
+//! - [`load`] —— 单次同步加载(含 v1→v2 迁移)
 //! - [`watch`] —— 基于 `notify` 的热重载 (debounce 250ms)
 //! - [`builder`] —— `ReflectConfig → ModelRegistry`
 //!
 //! ## 配置示例
+//!
+//! **模型组(`[[model_group]]`)是唯一的模型接入单元** —— 组 id 即模型
+//! spec 前缀(`<组id>/<模型>`),也是 registry 的池名。
+//!
 //! ```toml
 //! [active]
-//! provider = "anthropic"   # 主 provider 名,值取自下方 provider 段名
+//! group = "anthropic"    # 活跃模型组 id
 //!
-//! [anthropic]              # Anthropic provider 段
-//! api_key = "sk-ant-..."   # Anthropic API key(也可由 ANTHROPIC_API_KEY env 提供)
+//! [[model_group]]        # 模型组数组
+//! id = "anthropic"       # 组 id = 模型 spec 前缀
+//! endpoint = "anthropic" # 线格式:openai | anthropic | ollama
+//! api_key = "sk-ant-..." # 也可由 ANTHROPIC_API_KEY env 提供(仅固定 id 组)
 //! base_url = "https://api.anthropic.com"   # 可选:自定义 endpoint
 //! model = "claude-3-5-sonnet-latest"       # 可选:默认模型
-//!
-//! [openai]                 # OpenAI provider 段
-//! api_key = "sk-..."       # OpenAI API key(也可由 OPENAI_API_KEY env 提供)
 //!
 //! [compact]                # 压缩策略段
 //! trigger_tokens = 10000   # 触发自动压缩的输入 token 阈值
@@ -31,12 +34,16 @@
 //! [hooks.search_budget]    # search_budget 钩子专属配置
 //! max_calls = 20           # 单 turn 最大搜索调用次数
 //! ```
+//!
+//! v1 的固定段(`[anthropic]` / `[openai]` / `[ollama]`)仍可读入 —— 加载时
+//! 自动迁移成等价模型组,写回只有新格式。
 
 pub mod analytics;
 pub mod builder;
 pub mod discovery;
 pub mod error;
 pub mod load;
+pub mod migration;
 pub mod paths;
 pub mod schema;
 pub mod watch;
@@ -102,7 +109,10 @@ pub use discovery::{
     fetch_catalog, is_dynamic_model, pick_free_model, resolve_dynamic_model, resolve_model_spec,
 };
 pub use error::ConfigError;
-pub use load::{default_config_path, load_default, load_from_file, load_from_str};
+pub use load::{
+    default_config_path, load_default, load_from_file, load_from_file_with_migration,
+    load_from_str, load_from_str_with_migration,
+};
 pub use paths::{
     data_dir, data_path, data_path_or_relative, default_skill_dirs, project_agents_skills_dir,
     project_data_dir, project_data_path, resolve_data_dir, user_agents_skills_dir,
@@ -111,17 +121,16 @@ pub use paths::{
 pub mod flags;
 pub use flags::{FlagDecl, FlagRegistry, FlagState, ReleaseStage};
 pub use schema::{
-    ACP_DEFAULT_BIND, AcpSection, ActiveSection, AnalyticsSection, AnthropicSection,
-    AskUserQuestionSection, BridgeSection, CompactSection, ContextWindowsSection,
-    CoordinatorSection, CredentialConfig, DapSection, GoalSection, HooksSection, LangfuseSection,
-    LspFilePattern, LspServerEntry, LspServersSection, McpServerEntry, McpServersSection,
-    McpTransport, ModelDiscoverySection, ModelSection, NotificationChannel, NotificationsSection,
-    OllamaSection, OpenAISection, PermissionsSection, PlanCompletionSection,
-    PostgresSessionSection, PromptGuardSection, QuotaConfig, QuotaSource, ReadBeforeEditSection,
-    ReflectConfig, ResolvedAskUserQuestion, RoutingSection, SandboxSection, SanitizeSection,
-    SearchBudgetSection, SpecSlotConfig, SseRedisSection, SubagentSpecConfig, TelemetrySection,
-    TestRunnerSection, TokenBudgetSection, TuiNotificationsSection, VerificationSection,
-    VoiceSection, WebSearchSection, parse_permission_entry,
+    ACP_DEFAULT_BIND, AcpSection, ActiveSection, AnalyticsSection, AskUserQuestionSection,
+    BridgeSection, CompactSection, ContextWindowsSection, CoordinatorSection, CredentialConfig,
+    DapSection, GoalSection, HooksSection, LangfuseSection, LspFilePattern, LspServerEntry,
+    LspServersSection, McpServerEntry, McpServersSection, McpTransport, ModelDiscoverySection,
+    ModelGroupSection, ModelSection, NotificationChannel, NotificationsSection, PermissionsSection,
+    PlanCompletionSection, PostgresSessionSection, PromptGuardSection, QuotaConfig, QuotaSource,
+    ReadBeforeEditSection, ReflectConfig, ResolvedAskUserQuestion, RoutingSection, SandboxSection,
+    SanitizeSection, SearchBudgetSection, SpecSlotConfig, SseRedisSection, SubagentSpecConfig,
+    TelemetrySection, TestRunnerSection, TokenBudgetSection, TuiNotificationsSection,
+    VerificationSection, VoiceSection, WebSearchSection, parse_permission_entry,
 };
 pub use watch::{ConfigWatcher, WatcherHandle};
 

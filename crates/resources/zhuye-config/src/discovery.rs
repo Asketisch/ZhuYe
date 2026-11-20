@@ -6,8 +6,10 @@
 //! 模型 id 必然腐烂。本模块让配置可以写**指针**而不是字面量:
 //!
 //! ```toml
-//! [openai]
-//! model = "free"      # 运行时查 provider 清单,按免费规则挑一个
+//! [[model_group]]
+//! id = "openai"
+//! endpoint = "openai"
+//! model = "free"      # 运行时查模型组清单,按免费规则挑一个
 //! ```
 //!
 //! 这与既有的 `ZHUYE_MODEL=mock` 完全同构 —— **显式 opt-in 的特殊值**,
@@ -16,7 +18,7 @@
 //! ## 失败语义
 //!
 //! **不静默回落,绝不编造 id**:
-//! - provider 没有清单端点 → 报错,提示显式配置 model;
+//! - 模型组没有清单端点 → 报错,提示显式配置 model;
 //! - 清单拉取失败 → 报错,带上原始原因;
 //! - 清单里没有免费模型 → 报错,提示用 `zhuye models list` 查看全部。
 
@@ -213,10 +215,10 @@ pub async fn resolve_dynamic_model(
     cfg: &ReflectConfig,
     registry: &ModelRegistry,
 ) -> Result<Option<String>, ConfigError> {
-    let Some(provider) = cfg.active_provider() else {
+    let Some(group) = cfg.active_group() else {
         return Ok(None);
     };
-    let Some(model) = cfg.resolve_model(&provider) else {
+    let Some(model) = cfg.resolve_model(&group) else {
         return Ok(None);
     };
     if !is_dynamic_model(&model) {
@@ -235,15 +237,15 @@ pub async fn resolve_dynamic_model(
     let timeout_secs = section
         .timeout_secs
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_SECS);
-    let catalog = fetch_catalog(registry, &provider, timeout_secs).await?;
+    let catalog = fetch_catalog(registry, &group, timeout_secs).await?;
     let picked = pick_free_model(&catalog, &section)?;
     tracing::info!(
-        provider = %provider,
+        group = %group,
         model = %picked.id,
         catalog_size = catalog.models.len(),
-        "resolved dynamic model 'free' from provider catalog"
+        "resolved dynamic model 'free' from group catalog"
     );
-    Ok(Some(format!("{provider}/{}", picked.id)))
+    Ok(Some(format!("{group}/{}", picked.id)))
 }
 
 /// 解析完整 spec:静态值走同步路径,动态值(`free`)走清单发现。
@@ -284,7 +286,7 @@ pub async fn resolve_model_spec_with_env(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::provider::OpenAISection;
+    use crate::schema::ModelGroupSection;
 
     #[test]
     fn 只有free是动态值() {
@@ -299,18 +301,20 @@ mod tests {
     async fn 静态model不触发清单发现() {
         let cfg = ReflectConfig {
             active: crate::schema::ActiveSection {
-                provider: Some("openai".into()),
+                group: Some("openai".into()),
                 ..Default::default()
             },
-            openai: Some(OpenAISection {
+            model_group: vec![ModelGroupSection {
+                id: "openai".into(),
+                endpoint: "openai".into(),
                 api_key: Some("k".into()),
                 model: Some("gpt-4o".into()),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         let registry = ModelRegistry::new();
-        // provider 未注册 → 静态路径不应报错(不查清单)。
+        // 模型组未注册 → 静态路径不应报错(不查清单)。
         let resolved = resolve_model_spec_with_env(&cfg, &registry, None, None)
             .await
             .expect("静态解析不应失败");

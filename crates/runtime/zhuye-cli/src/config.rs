@@ -2,8 +2,8 @@
 
 use anyhow::{Context, anyhow};
 use zhuye_config::{
-    AnthropicSection, CompactSection, HooksSection, ModelSection, OllamaSection, OpenAISection,
-    PromptGuardSection, ReflectConfig, default_config_path, load_default,
+    CompactSection, HooksSection, ModelGroupSection, ModelSection, PromptGuardSection,
+    ReflectConfig, default_config_path, load_default,
 };
 
 use crate::login;
@@ -93,7 +93,7 @@ pub fn ls() -> anyhow::Result<()> {
 
 fn allowed_keys() -> Vec<&'static str> {
     let mut keys = vec![
-        "active.provider",
+        "active.group",
         "anthropic.api_key",
         "anthropic.base_url",
         "anthropic.model",
@@ -128,22 +128,30 @@ fn allowed_keys_hint() -> String {
 /// `apply_set` 把 `key = value` 写入 `cfg`,返回 Err 表示未知 key。
 fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), String> {
     match key {
-        "active.provider" => cfg.active.provider = Some(value.to_string()),
-        "anthropic.api_key" => anthropic_mut(cfg).api_key = Some(value.to_string()),
-        "anthropic.base_url" => anthropic_mut(cfg).base_url = Some(value.to_string()),
-        "anthropic.model" => anthropic_mut(cfg).model = Some(value.to_string()),
-        "anthropic.timeout_secs" => anthropic_mut(cfg).timeout_secs = Some(parse_u64(value, key)?),
-        "openai.api_key" => openai_mut(cfg).api_key = Some(value.to_string()),
-        "openai.base_url" => openai_mut(cfg).base_url = Some(value.to_string()),
-        "openai.model" => openai_mut(cfg).model = Some(value.to_string()),
-        "openai.timeout_secs" => openai_mut(cfg).timeout_secs = Some(parse_u64(value, key)?),
-        "ollama.base_url" => ollama_mut(cfg).base_url = Some(value.to_string()),
-        "ollama.api_key" => ollama_mut(cfg).api_key = Some(value.to_string()),
-        "ollama.model" => ollama_mut(cfg).model = Some(value.to_string()),
-        "ollama.keep_alive_secs" => ollama_mut(cfg).keep_alive_secs = Some(parse_i64(value, key)?),
-        "ollama.num_ctx" => ollama_mut(cfg).num_ctx = Some(parse_u32(value, key)?),
-        "ollama.num_gpu" => ollama_mut(cfg).num_gpu = Some(parse_u32(value, key)?),
-        "ollama.timeout_secs" => ollama_mut(cfg).timeout_secs = Some(parse_u64(value, key)?),
+        "active.group" => cfg.active.group = Some(value.to_string()),
+        "anthropic.api_key" => group_mut(cfg, "anthropic").api_key = Some(value.to_string()),
+        "anthropic.base_url" => group_mut(cfg, "anthropic").base_url = Some(value.to_string()),
+        "anthropic.model" => group_mut(cfg, "anthropic").model = Some(value.to_string()),
+        "anthropic.timeout_secs" => {
+            group_mut(cfg, "anthropic").timeout_secs = Some(parse_u64(value, key)?)
+        }
+        "openai.api_key" => group_mut(cfg, "openai").api_key = Some(value.to_string()),
+        "openai.base_url" => group_mut(cfg, "openai").base_url = Some(value.to_string()),
+        "openai.model" => group_mut(cfg, "openai").model = Some(value.to_string()),
+        "openai.timeout_secs" => {
+            group_mut(cfg, "openai").timeout_secs = Some(parse_u64(value, key)?)
+        }
+        "ollama.base_url" => group_mut(cfg, "ollama").base_url = Some(value.to_string()),
+        "ollama.api_key" => group_mut(cfg, "ollama").api_key = Some(value.to_string()),
+        "ollama.model" => group_mut(cfg, "ollama").model = Some(value.to_string()),
+        "ollama.keep_alive_secs" => {
+            group_mut(cfg, "ollama").keep_alive_secs = Some(parse_i64(value, key)?)
+        }
+        "ollama.num_ctx" => group_mut(cfg, "ollama").num_ctx = Some(parse_u32(value, key)?),
+        "ollama.num_gpu" => group_mut(cfg, "ollama").num_gpu = Some(parse_u32(value, key)?),
+        "ollama.timeout_secs" => {
+            group_mut(cfg, "ollama").timeout_secs = Some(parse_u64(value, key)?)
+        }
         "compact.trigger_tokens" => {
             cfg.compact = CompactSection {
                 trigger_tokens: Some(parse_u32(value, key)?),
@@ -197,22 +205,22 @@ fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), Stri
 /// `apply_unset` 把 key 对应字段重置回 None / ""(区分 Option vs String)。
 fn apply_unset(cfg: &mut ReflectConfig, key: &str) -> Result<(), String> {
     match key {
-        "active.provider" => cfg.active.provider = None,
-        "anthropic.api_key" => anthropic_mut(cfg).api_key = None,
-        "anthropic.base_url" => anthropic_mut(cfg).base_url = None,
-        "anthropic.model" => anthropic_mut(cfg).model = None,
-        "anthropic.timeout_secs" => anthropic_mut(cfg).timeout_secs = None,
-        "openai.api_key" => openai_mut(cfg).api_key = None,
-        "openai.base_url" => openai_mut(cfg).base_url = None,
-        "openai.model" => openai_mut(cfg).model = None,
-        "openai.timeout_secs" => openai_mut(cfg).timeout_secs = None,
-        "ollama.base_url" => ollama_mut(cfg).base_url = None,
-        "ollama.api_key" => ollama_mut(cfg).api_key = None,
-        "ollama.model" => ollama_mut(cfg).model = None,
-        "ollama.keep_alive_secs" => ollama_mut(cfg).keep_alive_secs = None,
-        "ollama.num_ctx" => ollama_mut(cfg).num_ctx = None,
-        "ollama.num_gpu" => ollama_mut(cfg).num_gpu = None,
-        "ollama.timeout_secs" => ollama_mut(cfg).timeout_secs = None,
+        "active.group" => cfg.active.group = None,
+        "anthropic.api_key" => group_mut(cfg, "anthropic").api_key = None,
+        "anthropic.base_url" => group_mut(cfg, "anthropic").base_url = None,
+        "anthropic.model" => group_mut(cfg, "anthropic").model = None,
+        "anthropic.timeout_secs" => group_mut(cfg, "anthropic").timeout_secs = None,
+        "openai.api_key" => group_mut(cfg, "openai").api_key = None,
+        "openai.base_url" => group_mut(cfg, "openai").base_url = None,
+        "openai.model" => group_mut(cfg, "openai").model = None,
+        "openai.timeout_secs" => group_mut(cfg, "openai").timeout_secs = None,
+        "ollama.base_url" => group_mut(cfg, "ollama").base_url = None,
+        "ollama.api_key" => group_mut(cfg, "ollama").api_key = None,
+        "ollama.model" => group_mut(cfg, "ollama").model = None,
+        "ollama.keep_alive_secs" => group_mut(cfg, "ollama").keep_alive_secs = None,
+        "ollama.num_ctx" => group_mut(cfg, "ollama").num_ctx = None,
+        "ollama.num_gpu" => group_mut(cfg, "ollama").num_gpu = None,
+        "ollama.timeout_secs" => group_mut(cfg, "ollama").timeout_secs = None,
         "compact.trigger_tokens" => cfg.compact = CompactSection::default(),
         "hooks.enabled" => cfg.hooks.enabled = None,
         // F01:回退到「配置未表态」= 默认开启(区别于显式 false)。
@@ -232,15 +240,27 @@ fn apply_unset(cfg: &mut ReflectConfig, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 返回对应 section 的 mutable 引用,缺失则插入 default 后再返回。
-fn anthropic_mut(cfg: &mut ReflectConfig) -> &mut AnthropicSection {
-    cfg.anthropic.get_or_insert_with(AnthropicSection::default)
+/// 返回同名 id 的模型组的 mutable 引用,缺失则新建一个(endpoint 与 id
+/// 同名)后再返回。
+fn group_mut<'a>(cfg: &'a mut ReflectConfig, id: &str) -> &'a mut ModelGroupSection {
+    if let Some(pos) = cfg.model_group.iter().position(|g| g.id.trim() == id) {
+        return &mut cfg.model_group[pos];
+    }
+    cfg.model_group.push(ModelGroupSection {
+        id: id.to_string(),
+        endpoint: id.to_string(),
+        ..Default::default()
+    });
+    cfg.model_group.last_mut().expect("刚 push 的组")
 }
-fn openai_mut(cfg: &mut ReflectConfig) -> &mut OpenAISection {
-    cfg.openai.get_or_insert_with(OpenAISection::default)
-}
-fn ollama_mut(cfg: &mut ReflectConfig) -> &mut OllamaSection {
-    cfg.ollama.get_or_insert_with(OllamaSection::default)
+
+/// 读同名 id 的模型组(不存在 → 全空默认值)。
+fn group(cfg: &ReflectConfig, id: &str) -> ModelGroupSection {
+    cfg.model_group
+        .iter()
+        .find(|g| g.id.trim() == id)
+        .cloned()
+        .unwrap_or_default()
 }
 fn model_mut(cfg: &mut ReflectConfig) -> &mut ModelSection {
     cfg.model.get_or_insert_with(ModelSection::default)
@@ -249,40 +269,40 @@ fn model_mut(cfg: &mut ReflectConfig) -> &mut ModelSection {
 /// `current_value_of` 返回该 key 当前值(redact api_key)。
 fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
     let v = match key {
-        "active.provider" => cfg.active.provider.clone().unwrap_or_default(),
-        "anthropic.api_key" => anthropic(cfg)
+        "active.group" => cfg.active.group.clone().unwrap_or_default(),
+        "anthropic.api_key" => group(cfg, "anthropic")
             .api_key
             .as_deref()
             .map_or_else(|| Default::default(), redact_key),
-        "anthropic.base_url" => anthropic(cfg).base_url.unwrap_or_default(),
-        "anthropic.model" => anthropic(cfg).model.unwrap_or_default(),
-        "anthropic.timeout_secs" => anthropic(cfg)
+        "anthropic.base_url" => group(cfg, "anthropic").base_url.unwrap_or_default(),
+        "anthropic.model" => group(cfg, "anthropic").model.unwrap_or_default(),
+        "anthropic.timeout_secs" => group(cfg, "anthropic")
             .timeout_secs
             .map_or_else(|| Default::default(), |v| v.to_string()),
-        "openai.api_key" => openai(cfg)
+        "openai.api_key" => group(cfg, "openai")
             .api_key
             .as_deref()
             .map_or_else(|| Default::default(), redact_key),
-        "openai.base_url" => openai(cfg).base_url.unwrap_or_default(),
-        "openai.model" => openai(cfg).model.unwrap_or_default(),
-        "openai.timeout_secs" => openai(cfg)
+        "openai.base_url" => group(cfg, "openai").base_url.unwrap_or_default(),
+        "openai.model" => group(cfg, "openai").model.unwrap_or_default(),
+        "openai.timeout_secs" => group(cfg, "openai")
             .timeout_secs
             .map_or_else(|| Default::default(), |v| v.to_string()),
-        "ollama.base_url" => ollama(cfg).base_url.unwrap_or_default(),
-        "ollama.api_key" => ollama(cfg)
+        "ollama.base_url" => group(cfg, "ollama").base_url.unwrap_or_default(),
+        "ollama.api_key" => group(cfg, "ollama")
             .api_key
             .map_or_else(|| Default::default(), |k| redact_key(&k)),
-        "ollama.model" => ollama(cfg).model.unwrap_or_default(),
-        "ollama.keep_alive_secs" => ollama(cfg)
+        "ollama.model" => group(cfg, "ollama").model.unwrap_or_default(),
+        "ollama.keep_alive_secs" => group(cfg, "ollama")
             .keep_alive_secs
             .map_or_else(|| Default::default(), |v| v.to_string()),
-        "ollama.num_ctx" => ollama(cfg)
+        "ollama.num_ctx" => group(cfg, "ollama")
             .num_ctx
             .map_or_else(|| Default::default(), |v| v.to_string()),
-        "ollama.num_gpu" => ollama(cfg)
+        "ollama.num_gpu" => group(cfg, "ollama")
             .num_gpu
             .map_or_else(|| Default::default(), |v| v.to_string()),
-        "ollama.timeout_secs" => ollama(cfg)
+        "ollama.timeout_secs" => group(cfg, "ollama")
             .timeout_secs
             .map_or_else(|| Default::default(), |v| v.to_string()),
         "compact.trigger_tokens" => cfg
@@ -313,16 +333,6 @@ fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
         _ => return "(unknown)".into(),
     };
     if v.is_empty() { "<unset>".into() } else { v }
-}
-
-fn anthropic(cfg: &ReflectConfig) -> AnthropicSection {
-    cfg.anthropic.clone().unwrap_or_default()
-}
-fn openai(cfg: &ReflectConfig) -> OpenAISection {
-    cfg.openai.clone().unwrap_or_default()
-}
-fn ollama(cfg: &ReflectConfig) -> OllamaSection {
-    cfg.ollama.clone().unwrap_or_default()
 }
 
 // ── redact 工具 ────────────────────────────────────────────────────────────
@@ -424,13 +434,26 @@ model = "claude-3-5-sonnet-latest"
         assert!(!out.contains("sk-secret-1234567890"));
     }
 
-    /// set 写入并能 read 回。
+    /// set 写入并能 read 回(落到同名 id 的模型组)。
     #[test]
     fn set_anthropic_model_updates_field() {
         let mut cfg = ReflectConfig::default();
         apply_set(&mut cfg, "anthropic.model", "claude-3-haiku-20240307").unwrap();
-        let a = cfg.anthropic.unwrap();
-        assert_eq!(a.model.as_deref(), Some("claude-3-haiku-20240307"));
+        assert_eq!(cfg.model_group.len(), 1);
+        assert_eq!(cfg.model_group[0].id, "anthropic");
+        assert_eq!(cfg.model_group[0].endpoint, "anthropic");
+        assert_eq!(
+            cfg.model_group[0].model.as_deref(),
+            Some("claude-3-haiku-20240307")
+        );
+    }
+
+    /// `active.group` 写活跃模型组 id。
+    #[test]
+    fn set_active_group_updates_field() {
+        let mut cfg = ReflectConfig::default();
+        apply_set(&mut cfg, "active.group", "my-glm").unwrap();
+        assert_eq!(cfg.active.group.as_deref(), Some("my-glm"));
     }
 
     /// 未知 key 拒绝。
@@ -446,14 +469,16 @@ model = "claude-3-5-sonnet-latest"
     #[test]
     fn unset_ollama_model_resets_to_none() {
         let mut cfg = ReflectConfig {
-            ollama: Some(OllamaSection {
+            model_group: vec![zhuye_config::ModelGroupSection {
+                id: "ollama".into(),
+                endpoint: "ollama".into(),
                 model: Some("llama3.2".into()),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         apply_unset(&mut cfg, "ollama.model").unwrap();
-        assert!(cfg.ollama.unwrap().model.is_none());
+        assert!(cfg.model_group[0].model.is_none());
     }
 
     /// `compact.trigger_tokens` 与 `hooks.enabled` 也能 set / unset。
@@ -512,9 +537,6 @@ model = "claude-3-5-sonnet-latest"
         let path = dir.path().join(".zhuye").join("config.toml");
         login::write_config_to(&cfg, &path).unwrap();
         let back = zhuye_config::load_from_file(&path).unwrap();
-        assert_eq!(
-            back.anthropic.unwrap().model.as_deref(),
-            Some("gpt-4o-mini")
-        );
+        assert_eq!(back.model_group[0].model.as_deref(), Some("gpt-4o-mini"));
     }
 }

@@ -95,15 +95,17 @@ free_id_patterns = ["-free", ":free", "/free"]
 enabled = []                      # 演练时关掉内置 hook(只验引擎行为)
 
 [active]
-provider = "openai"
+group = "openai"
 
-[openai]
+[[model_group]]
+id = "openai"                     # 组 id = 模型 spec 前缀(也是池名)
+endpoint = "openai"
 api_key = ""                      # 免 Key —— 空 key 不发 Authorization 头
 base_url = "https://api.kilo.ai/api/gateway"
 timeout_secs = 300                # ⚠️ 见下方「已知限制」
 model = "free"                    # 运行时从清单里挑
 
-[[openai.credentials]]
+[[model_group.credentials]]
 label = "kilo-free"
 api_key = ""
 base_url = "https://api.kilo.ai/api/gateway"
@@ -119,7 +121,9 @@ fallbacks = ["openai/cohere/north-mini-code:free"]
 ### dsh 网关车道(OpenCode 车道)
 
 ```toml
-[openai]
+[[model_group]]
+id = "openai"
+endpoint = "openai"
 api_key = "<forwardKey>"           # ~/.our-free-model/settings.json
 base_url = "http://127.0.0.1:18900"
 timeout_secs = 300

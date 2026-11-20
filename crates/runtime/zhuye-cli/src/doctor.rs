@@ -44,11 +44,11 @@ pub async fn run(check_network: bool, dump_config: bool) -> anyhow::Result<()> {
 
     // ── 2. provider 可达性(provider reachability)──
     if check_network {
-        if let Some(provider) = cfg.active_provider() {
-            println!("[network] checking provider '{provider}' (best-effort)...");
-            probe_provider_network(&cfg, &provider);
+        if let Some(group) = cfg.active_group() {
+            println!("[network] checking model group '{group}' (best-effort)...");
+            probe_provider_network(&cfg, &group);
         } else {
-            println!("{WARN} provider  no [active].provider set; would skip network probe");
+            println!("{WARN} provider  no [active].group set; would skip network probe");
         }
     } else {
         println!("[skip]   provider  network probe skipped (pass --check-network to enable)");
@@ -64,9 +64,9 @@ pub async fn run(check_network: bool, dump_config: bool) -> anyhow::Result<()> {
         } else {
             match crate::models::doctor_summary(&cfg, &registry).await {
                 Some(summary) => println!("{OK} models    {summary}"),
-                None => println!(
-                    "[skip]   models    no [active].provider set; skipped model list probe"
-                ),
+                None => {
+                    println!("[skip]   models    no [active].group set; skipped model list probe")
+                }
             }
         }
     } else {
@@ -159,15 +159,18 @@ fn probe_provider_network(cfg: &zhuye_config::ReflectConfig, provider: &str) {
     }
 }
 
-/// 从 config + provider 推导 base_url,缺省走厂商默认 endpoint。
-fn active_base_url(cfg: &zhuye_config::ReflectConfig, provider: &str) -> Option<String> {
-    let section_url = match provider {
-        "anthropic" => cfg.anthropic.as_ref().and_then(|s| s.base_url.clone()),
-        "openai" => cfg.openai.as_ref().and_then(|s| s.base_url.clone()),
-        "ollama" => cfg.ollama.as_ref().and_then(|s| s.base_url.clone()),
-        _ => None,
-    };
-    Some(section_url.unwrap_or_else(|| match provider {
+/// 从 config + 模型组推导 base_url,缺省走**该组端点**的厂商默认地址。
+///
+/// 组 id 不再决定厂商 —— 组自带 `endpoint`(openai / anthropic / ollama),
+///默认地址按 endpoint 走;组未声明 endpoint 时按 id 兜底。
+fn active_base_url(cfg: &zhuye_config::ReflectConfig, group_id: &str) -> Option<String> {
+    let group = cfg.model_group.iter().find(|g| g.id.trim() == group_id);
+    let group_url = group.and_then(|g| g.base_url.clone());
+    let endpoint = group
+        .map(|g| g.endpoint.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .unwrap_or_else(|| group_id.to_ascii_lowercase());
+    Some(group_url.unwrap_or_else(|| match endpoint.as_str() {
         "anthropic" => "https://api.anthropic.com".to_string(),
         "openai" => "https://api.openai.com".to_string(),
         "ollama" => "http://127.0.0.1:11434".to_string(),
@@ -375,11 +378,11 @@ fn run_probe_with_timeout(
 #[cfg(test)]
 fn snapshot_summary(cfg: &zhuye_config::ReflectConfig) -> String {
     let mut out = String::new();
+    let group_ids: Vec<&str> = cfg.model_group.iter().map(|g| g.id.as_str()).collect();
     out.push_str(&format!(
-        "anthropic={} openai={} ollama={}\n",
-        cfg.anthropic.is_some(),
-        cfg.openai.is_some(),
-        cfg.ollama.is_some()
+        "model_groups={} ({})\n",
+        group_ids.len(),
+        group_ids.join(",")
     ));
     out.push_str(&format!(
         "mcp_servers={} compact_trigger={:?}\n",
@@ -400,13 +403,13 @@ fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value
     use serde_json::json;
 
     // provider / model:解析后的生效值(env 优先级已含)。
-    let active_provider = cfg.active_provider();
+    let active_group = cfg.active_group();
     let model_spec = cfg.resolved_model_spec();
 
     // 凭据:只出 label 与「是否设了 key」,绝不出 key 本身。
     // 凭据条目摘要(label + 布尔,绝不出 key 值)。
     fn cred_labels(
-        creds: Option<&Vec<zhuye_config::schema::provider::CredentialConfig>>,
+        creds: Option<&Vec<zhuye_config::schema::CredentialConfig>>,
     ) -> Vec<serde_json::Value> {
         creds.map_or_default(|list| {
             list.iter()
@@ -456,7 +459,7 @@ fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value
         "config_path": default_config_path().map(|p| p.display().to_string()),
         "data_dir": zhuye_config::data_path(&[]).map(|p| p.display().to_string()),
         "active": {
-            "provider": active_provider,
+            "group": active_group,
             "credential": cfg.active.credential,
             "model_spec": model_spec,
             "max_iterations": cfg.active.max_iterations,
@@ -465,25 +468,16 @@ fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value
             "tools_allowlist": !cfg.active.tools.is_empty(),
             "disallowed_tools": cfg.active.disallowed_tools,
         },
-        "providers": {
-            "anthropic": cfg.anthropic.as_ref().map(|a| json!({
-                "has_api_key": a.api_key.as_ref().is_some_and(|k| !k.is_empty()),
-                "base_url": a.base_url,
-                "model": a.model,
-                "credentials": cred_labels(Some(&a.credentials)),
-            })),
-            "openai": cfg.openai.as_ref().map(|o| json!({
-                "has_api_key": o.api_key.as_ref().is_some_and(|k| !k.is_empty()),
-                "base_url": o.base_url,
-                "model": o.model,
-                "credentials": cred_labels(Some(&o.credentials)),
-            })),
-            "ollama": cfg.ollama.as_ref().map(|o| json!({
-                "base_url": o.base_url,
-                "has_api_key": o.api_key.as_ref().is_some_and(|k| !k.is_empty()),
-                "model": o.model,
-            })),
-        },
+        // 模型组是唯一的接入单元 —— 逐组列出(组 id → 摘要)。
+        "model_groups": cfg.model_group.iter().map(|g| json!({
+            "id": g.id,
+            "endpoint": g.endpoint,
+            "label": g.display_label(),
+            "has_api_key": g.api_key.as_ref().is_some_and(|k| !k.is_empty()),
+            "base_url": g.base_url,
+            "model": g.model,
+            "credentials": cred_labels(Some(&g.credentials)),
+        })).collect::<Vec<_>>(),
         "routing": routing_json,
         "model": cfg.model.as_ref().map(|m| json!({
             "context_window": m.context_window,
@@ -516,7 +510,7 @@ fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value
 mod tests {
     use super::*;
     use anyhow::Context;
-    use zhuye_config::{AnthropicSection, ReflectConfig};
+    use zhuye_config::{ModelGroupSection, ReflectConfig};
 
     #[tokio::test]
     async fn doctor_runs_without_panic_with_default() {
@@ -558,16 +552,17 @@ mod tests {
     #[test]
     fn snapshot_summary_lists_present_sections() {
         let cfg = ReflectConfig {
-            anthropic: Some(AnthropicSection {
+            model_group: vec![ModelGroupSection {
+                id: "anthropic".into(),
+                endpoint: "anthropic".into(),
                 api_key: Some("sk-x".into()),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         let s = snapshot_summary(&cfg);
-        assert!(s.contains("anthropic=true"));
-        assert!(s.contains("openai=false"));
-        assert!(s.contains("ollama=false"));
+        assert!(s.contains("model_groups=1"));
+        assert!(s.contains("anthropic"));
     }
 
     /// v1.11 F6:`--dump-config` 凭据摘要脱敏 —— 只出 label / has_api_key
@@ -575,10 +570,12 @@ mod tests {
     /// (段级与凭据池条目双路径都验)。
     #[test]
     fn dump_effective_config_脱敏凭据只出布尔() {
-        use zhuye_config::schema::provider::CredentialConfig;
+        use zhuye_config::schema::CredentialConfig;
         const SECRET: &str = "sk-ant-super-secret-doctor-test";
         let cfg = ReflectConfig {
-            anthropic: Some(AnthropicSection {
+            model_group: vec![ModelGroupSection {
+                id: "anthropic".into(),
+                endpoint: "anthropic".into(),
                 api_key: Some("sk-ant-section-key".into()),
                 credentials: vec![
                     CredentialConfig {
@@ -593,13 +590,14 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         let dump = dump_effective_config(&cfg);
         assert_eq!(dump["schema"], "zhuye-dump-config/1", "schema 标记固定");
-        let anthropic = &dump["providers"]["anthropic"];
-        assert_eq!(anthropic["has_api_key"], true, "段级 api_key 存在 → true");
+        let anthropic = &dump["model_groups"][0];
+        assert_eq!(anthropic["id"], "anthropic");
+        assert_eq!(anthropic["has_api_key"], true, "组级 api_key 存在 → true");
         let creds = anthropic["credentials"].as_array().unwrap();
         assert_eq!(creds.len(), 2);
         assert_eq!(creds[0]["label"], "pool-a");
@@ -694,19 +692,21 @@ mod tests {
     }
 
     #[test]
-    fn active_base_url_uses_section_then_defaults() {
+    fn active_base_url_uses_group_then_endpoint_defaults() {
         let cfg = ReflectConfig {
-            anthropic: Some(AnthropicSection {
+            model_group: vec![ModelGroupSection {
+                id: "anthropic".into(),
+                endpoint: "anthropic".into(),
                 base_url: Some("https://my.proxy.example".into()),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         assert_eq!(
             active_base_url(&cfg, "anthropic").as_deref(),
             Some("https://my.proxy.example")
         );
-        // 无 section 时回退到厂商默认 endpoint。
+        // 无该组时回退到厂商默认 endpoint。
         assert_eq!(
             active_base_url(&cfg, "openai").as_deref(),
             Some("https://api.openai.com")

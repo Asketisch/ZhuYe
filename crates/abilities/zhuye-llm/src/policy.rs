@@ -7,7 +7,7 @@
 //! `Role::Compact` 的 primary 在构造 `LlmSummarizer` 时拷进 `model_name`。
 //! 摘要调用只对这一个 spec 做 `next_for`,不读 compact 槽的 `fallbacks`。
 //! `Role::Subagent` 只有 `resolve` 的匹配臂,没有任何调用方传入;
-//! 子代理用启动时的主模型,或 `[subagent_providers]` 的独立 registry。
+//! 子代理用启动时的主模型,或 `[subagent_models]` 的独立 registry。
 //!
 //! `max_attempts` 限制单次 LLM 调用的总尝试次数(含同凭证重试 / 冷却 /
 //! failover),默认 10 —— 即「初始 1 次 + 最多 9 次自动重试」;瞬时错误
@@ -30,7 +30,7 @@ pub struct RoutingPolicy {
     /// 压缩模型槽。构造摘要器时只拷贝 `primary`;`fallbacks` 不被摘要器读取。
     pub compact: SpecSlot,
     /// 配置会写入此槽。没有任何调用方 `resolve(Role::Subagent)`。
-    /// 子代理模型来自启动时传入的主模型,或 `[subagent_providers]`。
+    /// 子代理模型来自启动时传入的主模型,或 `[subagent_models]`。
     pub subagent: SpecSlot,
     /// 角色名前缀,留扩展用;`Role::Subagent("researcher")` 配合
     /// `subagent_prefix = "subagent"` 形成 `"subagent/researcher"`。
