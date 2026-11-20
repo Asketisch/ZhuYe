@@ -72,6 +72,10 @@ back emits only the new format:
 and `[ollama].keep_alive_secs` / `num_ctx` / `num_gpu` land on the group with
 the same names.
 
+The sub-agent endpoint section is renamed in step: `[subagent_providers]` →
+`[subagent_models]` (the old section name is still readable; writing emits
+only the new name).
+
 The migration is **idempotent**: a config already in the new format loads
 without any change (no duplicate groups are appended, and an existing group
 with the same id is never overwritten — the group wins). Legacy section data

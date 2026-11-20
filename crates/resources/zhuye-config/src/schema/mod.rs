@@ -27,7 +27,7 @@ pub use integrations::ACP_DEFAULT_BIND;
 
 pub use agent::{
     AnthropicSubagentSection, CompactSection, CoordinatorSection, OllamaSubagentSection,
-    OpenAISubagentSection, RoutingSection, SpecSlotConfig, SubagentProvidersSection,
+    OpenAISubagentSection, RoutingSection, SpecSlotConfig, SubagentModelsSection,
     SubagentSpecConfig, TokenBudgetSection,
 };
 pub use discovery::ModelDiscoverySection;
@@ -89,7 +89,11 @@ pub struct ReflectConfig {
     #[serde(default)]
     pub routing: Option<RoutingSection>,
     #[serde(default)]
-    pub subagent_providers: Option<SubagentProvidersSection>,
+    /// 子代理专用的模型端点段(TOML `[subagent_models]`)。
+    ///
+    /// v1 的段名是 `[subagent_providers]` —— 旧段名仍能读入(由 v1→v2
+    /// 迁移接管),写回只写 `[subagent_models]`。
+    pub subagent_models: Option<SubagentModelsSection>,
     #[serde(default)]
     pub coordinator: Option<CoordinatorSection>,
     #[serde(default)]
@@ -302,7 +306,7 @@ impl Default for ReflectConfig {
             routing: None,
             context_windows: None,
             model_discovery: None,
-            subagent_providers: None,
+            subagent_models: None,
             coordinator: None,
             sanitize: None,
             prompt_guard: None,

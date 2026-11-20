@@ -61,6 +61,7 @@
 | `zhuye-config/src/load.rs` | 配置加载 + **v1→v2 迁移**(旧固定段 → 等价模型组,幂等;`load_from_str` / `load_from_file` / `load_default` 全跑迁移) |
 | `zhuye-config/src/watch.rs` | 配置热重载监听 |
 | `zhuye-config/src/builder/` | 配置 → ModelRegistry 的装配(只认模型组,池名 = 组 id;`pools.rs` 建池 + `shapes.rs` MCP/LSP 形状;非法/重复组 id warn 跳过) |
+| `zhuye-config/src/migration.rs` | v1→v2 迁移:旧固定段(`[anthropic]`/`[openai]`/`[ollama]`)→ 等价模型组,`[active].provider` → `[active].group`,`[subagent_providers]` → `[subagent_models]`;幂等 |
 | `zhuye-plugin/src/manager/mod.rs` | 插件安装 / 卸载与状态记账 |
 | `zhuye-rollout/src/lib.rs` | JSONL rollout 落盘与轮转 |
 | `zhuye-rollout/src/index/mod.rs` | 会话索引:`list_sessions` 只读每文件首行(按 session 去重);首行非 SessionMeta 时在前缀窗口与轮转副本中恢复。`message_count` 把同回合同角色的增量落盘分片计为一条消息 |

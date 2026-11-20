@@ -54,7 +54,7 @@ pub struct SubAgentFactory {
     /// 允许 subagent 拥有独立的 base_url + api_key + model。
     /// `Mutex` 包裹让 `set_child_registry` 走 `&self`(对齐 `set_default_model`
     /// 模式),`Arc<Factory>` clone 后所有副本都看到同一份 registry;
-    /// `zhuye-exec::handle_reload` 热重载 `[subagent_providers]` 时替换。
+    /// `zhuye-exec::handle_reload` 热重载 `[subagent_models]` 时替换。
     child_registry: Mutex<Option<SharedModelRegistry>>,
     /// v1.x 功能 6:父 agent 的 skills catalog(可选)。`None` 时 child 用
     /// 空 catalog(向后兼容,M5 v0 行为);`Some` 时注入到 child 的 M4,
