@@ -336,9 +336,12 @@ pub struct ActiveSection {
     /// `ZHUYE_MODEL` 前缀 → 第一个有凭据的组」顺序解析;指向不存在的组
     /// 会被忽略并继续往下兜底。
     ///
-    /// `#[serde(alias = "provider")]` —— v1 的 `[active].provider` 仍能
-    /// 读入(值直接落到本字段),但**序列化只写 `group`** —— 写回即新格式。
-    #[serde(default, alias = "provider")]
+    /// v1 的 `[active].provider` **不**用 serde alias 读入 —— alias 在
+    /// 「`provider` 与 `group` 同时存在」时会报 duplicate field,让整份
+    /// 配置解析失败(用户手改配置常见的半迁移状态)。旧键由
+    /// [`crate::load`] 的 v1→v2 迁移从 legacy 侧读入并落到本字段,
+    /// 写回只写 `group`。
+    #[serde(default)]
     pub group: Option<String>,
     /// 钉住该模型组凭证池中的某个条目(`[[<组>.credentials]]` 的
     /// `label`)。`Some` 且命中池内条目时,该条目健康则始终优先派位,其余

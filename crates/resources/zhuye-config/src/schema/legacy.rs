@@ -40,13 +40,31 @@ pub struct LegacySections {
     /// 旧 `[ollama]` 段。
     #[serde(default)]
     pub ollama: Option<OllamaSection>,
+    /// 旧 `[active]` 段(只取 `provider` 键)。
+    #[serde(default)]
+    pub active: Option<LegacyActiveSection>,
 }
 
 impl LegacySections {
     /// 三段是否全空(全空 = 没有旧配置需要迁移)。
     pub fn is_empty(&self) -> bool {
-        self.anthropic.is_none() && self.openai.is_none() && self.ollama.is_none()
+        self.anthropic.is_none()
+            && self.openai.is_none()
+            && self.ollama.is_none()
+            && self
+                .active
+                .as_ref()
+                .and_then(|a| a.provider.as_deref())
+                .is_none()
     }
+}
+
+/// v1 的 `[active]` 段 —— 只关心 `provider` 键(模型组 id)。
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+pub struct LegacyActiveSection {
+    /// v1 的 `[active].provider` —— 迁移到 `[active].group`。
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 /// v1 `[anthropic]` 段 —— 迁移到 `id="anthropic"` 的模型组。
