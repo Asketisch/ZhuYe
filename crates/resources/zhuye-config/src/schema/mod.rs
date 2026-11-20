@@ -2,8 +2,9 @@
 //!
 //! ## 子模块拆分
 //!
-//! - [`provider`] —— 各 provider 段(`AnthropicSection` / `OpenAISection` / `OllamaSection`) + `CredentialConfig`
-//! - [`provider_group`] —— 模型组(`[[provider_group]]`,命名 provider 条目)
+//! - [`model_group`] —— 模型组(`[[model_group]]`)**唯一的模型接入单元**
+//! - [`provider`] —— 共享类型(`CredentialConfig` / `QuotaConfig` / `QuotaSource`)
+//! - [`legacy`] —— v1 固定接入段(仅读入旧配置用,迁移后即丢弃)
 //! - [`agent`] —— 路由 / 子代理 / 协调器 / 压缩 / token 预算
 //! - [`discovery`] —— 模型清单发现(`[model_discovery]` 段)
 //! - [`notifications`] —— 通知 / 遥测 / 分析
@@ -15,11 +16,12 @@
 pub mod agent;
 pub mod discovery;
 pub mod integrations;
+pub mod legacy;
+pub mod model_group;
 pub mod notifications;
 pub mod permission_syntax;
 pub mod plugins;
 pub mod provider;
-pub mod provider_group;
 
 pub use integrations::ACP_DEFAULT_BIND;
 
@@ -34,16 +36,14 @@ pub use integrations::{
     McpServerEntry, McpServersSection, McpTransport, PostgresSessionSection, SseRedisSection,
     VoiceSection, WebSearchSection,
 };
+pub use model_group::ModelGroupSection;
 pub use notifications::{
     AnalyticsSection, NotificationChannel, NotificationsSection, TelemetrySection,
     TuiNotificationsSection,
 };
 pub use permission_syntax::parse_permission_entry;
 pub use plugins::{PluginMarketplaceConfig, PluginMarketplaceKind, PluginsSection};
-pub use provider::{
-    AnthropicSection, CredentialConfig, OllamaSection, OpenAISection, QuotaConfig, QuotaSource,
-};
-pub use provider_group::ProviderGroupSection;
+pub use provider::{CredentialConfig, QuotaConfig, QuotaSource};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 
 /// 顶层配置 —— 对应 `~/.zhuye/config.toml` 的根表。
 ///
-/// 注:不再 derive `Eq` —— provider 段的 `temperature: Option<f32>`
+/// 注:不再 derive `Eq` —— 模型组的 `temperature: Option<f32>`
 /// 不实现 `Eq`;`PartialEq` 已覆盖所有既有用法(断言比较)。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ReflectConfig {
@@ -63,18 +63,15 @@ pub struct ReflectConfig {
     /// 新会话使用的提示词选择策略。
     #[serde(default)]
     pub prompts: zhuye_protocol::PromptSelection,
+    /// 模型组(`[[model_group]]`)**唯一的模型接入单元**:命名端点条目,
+    /// 组 id 即模型 spec 前缀(`<id>/<model>`),组 id 直接注册为 registry
+    /// 池名。
+    ///
+    /// v1 的固定段(`[anthropic]` / `[openai]` / `[ollama]`)不再是运行期
+    /// 概念 —— 旧配置读入后由 v1→v2 迁移就地转成等价模型组(见
+    /// [`crate::load`]),写回时只输出本字段的新格式。
     #[serde(default)]
-    pub anthropic: Option<AnthropicSection>,
-    #[serde(default)]
-    pub openai: Option<OpenAISection>,
-    #[serde(default)]
-    pub ollama: Option<OllamaSection>,
-    /// 模型组(`[[provider_group]]`):命名 provider 条目,组 id 即模型
-    /// spec 前缀(`<id>/<model>`),组 id 直接注册为 registry 池名。
-    /// 内置三段保持原样;两者并存,`[active].provider` 既可写内置名
-    /// 也可写组 id。
-    #[serde(default)]
-    pub provider_group: Vec<ProviderGroupSection>,
+    pub model_group: Vec<ModelGroupSection>,
     #[serde(default)]
     pub compact: CompactSection,
     #[serde(default)]
@@ -157,8 +154,18 @@ pub struct ReflectConfig {
     pub config_version: u32,
 }
 
-pub const CURRENT_CONFIG_VERSION: u32 = 1;
+/// 当前配置版本号。
+///
+/// - v1 —— 固定接入段(`[anthropic]` / `[openai]` / `[ollama]`)+
+///   `[[provider_group]]` 模型组并存。
+/// - v2 —— 只剩模型组(`[[model_group]]`);固定段读入后自动迁移。
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
+/// 配置文件里**缺省** `config_version` 字段时填的版本号。
+///
+/// 刻意保持 `1` —— v1 配置文件根本没有这个字段,若缺省就填 2,
+/// 迁移框架会认为「已是最新」而跳过 v1→v2 的旧段迁移,老用户的
+/// api_key 会静默丢失。缺失 = v1 = 需要迁移。
 fn default_config_version() -> u32 {
     1
 }
@@ -284,10 +291,7 @@ impl Default for ReflectConfig {
         Self {
             active: ActiveSection::default(),
             prompts: zhuye_protocol::PromptSelection::default(),
-            anthropic: None,
-            openai: None,
-            ollama: None,
-            provider_group: Vec::new(),
+            model_group: Vec::new(),
             compact: CompactSection::default(),
             token_budget: None,
             sandbox: SandboxSection::default(),
@@ -326,11 +330,20 @@ impl Default for ReflectConfig {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ActiveSection {
-    pub provider: Option<String>,
-    /// 钉住该 provider 凭证池中的某个条目(`[[<provider>.credentials]]` 的
+    /// 活跃模型组 id(TOML `[active].group`)。
+    ///
+    /// 值必须是已声明的模型组 id —— 运行时按「`[active].group` → env
+    /// `ZHUYE_MODEL` 前缀 → 第一个有凭据的组」顺序解析;指向不存在的组
+    /// 会被忽略并继续往下兜底。
+    ///
+    /// `#[serde(alias = "provider")]` —— v1 的 `[active].provider` 仍能
+    /// 读入(值直接落到本字段),但**序列化只写 `group`** —— 写回即新格式。
+    #[serde(default, alias = "provider")]
+    pub group: Option<String>,
+    /// 钉住该模型组凭证池中的某个条目(`[[<组>.credentials]]` 的
     /// `label`)。`Some` 且命中池内条目时,该条目健康则始终优先派位,其余
     /// 条目仅在其 cooldown 时作为 failover;`None` = 不钉住,全池加权
-    /// round-robin。顶层 `[<provider>].api_key` 隐式条目的 label 固定为
+    /// round-robin。组级 `api_key` 隐式条目的 label 固定为
     /// `"default"`,钉它就显式写 `credential = "default"`。
     #[serde(default)]
     pub credential: Option<String>,
