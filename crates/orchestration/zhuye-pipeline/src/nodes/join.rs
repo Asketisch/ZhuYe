@@ -91,7 +91,7 @@ mod tests {
             ThreadId::new(),
             "openai/gpt-4o",
             Arc::new(ModelRegistry::new()),
-            None, // child_registry: will be set by caller if subagent_providers configured
+            None, // child_registry: will be set by caller if subagent_models configured
             Arc::new(ToolRegistry::default()),
             CancellationToken::new(),
             None,

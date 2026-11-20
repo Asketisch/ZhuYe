@@ -8,14 +8,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use zhuye_config::{ActiveSection, AnthropicSection, ReflectConfig};
+use zhuye_config::{ActiveSection, ModelGroupSection, ReflectConfig};
 use zhuye_core::AgentConfig;
 use zhuye_exec::handle_reload;
 use zhuye_llm::ModelRegistry;
 use zhuye_protocol::{Event, EventMsg};
 use zhuye_tools::ToolRegistry;
 
-/// `[anthropic].model` 字段从 `claude-3-5-sonnet-latest` 切到
+/// 模型组的 `model` 字段从 `claude-3-5-sonnet-latest` 切到
 /// `claude-3-haiku-20240307` 时,`AgentConfig.model` 必须随之更新。
 #[tokio::test]
 async fn model_field_change_propagates_to_agent_config() {
@@ -30,18 +30,20 @@ async fn model_field_change_propagates_to_agent_config() {
     let (tx, mut rx) = mpsc::channel::<Event>(4);
     let old_cfg = ReflectConfig {
         active: ActiveSection {
-            provider: Some("anthropic".into()),
+            group: Some("anthropic".into()),
             ..Default::default()
         },
-        anthropic: Some(AnthropicSection {
+        model_group: vec![ModelGroupSection {
+            id: "anthropic".into(),
+            endpoint: "anthropic".into(),
             api_key: Some("sk-a".into()),
             model: Some("claude-3-5-sonnet-latest".into()),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
     let mut new_cfg = old_cfg.clone();
-    new_cfg.anthropic.as_mut().unwrap().model = Some("claude-3-haiku-20240307".into());
+    new_cfg.model_group[0].model = Some("claude-3-haiku-20240307".into());
     let path = PathBuf::from("/tmp/test.toml");
     let agent_cfg = AgentConfig::new("anthropic/claude-3-5-sonnet-latest", "/tmp");
 
@@ -83,7 +85,7 @@ async fn model_field_change_propagates_to_agent_config() {
                 saw_session = true;
             }
             EventMsg::ConfigReloaded(cr) => {
-                assert!(cr.sections_changed.contains(&"anthropic".to_string()));
+                assert!(cr.sections_changed.contains(&"model_group".to_string()));
                 saw_reloaded = true;
             }
             _ => {}
@@ -101,14 +103,16 @@ async fn no_op_reload_does_not_touch_model() {
     let (tx, mut rx) = mpsc::channel::<Event>(2);
     let cfg = ReflectConfig {
         active: ActiveSection {
-            provider: Some("anthropic".into()),
+            group: Some("anthropic".into()),
             ..Default::default()
         },
-        anthropic: Some(AnthropicSection {
+        model_group: vec![ModelGroupSection {
+            id: "anthropic".into(),
+            endpoint: "anthropic".into(),
             api_key: Some("sk-a".into()),
             model: Some("claude-3-5-sonnet-latest".into()),
             ..Default::default()
-        }),
+        }],
         ..Default::default()
     };
     let path = PathBuf::from("/tmp/test.toml");

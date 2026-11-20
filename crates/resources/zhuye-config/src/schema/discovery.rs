@@ -10,9 +10,11 @@
 //!
 //! ```toml
 //! [active]
-//! provider = "openai"
+//! group = "openai"
 //!
-//! [openai]
+//! [[model_group]]
+//! id = "openai"
+//! endpoint = "openai"
 //! api_key = ""                                              # 免 Key 端点
 //! base_url = "https://api.kilo.ai/api/gateway"
 //! model = "free"                                            # 运行时从清单里挑

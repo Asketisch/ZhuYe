@@ -52,7 +52,7 @@ fn hooks_section_parses_read_before_edit_with_values() {
 /// `[web_search]` 段缺失时 → `None`(向后兼容)。
 #[test]
 fn web_search_section_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\nprovider = \"anthropic\"\n").unwrap();
+    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.web_search.is_none());
 }
 
@@ -222,9 +222,11 @@ fn partial_eq_detects_timeout_change() {
 // ── Ollama 段(v0.3.1)─────────────────────────────────────────
 
 #[test]
-fn parses_full_ollama_section() {
+fn parses_full_ollama_model_group() {
     let toml = r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
         base_url = "http://192.168.1.5:11434"
         api_key = "sk-local"
         model = "qwen2.5:7b"
@@ -234,7 +236,7 @@ fn parses_full_ollama_section() {
         timeout_secs = 120
     "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    let o = cfg.ollama.as_ref().expect("ollama section");
+    let o = cfg.model_group.first().expect("ollama 模型组");
     assert_eq!(o.base_url.as_deref(), Some("http://192.168.1.5:11434"));
     assert_eq!(o.api_key.as_deref(), Some("sk-local"));
     assert_eq!(o.model.as_deref(), Some("qwen2.5:7b"));
@@ -245,13 +247,15 @@ fn parses_full_ollama_section() {
 }
 
 #[test]
-fn parses_minimal_ollama_section_with_all_none_fields() {
-    // 仅声明 `[ollama]`,所有字段都缺省 → 全 None,builder 走兜底。
+fn parses_minimal_model_group_with_all_none_fields() {
+    // 仅声明 id / endpoint,所有可选字段都缺省 → 全 None,builder 走兜底。
     let toml = r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
     "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    let o = cfg.ollama.as_ref().expect("ollama section");
+    let o = cfg.model_group.first().expect("模型组");
     assert!(o.base_url.is_none());
     assert!(o.api_key.is_none());
     assert!(o.model.is_none());
@@ -262,31 +266,35 @@ fn parses_minimal_ollama_section_with_all_none_fields() {
 }
 
 #[test]
-fn partial_eq_detects_ollama_section_change() {
-    // 改 keep_alive_secs → partial_eq 不等 → diff_sections 报 "ollama"。
+fn partial_eq_detects_model_group_change() {
+    // 改 keep_alive_secs → partial_eq 不等 → diff_sections 报组名。
     let a: ReflectConfig = toml::from_str(
         r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
         model = "llama3.2"
         keep_alive_secs = 300
         "#,
     )
     .unwrap();
     let mut b = a.clone();
-    b.ollama.as_mut().unwrap().keep_alive_secs = Some(600);
-    assert_ne!(a.ollama, b.ollama);
+    b.model_group[0].keep_alive_secs = Some(600);
+    assert_ne!(a.model_group, b.model_group);
 }
 
 #[test]
-fn unknown_ollama_keys_ignored() {
+fn unknown_model_group_keys_ignored() {
     // 容忍策略:未知字段不报错(v0.4 strict 模式留待)。
     let toml = r#"
-        [ollama]
+        [[model_group]]
+        id = "ollama"
+        endpoint = "ollama"
         model = "llama3.2"
         future_field = "ignored"
         "#;
     let cfg: ReflectConfig = toml::from_str(toml).unwrap();
-    assert!(cfg.ollama.is_some());
+    assert_eq!(cfg.model_group.len(), 1);
 }
 
 #[test]
@@ -456,7 +464,7 @@ fn old_toml_without_coordinator_loads() {
     let cfg: ReflectConfig = toml::from_str(
         r#"
         [active]
-        provider = "anthropic"
+        group = "anthropic"
     "#,
     )
     .unwrap();
@@ -530,7 +538,7 @@ fn old_toml_without_sanitize_loads() {
     let cfg: ReflectConfig = toml::from_str(
         r#"
         [active]
-        provider = "anthropic"
+        group = "anthropic"
     "#,
     )
     .unwrap();
@@ -597,7 +605,7 @@ fn zhuye_config_partial_eq_detects_sanitize_change() {
 /// `[model]` 段缺省 → `None`(零行为变化)。
 #[test]
 fn model_section_absent_by_default() {
-    let cfg: ReflectConfig = toml::from_str("[active]\nprovider = \"anthropic\"\n").unwrap();
+    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.model.is_none());
 }
 
@@ -605,7 +613,7 @@ fn model_section_absent_by_default() {
 /// 框架层不向会话注入编码向目录文本。
 #[test]
 fn bundled_skills_disabled_by_default() {
-    let cfg: ReflectConfig = toml::from_str("[active]\nprovider = \"anthropic\"\n").unwrap();
+    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(!cfg.active.bundled_skills);
 }
 
@@ -613,7 +621,7 @@ fn bundled_skills_disabled_by_default() {
 #[test]
 fn bundled_skills_opt_in_parses() {
     let cfg: ReflectConfig =
-        toml::from_str("[active]\nprovider = \"anthropic\"\nbundled_skills = true\n").unwrap();
+        toml::from_str("[active]\ngroup = \"anthropic\"\nbundled_skills = true\n").unwrap();
     assert!(cfg.active.bundled_skills);
 }
 
@@ -623,7 +631,7 @@ fn bundled_skills_opt_in_parses() {
 /// false」。
 #[test]
 fn agents_md_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\nprovider = \"anthropic\"\n").unwrap();
+    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert_eq!(cfg.active.agents_md, None);
 }
 
@@ -632,7 +640,7 @@ fn agents_md_absent_is_none() {
 #[test]
 fn agents_md_explicit_false_parses() {
     let cfg: ReflectConfig =
-        toml::from_str("[active]\nprovider = \"anthropic\"\nagents_md = false\n").unwrap();
+        toml::from_str("[active]\ngroup = \"anthropic\"\nagents_md = false\n").unwrap();
     assert_eq!(cfg.active.agents_md, Some(false));
 }
 
@@ -641,7 +649,7 @@ fn agents_md_explicit_false_parses() {
 #[test]
 fn agents_md_explicit_true_parses() {
     let cfg: ReflectConfig =
-        toml::from_str("[active]\nprovider = \"anthropic\"\nagents_md = true\n").unwrap();
+        toml::from_str("[active]\ngroup = \"anthropic\"\nagents_md = true\n").unwrap();
     assert_eq!(cfg.active.agents_md, Some(true));
 }
 
@@ -807,7 +815,7 @@ action = "deny"
 /// 无 `[permissions]` 段时,字段为 None(向后兼容,行为不变)。
 #[test]
 fn permissions_section_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\nprovider = \"anthropic\"\n").unwrap();
+    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.permissions.is_none(), "无 [permissions] 段应为 None");
 }
 
@@ -954,7 +962,7 @@ fn parses_context_windows_nested_entries() {
 /// 无 `[context_windows]` 段时为 None(向后兼容,行为不变)。
 #[test]
 fn context_windows_section_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\nprovider = \"anthropic\"\n").unwrap();
+    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.context_windows.is_none());
 }
 

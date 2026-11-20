@@ -163,7 +163,7 @@ running. The overall status is `failed` and `partial` respectively.
 credential cooldown of `Role::Main`. When constructing the summarizer, the primary of `Role::Compact` is
 copied into model_name; the summarization call only runs next_for on this single spec and does not read
 compact's fallbacks. Sub-agents use the primary model at startup, or the independent registry of
-`[subagent_providers]`.
+`[subagent_models]`.
 - **Context recovery.** Active files are re-read only on
 `compact_triggered` (any non-Noop compaction). Sub-agent registration and session notes are injected on
 every `pre_loop`, then appended into the message by `model_call`.

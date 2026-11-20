@@ -7,11 +7,17 @@ use std::time::Duration;
 use zhuye_config::{ConfigWatcher, load_from_file};
 use zhuye_llm::ModelRegistry;
 
+/// 一个 anthropic 端点的模型组(v2 的唯一接入单元)。
+const GROUP_TOML_A1: &str =
+    "[[model_group]]\nid = \"anthropic\"\nendpoint = \"anthropic\"\napi_key = \"sk-a-1\"\n";
+const GROUP_TOML_A2: &str =
+    "[[model_group]]\nid = \"anthropic\"\nendpoint = \"anthropic\"\napi_key = \"sk-a-2\"\n";
+
 #[tokio::test(flavor = "current_thread")]
 async fn watcher_triggers_registry_replacement_on_toml_change() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    std::fs::write(&path, "[anthropic]\napi_key = \"sk-a-1\"\n").unwrap();
+    std::fs::write(&path, GROUP_TOML_A1).unwrap();
 
     let initial = load_from_file(&path).unwrap();
     let watcher = ConfigWatcher::spawn(path.clone(), initial.clone()).unwrap();
@@ -21,7 +27,7 @@ async fn watcher_triggers_registry_replacement_on_toml_change() {
     let mut rx = watcher.subscribe();
 
     // 改文件 —— 触发 notify event。
-    std::fs::write(&path, "[anthropic]\napi_key = \"sk-a-2\"\n").unwrap();
+    std::fs::write(&path, GROUP_TOML_A2).unwrap();
 
     // 等待 watcher 检测 + debounce + reload + send。
     let new_cfg = tokio::time::timeout(Duration::from_secs(3), async {
@@ -32,21 +38,18 @@ async fn watcher_triggers_registry_replacement_on_toml_change() {
     .expect("reload timed out");
 
     new_cfg.apply_to_registry(&registry).unwrap();
-    assert_eq!(
-        new_cfg.anthropic.as_ref().unwrap().api_key.as_deref(),
-        Some("sk-a-2")
-    );
+    assert_eq!(new_cfg.model_group[0].api_key.as_deref(), Some("sk-a-2"));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn invalid_toml_does_not_clear_old_clients() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    std::fs::write(&path, "[anthropic]\napi_key = \"sk-a-1\"\n").unwrap();
+    std::fs::write(&path, GROUP_TOML_A1).unwrap();
 
     let initial = load_from_file(&path).unwrap();
     let watcher = ConfigWatcher::spawn(path.clone(), initial.clone()).unwrap();
-    assert!(watcher.current().anthropic.is_some());
+    assert!(!watcher.current().model_group.is_empty());
 
     // 写非法 TOML —— watcher 会 warn 但保留上一个值。
     std::fs::write(&path, "garbage = = =").unwrap();
@@ -54,8 +57,8 @@ async fn invalid_toml_does_not_clear_old_clients() {
 
     let last = watcher.current();
     assert!(
-        last.anthropic.is_some(),
+        !last.model_group.is_empty(),
         "previous valid config must be retained"
     );
-    assert_eq!(last.anthropic.unwrap().api_key.as_deref(), Some("sk-a-1"));
+    assert_eq!(last.model_group[0].api_key.as_deref(), Some("sk-a-1"));
 }

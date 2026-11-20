@@ -493,7 +493,7 @@ system_prompt = "x"
     /// 必须返 `None`(降级 noop 路径)。
     ///
     /// 注:不强制清 env,这样测试与本地 dev 配置兼容 —— 只要 env 没设关键变量,
-    /// `ReflectConfig::active_provider()` 走 `None` 路径即 OK。
+    /// `ReflectConfig::active_group()` 走 `None` 路径即 OK。
     // `try_build_llm_orchestrator` 是 async(内部要 await 模型解析),
     // 故本用例必须 async —— 否则 `.await` 落在同步 fn 里编译不过
     // (E0728:await is only allowed inside async functions)。
