@@ -26,6 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::agent::SubagentModelsSection;
 use super::provider::CredentialConfig;
 
 /// v1 的三个固定接入段 —— 读入旧配置用,迁移后即丢弃。
@@ -43,14 +44,18 @@ pub struct LegacySections {
     /// 旧 `[active]` 段(只取 `provider` 键)。
     #[serde(default)]
     pub active: Option<LegacyActiveSection>,
+    /// 旧 `[subagent_providers]` 段 → 新 `[subagent_models]`。
+    #[serde(default)]
+    pub subagent_providers: Option<SubagentModelsSection>,
 }
 
 impl LegacySections {
-    /// 三段是否全空(全空 = 没有旧配置需要迁移)。
+    /// 是否完全没有旧配置需要迁移。
     pub fn is_empty(&self) -> bool {
         self.anthropic.is_none()
             && self.openai.is_none()
             && self.ollama.is_none()
+            && self.subagent_providers.is_none()
             && self
                 .active
                 .as_ref()

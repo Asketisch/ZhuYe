@@ -154,7 +154,7 @@ max-iteration 安全阀兜底防止无限续跑。
 - **路由。** `model_call` 消费 `Role::Main` 的 primary、fallbacks 和凭据
   cooldown。构造摘要器时把 `Role::Compact` 的 primary 拷进 model_name;
   摘要调用只对这一个 spec 做 next_for,不读 compact 的 fallbacks。子代理用
-  启动时的主模型,或 `[subagent_providers]` 的独立 registry。
+  启动时的主模型,或 `[subagent_models]` 的独立 registry。
 - **上下文恢复。** 活跃文件只在 `compact_triggered`(任意非 Noop 压缩)时
   重读。子代理登记和会话笔记每个 `pre_loop` 都注入,再由 `model_call`
   追加进消息。

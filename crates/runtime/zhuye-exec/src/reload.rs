@@ -265,16 +265,16 @@ pub async fn handle_reload(
         );
     }
 
-    // v1.x 功能 1:`[subagent_providers]` 段变更 → 重建 child registry。
+    // v1.x 功能 1:`[subagent_models]` 段变更 → 重建 child registry。
     // 后续 `spawn()` 拿新 registry(独立 base_url + api_key + model)。
     // `None` = 清除独立凭证,回退父子共享(向后兼容)。
-    if sections_changed.iter().any(|s| s == "subagent_providers") {
+    if sections_changed.iter().any(|s| s == "subagent_models") {
         if let Some(f) = factory {
             let child_reg = new_cfg.to_child_registry().map(Arc::new);
             f.set_child_registry(child_reg.clone());
             tracing::info!(
                 has_child_registry = child_reg.is_some(),
-                "config reload: subagent_providers updated"
+                "config reload: subagent_models updated"
             );
         }
     }

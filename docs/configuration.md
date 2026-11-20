@@ -69,6 +69,9 @@ v1 的固定接入段 `[anthropic]` / `[openai]` / `[ollama]` **仍可读入** �
 `timeout_secs` / `credentials` 原样下沉；`[openai].responses_api` 与
 `[ollama].keep_alive_secs` / `num_ctx` / `num_gpu` 落到组级同名字段。
 
+子代理的独立端点段同步改名：`[subagent_providers]` → `[subagent_models]`
+（旧段名仍能读入，写回只写新名）。
+
 迁移**幂等**：已是新格式的配置读入后不产生任何变化（不重复追加组，也不
 覆盖已有的同名模型组 —— 同名时以模型组现状为准）。旧段数据不会出现在
 写回结果里。
