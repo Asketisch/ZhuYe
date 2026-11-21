@@ -185,6 +185,7 @@ fn write_two_sessions(dir: &Path) -> (zhuye_protocol::ThreadId, zhuye_protocol::
             serde_json::to_string(&RolloutRecord::SessionMeta {
                 session_id: id,
                 model: "openai/gpt-4o".into(),
+                parent_session_id: None,
                 started_at: started,
                 workspace: None,
             })

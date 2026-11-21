@@ -131,6 +131,7 @@ fn audit_records_ignored() {
         RolloutRecord::SessionMeta {
             session_id: zhuye_protocol::ThreadId::new(),
             model: "m".into(),
+            parent_session_id: None,
             started_at: chrono::Utc::now(),
             workspace: None,
         },

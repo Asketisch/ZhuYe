@@ -126,6 +126,7 @@ mod tests {
             RolloutRecord::Fork {
                 parent_session_id: sid,
                 branch_name: "explorer".into(),
+                child_session_id: None,
             },
         ];
         for r in &records {

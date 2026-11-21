@@ -567,6 +567,7 @@ mod tests {
         let meta = serde_json::to_string(&zhuye_protocol::RolloutRecord::SessionMeta {
             session_id: inner,
             model: "mock".into(),
+            parent_session_id: None,
             started_at: chrono::Utc::now(),
             workspace: None,
         })

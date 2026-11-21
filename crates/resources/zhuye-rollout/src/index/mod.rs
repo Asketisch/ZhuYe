@@ -349,6 +349,7 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
         && let RolloutRecord::SessionMeta {
             session_id,
             model,
+            parent_session_id,
             started_at,
             workspace,
         } = record
@@ -366,6 +367,7 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
             total_tokens,
             cost_usd,
             workspace,
+            parent_session_id,
         });
     }
 
@@ -386,6 +388,7 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
             && let RolloutRecord::SessionMeta {
                 session_id,
                 model,
+                parent_session_id,
                 started_at,
                 workspace,
             } = record
@@ -403,6 +406,7 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
                 total_tokens,
                 cost_usd,
                 workspace,
+                parent_session_id,
             });
         }
     }
@@ -425,6 +429,7 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
             model: meta.model,
             started_at: meta.started_at,
             message_count: non_blank_lines.saturating_sub(continuation_lines),
+            parent_session_id: meta.parent_session_id,
             title,
             input_tokens,
             output_tokens,
@@ -609,6 +614,7 @@ fn session_meta_from_rotated_sibling(path: &Path) -> Option<SessionMetaFields> {
             && let RolloutRecord::SessionMeta {
                 session_id,
                 model,
+                parent_session_id,
                 started_at,
                 workspace,
             } = record
@@ -618,6 +624,7 @@ fn session_meta_from_rotated_sibling(path: &Path) -> Option<SessionMetaFields> {
                 model,
                 started_at,
                 workspace,
+                parent_session_id,
             });
         }
     }
@@ -630,6 +637,7 @@ struct SessionMetaFields {
     model: String,
     started_at: chrono::DateTime<chrono::Utc>,
     workspace: Option<String>,
+    parent_session_id: Option<ThreadId>,
 }
 
 fn session_contains_discussion(path: &Path, target: &uuid::Uuid) -> bool {
@@ -922,6 +930,7 @@ pub fn write_fork_record(
     let record = RolloutRecord::Fork {
         parent_session_id: parent_id,
         branch_name: branch_name.to_string(),
+        child_session_id: None,
     };
     let line = serde_json::to_string(&record).map_err(std::io::Error::other)?;
     let mut f = std::fs::OpenOptions::new()
@@ -1024,6 +1033,7 @@ pub fn fork_with_history(
             session_id: child_id,
             model: parent_model,
             started_at: Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })?
     )?;
@@ -1074,6 +1084,7 @@ pub fn fork_with_history(
         to_line(&RolloutRecord::Fork {
             parent_session_id: parent_id,
             branch_name: branch_name.to_string(),
+            child_session_id: None,
         })?
     )?;
     child.flush()?;
@@ -1082,6 +1093,7 @@ pub fn fork_with_history(
     let fork_line = to_line(&RolloutRecord::Fork {
         parent_session_id: parent_id,
         branch_name: branch_name.to_string(),
+        child_session_id: None,
     })?;
     let mut parent_f = std::fs::OpenOptions::new()
         .create(true)

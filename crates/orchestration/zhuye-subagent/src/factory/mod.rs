@@ -77,6 +77,11 @@ pub struct SubAgentFactory {
     cancel: Mutex<CancellationToken>,
     /// 父级 recorder(可选),用于写入 `Fork` 记录 + 创建子 agent JSONL 文件。
     recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>>,
+    /// v1.12:rollout 根目录。`Some` 时子代理 spawn 落**独立 JSONL**
+    /// (`<base>/<child_id>.jsonl`,SessionMeta 带 parent_session_id),
+    /// 桌面侧栏可把子会话挂在父会话下展示;`None` = 维持旧行为
+    /// (内存即丢,只在父 rollout 记 Fork 血缘)。
+    rollout_base: Mutex<Option<std::path::PathBuf>>,
     /// M5 v0:子 agent 仅获得一份最小 `AgentConfig`(无 M4 依赖)。若日后
     /// 需要子 agent 共享父级的 compactor / memory / skills,
     /// 在此处添加 `parent_m4: Option<M4Deps>` 并向下传递到子 agent。
@@ -168,6 +173,7 @@ impl SubAgentFactory {
             parent_tools,
             role_tools: Mutex::new(HashMap::new()),
             cancel: Mutex::new(cancel),
+            rollout_base: Mutex::new(None),
             recorder,
             _no_parent_m4: (),
             plugin_specs: Mutex::new(HashMap::new()),
@@ -293,6 +299,12 @@ impl SubAgentFactory {
     /// 返回与父会话共享的审批路由状态。
     pub fn approval_context(&self) -> zhuye_tools::ApprovalContext {
         self.approval_context.clone()
+    }
+
+    /// v1.12:设置 rollout 根目录 —— 开启子代理会话落盘。装配点(exec
+    /// bootstrap / 桌面线程工厂)传 `zhuye_rollout::path::default_base()`。
+    pub fn set_rollout_base(&self, base: std::path::PathBuf) {
+        *self.rollout_base.lock() = Some(base);
     }
 
     /// 设置子代理继承的父会话安全策略。
@@ -474,6 +486,7 @@ impl SubAgentFactory {
             // 语义与父级一致(discussion 场景下子代理可能再 spawn)。
             role_tools: Mutex::new(self.role_tools.lock().clone()),
             cancel: Mutex::new(self.cancel.lock().clone()),
+            rollout_base: Mutex::new(self.rollout_base.lock().clone()),
             recorder: self.recorder.clone(),
             _no_parent_m4: (),
             // 子 factory 不继承 plugin_specs —— 子 agent 不需要管理
@@ -534,13 +547,34 @@ impl SubAgentFactory {
 
         // 构造子 session —— 新的 `ThreadId` 用于血缘追踪。
         //
-        // v1.x:子代理**不再**写独立 JSONL 文件(此前每次 `CallSubAgentTool`
-        // 都新建一个子 session 文件,导致"一次对话产生多个 session",污染
-        // `/session` 列表)。血缘关系已由下面写入**父** recorder 的 `Fork`
-        // record 记录(branch_name / parent_session_id),无需子文件。子代理
-        // 在内存里跑完即丢,符合"子代理是父会话的临时工具调用"语义。
+        // v1.12:宿主装配了 `rollout_base` 时,子代理落**独立 JSONL**
+        // (`SessionMeta.parent_session_id` 指回父会话)—— 桌面侧栏据血缘把
+        // 子会话挂在父会话下缩进展示(minimax code 形态),不污染顶层列表。
+        // 未装配时维持旧行为:内存即丢,只在父 rollout 记 Fork 血缘。
         let child_thread_id = ThreadId::new();
-        let child_recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>> = None;
+        let child_recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>> = {
+            let base = self.rollout_base.lock().clone();
+            base.map(|base| {
+                Arc::new(zhuye_rollout::JsonlRolloutWriter::new(
+                    base,
+                    child_thread_id,
+                )) as Arc<dyn zhuye_protocol::RolloutRecorder>
+            })
+        };
+        if let Some(child_rec) = child_recorder.as_ref() {
+            let _ = child_rec
+                .record(RolloutRecord::SessionMeta {
+                    session_id: child_thread_id,
+                    model: spec
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| self.default_model.lock().clone()),
+                    started_at: chrono::Utc::now(),
+                    workspace: None,
+                    parent_session_id: Some(self.parent_session_id),
+                })
+                .await;
+        }
 
         // 向父 recorder(若有)写入 `Fork` 记录,这样恢复时可查询父子关系。
         if let Some(rec) = self.recorder.as_ref() {
@@ -548,6 +582,7 @@ impl SubAgentFactory {
                 .record(RolloutRecord::Fork {
                     parent_session_id: self.parent_session_id,
                     branch_name: spec.role.clone(),
+                    child_session_id: Some(child_thread_id),
                 })
                 .await;
         }
