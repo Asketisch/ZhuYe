@@ -600,6 +600,7 @@ fn event_with(msg: EventMsg) -> Event {
     Event {
         id: "evt-test".to_string(),
         msg,
+        seq: 0,
     }
 }
 
