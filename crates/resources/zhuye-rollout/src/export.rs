@@ -305,6 +305,11 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
                 }
                 out.push_str(&format!("- at: {}\n\n", at.format("%Y-%m-%dT%H:%M:%SZ")));
             }
+            // v1.12:人机交互审计(注册 / 了结)。转写稿不逐条渲染(不是
+            // 对话内容;审批上下文已由对话内的 ApprovalRequest 事件体现),
+            // 显式忽略以保证 match 穷尽 —— 未来新增变体编译期报错。
+            RolloutRecord::InteractionRequest { .. }
+            | RolloutRecord::InteractionResolution { .. } => {}
         }
     }
 
@@ -498,6 +503,9 @@ pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
             | RolloutRecord::PlanReady { .. }
             | RolloutRecord::PlanRejected { .. }
             | RolloutRecord::PermissionModeChanged { .. } => {}
+            // v1.12:人机交互审计,同上不渲染。
+            | RolloutRecord::InteractionRequest { .. }
+            | RolloutRecord::InteractionResolution { .. } => {}
             RolloutRecord::PromptSelectionChanged { .. } => {}
         }
     }

@@ -56,6 +56,7 @@ mod tests {
     fn minimal_ctx(engine: Arc<HookEngine>) -> NodeContext {
         let (event_tx, _rx) = tokio::sync::mpsc::channel::<zhuye_protocol::Event>(8);
         NodeContext {
+            session_seq: None,
             turn_id: zhuye_protocol::TurnId::new(),
             session_id: zhuye_protocol::ThreadId::new(),
             model: Arc::new(parking_lot::RwLock::new("stub/model".to_string())),

@@ -137,6 +137,11 @@ pub struct NodeContext {
     /// 会话级订阅者(TUI 多 tab / 持久化层 / 外接 dashboard)。
     /// `None` 表示无订阅者,跳过 fan_out。
     pub plan_session_subs: Option<Arc<Mutex<Vec<mpsc::Sender<Event>>>>>,
+    /// v1.12:会话扇出序号计数器。`tool_exec` 的 plan dispatch 经
+    /// `fan_out_session` 广播时用它赋号,保证 plan 事件与主循环事件
+    /// 共享同一单调序列。`None`(测试 / 旧构造方)时 dispatch 用
+    /// 模块级 fallback 计数器(仅保证 API 兼容,序号不参与跨流判定)。
+    pub session_seq: Option<Arc<SessionSeq>>,
     /// v1.4 A2:会话级转向队列句柄。`pre_loop` 在每次(含 ToolExec 回环)
     /// 入口收割其中的 Now / Attachment 消息并注入 `state.messages` 尾部,
     /// 实现「回合中途边跑边改需求」—— 此前转向只在下一个 turn 边界
@@ -193,7 +198,11 @@ pub async fn submission_loop(
     // 投递决策后由 `complete_plan_approval` 唤醒 waiter。
     // 包裹在 `Arc` 内,让 `tool_exec` 节点(`NodeContext`)可以共享同一份
     // gate 状态(原 `PlanApprovalGate` 不实现 `Clone`)。
-    let plan_approval_gate = Arc::new(PlanApprovalGate::new());
+    // v1.12:注入会话级挂起交互注册表,plan 审批进入
+    // `pending_interactions()` 查询面(与工具审批同表)。
+    let plan_approval_gate = Arc::new(
+        PlanApprovalGate::new().with_pending_registry(cfg.approval_context.pending.clone()),
+    );
     // P2:session 级 steering 队列与后台任务注入队列。
     let steering_queue = Arc::new(Mutex::new(SteeringQueue::new()));
     // v1.4 A1:在飞回合表 —— turn 级取消令牌的登记处。每个 UserInput
@@ -249,6 +258,11 @@ pub async fn submission_loop(
     let mut session_end_sent = false;
 
     let mut session_emitted = false;
+    // v1.12:会话扇出序号计数器(从 1 起单调递增)。会话扇出出口
+    // (`fan_out_session` / `fan_out_session_reliable`)统一 stamp,客户端
+    // 据此检测缺口;per-turn 专属流不赋号(`seq = 0`)。`Arc` 包装以便
+    // 进入 spawn 的转发任务 / plan waiter。
+    let session_seq = Arc::new(SessionSeq::new(0));
     // v1.x:从首条 Submission(通常是首条 UserInput)携带的 `workspace`
     // 字段捕获。GUI 主动注入当前激活工作区;CLI / 测试场景不指定 →
     // 后续 `cfg.current_workspace()` 作为回退。捕获后保持不变,即使
@@ -264,9 +278,10 @@ pub async fn submission_loop(
             None => {
                 let (tx, mut rx) = mpsc::channel::<Event>(64);
                 let session_subs = Arc::clone(&session_subs);
+                let forwarder_seq = Arc::clone(&session_seq);
                 tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
-                        fan_out_session(&session_subs, &event);
+                        fan_out_session(&session_subs, &forwarder_seq, &event);
                     }
                 });
                 tx
@@ -380,7 +395,7 @@ pub async fn submission_loop(
                         EventMsg::SessionConfigured(sc),
                     );
                     let _ = turn_tx.send(ev.clone()).await;
-                    fan_out_session(&session_subs, &ev);
+                    fan_out_session(&session_subs, &session_seq, &ev);
                     // M5:把会话头部持久化到 rollout recorder。
                     // v1.x:workspace 字段 —— 首条 Submission 携带的
                     // `workspace` 优先,否则回退到 `cfg.current_workspace()`
@@ -421,7 +436,7 @@ pub async fn submission_loop(
                             }),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                         // v1.x 修复:初始模式通告**同步落盘**。首条消息前经
                         // `Op::SetPermissionMode` 切的模式因「SessionMeta 未写
                         // 不落盘」守卫被跳过,这里在 SessionMeta 之后补记,
@@ -712,6 +727,7 @@ pub async fn submission_loop(
                     // 通道把工具结果转发回主循环)。
                     plan_approval_gate: Some(plan_approval_gate.clone()),
                     plan_session_subs: Some(session_subs.clone()),
+                    session_seq: Some(Arc::clone(&session_seq)),
                     // v1.4 A2:共享会话级转向队列,pre_loop 每次入口收割。
                     steering_queue: Some(steering_queue.clone()),
                     // v1.5 R1:每回合沙箱覆盖。
@@ -742,7 +758,12 @@ pub async fn submission_loop(
                         // 回合永远停在审批门上(既没有 turn_aborted 也没有
                         // turn_complete)。gate 是每回合构造的,挂回合令牌安全。
                         .with_turn_cancel(turn_cancel.clone())
-                        .with_turn_policy(thread_settings.approval_policy);
+                        .with_turn_policy(thread_settings.approval_policy)
+                        // v1.12:挂起交互注册表 + rollout 审计 —— gate 真相
+                        // 上收引擎:reload 后 `pending_interactions()` 可查,
+                        // 注册 / 了结落 `InteractionRequest` / `Resolution`。
+                        .with_pending_registry(cfg.approval_context.pending.clone())
+                        .with_recorder(cfg.m4.as_ref().and_then(|m| m.recorder.clone()));
                         // P2 `yolo-classifier`:把 cfg 的启发式分类器注入 gate。
                         if cfg.yolo_classifier.is_some() {
                             g.set_yolo_classifier(
@@ -1236,7 +1257,7 @@ pub async fn submission_loop(
                 session_end_sent = true;
                 let ev = Event::new(sub.id, EventMsg::ShutdownComplete);
                 let _ = turn_tx.send(ev.clone()).await;
-                fan_out_session(&session_subs, &ev);
+                fan_out_session(&session_subs, &session_seq, &ev);
                 break;
             }
             // v1.4 A2:回合中途转向入口。客户端(界面 / SDK)对正在跑的
@@ -1273,7 +1294,7 @@ pub async fn submission_loop(
                     EventMsg::SubagentStatus(zhuye_protocol::SubagentStatusEvent { children }),
                 );
                 let _ = turn_tx.send(ev.clone()).await;
-                fan_out_session(&session_subs, &ev);
+                fan_out_session(&session_subs, &session_seq, &ev);
             }
             // ── v1.x:side-channel agent(WP9)────────────────────────
             // 用户驱动、与主 agent 并发的独立 agent 运行。driver 未配置
@@ -1287,7 +1308,7 @@ pub async fn submission_loop(
                         )),
                     );
                     let _ = turn_tx.send(ev.clone()).await;
-                    fan_out_session(&session_subs, &ev);
+                    fan_out_session(&session_subs, &session_seq, &ev);
                     continue;
                 };
                 // 必须在启动前订阅,以免任务立即结束时丢失终态。
@@ -1310,8 +1331,10 @@ pub async fn submission_loop(
                             ),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                         let subscribers = session_subs.clone();
+                        // v1.12:扇出序号计数器 clone 进 side-channel 任务。
+                        let fanout_seq = Arc::clone(&session_seq);
                         let session_cancel = cfg.cancel.clone();
                         tokio::spawn(async move {
                             loop {
@@ -1321,7 +1344,7 @@ pub async fn submission_loop(
                                         match approval {
                                             Ok((id, request)) if id == side_id => {
                                                 let event = Event::new(zhuye_protocol::EVENT_ID_NONE, EventMsg::ApprovalRequest(request));
-                                                fan_out_session(&subscribers, &event);
+                                                fan_out_session(&subscribers, &fanout_seq, &event);
                                             }
                                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                                             _ => {}
@@ -1331,7 +1354,7 @@ pub async fn submission_loop(
                                         match interaction {
                                             Ok((id, msg)) if id == side_id => {
                                                 let event = Event::new(zhuye_protocol::EVENT_ID_NONE, msg);
-                                                fan_out_session(&subscribers, &event);
+                                                fan_out_session(&subscribers, &fanout_seq, &event);
                                             }
                                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                                             _ => {}
@@ -1350,16 +1373,16 @@ pub async fn submission_loop(
                                             // 终态与交互事件走独立广播,收尾前排空已发送事件以免竞争丢失。
                                             while let Ok((id, msg)) = side_interactions.try_recv() {
                                                 if id == side_id {
-                                                    fan_out_session(&subscribers, &Event::new(zhuye_protocol::EVENT_ID_NONE, msg));
+                                                    fan_out_session(&subscribers, &fanout_seq, &Event::new(zhuye_protocol::EVENT_ID_NONE, msg));
                                                 }
                                             }
                                             while let Ok((id, request)) = side_approvals.try_recv() {
                                                 if id == side_id {
-                                                    fan_out_session(&subscribers, &Event::new(zhuye_protocol::EVENT_ID_NONE, EventMsg::ApprovalRequest(request)));
+                                                    fan_out_session(&subscribers, &fanout_seq, &Event::new(zhuye_protocol::EVENT_ID_NONE, EventMsg::ApprovalRequest(request)));
                                                 }
                                             }
                                             let event = Event::new(zhuye_protocol::EVENT_ID_NONE, EventMsg::SideChannelFinished(payload));
-                                            fan_out_session(&subscribers, &event);
+                                            fan_out_session(&subscribers, &fanout_seq, &event);
                                             break;
                                         }
                                     }
@@ -1374,7 +1397,7 @@ pub async fn submission_loop(
                             EventMsg::SideChannelFinished(side_channel_error_event(&e.to_string())),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                     }
                 }
             }
@@ -1403,7 +1426,7 @@ pub async fn submission_loop(
                     }),
                 );
                 let _ = turn_tx.send(ev.clone()).await;
-                fan_out_session(&session_subs, &ev);
+                fan_out_session(&session_subs, &session_seq, &ev);
             }
             zhuye_protocol::Op::ToolApproval { id, decision }
             | zhuye_protocol::Op::HookApproval { id, decision } => {
@@ -1439,6 +1462,7 @@ pub async fn submission_loop(
                 dispatch_plan_request(
                     &plan_approval_gate,
                     &session_subs,
+                    Arc::clone(&session_seq),
                     turn_tx.clone(),
                     sub.id.clone(),
                     cfg.clone(),
@@ -1454,6 +1478,7 @@ pub async fn submission_loop(
                 dispatch_plan_ready(
                     &plan_approval_gate,
                     &session_subs,
+                    Arc::clone(&session_seq),
                     turn_tx.clone(),
                     sub.id.clone(),
                     cfg.clone(),
@@ -1548,7 +1573,7 @@ pub async fn submission_loop(
                             to: target,
                         }),
                     );
-                    fan_out_session(&session_subs, &ev);
+                    fan_out_session(&session_subs, &session_seq, &ev);
                     tracing::warn!(
                         requested = ?mode,
                         effective = ?target,
@@ -1566,6 +1591,7 @@ pub async fn submission_loop(
                     &cfg,
                     target,
                     &session_subs,
+                    Arc::clone(&session_seq),
                     &turn_subs,
                     session_emitted || existing_session,
                 );
@@ -1577,6 +1603,7 @@ pub async fn submission_loop(
                     &cfg,
                     next,
                     &session_subs,
+                    Arc::clone(&session_seq),
                     &turn_subs,
                     session_emitted || existing_session,
                 );
@@ -1623,7 +1650,7 @@ pub async fn submission_loop(
                             }),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                         continue;
                     }
                 };
@@ -1669,7 +1696,7 @@ pub async fn submission_loop(
                             }),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                     }
                     PromptAction::Switch { layer } => {
                         // layer 槽位当前固定走全量重扫;预留未来聚焦切换。
@@ -1701,7 +1728,7 @@ pub async fn submission_loop(
                             }),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                     }
                     PromptAction::Select { selection } => {
                         let missing = match &selection {
@@ -1752,7 +1779,7 @@ pub async fn submission_loop(
                         };
                         let ev = Event::new(sub.id.clone(), msg);
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                     }
                     PromptAction::SaveDefault { selection } => {
                         let missing = match &selection {
@@ -1803,7 +1830,7 @@ pub async fn submission_loop(
                         };
                         let ev = Event::new(sub.id.clone(), msg);
                         let _ = turn_tx.send(ev.clone()).await;
-                        fan_out_session(&session_subs, &ev);
+                        fan_out_session(&session_subs, &session_seq, &ev);
                     }
                 }
             }
@@ -1844,7 +1871,7 @@ pub async fn submission_loop(
                     }),
                 );
                 let _ = turn_tx.send(ev.clone()).await;
-                fan_out_session(&session_subs, &ev);
+                fan_out_session(&session_subs, &session_seq, &ev);
             }
             // F01:`Op::QueryGuardStats` 的引擎端 —— prompt_guard 裁决统计
             // 快照。统计实例挂在 ToolRegistry(定义侧)与 ToolExecutionQueue
@@ -1865,7 +1892,7 @@ pub async fn submission_loop(
                     }),
                 );
                 let _ = turn_tx.send(ev.clone()).await;
-                fan_out_session(&session_subs, &ev);
+                fan_out_session(&session_subs, &session_seq, &ev);
             }
             // v1.3 SDK:`RegisterTools` / `ToolExecutionResponse` 是 serve
             // 模式的**进程内控制 Op**,由 `zhuye serve` 的 stdin 循环就
@@ -1949,10 +1976,26 @@ fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-fn fan_out_session(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {
+/// v1.12:会话扇出序号 —— 本 loop 所有经会话扇出出口投递的事件在此统一
+/// 赋号(per-session 单调,从 1 起)。客户端据此做缺口检测:收到
+/// `seq > last + 1` 即丢过事件,应走 replay 链路重同步。注意 per-turn
+/// 专属流(graph 节点直发 turn channel,`seq = 0`)不参与缺口判定。
+pub(crate) type SessionSeq = std::sync::atomic::AtomicU64;
+
+/// 会话扇出序号赋号 + stamp。
+fn stamp_session_seq(seq: &SessionSeq, ev: &Event) -> Event {
+    let seq_no = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    Event {
+        seq: seq_no,
+        ..ev.clone()
+    }
+}
+
+fn fan_out_session(subs: &Mutex<Vec<mpsc::Sender<Event>>>, seq: &SessionSeq, ev: &Event) {
+    let stamped = stamp_session_seq(seq, ev);
     let guard = subs.lock();
     for tx in guard.iter() {
-        let _ = tx.try_send(ev.clone());
+        let _ = tx.try_send(stamped.clone());
     }
 }
 
@@ -1968,10 +2011,15 @@ fn fan_out_session(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {
 /// (token_count / delta)继续走 [`fan_out_session`] 的 fire-and-forget,
 /// 避免慢消费者反向阻塞图推进。接收端已关闭时 `send` 立即返回 Err,
 /// 不会因订阅者退出而悬挂。
-async fn fan_out_session_reliable(subs: &Mutex<Vec<mpsc::Sender<Event>>>, ev: &Event) {
+async fn fan_out_session_reliable(
+    subs: &Mutex<Vec<mpsc::Sender<Event>>>,
+    seq: &SessionSeq,
+    ev: &Event,
+) {
+    let stamped = stamp_session_seq(seq, ev);
     let senders = subs.lock().clone();
     for tx in senders {
-        let payload = ev.clone();
+        let payload = stamped.clone();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(payload)).await;
     }
 }
@@ -2005,6 +2053,7 @@ fn apply_permission_mode_change(
     cfg: &AgentConfig,
     to: PermissionMode,
     session_subs: &Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
     turn_subs: &Arc<Mutex<HashMap<String, mpsc::Sender<Event>>>>,
     meta_written: bool,
 ) {
@@ -2017,7 +2066,7 @@ fn apply_permission_mode_change(
         zhuye_protocol::EVENT_ID_NONE,
         EventMsg::PermissionModeChanged(PermissionModeChangedEvent { from, to }),
     );
-    fan_out_session(session_subs, &ev);
+    fan_out_session(session_subs, &session_seq, &ev);
     let guard = turn_subs.lock();
     for tx in guard.values() {
         let _ = tx.try_send(ev.clone());
@@ -2073,6 +2122,7 @@ async fn apply_plan_approval_choice(
     cfg: &AgentConfig,
     sub_id: &str,
     session_subs: &Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
 ) {
     use zhuye_protocol::PlanApprovalChoice as C;
     match choice {
@@ -2099,6 +2149,7 @@ async fn apply_plan_approval_choice(
                 if matches!(direction, PlanDirection::Exit) {
                     fan_out_session_reliable(
                         session_subs,
+                        &session_seq,
                         &Event::new(
                             sub_id,
                             EventMsg::PlanApproved(PlanApprovedEvent { plan_id }),
@@ -2128,7 +2179,7 @@ async fn apply_plan_approval_choice(
                 }),
             );
             // 关键回执:丢失会让客户端权限状态漂移,必须可靠投递。
-            fan_out_session_reliable(session_subs, &ev).await;
+            fan_out_session_reliable(session_subs, &session_seq, &ev).await;
             // Exit 方向(ExitPlanMode 审批)补发 `PlanApproved`:TUI 的
             // plan_approval 提示条不乐观关闭,靠此事件「关闭提示条 + 推
             // ✓ Plan approved 确认行」同帧完成。协议里该事件早已定义
@@ -2136,6 +2187,7 @@ async fn apply_plan_approval_choice(
             if matches!(direction, PlanDirection::Exit) {
                 fan_out_session_reliable(
                     session_subs,
+                    &session_seq,
                     &Event::new(
                         sub_id,
                         EventMsg::PlanApproved(PlanApprovedEvent { plan_id }),
@@ -2172,7 +2224,7 @@ async fn apply_plan_approval_choice(
                     }),
                 );
                 // 审批拒绝回执同样关键:丢失会让 TUI 的 plan modal 挂死。
-                fan_out_session_reliable(session_subs, &ev).await;
+                fan_out_session_reliable(session_subs, &session_seq, &ev).await;
             }
             PlanDirection::Enter => {
                 tracing::info!(
@@ -2204,6 +2256,7 @@ fn spawn_plan_approval_waiter(
     cfg: AgentConfig,
     sub_id: String,
     session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
 ) {
     tokio::spawn(async move {
         let choice = match rx.await {
@@ -2223,6 +2276,7 @@ fn spawn_plan_approval_waiter(
             &cfg,
             &sub_id,
             &session_subs,
+            Arc::clone(&session_seq),
         )
         .await;
     });
@@ -2238,6 +2292,7 @@ fn spawn_plan_enter_waiter(
     cfg: AgentConfig,
     sub_id: String,
     session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
 ) {
     tokio::spawn(async move {
         let choice = match rx.await {
@@ -2257,6 +2312,7 @@ fn spawn_plan_enter_waiter(
             &cfg,
             &sub_id,
             &session_subs,
+            Arc::clone(&session_seq),
         )
         .await;
     });
@@ -2279,6 +2335,7 @@ fn spawn_plan_enter_waiter(
 pub(crate) async fn dispatch_plan_request(
     gate: &Arc<PlanApprovalGate>,
     session_subs: &Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
     turn_tx: mpsc::Sender<Event>,
     sub_id: String,
     cfg: AgentConfig,
@@ -2286,7 +2343,8 @@ pub(crate) async fn dispatch_plan_request(
     meta_written: bool,
 ) {
     let plan_id = PlanId::new();
-    let rx = gate.register(plan_id);
+    // v1.12:带摘要注册 —— 挂起交互查询面(plan 类)可见规划目标。
+    let rx = gate.register_with_summary(plan_id, task.clone());
     // v1.x:把 PlanRequest 落进 session JSONL,让 resume / export 能还原 plan 起点。
     // v1.x 修复:SessionMeta 未落盘时跳过(与 apply_permission_mode_change 同理
     // —— 首行必须是 SessionMeta,否则 rollout 索引丢弃整个会话)。
@@ -2319,7 +2377,14 @@ pub(crate) async fn dispatch_plan_request(
         return;
     }
     tracing::info!(plan_id = %plan_id, %task, "plan request emitted");
-    spawn_plan_enter_waiter(rx, plan_id, cfg, sub_id, session_subs.clone());
+    spawn_plan_enter_waiter(
+        rx,
+        plan_id,
+        cfg,
+        sub_id,
+        session_subs.clone(),
+        Arc::clone(&session_seq),
+    );
 }
 
 /// v1.x Plan mode:LLM / slash 退出 Plan mode 的统一入口。
@@ -2332,6 +2397,7 @@ pub(crate) async fn dispatch_plan_request(
 pub(crate) async fn dispatch_plan_ready(
     gate: &Arc<PlanApprovalGate>,
     session_subs: &Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
     turn_tx: mpsc::Sender<Event>,
     sub_id: String,
     cfg: AgentConfig,
@@ -2339,7 +2405,8 @@ pub(crate) async fn dispatch_plan_ready(
     meta_written: bool,
 ) {
     let plan_id = PlanId::new();
-    let rx = gate.register(plan_id);
+    // v1.12:带摘要注册(取 plan 预览,截断交给 gate 侧 registry 摘要约定)。
+    let rx = gate.register_with_summary(plan_id, markdown.chars().take(120).collect::<String>());
     // 把 plan 落盘成持久产物(`<workspace>/.zhuye/plan/<plan_id>.md`)。
     // best-effort:失败返回 None,不阻断下面的 PlanReady 发送。
     let plan_path = persist_plan_markdown(&cfg.current_workspace(), plan_id, &markdown);
@@ -2381,7 +2448,14 @@ pub(crate) async fn dispatch_plan_ready(
         markdown_chars = markdown.len(),
         "plan ready emitted"
     );
-    spawn_plan_approval_waiter(rx, plan_id, cfg, sub_id, session_subs.clone());
+    spawn_plan_approval_waiter(
+        rx,
+        plan_id,
+        cfg,
+        sub_id,
+        session_subs.clone(),
+        Arc::clone(&session_seq),
+    );
 }
 
 // ── v1.x Plan mode:tool_exec 专用阻塞版 dispatch ────────────────────
@@ -2404,6 +2478,7 @@ pub(crate) async fn dispatch_plan_ready(
 pub(crate) async fn dispatch_plan_ready_blocking(
     gate: &Arc<PlanApprovalGate>,
     session_subs: &Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
     turn_tx: mpsc::Sender<Event>,
     sub_id: String,
     cfg: AgentConfig,
@@ -2411,7 +2486,8 @@ pub(crate) async fn dispatch_plan_ready_blocking(
     turn_cancel: tokio_util::sync::CancellationToken,
 ) -> Option<zhuye_protocol::PlanApprovalChoice> {
     let plan_id = PlanId::new();
-    let rx = gate.register(plan_id);
+    // v1.12:带摘要注册(同 spawn 版,挂起交互查询面可见 plan 预览)。
+    let rx = gate.register_with_summary(plan_id, markdown.chars().take(120).collect::<String>());
     // plan 落盘(与 spawn 版一致,best-effort;失败降级为 None path)。
     let plan_path = persist_plan_markdown(&cfg.current_workspace(), plan_id, &markdown);
     let ready_at = chrono::Utc::now();
@@ -2457,7 +2533,7 @@ pub(crate) async fn dispatch_plan_ready_blocking(
             Ok(choice) => {
                 apply_plan_approval_choice(
                     choice, plan_id, PlanDirection::Exit,
-                    &cfg, &sub_id, session_subs,
+                    &cfg, &sub_id, session_subs, session_seq.clone(),
                 ).await;
                 Some(choice)
             }
@@ -2485,6 +2561,7 @@ pub(crate) async fn dispatch_plan_ready_blocking(
 pub(crate) async fn dispatch_plan_request_blocking(
     gate: &Arc<PlanApprovalGate>,
     session_subs: &Arc<Mutex<Vec<mpsc::Sender<Event>>>>,
+    session_seq: Arc<SessionSeq>,
     turn_tx: mpsc::Sender<Event>,
     sub_id: String,
     cfg: AgentConfig,
@@ -2492,7 +2569,8 @@ pub(crate) async fn dispatch_plan_request_blocking(
     turn_cancel: tokio_util::sync::CancellationToken,
 ) -> Option<zhuye_protocol::PlanApprovalChoice> {
     let plan_id = PlanId::new();
-    let rx = gate.register(plan_id);
+    // v1.12:带摘要注册(同 spawn 版)。
+    let rx = gate.register_with_summary(plan_id, task.clone());
     let request_at = chrono::Utc::now();
     persist_rollout_best_effort(&cfg, || RolloutRecord::PlanRequest {
         plan_id,
@@ -2529,7 +2607,7 @@ pub(crate) async fn dispatch_plan_request_blocking(
             Ok(choice) => {
                 apply_plan_approval_choice(
                     choice, plan_id, PlanDirection::Enter,
-                    &cfg, &sub_id, session_subs,
+                    &cfg, &sub_id, session_subs, session_seq.clone(),
                 ).await;
                 Some(choice)
             }
@@ -2896,12 +2974,14 @@ mod tests {
     async fn dispatch_plan_request_emits_plan_request_and_registers_waiter() {
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let cfg = test_cfg();
 
         dispatch_plan_request(
             &gate,
             &session_subs,
+            Arc::clone(&session_seq),
             turn_tx,
             "sub-1".to_string(),
             cfg,
@@ -2930,6 +3010,7 @@ mod tests {
     async fn dispatch_plan_ready_emits_plan_ready_with_real_markdown() {
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let cfg = test_cfg();
         let markdown = "## Plan\n1. read foo.rs\n2. edit bar.rs".to_string();
@@ -2937,6 +3018,7 @@ mod tests {
         dispatch_plan_ready(
             &gate,
             &session_subs,
+            Arc::clone(&session_seq),
             turn_tx,
             "sub-1".to_string(),
             cfg,
@@ -2973,6 +3055,7 @@ mod tests {
         // 的保证 —— 若此测试失败,说明 agent 图会在 plan 审批前继续跑。
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let cfg = test_cfg();
 
@@ -2982,6 +3065,7 @@ mod tests {
             dispatch_plan_ready_blocking(
                 &gate_for_task,
                 &subs_for_task,
+                session_seq.clone(),
                 turn_tx,
                 "sub-blk".into(),
                 cfg,
@@ -3020,6 +3104,7 @@ mod tests {
         // cfg.cancel.cancel()(Op::Shutdown)必须级联唤醒并返回 None。
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let cfg = test_cfg();
         let cancel = cfg.cancel.clone();
@@ -3031,6 +3116,7 @@ mod tests {
             dispatch_plan_ready_blocking(
                 &gate_for_task,
                 &subs_for_task,
+                session_seq.clone(),
                 turn_tx,
                 "sub-cancel".into(),
                 cfg,
@@ -3061,6 +3147,7 @@ mod tests {
     async fn dispatch_plan_ready_blocking_returns_none_on_turn_interrupt() {
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let cfg = test_cfg();
         let turn_token = cfg.cancel.child_token();
@@ -3072,6 +3159,7 @@ mod tests {
             dispatch_plan_ready_blocking(
                 &gate_for_task,
                 &subs_for_task,
+                session_seq.clone(),
                 turn_tx,
                 "sub-interrupt".into(),
                 cfg,
@@ -3102,6 +3190,7 @@ mod tests {
         let captured = Arc::new(CapturingRecorder::default());
         let cfg = cfg_with_recorder(captured.clone());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // Enter 方向批准 → Plan。
         apply_plan_approval_choice(
@@ -3111,6 +3200,7 @@ mod tests {
             &cfg,
             "sub-appr",
             &session_subs,
+            session_seq.clone(),
         )
         .await;
         assert!(matches!(
@@ -3126,6 +3216,7 @@ mod tests {
             &cfg,
             "sub-appr",
             &session_subs,
+            session_seq.clone(),
         )
         .await;
         yield_for_spawns().await;
@@ -3158,11 +3249,13 @@ mod tests {
         // drop 后 waiter task 静默退出),不应 panic / hang。
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let cfg = test_cfg();
 
         dispatch_plan_request(
             &gate,
             &session_subs,
+            Arc::clone(&session_seq),
             mpsc::channel::<Event>(8).0, // 立即丢弃 rx;tx 唯一引用在 helper 内
             "sub-2".to_string(),
             cfg,
@@ -3227,6 +3320,7 @@ mod tests {
     async fn dispatch_plan_ready_persists_plan_ready_record() {
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let captured = Arc::new(CapturingRecorder::default());
         let cfg = cfg_with_recorder(captured.clone());
@@ -3235,6 +3329,7 @@ mod tests {
         dispatch_plan_ready(
             &gate,
             &session_subs,
+            Arc::clone(&session_seq),
             turn_tx,
             "sub-1".to_string(),
             cfg,
@@ -3262,6 +3357,7 @@ mod tests {
     async fn dispatch_plan_request_persists_plan_request_record() {
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
         let captured = Arc::new(CapturingRecorder::default());
         let cfg = cfg_with_recorder(captured.clone());
@@ -3269,6 +3365,7 @@ mod tests {
         dispatch_plan_request(
             &gate,
             &session_subs,
+            Arc::clone(&session_seq),
             turn_tx,
             "sub-1".to_string(),
             cfg,
@@ -3299,6 +3396,7 @@ mod tests {
     async fn plan_dispatch_skips_persist_before_session_meta() {
         let gate = Arc::new(PlanApprovalGate::new());
         let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let captured = Arc::new(CapturingRecorder::default());
 
         {
@@ -3306,6 +3404,7 @@ mod tests {
             dispatch_plan_request(
                 &gate,
                 &session_subs,
+                session_seq.clone(),
                 turn_tx,
                 "sub-0".to_string(),
                 cfg_with_recorder(captured.clone()),
@@ -3320,6 +3419,7 @@ mod tests {
             dispatch_plan_ready(
                 &gate,
                 &session_subs,
+                session_seq.clone(),
                 turn_tx,
                 "sub-0".to_string(),
                 cfg_with_recorder(captured.clone()),

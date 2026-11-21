@@ -186,6 +186,18 @@ impl AgentThread {
         &self.cfg
     }
 
+    /// v1.12:当前挂起人机交互快照(审批 / 问答 / 询问 / plan,按注册
+    /// 时刻升序)。
+    ///
+    /// 活进程内的**权威查询面**:webview reload / 客户端换绑后据此重新
+    /// 水合审批 UI,不依赖前端内存投影。子代理经共享 `ApprovalContext`
+    /// 写入同一张表;plan 审批由 `PlanApprovalGate` 写入,同样出现在
+    /// 快照里。会话关闭 / 进程重启后快照为空(交互随 waiter 消亡,
+    /// 持久化层只有审计记录 —— 有意不跨进程重发,避免幽灵弹窗)。
+    pub fn pending_interactions(&self) -> Vec<zhuye_protocol::PendingInteraction> {
+        zhuye_tools::approval::pending_snapshot(&self.cfg.approval_context.pending)
+    }
+
     /// 当前目标模式状态快照(权威值)—— `None` = 没有活跃目标。
     ///
     /// GUI 此前只能靠前端投影猜「目标模式是否活跃」(协议无 goal 事件),

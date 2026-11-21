@@ -461,6 +461,9 @@ async fn full_link_turn_lifecycle_with_tool_loop() {
             EventMsg::ToolCallEnd(_) => "tool_call_end",
             EventMsg::AgentMessageDelta(_) => "agent_delta",
             EventMsg::TokenCount(_) => "token_count",
+            // v1.12:additive 变体 —— 每次请求组装后计量(指纹去重),
+            // 子序列断言无需关心,直接忽略。
+            EventMsg::ContextComposition(_) => "context_composition",
             EventMsg::TurnComplete(_) => "turn_complete",
             other => panic!("unexpected event: {other:?}"),
         })

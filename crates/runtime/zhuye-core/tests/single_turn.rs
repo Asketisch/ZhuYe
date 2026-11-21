@@ -183,17 +183,37 @@ async fn single_turn_emits_expected_events() {
         got.push(ev.msg);
     }
 
-    // 事件序列:SessionConfigured, TurnStarted, AgentMessageDelta("hi"),
-    // TokenCount, TurnComplete
+    // 事件序列:SessionConfigured, TurnStarted, ContextComposition(v1.12,
+    // 每次请求组装后计量), AgentMessageDelta("hi"), TokenCount, TurnComplete
+    // —— ContextComposition 是 additive 变体,断言按位置过滤而非定长索引。
     assert!(matches!(got[0], EventMsg::SessionConfigured(_)));
     assert!(matches!(got[1], EventMsg::TurnStarted(_)));
-    match &got[2] {
-        EventMsg::AgentMessageDelta(d) => assert_eq!(d.delta, "hi"),
-        other => panic!("expected AgentMessageDelta, got {other:?}"),
-    }
-    assert!(matches!(got[3], EventMsg::TokenCount(_)));
-    let last = got.last().unwrap();
-    assert!(matches!(last, EventMsg::TurnComplete(_)));
+    let delta = got
+        .iter()
+        .find_map(|m| match m {
+            EventMsg::AgentMessageDelta(d) => Some(d),
+            _ => None,
+        })
+        .expect("must contain AgentMessageDelta");
+    assert_eq!(delta.delta, "hi");
+    // v1.12:组成快照在 delta 前到达,且六类齐全。
+    let composition = got
+        .iter()
+        .find_map(|m| match m {
+            EventMsg::ContextComposition(c) => Some(c),
+            _ => None,
+        })
+        .expect("must contain ContextComposition");
+    assert_eq!(composition.categories.len(), 6);
+    assert!(
+        got.iter()
+            .position(|m| matches!(m, EventMsg::ContextComposition(_)))
+            < got
+                .iter()
+                .position(|m| matches!(m, EventMsg::AgentMessageDelta(_))),
+        "composition 必须先于 delta(请求组装后即计量)"
+    );
+    assert!(matches!(got.last(), Some(EventMsg::TurnComplete(_))));
 }
 
 #[tokio::test]

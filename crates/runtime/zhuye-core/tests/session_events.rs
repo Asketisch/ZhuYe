@@ -273,3 +273,79 @@ async fn session_configured_reports_preallocated_session_id() {
         other => panic!("expected SessionConfigured, got {other:?}"),
     }
 }
+
+// ── v1.12:会话扇出序号(Event.seq)+ 挂起交互查询 ────────────────────
+
+/// 会话扇出出口统一赋号:session 流上所有带 seq 的事件严格按 1,2,3…
+/// 单调递增(同 loop 内无缺口);per-turn 专属流事件 seq = 0,不参与判定。
+#[tokio::test]
+async fn session_stream_events_have_monotonic_seq() {
+    let registry = Arc::new(ModelRegistry::new());
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: Arc::new(StubClient::new(vec![
+                    ChatEvent::MessageStart {
+                        id: "m1".into(),
+                        model: "stub-1".into(),
+                    },
+                    ChatEvent::ContentDelta("hi".into()),
+                    ChatEvent::MessageStop,
+                ])),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let thread = build_thread(registry);
+
+    let mut session_rx = thread.subscribe_session();
+    let _handle = thread.submit(user_input_sub("s-seq", "hi")).await;
+    // 首条提交触发 SessionConfigured,Shutdown 后再收终态。
+    let _ = thread.submit(shutdown_sub("s-seq-shut")).await;
+
+    let mut last_seq = 0u64;
+    let mut stamped_seen = 0usize;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        match timeout(Duration::from_millis(300), session_rx.recv()).await {
+            Ok(Some(ev)) => {
+                if ev.seq > 0 {
+                    assert_eq!(
+                        ev.seq,
+                        last_seq + 1,
+                        "session 流 seq 必须严格 +1 单调,got {last_seq} → {}",
+                        ev.seq
+                    );
+                    last_seq = ev.seq;
+                    stamped_seen += 1;
+                } else {
+                    panic!("session 流事件不允许 seq = 0(必须由扇出出口赋号)");
+                }
+                if matches!(ev.msg, EventMsg::ShutdownComplete) {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    assert!(
+        stamped_seen >= 2,
+        "至少应收到 SessionConfigured 与 ShutdownComplete 两条赋号事件,实际 {stamped_seen}"
+    );
+}
+
+/// 挂起交互查询面:注册表随 gate 注册而可见、随进程存活而权威。
+/// 本测试验证空会话快照为空(不依赖审批流程;注册→可见的完整闭环由
+/// zhuye-tools 的 approval 测试覆盖)。
+#[tokio::test]
+async fn pending_interactions_empty_on_fresh_thread() {
+    let registry = Arc::new(ModelRegistry::new());
+    let thread = build_thread(registry);
+    assert!(
+        thread.pending_interactions().is_empty(),
+        "新会话必须无挂起交互"
+    );
+}

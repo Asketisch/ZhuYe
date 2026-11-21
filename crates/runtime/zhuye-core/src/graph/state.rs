@@ -107,6 +107,11 @@ pub struct AgentState {
     /// M4:临时提醒文本(以带 `<system-reminder>` 标签的 `User` 消息
     /// 渲染)。由 `pre_loop` 设置。
     pub ephemeral_text: String,
+    /// v1.12:上次发出的 ContextComposition 指纹(六类估算分解的哈希)。
+    /// `model_call` 每次组装请求后计量一次,与上次指纹相同则**省略不发**
+    /// (组成无变化时避免高频重复事件)。每 turn 经 `AgentState::default`
+    /// 重置。
+    pub composition_fingerprint: Option<u64>,
     /// M5:本会话内 compactor 最近一次产出的 LLM 摘要(若有)。下一次
     /// compaction 时喂给 `summarize_recent`,让 LLM 能做增量更新,
     /// 而不是从头重新总结整个对话。
