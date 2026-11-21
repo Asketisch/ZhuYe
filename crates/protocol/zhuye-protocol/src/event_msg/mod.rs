@@ -18,6 +18,7 @@ mod approval;
 mod collab;
 mod compaction;
 mod config;
+mod interaction;
 mod lsp;
 mod mcp;
 mod plan;
@@ -29,7 +30,8 @@ mod tool;
 mod turn;
 
 pub use agent::{
-    AgentMessage, AgentMessageDelta, AgentMessageResetEvent, ThinkingDelta, ThinkingDeltaKind,
+    AgentMessage, AgentMessageDelta, AgentMessageResetEvent, CompositionCategory,
+    CompositionCategoryId, ContextCompositionEvent, ThinkingDelta, ThinkingDeltaKind,
     TokenCountEvent,
 };
 pub use approval::{ApprovalKind, ApprovalRequestEvent, PermissionBubbleEvent};
@@ -40,6 +42,9 @@ pub use compaction::{
 pub use config::{
     ConfigReloadedEvent, ExtensionsRescannedEvent, GuardStatsEvent, PromptListEvent,
     PromptSwitchedEvent,
+};
+pub use interaction::{
+    InteractionKind, InteractionOutcome, InteractionResolvedEvent, PendingInteraction,
 };
 pub use lsp::{LspServerFailedEvent, LspServerStartedEvent};
 pub use mcp::{
@@ -108,6 +113,8 @@ pub enum EventMsg {
     ThinkingDelta(ThinkingDelta),
     /// Token 用量快照(通常在 turn 结束时 emit)。
     TokenCount(TokenCountEvent),
+    /// v1.12:上下文组成快照(六类估算分解;组成无变化时省略不发)。
+    ContextComposition(ContextCompositionEvent),
 
     // 工具(4;v1.4 A3 新增 ToolCallOutputDelta / v1.5 新增 ToolCallArgsDelta)
     /// 工具调用开始(模型开始生成 tool_use 时即发出)。
@@ -142,6 +149,12 @@ pub enum EventMsg {
     /// `Op::ToolApproval { id, decision }` 或 `Op::HookApproval { id, decision }`
     /// 回应。
     ApprovalRequest(ApprovalRequestEvent),
+
+    // 人机交互(1;v1.12)—— 挂起交互的了结通知
+    /// 一个挂起交互(审批 / 问答 / 询问 / plan)已按任意路径了结。
+    /// 与请求事件按 `request_id` 配对;客户端收到后**无条件**清理本地
+    /// 挂起态(TTL 过期 / 取消 / 中断等路径不会再有对应回执事件)。
+    InteractionResolved(InteractionResolvedEvent),
 
     // AskUserQuestion (1; v1.1.0) — LLM 主动发起结构化询问,多题多选项。
     // 客户端通过 `Op::AskUserQuestionResponse { id, answers }` 回执。
@@ -284,6 +297,7 @@ impl EventMsg {
             EventMsg::AgentMessageReset(_) => "agent_message_reset",
             EventMsg::ThinkingDelta(_) => "thinking_delta",
             EventMsg::TokenCount(_) => "token_count",
+            EventMsg::ContextComposition(_) => "context_composition",
             EventMsg::ToolCallBegin(_) => "tool_call_begin",
             EventMsg::ToolCallArgsDelta(_) => "tool_call_args_delta",
             EventMsg::ToolCallEnd(_) => "tool_call_end",
@@ -295,6 +309,7 @@ impl EventMsg {
             EventMsg::SubagentStatus(_) => "subagent_status",
             EventMsg::ToolExecutionRequest(_) => "tool_execution_request",
             EventMsg::ApprovalRequest(_) => "approval_request",
+            EventMsg::InteractionResolved(_) => "interaction_resolved",
             EventMsg::AskUserQuestion(_) => "ask_user_question",
             EventMsg::AskUserInput(_) => "ask_user",
             EventMsg::PermissionBubble(_) => "permission_bubble",
@@ -419,6 +434,26 @@ mod tests {
                 total_tokens: 0,
                 cost_usd: None,
                 ..Default::default()
+            }),
+            // v1.12:上下文组成快照 + 交互了结通知(additive 变体的判别锁定)。
+            EventMsg::ContextComposition(ContextCompositionEvent {
+                categories: vec![
+                    CompositionCategory {
+                        id: CompositionCategoryId::SystemPrompt,
+                        tokens: 1200,
+                    },
+                    CompositionCategory {
+                        id: CompositionCategoryId::Messages,
+                        tokens: 3400,
+                    },
+                ],
+            }),
+            EventMsg::InteractionResolved(InteractionResolvedEvent {
+                request_id: "r1".into(),
+                kind: InteractionKind::Tool {
+                    tool_name: "bash".into(),
+                },
+                outcome: InteractionOutcome::Expired,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: TurnId::new(),

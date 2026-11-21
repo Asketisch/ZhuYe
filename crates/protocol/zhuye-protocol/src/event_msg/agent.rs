@@ -108,3 +108,53 @@ pub struct TokenCountEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
+
+/// v1.12:上下文组成类别的稳定 id。六类覆盖「这个 turn 的 input 上下文
+/// 由什么构成」;对齐 ZCode 的 context composition 形态(其 11 细类在此
+/// 归并为 6 粗类:提示词库主体 / 记忆注入 / 技能与临时层 / 内置工具
+/// schema / 外部(MCP·LSP·插件)工具 schema / 对话消息)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositionCategoryId {
+    /// 系统提示词主体(提示词库 core 段 + agent 定义 + mode 段,不含
+    /// 记忆注入与 checklist)。
+    #[default]
+    SystemPrompt,
+    /// 记忆检索注入(pre_loop 拼进 system prompt 的相关记忆文本)。
+    Memory,
+    /// 技能与临时层(`<system-reminder>` 块:技能目录 + 工具目录文本 +
+    /// 迭代提醒 + mode hint)。
+    Skills,
+    /// 内置工具 JSON schema(`ToolSource::Builtin` 的工具参数定义)。
+    ToolSchemas,
+    /// 外部工具 JSON schema(MCP / LSP / 插件 / 远程注册,即非 Builtin 源)。
+    McpTools,
+    /// 对话消息历史(含内联 system-reminder 注入与压缩摘要)。
+    Messages,
+    /// 前向兼容:未知类别(旧 consumer 容错,仅反序列化路径可出现)。
+    #[serde(other)]
+    Unknown,
+}
+
+/// 一个类别的估算 token 量。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionCategory {
+    /// 类别 id。
+    pub id: CompositionCategoryId,
+    /// 估算 token 数。**估算值,非精确计量**:复用 compact 的启发式 /
+    /// tiktoken 估计器,各类别独立计量,不保证求和等于 provider 上报的
+    /// `input_tokens`。
+    pub tokens: u32,
+}
+
+/// v1.12:上下文组成快照(additive 新变体)。
+///
+/// 每次 LLM 请求组装后计量一次;组成与上次相比无变化时**省略不发**
+/// (按类别序列指纹去重),避免高频 delta 流淹没事件通道。客户端据此
+/// 渲染「上下文容量分解」条形(系统提示词 / 记忆 / 技能 / 工具 schema /
+/// 外部工具 / 消息各占多少)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextCompositionEvent {
+    /// 六类分解(顺序固定为 id 枚举声明序,客户端按 id 取值)。
+    pub categories: Vec<CompositionCategory>,
+}
