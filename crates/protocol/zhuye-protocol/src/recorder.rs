@@ -93,6 +93,10 @@ pub struct SessionInfo {
     /// 且不进入任何工作区视图。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// v1.12:子代理会话的父会话 ID;`None` = 主会话。桌面侧栏据它把
+    /// 子会话挂在父会话下缩进展示,不进顶层列表。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<ThreadId>,
 }
 
 /// 一条在线程 JSONL rollout 中持久化的事件。
@@ -123,6 +127,11 @@ pub enum RolloutRecord {
         /// 旧 JSONL 反序列化为 `None`(#[serde(default)])。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
+        /// v1.12:子代理会话的父会话 ID。`None` = 主会话(默认)。
+        /// 子代理落盘后,列表/侧栏据它把子会话挂在父会话下缩进展示,
+        /// 不作为独立顶层会话(避免一次对话产生多个顶层 session)。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_session_id: Option<ThreadId>,
     },
     /// 一条持久化对话回合。`content` 是对 JSON 不透明的负载,让 recorder
     /// 既能携带 `ContentBlock`,也能携带纯文本或工具 payload。
@@ -165,6 +174,11 @@ pub enum RolloutRecord {
         parent_session_id: ThreadId,
         /// 分支名,当前取子代理角色名(`SubAgentSpec.role`,如 `"explorer"`)。
         branch_name: String,
+        /// v1.12:子会话 ID(spawn 时子代理落独立 JSONL 后回填)。
+        /// `None` = 旧记录 / 子代理未落盘(内存即丢)。桌面侧栏据它把
+        /// 子会话挂在父会话下缩进展示。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        child_session_id: Option<ThreadId>,
     },
     /// v1.2 P0-3:`CheckpointTool` 在 `git_auto_commit` 后发出,记录工作区
     /// 的 git 快照 sha。`rewind` 工具据此把工作区 `git reset --hard` 回该
@@ -424,6 +438,7 @@ impl RolloutRecord {
             model: model.into(),
             started_at: Utc::now(),
             workspace: None,
+            parent_session_id: None,
         }
     }
 }
@@ -646,6 +661,7 @@ mod tests {
         let r = RolloutRecord::Fork {
             parent_session_id: parent,
             branch_name: "explorer-branch".into(),
+            child_session_id: None,
         };
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains(r#""type":"fork""#));

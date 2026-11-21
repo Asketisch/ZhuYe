@@ -406,6 +406,7 @@ pub async fn submission_loop(
                             .or_else(|| cfg.current_workspace().to_str().map(|s| s.to_string()));
                         let _ = rec
                             .record(RolloutRecord::SessionMeta {
+                                parent_session_id: None,
                                 session_id,
                                 model: cfg.current_model(),
                                 started_at: chrono::Utc::now(),

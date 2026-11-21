@@ -90,6 +90,7 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
             RolloutRecord::SessionMeta {
                 session_id,
                 model,
+                parent_session_id: _,
                 started_at,
                 workspace: _,
             } => {
@@ -134,6 +135,7 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
             RolloutRecord::Fork {
                 parent_session_id,
                 branch_name,
+                child_session_id: _,
             } => {
                 push_header(&mut out, "Fork");
                 out.push_str(&format!("- parent_session_id: {parent_session_id}\n"));
@@ -436,6 +438,7 @@ pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
             RolloutRecord::Fork {
                 parent_session_id,
                 branch_name,
+                child_session_id: _,
             } => {
                 out.push_str(&format!(
                     "\n*forked from `{parent_session_id}` as `{branch_name}`*\n\n"
@@ -504,7 +507,7 @@ pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
             | RolloutRecord::PlanRejected { .. }
             | RolloutRecord::PermissionModeChanged { .. } => {}
             // v1.12:人机交互审计,同上不渲染。
-            | RolloutRecord::InteractionRequest { .. }
+            RolloutRecord::InteractionRequest { .. }
             | RolloutRecord::InteractionResolution { .. } => {}
             RolloutRecord::PromptSelectionChanged { .. } => {}
         }
@@ -703,6 +706,7 @@ mod tests {
                 session_id: id,
                 model: "openai/gpt-4o".into(),
                 started_at: Utc::now(),
+                parent_session_id: None,
                 workspace: None,
             },
             message(MessageRole::User, "hello"),
@@ -843,6 +847,7 @@ mod tests {
                 session_id: sid,
                 model: "openai/gpt-4o".into(),
                 started_at: Utc::now(),
+                parent_session_id: None,
                 workspace: None,
             })
             .unwrap(),
@@ -894,6 +899,7 @@ mod tests {
             RolloutRecord::SessionMeta {
                 session_id: sid,
                 model: "anthropic/claude-3-5-sonnet-latest".into(),
+                parent_session_id: None,
                 started_at: Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap(),
                 workspace: None,
             },
@@ -939,6 +945,7 @@ mod tests {
             RolloutRecord::SessionMeta {
                 session_id: sid,
                 model: "openai/gpt-4o".into(),
+                parent_session_id: None,
                 started_at: Utc.with_ymd_and_hms(2026, 6, 18, 13, 0, 0).unwrap(),
                 workspace: None,
             },
@@ -955,6 +962,7 @@ mod tests {
             RolloutRecord::Fork {
                 parent_session_id: parent,
                 branch_name: "explorer".into(),
+                child_session_id: None,
             },
         ];
         let md = to_markdown(&recs);
@@ -992,6 +1000,7 @@ mod tests {
                 session_id: ThreadId::new(),
                 model: "m".into(),
                 started_at: Utc::now(),
+                parent_session_id: None,
                 workspace: None,
             },
             RolloutRecord::DiscussionTranscript {
@@ -1029,6 +1038,7 @@ mod tests {
             RolloutRecord::SessionMeta {
                 session_id: ThreadId::new(),
                 model: "m".into(),
+                parent_session_id: None,
                 started_at: Utc.with_ymd_and_hms(2026, 8, 5, 10, 0, 0).unwrap(),
                 workspace: None,
             },
@@ -1100,6 +1110,7 @@ mod tests {
                 session_id: ThreadId::new(),
                 model: "m".into(),
                 started_at: Utc::now(),
+                parent_session_id: None,
                 workspace: None,
             },
             RolloutRecord::message(TurnId::new(), MessageRole::User, serde_json::json!(big)),

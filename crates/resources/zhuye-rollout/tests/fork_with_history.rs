@@ -51,6 +51,7 @@ fn write_parent(
         f,
         "{}",
         serde_json::to_string(&RolloutRecord::SessionMeta {
+            parent_session_id: None,
             session_id: sid,
             model: model.to_string(),
             started_at: Utc::now(),
@@ -188,6 +189,7 @@ fn fork_with_history_full_copy_preserves_all_records() {
         Some(RolloutRecord::Fork {
             parent_session_id,
             branch_name,
+            child_session_id: _,
         }) => {
             assert_eq!(*parent_session_id, parent);
             assert_eq!(branch_name, "fix-branch");

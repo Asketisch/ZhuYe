@@ -32,6 +32,7 @@ pub fn imported_to_records(session: &ImportedSession, opts: &ConvertOptions) -> 
 
     // 首行:会话元数据(thread_id 已在 parse 层定型)。
     records.push(RolloutRecord::SessionMeta {
+        parent_session_id: None,
         session_id: session.thread_id,
         model: session.model.clone(),
         started_at: session.started_at,

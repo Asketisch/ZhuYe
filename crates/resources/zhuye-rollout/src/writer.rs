@@ -186,6 +186,7 @@ impl JsonlRolloutWriter {
                 session_id,
                 model: meta.model,
                 started_at: meta.started_at,
+                parent_session_id: None,
                 workspace: meta.workspace,
             })?;
             if let Some(w) = g.writer.as_mut() {

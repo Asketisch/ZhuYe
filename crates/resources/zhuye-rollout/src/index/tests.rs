@@ -96,6 +96,7 @@ fn list_sessions_derives_title_from_first_user_message() {
             session_id: sid,
             model: "m".into(),
             started_at: chrono::Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -133,6 +134,7 @@ fn list_sessions_no_title_when_no_user_message() {
         session_id: sid,
         model: "m".into(),
         started_at: chrono::Utc::now(),
+        parent_session_id: None,
         workspace: None,
     })
     .unwrap();
@@ -158,6 +160,7 @@ fn list_sessions_derives_title_from_block_array_content() {
             session_id: sid,
             model: "m".into(),
             started_at: chrono::Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -284,6 +287,7 @@ fn recovers_meta_within_prefix_window_when_leading_mode_change() {
         session_id: sid,
         model: "openai/gpt-4o".into(),
         started_at: Utc::now(),
+        parent_session_id: None,
         workspace: Some("/tmp/proj".into()),
     })
     .unwrap();
@@ -333,6 +337,7 @@ fn prefix_window_scan_gives_up_out_of_window() {
             session_id: sid,
             model: "m".into(),
             started_at: Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -364,6 +369,7 @@ fn recovers_meta_from_rotated_sibling() {
         session_id: sid,
         model: "openai/gpt-4o".into(),
         started_at: started,
+        parent_session_id: None,
         workspace: None,
     })
     .unwrap();
@@ -420,6 +426,7 @@ fn list_sessions_with_discussion_filters_by_id() {
             session_id: sid_a,
             model: "openai/gpt-4o".into(),
             started_at: Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -443,6 +450,7 @@ fn list_sessions_with_discussion_filters_by_id() {
             session_id: sid_b,
             model: "anthropic/claude".into(),
             started_at: Utc.with_ymd_and_hms(2026, 6, 18, 13, 0, 0).unwrap(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -496,6 +504,7 @@ fn newest_first_ordering() {
             session_id: sid_old,
             model: "m".into(),
             started_at: older,
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -507,6 +516,7 @@ fn newest_first_ordering() {
             session_id: sid_new,
             model: "m".into(),
             started_at: newer,
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -544,6 +554,7 @@ fn list_sessions_in_workspace_filters_by_exact_match() {
                 session_id: **sid,
                 model: "m".into(),
                 started_at: chrono::Utc::now(),
+                parent_session_id: None,
                 workspace: workspace.clone(),
             })
             .unwrap(),
@@ -588,6 +599,7 @@ fn prepare_n_sessions(n: usize) -> (tempfile::TempDir, Vec<ThreadId>) {
                 session_id: sid,
                 model: "m".into(),
                 started_at: started,
+                parent_session_id: None,
                 workspace: None,
             })
             .unwrap(),
@@ -702,6 +714,7 @@ fn find_session_path_prefers_active_over_rotated() {
         session_id: id,
         model: "m".into(),
         started_at: chrono::Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap(),
+        parent_session_id: None,
         workspace: None,
     };
     for n in 1..=3 {
@@ -729,6 +742,7 @@ fn find_session_path_falls_back_to_rotated() {
         session_id: id,
         model: "m".into(),
         started_at: chrono::Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap(),
+        parent_session_id: None,
         workspace: None,
     };
     std::fs::write(&rotated, serde_json::to_string(&meta).unwrap()).unwrap();
@@ -855,6 +869,7 @@ fn write_fork_record_appends_to_parent() {
             session_id: parent,
             model: "m".into(),
             started_at: started,
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -875,6 +890,7 @@ fn write_fork_record_appends_to_parent() {
         if let Ok(RolloutRecord::Fork {
             parent_session_id,
             branch_name,
+            child_session_id: _,
         }) = serde_json::from_str::<RolloutRecord>(line)
         {
             assert_eq!(parent_session_id, parent);
@@ -1063,6 +1079,7 @@ fn list_sessions_aggregates_token_count_from_records() {
             session_id: sid,
             model: "openai/gpt-4o".into(),
             started_at: chrono::Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -1107,6 +1124,7 @@ fn list_sessions_sums_cost_usd_across_turns() {
             session_id: sid,
             model: "openai/gpt-4o".into(),
             started_at: chrono::Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),
@@ -1148,6 +1166,7 @@ fn list_sessions_token_count_zero_for_old_rollouts() {
             session_id: sid,
             model: "m".into(),
             started_at: chrono::Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap(),

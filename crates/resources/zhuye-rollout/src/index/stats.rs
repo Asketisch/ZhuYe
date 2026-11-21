@@ -388,6 +388,7 @@ mod tests {
             session_id,
             model: model.to_string(),
             started_at: Utc::now(),
+            parent_session_id: None,
             workspace: None,
         })
         .unwrap()

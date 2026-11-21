@@ -25,6 +25,7 @@ async fn roundtrips_all_four_record_types() {
             after_tokens: 0,
         },
         RolloutRecord::Fork {
+            child_session_id: None,
             parent_session_id: sid,
             branch_name: "explorer".into(),
         },
