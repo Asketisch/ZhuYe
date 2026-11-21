@@ -787,6 +787,7 @@ mod tests {
         // turn 类 → user actor。
         let ev = Event {
             id: "x".into(),
+            seq: 0,
             msg: EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: zhuye_protocol::TurnId::new(),
                 user_message_id: None,
@@ -799,6 +800,7 @@ mod tests {
         // tool 类 → system actor。
         let ev = Event {
             id: "x".into(),
+            seq: 0,
             msg: EventMsg::ToolCallBegin(zhuye_protocol::ToolCallBeginEvent {
                 call_id: "c1".into(),
                 tool_name: "bash".into(),
@@ -814,6 +816,7 @@ mod tests {
         // error 类 → Error 等级。
         let ev = Event {
             id: "x".into(),
+            seq: 0,
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: zhuye_protocol::TurnId::new(),
                 usage: TokenUsage::default(),
@@ -826,6 +829,7 @@ mod tests {
         // 未映射变体 → None。
         let ev = Event {
             id: "x".into(),
+            seq: 0,
             msg: EventMsg::AgentMessageDelta(zhuye_protocol::AgentMessageDelta {
                 delta: "x".into(),
             }),
