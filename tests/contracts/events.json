@@ -30,17 +30,29 @@
     "turn_aborted": {
       "type": "turn_aborted",
       "turn_id": "5f8a3c1e-9b2d-4c6a-8e7f-1a2b3c4d5e6f",
-      "reason": { "type": "user_interrupt" }
+      "reason": {
+        "type": "user_interrupt"
+      }
     },
     "turn_rewound": {
       "type": "turn_rewound",
       "to_turn_id": "9c1d2f2e-7a3b-4e8c-b5d6-0f1e2d3c4b5a",
       "truncated_after": 2
     },
-    "submission_closed": { "type": "submission_closed" },
-    "shutdown_complete": { "type": "shutdown_complete" },
-    "agent_message": { "type": "agent_message", "text": "final answer" },
-    "agent_message_delta": { "type": "agent_message_delta", "delta": "partial " },
+    "submission_closed": {
+      "type": "submission_closed"
+    },
+    "shutdown_complete": {
+      "type": "shutdown_complete"
+    },
+    "agent_message": {
+      "type": "agent_message",
+      "text": "final answer"
+    },
+    "agent_message_delta": {
+      "type": "agent_message_delta",
+      "delta": "partial "
+    },
     "agent_message_reset": {
       "type": "agent_message_reset",
       "reason_code": "SSE_PARSE_ERROR",
@@ -64,7 +76,9 @@
       "type": "tool_call_begin",
       "call_id": "c-event-1",
       "tool_name": "bash",
-      "args": { "cmd": "echo hi" }
+      "args": {
+        "cmd": "echo hi"
+      }
     },
     "tool_call_args_delta": {
       "type": "tool_call_args_delta",
@@ -75,7 +89,12 @@
       "type": "tool_call_end",
       "call_id": "c-event-1",
       "output": {
-        "content": [{ "type": "text", "text": "hi" }],
+        "content": [
+          {
+            "type": "text",
+            "text": "hi"
+          }
+        ],
         "is_error": false,
         "metadata": null,
         "elapsed_ms": 42
@@ -93,7 +112,9 @@
       "type": "tool_execution_request",
       "call_id": "c-event-2",
       "tool": "fetch",
-      "args": { "url": "https://example.invalid" }
+      "args": {
+        "url": "https://example.invalid"
+      }
     },
     "subagent_progress": {
       "type": "subagent_progress",
@@ -146,7 +167,13 @@
     "approval_request": {
       "type": "approval_request",
       "request_id": "req-event-1",
-      "kind": { "type": "tool", "tool_name": "bash", "args": { "cmd": "ls" } },
+      "kind": {
+        "type": "tool",
+        "tool_name": "bash",
+        "args": {
+          "cmd": "ls"
+        }
+      },
       "risk": "medium"
     },
     "ask_user_question": {
@@ -157,8 +184,14 @@
           "header": "Approach",
           "question": "Which approach?",
           "options": [
-            { "label": "A", "description": "option a" },
-            { "label": "B", "description": "option b" }
+            {
+              "label": "A",
+              "description": "option a"
+            },
+            {
+              "label": "B",
+              "description": "option b"
+            }
           ],
           "multi_select": false
         }
@@ -188,7 +221,9 @@
       "type": "error",
       "code": "provider_unavailable",
       "message": "provider unreachable",
-      "details": { "attempt": 1 }
+      "details": {
+        "attempt": 1
+      }
     },
     "stream_error": {
       "type": "stream_error",
@@ -197,12 +232,19 @@
       "retry_in_ms": 5000,
       "provider": "openai",
       "credential_label": "main",
-      "tried": [{ "label": "main", "outcome": "rate_limited" }]
+      "tried": [
+        {
+          "label": "main",
+          "outcome": "rate_limited"
+        }
+      ]
     },
     "config_reloaded": {
       "type": "config_reloaded",
       "path": "/tmp/zhuye/config.toml",
-      "sections_changed": ["model"],
+      "sections_changed": [
+        "model"
+      ],
       "at": 1767225600
     },
     "routing": {
@@ -216,7 +258,10 @@
     "collab_started": {
       "type": "collab_started",
       "id": "disc-event-1",
-      "participants": ["a", "b"],
+      "participants": [
+        "a",
+        "b"
+      ],
       "mode": "discussion"
     },
     "collab_message": {
@@ -238,7 +283,11 @@
       "server": "fs",
       "tool_count": 3,
       "transport": "stdio",
-      "tool_names": ["read", "write", "list"]
+      "tool_names": [
+        "read",
+        "write",
+        "list"
+      ]
     },
     "mcp_server_failed": {
       "type": "mcp_server_failed",
@@ -255,8 +304,12 @@
     "lsp_server_started": {
       "type": "lsp_server_started",
       "server": "rust-analyzer",
-      "methods": ["textDocument/hover"],
-      "language_ids": ["rust"]
+      "methods": [
+        "textDocument/hover"
+      ],
+      "language_ids": [
+        "rust"
+      ]
     },
     "lsp_server_failed": {
       "type": "lsp_server_failed",
@@ -321,14 +374,21 @@
     },
     "prompt_list": {
       "type": "prompt_list",
-      "available": ["default", "review"],
+      "available": [
+        "default",
+        "review"
+      ],
       "current_spec": "default",
-      "active_layers": ["builtin"]
+      "active_layers": [
+        "builtin"
+      ]
     },
     "prompt_switched": {
       "type": "prompt_switched",
       "action": "switch",
-      "active_layers": ["review"]
+      "active_layers": [
+        "review"
+      ]
     },
     "extensions_rescanned": {
       "type": "extensions_rescanned",
@@ -342,6 +402,44 @@
       "definitions_reviewed": 2,
       "outputs_blocked": 3,
       "outputs_reviewed": 4
+    },
+    "interaction_resolved": {
+      "type": "interaction_resolved",
+      "request_id": "req-event-77",
+      "kind": {
+        "type": "tool",
+        "tool_name": "bash"
+      },
+      "outcome": "expired"
+    },
+    "context_composition": {
+      "type": "context_composition",
+      "categories": [
+        {
+          "id": "system_prompt",
+          "tokens": 1200
+        },
+        {
+          "id": "memory",
+          "tokens": 300
+        },
+        {
+          "id": "skills",
+          "tokens": 800
+        },
+        {
+          "id": "tool_schemas",
+          "tokens": 2100
+        },
+        {
+          "id": "mcp_tools",
+          "tokens": 900
+        },
+        {
+          "id": "messages",
+          "tokens": 3400
+        }
+      ]
     }
   }
 }

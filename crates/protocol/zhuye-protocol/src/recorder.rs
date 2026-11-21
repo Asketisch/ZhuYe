@@ -319,6 +319,38 @@ pub enum RolloutRecord {
         /// 访问时间(UTC)。
         at: DateTime<Utc>,
     },
+    /// v1.12:一次挂起人机交互(审批 / 问答 / 询问 / plan)的注册审计。
+    /// 由 `ApprovalGate` / `PlanApprovalGate` 在注册 waiter 时写入。
+    /// 审计轨迹,不参与 `resume` 回放 —— 回放**不重发**未决交互:进程
+    /// 重启后原回合已不存在,重发只会造出「无人接听的幽灵弹窗」;活进程
+    /// 内的未决交互由 `AgentThread::pending_interactions()` 查询,持久化
+    /// 面向的是审计与未来跨进程应答。`kind` 是
+    /// [`crate::event_msg::InteractionKind`](snake_case JSON)。
+    InteractionRequest {
+        /// 交互唯一 id(与 `Op::ToolApproval` 等回执配对)。
+        request_id: String,
+        /// 交互类别(snake_case JSON,同 `PendingInteraction.kind`)。
+        kind: crate::event_msg::InteractionKind,
+        /// 人类可读摘要(工具命令预览 / 询问正文截断,长度有界)。
+        summary: String,
+        /// 注册时刻(unix 毫秒)。
+        created_at_ms: u64,
+        /// 预期过期时刻(unix 毫秒);`None` = 未启用 TTL。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at_ms: Option<u64>,
+    },
+    /// v1.12:一次挂起人机交互的了结审计。与 [`RolloutRecord::InteractionRequest`]
+    /// 按 `request_id` 配对;`outcome` 是 [`crate::event_msg::InteractionOutcome`]
+    /// (snake_case,应答 / 过期 / 取消 / 中断 / 通道关闭)。审计轨迹,
+    /// 不参与 `resume` 回放。
+    InteractionResolution {
+        /// 了结的交互 id。
+        request_id: String,
+        /// 了结路径(snake_case JSON)。
+        outcome: crate::event_msg::InteractionOutcome,
+        /// 了结时间(UTC)。
+        at: DateTime<Utc>,
+    },
 }
 
 impl RolloutRecord {
@@ -1130,5 +1162,58 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    // ── v1.12:InteractionRequest / InteractionResolution 变体 serde ──
+
+    #[test]
+    fn rollout_record_interaction_request_serde() {
+        let r = RolloutRecord::InteractionRequest {
+            request_id: "req-42".into(),
+            kind: crate::event_msg::InteractionKind::Tool {
+                tool_name: "bash".into(),
+            },
+            summary: "bash: git status".into(),
+            created_at_ms: 1_700_000_000_000,
+            expires_at_ms: Some(1_700_000_300_000),
+        };
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(j.contains(r#""type":"interaction_request""#), "got: {j}");
+        assert!(j.contains(r#""request_id":"req-42""#), "got: {j}");
+        assert!(j.contains(r#""kind":{"type":"tool""#), "got: {j}");
+        let back: RolloutRecord = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn rollout_record_interaction_request_optional_expiry() {
+        // expires_at_ms = None 必须 round-trip(skip_serializing_if)。
+        let j = r#"{"type":"interaction_request","request_id":"r","kind":{"type":"question"},"summary":"问一句","created_at_ms":1700000000000}"#;
+        let back: RolloutRecord = serde_json::from_str(j).unwrap();
+        match back {
+            RolloutRecord::InteractionRequest {
+                kind,
+                expires_at_ms,
+                ..
+            } => {
+                assert_eq!(kind, crate::event_msg::InteractionKind::Question);
+                assert_eq!(expires_at_ms, None, "缺省必须反序列化为 None");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rollout_record_interaction_resolution_serde() {
+        let r = RolloutRecord::InteractionResolution {
+            request_id: "req-42".into(),
+            outcome: crate::event_msg::InteractionOutcome::Expired,
+            at: Utc::now(),
+        };
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(j.contains(r#""type":"interaction_resolution""#), "got: {j}");
+        assert!(j.contains(r#""outcome":"expired""#), "got: {j}");
+        let back: RolloutRecord = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, r);
     }
 }
