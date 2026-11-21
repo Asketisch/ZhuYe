@@ -401,6 +401,7 @@ pub(crate) fn bootstrap_m5(
     // v1.12:子代理会话落盘 —— SessionMeta 带 parent_session_id,桌面
     // 侧栏据血缘把子会话挂在父会话下(minimax code 形态)。
     factory.set_rollout_base(zhuye_rollout::path::default_base());
+    factory.set_workspace(workspace.to_path_buf());
     // v1.1.0 Phase 6 P0:把 `M4Deps` 里的 subagent registry 注入 factory,
     // 后续 `CallSubAgentTool::execute` 写 + `pre_loop` 读走同一 Arc。
     factory.set_subagent_registry(m4.subagent_registry.clone());

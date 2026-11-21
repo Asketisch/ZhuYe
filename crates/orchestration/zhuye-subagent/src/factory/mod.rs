@@ -77,6 +77,9 @@ pub struct SubAgentFactory {
     cancel: Mutex<CancellationToken>,
     /// 父级 recorder(可选),用于写入 `Fork` 记录 + 创建子 agent JSONL 文件。
     recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>>,
+    /// v1.12:父会话工作区(装配点传入)。子会话 SessionMeta.workspace
+    /// 继承它 —— 否则子会话落"未归属"组,与父会话在侧栏错位。
+    workspace: Mutex<Option<std::path::PathBuf>>,
     /// v1.12:rollout 根目录。`Some` 时子代理 spawn 落**独立 JSONL**
     /// (`<base>/<child_id>.jsonl`,SessionMeta 带 parent_session_id),
     /// 桌面侧栏可把子会话挂在父会话下展示;`None` = 维持旧行为
@@ -173,6 +176,7 @@ impl SubAgentFactory {
             parent_tools,
             role_tools: Mutex::new(HashMap::new()),
             cancel: Mutex::new(cancel),
+            workspace: Mutex::new(None),
             rollout_base: Mutex::new(None),
             recorder,
             _no_parent_m4: (),
@@ -299,6 +303,11 @@ impl SubAgentFactory {
     /// 返回与父会话共享的审批路由状态。
     pub fn approval_context(&self) -> zhuye_tools::ApprovalContext {
         self.approval_context.clone()
+    }
+
+    /// v1.12:设置父会话工作区(子会话 SessionMeta.workspace 继承)。
+    pub fn set_workspace(&self, ws: std::path::PathBuf) {
+        *self.workspace.lock() = Some(ws);
     }
 
     /// v1.12:设置 rollout 根目录 —— 开启子代理会话落盘。装配点(exec
@@ -486,6 +495,7 @@ impl SubAgentFactory {
             // 语义与父级一致(discussion 场景下子代理可能再 spawn)。
             role_tools: Mutex::new(self.role_tools.lock().clone()),
             cancel: Mutex::new(self.cancel.lock().clone()),
+            workspace: Mutex::new(self.workspace.lock().clone()),
             rollout_base: Mutex::new(self.rollout_base.lock().clone()),
             recorder: self.recorder.clone(),
             _no_parent_m4: (),
@@ -552,6 +562,12 @@ impl SubAgentFactory {
         // 子会话挂在父会话下缩进展示(minimax code 形态),不污染顶层列表。
         // 未装配时维持旧行为:内存即丢,只在父 rollout 记 Fork 血缘。
         let child_thread_id = ThreadId::new();
+        // guard 不跨 await:先拷值再进 async 块。
+        let child_workspace = self
+            .workspace
+            .lock()
+            .clone()
+            .map(|p| p.to_string_lossy().to_string());
         let child_recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>> = {
             let base = self.rollout_base.lock().clone();
             base.map(|base| {
@@ -570,7 +586,7 @@ impl SubAgentFactory {
                         .clone()
                         .unwrap_or_else(|| self.default_model.lock().clone()),
                     started_at: chrono::Utc::now(),
-                    workspace: None,
+                    workspace: child_workspace,
                     parent_session_id: Some(self.parent_session_id),
                 })
                 .await;
