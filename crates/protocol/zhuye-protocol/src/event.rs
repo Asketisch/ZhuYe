@@ -68,7 +68,7 @@ mod tests {
         // v1.12:seq 缺省 0(未赋号);with_seq 赋号后 roundtrip 保持。
         let e = Event::new("sub-1", EventMsg::ShutdownComplete);
         assert_eq!(e.seq, 0, "new() 不赋号,seq 必须为 0");
-        let stamped = e.clone().with_seq(7);
+        let stamped = e.with_seq(7);
         assert_eq!(stamped.seq, 7);
         let json = serde_json::to_string(&stamped).unwrap();
         assert!(json.contains(r#""seq":7"#), "got: {json}");
