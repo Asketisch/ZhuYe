@@ -338,6 +338,10 @@ pub enum RolloutRecord {
         /// 预期过期时刻(unix 毫秒);`None` = 未启用 TTL。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at_ms: Option<u64>,
+        /// 类别专属原始事件载荷(同 `PendingInteraction.payload`);
+        /// `Null` = 未携带(旧 producer)。
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        payload: serde_json::Value,
     },
     /// v1.12:一次挂起人机交互的了结审计。与 [`RolloutRecord::InteractionRequest`]
     /// 按 `request_id` 配对;`outcome` 是 [`crate::event_msg::InteractionOutcome`]
@@ -1176,6 +1180,7 @@ mod tests {
             summary: "bash: git status".into(),
             created_at_ms: 1_700_000_000_000,
             expires_at_ms: Some(1_700_000_300_000),
+            payload: serde_json::json!({"tool_name": "bash", "args": {"cmd": "git status"}}),
         };
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains(r#""type":"interaction_request""#), "got: {j}");

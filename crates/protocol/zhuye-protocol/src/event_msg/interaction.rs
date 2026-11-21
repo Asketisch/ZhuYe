@@ -77,6 +77,15 @@ pub struct PendingInteraction {
     /// 由取消 / 回执兜底)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
+    /// 类别专属的**原始事件载荷**(与对应 `EventMsg` 变体的字段同构,
+    /// 不含 `request_id`):tool/hook → `{tool_name|hook_name, args|
+    /// decision_preview}`;question → `{questions: [...]}`;ask_user →
+    /// `{prompt, secret?, placeholder?}`;plan → `{task}` 或
+    /// `{markdown}`。客户端 reload 后据此**完整**重建审批 / 问答 UI
+    /// (选项、原始工具参数、plan 正文),而非降级的文本摘要。
+    /// `Null` = 未携带(旧 producer)。
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub payload: serde_json::Value,
 }
 
 /// 一个挂起交互已了结(additive 新变体,v1.12)。
@@ -131,6 +140,7 @@ mod tests {
             summary: "重构 auth 模块…".into(),
             created_at_ms: 1_700_000_000_000,
             expires_at_ms: Some(1_700_000_300_000),
+            payload: serde_json::json!({"markdown": "## Plan"}),
         };
         let j = serde_json::to_string(&p).unwrap();
         let back: PendingInteraction = serde_json::from_str(&j).unwrap();
@@ -142,6 +152,16 @@ mod tests {
         };
         let j2 = serde_json::to_string(&p2).unwrap();
         assert!(!j2.contains("expires_at_ms"), "got: {j2}");
+        // payload: Null 时序列化省略(skip_serializing_if)。
+        let p3 = PendingInteraction {
+            expires_at_ms: None,
+            payload: serde_json::Value::Null,
+            ..p2
+        };
+        let j3 = serde_json::to_string(&p3).unwrap();
+        assert!(!j3.contains("payload"), "Null payload 必须省略, got: {j3}");
+        let back3: PendingInteraction = serde_json::from_str(&j3).unwrap();
+        assert!(back3.payload.is_null(), "缺省 payload 反序列化为 Null");
     }
 
     use super::super::EventMsg;

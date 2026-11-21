@@ -339,6 +339,7 @@ impl ApprovalGate {
                         summary: snapshot.summary.clone(),
                         created_at_ms: snapshot.created_at_ms,
                         expires_at_ms: snapshot.expires_at_ms,
+                        payload: snapshot.payload.clone(),
                     })
                     .await;
             });
@@ -762,6 +763,12 @@ impl ApprovalGate {
                 summary: Self::bounded_summary(format!("{tool_name}: {args_preview}")),
                 created_at_ms,
                 expires_at_ms,
+                // v1.12:原始 kind 载荷 —— reload 后客户端据此完整重建
+                // 审批弹窗(含「始终允许这条命令」所需的原始 args)。
+                payload: serde_json::json!({
+                    "tool_name": tool_name,
+                    "args": args,
+                }),
             })
             .await;
 
@@ -870,6 +877,10 @@ impl ApprovalGate {
                 summary: Self::bounded_summary(format!("{hook_name}: {decision_preview}")),
                 created_at_ms,
                 expires_at_ms,
+                payload: serde_json::json!({
+                    "hook_name": hook_name,
+                    "decision_preview": decision_preview,
+                }),
             })
             .await;
 
@@ -1010,6 +1021,7 @@ impl ApprovalGate {
                 summary,
                 created_at_ms,
                 expires_at_ms,
+                payload: serde_json::json!({ "questions": questions }),
             })
             .await;
 
@@ -1207,6 +1219,11 @@ impl ApprovalGate {
                 summary: Self::bounded_summary(prompt_text.clone()),
                 created_at_ms,
                 expires_at_ms,
+                payload: serde_json::json!({
+                    "prompt": prompt_text,
+                    "secret": secret,
+                    "placeholder": placeholder,
+                }),
             })
             .await;
 
