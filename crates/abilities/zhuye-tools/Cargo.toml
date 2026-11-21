@@ -25,6 +25,8 @@ zhuye-git         = { workspace = true }
 # 工具);rollout 只依赖 protocol/sanitize/fs,无环。
 zhuye-rollout     = { workspace = true }
 async-trait        = { workspace = true }
+# v1.12:交互审计记录的 `at: DateTime<Utc>` 与 protocol/rollout 同源。
+chrono              = { workspace = true }
 futures            = { workspace = true }
 htmd               = { workspace = true }
 ignore             = { workspace = true }

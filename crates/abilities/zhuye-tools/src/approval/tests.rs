@@ -1447,3 +1447,198 @@ async fn ask_question_times_out_with_execution_error() {
     // waiter 已被清理。
     assert!(gate_arc.question_waiters().lock().is_empty());
 }
+
+// ── v1.12:挂起交互注册表 + 审计落盘 ────────────────────────────────
+
+use async_trait::async_trait;
+use zhuye_protocol::{
+    InteractionKind, InteractionOutcome, RolloutError, RolloutRecord, RolloutRecorder,
+};
+
+/// 捕获型 recorder:收集全部落盘记录供断言。
+#[derive(Debug, Default)]
+struct CapturingRecorder {
+    records: Mutex<Vec<RolloutRecord>>,
+}
+
+#[async_trait]
+impl RolloutRecorder for CapturingRecorder {
+    async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError> {
+        self.records.lock().push(r);
+        Ok(())
+    }
+    async fn replay(
+        &self,
+        _session_id: zhuye_protocol::ThreadId,
+    ) -> Result<Vec<RolloutRecord>, RolloutError> {
+        Ok(Vec::new())
+    }
+    async fn list_sessions(&self) -> Result<Vec<zhuye_protocol::SessionInfo>, RolloutError> {
+        Ok(Vec::new())
+    }
+    async fn truncate_after(
+        &self,
+        _to_turn_id: Option<&zhuye_protocol::TurnId>,
+    ) -> Result<usize, RolloutError> {
+        Ok(0)
+    }
+}
+
+/// 应答路径全链路:注册 → 快照可见 → 回执 → 快照清空 + InteractionResolved
+/// 广播 + InteractionRequest/Resolution 落盘。
+#[tokio::test]
+async fn pending_registry_snapshot_and_answered_resolution() {
+    let reg = super::pending::new_pending_registry();
+    let recorder = Arc::new(CapturingRecorder::default());
+    let (tx, mut rx) = mpsc::channel::<Event>(16);
+    let gate = Arc::new(
+        ApprovalGate::new(tx, "sub-1")
+            .with_pending_registry(reg.clone())
+            .with_recorder(Some(Arc::clone(&recorder) as Arc<dyn RolloutRecorder>)),
+    );
+    let cancel = CancellationToken::new();
+
+    let g = gate.clone();
+    let cancel_c = cancel.clone();
+    let asker = tokio::spawn(async move {
+        g.ask_tool(
+            "bash",
+            &serde_json::json!({"cmd": "git status"}),
+            RiskLevel::Medium,
+            &cancel_c,
+        )
+        .await
+    });
+
+    let ev = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let request_id = match ev.msg {
+        EventMsg::ApprovalRequest(req) => req.request_id,
+        other => panic!("expected ApprovalRequest, got {other:?}"),
+    };
+
+    // 快照可见:kind=Tool + 摘要含 bash 命令 + 有过期时刻(TTL 默认启用)。
+    let snap = gate.pending_snapshot();
+    assert_eq!(snap.len(), 1, "挂起期间快照必须恰有一条");
+    assert_eq!(snap[0].request_id, request_id);
+    assert!(matches!(&snap[0].kind, InteractionKind::Tool { tool_name } if tool_name == "bash"));
+    assert!(
+        snap[0].summary.contains("git status"),
+        "summary: {}",
+        snap[0].summary
+    );
+    assert!(snap[0].expires_at_ms.is_some());
+
+    // 注册审计已落盘。
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let records = recorder.records.lock().clone();
+            if records.iter().any(|r| matches!(r, RolloutRecord::InteractionRequest { request_id: id, .. } if id == &request_id)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("InteractionRequest 审计必须落盘");
+
+    // 应答 → 决策回传 + 快照清空 + InteractionResolved(Answered) + Resolution 落盘。
+    assert!(gate.complete(&request_id, ReviewDecision::Approve));
+    let decision = timeout(Duration::from_secs(2), asker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(decision, ReviewDecision::Approve);
+    assert!(gate.pending_snapshot().is_empty(), "应答后快照必须清空");
+
+    let resolved = timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(ev) = rx.try_recv() {
+                if let EventMsg::InteractionResolved(r) = ev.msg {
+                    return r;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("必须广播 InteractionResolved");
+    assert_eq!(resolved.request_id, request_id);
+    assert_eq!(resolved.outcome, InteractionOutcome::Answered);
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let records = recorder.records.lock().clone();
+            if records.iter().any(|r| matches!(r, RolloutRecord::InteractionResolution { request_id: id, outcome: InteractionOutcome::Answered, .. } if id == &request_id)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("InteractionResolution(Answered) 审计必须落盘");
+}
+
+/// TTL 过期路径:等待侧 select 死线触发 → Deny(expired)+ 快照清空 +
+/// InteractionResolved(Expired) 广播。
+#[tokio::test]
+async fn pending_registry_ttl_expiry_resolves_with_expired_outcome() {
+    let reg = super::pending::new_pending_registry();
+    let (tx, mut rx) = mpsc::channel::<Event>(16);
+    let gate = Arc::new(
+        ApprovalGate::new(tx, "sub-1")
+            .with_pending_registry(reg.clone())
+            .with_approval_ttl(Duration::from_millis(80)),
+    );
+    let cancel = CancellationToken::new();
+
+    let g = gate.clone();
+    let cancel_c = cancel.clone();
+    let asker = tokio::spawn(async move {
+        g.ask_tool(
+            "bash",
+            &serde_json::json!({"cmd": "sleep"}),
+            RiskLevel::Low,
+            &cancel_c,
+        )
+        .await
+    });
+
+    let ev = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let request_id = match ev.msg {
+        EventMsg::ApprovalRequest(req) => req.request_id,
+        other => panic!("expected ApprovalRequest, got {other:?}"),
+    };
+    assert_eq!(gate.pending_snapshot().len(), 1);
+
+    // TTL 到点 → fail-closed Deny(expired)。
+    let decision = timeout(Duration::from_secs(2), asker)
+        .await
+        .unwrap()
+        .unwrap();
+    match &decision {
+        ReviewDecision::Deny { reason } => assert!(reason.contains("expired"), "got: {reason}"),
+        other => panic!("expected Deny(expired), got {other:?}"),
+    }
+    assert!(gate.pending_snapshot().is_empty(), "过期后快照必须清空");
+
+    let resolved = timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(ev) = rx.try_recv() {
+                if let EventMsg::InteractionResolved(r) = ev.msg {
+                    return r;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("过期路径必须广播 InteractionResolved");
+    assert_eq!(resolved.request_id, request_id);
+    assert_eq!(resolved.outcome, InteractionOutcome::Expired);
+}

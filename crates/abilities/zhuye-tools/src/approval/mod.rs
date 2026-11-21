@@ -36,6 +36,7 @@
 //! 显式关闭(headless 全自动流水线等场景)。
 
 mod gate;
+mod pending;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -47,6 +48,10 @@ use tracing::warn;
 use zhuye_protocol::{AskUserAnswer, ReviewDecision};
 
 pub use gate::ApprovalGate;
+pub use pending::{
+    PendingLease, PendingRegistry, new_pending_registry, pending_register, pending_resolve,
+    pending_snapshot,
+};
 
 /// 待处理审批的 `request_id` → oneshot waiter 映射。
 pub type ApprovalWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<ReviewDecision>>>>;
@@ -89,12 +94,20 @@ pub type AskUserInputWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<String>
 ///
 /// 父会话和子代理必须使用同一组 waiter / 会话许可,否则子代理发出的
 /// `approval_request` 虽能显示,父会话的审批回执也无法唤醒等待中的 gate。
+///
+/// v1.12:`pending` 是挂起人机交互注册表(与 waiter 表并排的快照行)。
+/// 同样必须会话级共享 —— `AgentThread::pending_interactions()` 查询的
+/// 是它,gate 注册 / 了结条目时父子代理写入同一张表。
 #[derive(Clone, Default)]
 pub struct ApprovalContext {
     pub waiters: ApprovalWaiters,
     pub question_waiters: AskUserQuestionWaiters,
     pub user_input_waiters: AskUserInputWaiters,
     pub session_allow: Arc<Mutex<HashSet<String>>>,
+    /// v1.12:挂起交互注册表(`Default` = 空表;子代理经 `cfg.clone()`
+    /// 共享同一 Arc)。plan 审批经 `PlanApprovalGate::with_pending_registry`
+    /// 也写入这张表。
+    pub pending: PendingRegistry,
 }
 
 /// v1.2 review P2:bug-2:`ask_user` 工具 prompt 字节上限。LLM 误发

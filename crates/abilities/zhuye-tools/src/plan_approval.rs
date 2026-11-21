@@ -20,7 +20,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
-use zhuye_protocol::{PlanApprovalChoice, PlanId};
+use zhuye_protocol::{InteractionKind, PendingInteraction, PlanApprovalChoice, PlanId};
+
+use crate::approval::PendingRegistry;
 
 /// 待审批 plan 的等待表:`PlanId` → oneshot 发送端。
 pub type PlanApprovalWaiters = Arc<Mutex<HashMap<PlanId, oneshot::Sender<PlanApprovalChoice>>>>;
@@ -55,18 +57,34 @@ pub fn complete_plan_approval(
 /// 调用方(caller)。
 pub struct PlanApprovalGate {
     waiters: PlanApprovalWaiters,
+    /// v1.12:挂起交互注册表(可选;与 `ApprovalGate` 共享会话级同一张表)。
+    /// plan 审批没有 TTL,注册条目 `expires_at_ms = None`;plan 的用户可见
+    /// 了结路径已有 `PlanApproved` / `PlanRejected` 事件承载,注册表只服务
+    /// `pending_interactions()` 查询面,不额外广播 / 落盘。
+    pending: Option<PendingRegistry>,
 }
 
 impl PlanApprovalGate {
     pub fn new() -> Self {
         Self {
             waiters: Arc::new(Mutex::new(HashMap::new())),
+            pending: None,
         }
     }
 
     /// 共享 waiters(测试 / 高级用法)。
     pub fn with_waiters(waiters: PlanApprovalWaiters) -> Self {
-        Self { waiters }
+        Self {
+            waiters,
+            pending: None,
+        }
+    }
+
+    /// v1.12:注入挂起交互注册表。`submission_loop` 装配时传
+    /// `cfg.approval_context.pending.clone()`。
+    pub fn with_pending_registry(mut self, pending: PendingRegistry) -> Self {
+        self.pending = Some(pending);
+        self
     }
 
     pub fn waiters(&self) -> &PlanApprovalWaiters {
@@ -77,18 +95,59 @@ impl PlanApprovalGate {
     /// `PlanRequest` / `PlanReady` 后用 `rx.await` 阻塞等待用户决策
     ///(`PlanApprovalChoice`:AutoMode / ManualApprove / Revise 三种)。
     pub fn register(&self, plan_id: PlanId) -> oneshot::Receiver<PlanApprovalChoice> {
+        self.register_with_summary(plan_id, "")
+    }
+
+    /// v1.12:带摘要的注册(注册表条目可读)。摘要取规划任务 / plan 预览。
+    pub fn register_with_summary(
+        &self,
+        plan_id: PlanId,
+        summary: impl Into<String>,
+    ) -> oneshot::Receiver<PlanApprovalChoice> {
         let (tx, rx) = oneshot::channel::<PlanApprovalChoice>();
         self.waiters.lock().insert(plan_id, tx);
+        if let Some(reg) = &self.pending {
+            let created_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_default();
+            crate::approval::pending_register(
+                reg,
+                PendingInteraction {
+                    request_id: plan_id.to_string(),
+                    kind: InteractionKind::Plan {
+                        plan_id: plan_id.to_string(),
+                    },
+                    summary: summary.into(),
+                    created_at_ms,
+                    expires_at_ms: None,
+                },
+            );
+        }
         rx
     }
 
     /// 完成一个待审批 plan(实例方法版,镜像 `ApprovalGate::complete`)。
     pub fn complete(&self, plan_id: PlanId, choice: PlanApprovalChoice) -> bool {
+        if let Some(reg) = &self.pending {
+            crate::approval::pending_resolve(reg, &plan_id.to_string());
+        }
         complete_plan_approval(&self.waiters, &plan_id, choice)
     }
 
     /// 取消所有 pending plan approval(用于 session 关闭 / cancel token 触发)。
     pub fn cancel_all(&self) {
+        if let Some(reg) = &self.pending {
+            let ids: Vec<String> = self
+                .waiters
+                .lock()
+                .keys()
+                .map(|id| id.to_string())
+                .collect();
+            for id in ids {
+                crate::approval::pending_resolve(reg, &id);
+            }
+        }
         let mut guard = self.waiters.lock();
         for (_, tx) in guard.drain() {
             // Receiver dropped → `rx.await` returns `Err`,caller 视作 deny。
