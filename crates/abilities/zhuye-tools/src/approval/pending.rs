@@ -94,6 +94,7 @@ mod tests {
             summary: "测试交互".into(),
             created_at_ms,
             expires_at_ms: None,
+            payload: serde_json::Value::Null,
         }
     }
 

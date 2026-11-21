@@ -95,14 +95,16 @@ impl PlanApprovalGate {
     /// `PlanRequest` / `PlanReady` 后用 `rx.await` 阻塞等待用户决策
     ///(`PlanApprovalChoice`:AutoMode / ManualApprove / Revise 三种)。
     pub fn register(&self, plan_id: PlanId) -> oneshot::Receiver<PlanApprovalChoice> {
-        self.register_with_summary(plan_id, "")
+        self.register_with_summary(plan_id, "", serde_json::Value::Null)
     }
 
-    /// v1.12:带摘要的注册(注册表条目可读)。摘要取规划任务 / plan 预览。
+    /// v1.12:带摘要与原始载荷的注册(注册表条目可读、可完整重建 UI)。
+    /// `payload` 与对应 `EventMsg`(`PlanRequest` / `PlanReady`)字段同构。
     pub fn register_with_summary(
         &self,
         plan_id: PlanId,
         summary: impl Into<String>,
+        payload: serde_json::Value,
     ) -> oneshot::Receiver<PlanApprovalChoice> {
         let (tx, rx) = oneshot::channel::<PlanApprovalChoice>();
         self.waiters.lock().insert(plan_id, tx);
@@ -121,6 +123,7 @@ impl PlanApprovalGate {
                     summary: summary.into(),
                     created_at_ms,
                     expires_at_ms: None,
+                    payload,
                 },
             );
         }

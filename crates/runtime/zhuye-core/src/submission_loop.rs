@@ -2344,7 +2344,7 @@ pub(crate) async fn dispatch_plan_request(
 ) {
     let plan_id = PlanId::new();
     // v1.12:带摘要注册 —— 挂起交互查询面(plan 类)可见规划目标。
-    let rx = gate.register_with_summary(plan_id, task.clone());
+    let rx = gate.register_with_summary(plan_id, task.clone(), serde_json::json!({ "task": task }));
     // v1.x:把 PlanRequest 落进 session JSONL,让 resume / export 能还原 plan 起点。
     // v1.x 修复:SessionMeta 未落盘时跳过(与 apply_permission_mode_change 同理
     // —— 首行必须是 SessionMeta,否则 rollout 索引丢弃整个会话)。
@@ -2406,7 +2406,11 @@ pub(crate) async fn dispatch_plan_ready(
 ) {
     let plan_id = PlanId::new();
     // v1.12:带摘要注册(取 plan 预览,截断交给 gate 侧 registry 摘要约定)。
-    let rx = gate.register_with_summary(plan_id, markdown.chars().take(120).collect::<String>());
+    let rx = gate.register_with_summary(
+        plan_id,
+        markdown.chars().take(120).collect::<String>(),
+        serde_json::json!({ "markdown": markdown }),
+    );
     // 把 plan 落盘成持久产物(`<workspace>/.zhuye/plan/<plan_id>.md`)。
     // best-effort:失败返回 None,不阻断下面的 PlanReady 发送。
     let plan_path = persist_plan_markdown(&cfg.current_workspace(), plan_id, &markdown);
@@ -2487,7 +2491,11 @@ pub(crate) async fn dispatch_plan_ready_blocking(
 ) -> Option<zhuye_protocol::PlanApprovalChoice> {
     let plan_id = PlanId::new();
     // v1.12:带摘要注册(同 spawn 版,挂起交互查询面可见 plan 预览)。
-    let rx = gate.register_with_summary(plan_id, markdown.chars().take(120).collect::<String>());
+    let rx = gate.register_with_summary(
+        plan_id,
+        markdown.chars().take(120).collect::<String>(),
+        serde_json::json!({ "markdown": markdown }),
+    );
     // plan 落盘(与 spawn 版一致,best-effort;失败降级为 None path)。
     let plan_path = persist_plan_markdown(&cfg.current_workspace(), plan_id, &markdown);
     let ready_at = chrono::Utc::now();
@@ -2570,7 +2578,7 @@ pub(crate) async fn dispatch_plan_request_blocking(
 ) -> Option<zhuye_protocol::PlanApprovalChoice> {
     let plan_id = PlanId::new();
     // v1.12:带摘要注册(同 spawn 版)。
-    let rx = gate.register_with_summary(plan_id, task.clone());
+    let rx = gate.register_with_summary(plan_id, task.clone(), serde_json::json!({ "task": task }));
     let request_at = chrono::Utc::now();
     persist_rollout_best_effort(&cfg, || RolloutRecord::PlanRequest {
         plan_id,
