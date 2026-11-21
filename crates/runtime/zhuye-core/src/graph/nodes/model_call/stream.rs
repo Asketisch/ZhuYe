@@ -582,6 +582,7 @@ mod tests {
     ) {
         let (event_tx, rx) = tokio::sync::mpsc::channel::<zhuye_protocol::Event>(64);
         let ctx = NodeContext {
+            session_seq: None,
             turn_id: zhuye_protocol::TurnId::new(),
             session_id: zhuye_protocol::ThreadId::new(),
             model: Arc::new(parking_lot::RwLock::new("stub/model".to_string())),

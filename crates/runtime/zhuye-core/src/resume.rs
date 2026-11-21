@@ -177,7 +177,15 @@ pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
             // v1.x:MemoryAccess 是记忆读写审计轨迹,不注入对话(与
             // TokenCount 同类 —— 记忆内容本身已随 system prompt 走
             // telemetry 层,回放不重复)。
-            | RolloutRecord::MemoryAccess { .. } => {}
+            | RolloutRecord::MemoryAccess { .. }
+            // v1.12:人机交互审计。**有意不重发**未决交互:进程重启后原
+            // 回合(及其 waiter)已不存在,重发只会造出「无人接听的幽灵
+            // 弹窗」—— 用户应答会打到空 waiter 上(submission_loop 只能
+            // debug 日志丢弃)。活进程内的未决交互由
+            // `AgentThread::pending_interactions()` 查询;跨进程应答属
+            // roadmap(需要回合复活语义)。
+            | RolloutRecord::InteractionRequest { .. }
+            | RolloutRecord::InteractionResolution { .. } => {}
         }
     }
 

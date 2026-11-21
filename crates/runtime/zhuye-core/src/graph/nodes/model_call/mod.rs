@@ -14,8 +14,9 @@ use std::time::Duration;
 use tokio::time::sleep;
 use zhuye_llm::{AssistantContent, ChatMessage, ChatRequest, CooldownReason, LlmError, Role};
 use zhuye_protocol::{
-    ContentBlock, ErrorEvent, Event, EventMsg, RolloutRecord, RoutingEvent, RoutingEventKind,
-    StreamErrorEvent, TokenCountEvent, TokenUsage, TriedCredential,
+    CompositionCategory, CompositionCategoryId, ContentBlock, ContextCompositionEvent, ErrorEvent,
+    Event, EventMsg, RolloutRecord, RoutingEvent, RoutingEventKind, StreamErrorEvent,
+    TokenCountEvent, TokenUsage, TriedCredential,
 };
 
 use super::nudge::MAX_AUTO_CONTINUATIONS;
@@ -240,6 +241,11 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         }),
         ..Default::default()
     };
+    // v1.12:上下文组成计量(六类估算分解)—— 对标 ZCode 的 context
+    // composition:system_prompt / memory / skills(临时层) /
+    // tool_schemas(内置)/ mcp_tools(外部)/ messages。复用 compact 的
+    // 全局估算器,估算值非精确计量;组成指纹无变化时省略不发。
+    emit_context_composition_if_changed(ctx, state, &request, &builtin_names).await;
     // OpenAI 兼容 / Ollama / Responses 要求 system 只能出现在 messages 开头,
     // 严格的网关对「中途 system」直接返回 400(System message must be at the
     // beginning.);Anthropic 则会静默丢弃内联 System。压缩摘要(PreCompact
@@ -1118,6 +1124,114 @@ mod cancellation_tests {
                 .expect("任务不应 panic")
         );
     }
+}
+
+/// v1.12:上下文组成计量 + `ContextComposition` 事件发射(指纹去重)。
+///
+/// 六类分解(对齐 ZCode context composition 形态,按烛夜组装段归并):
+/// - `system_prompt`:system 块 core 文本扣除记忆与 checklist 注入段
+/// - `memory`:pre_loop 检索注入的记忆文本
+/// - `skills`:ephemeral `<system-reminder>` 块(技能目录 + 工具目录
+///   文本 + 迭代提醒 + mode hint —— 工具目录文本与 schema 属不同层面)
+/// - `tool_schemas`:内置工具(`ToolSource::Builtin`)的 JSON schema
+/// - `mcp_tools`:外部工具(MCP / LSP / 插件 / 远程注册)的 JSON schema
+/// - `messages`:对话消息历史
+///
+/// 复用 compact 的全局估算器(`estimate_text` / `estimate_messages`),
+/// 各类别独立计量,**不保证求和等于 provider 上报的 input_tokens**。
+/// 组成指纹(类别序 + token 值)与上次相同则不发 —— 组成在同一 turn 的
+/// 多次迭代间通常不变,去重避免高频事件淹没通道。
+async fn emit_context_composition_if_changed(
+    ctx: &NodeContext,
+    state: &mut AgentState,
+    request: &ChatRequest,
+    builtin_names: &std::collections::HashSet<String>,
+) {
+    use std::hash::{Hash, Hasher};
+
+    let core_text = state
+        .system_blocks
+        .0
+        .first()
+        .map(|b| b.text.clone())
+        .unwrap_or_default();
+    let ephemeral_text = state.ephemeral_text.clone();
+    let memory_text = state
+        .prompt_core
+        .as_ref()
+        .map(|c| c.memory.clone())
+        .unwrap_or_default();
+    let checklist_text = state
+        .prompt_core
+        .as_ref()
+        .and_then(|c| c.checklist.clone())
+        .unwrap_or_default();
+
+    let mut builtin_json = String::new();
+    let mut external_json = String::new();
+    for spec in &request.tools {
+        let wire = serde_json::to_string(spec).unwrap_or_default();
+        let is_builtin = match spec {
+            zhuye_llm::ToolSpec::Function { name, .. } => builtin_names.contains(name),
+        };
+        if is_builtin {
+            builtin_json.push_str(&wire);
+        } else {
+            external_json.push_str(&wire);
+        }
+    }
+
+    // system_prompt = core 总量 − 记忆 − checklist(saturating,防估计
+    // 噪声把差值顶成负数)。
+    let memory_tokens = zhuye_compact::tokens::estimate_text(&memory_text);
+    let checklist_tokens = zhuye_compact::tokens::estimate_text(&checklist_text);
+    let system_tokens = zhuye_compact::tokens::estimate_text(&core_text)
+        .saturating_sub(memory_tokens)
+        .saturating_sub(checklist_tokens);
+    let categories = vec![
+        CompositionCategory {
+            id: CompositionCategoryId::SystemPrompt,
+            tokens: system_tokens,
+        },
+        CompositionCategory {
+            id: CompositionCategoryId::Memory,
+            tokens: memory_tokens,
+        },
+        CompositionCategory {
+            id: CompositionCategoryId::Skills,
+            tokens: zhuye_compact::tokens::estimate_text(&ephemeral_text),
+        },
+        CompositionCategory {
+            id: CompositionCategoryId::ToolSchemas,
+            tokens: zhuye_compact::tokens::estimate_text(&builtin_json),
+        },
+        CompositionCategory {
+            id: CompositionCategoryId::McpTools,
+            tokens: zhuye_compact::tokens::estimate_text(&external_json),
+        },
+        CompositionCategory {
+            id: CompositionCategoryId::Messages,
+            tokens: zhuye_compact::tokens::estimate_messages(&request.messages),
+        },
+    ];
+
+    // 指纹:类别 id + token 值序列哈希。无变化 → 省略。
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for cat in &categories {
+        cat.id.hash(&mut hasher);
+        cat.tokens.hash(&mut hasher);
+    }
+    let fingerprint = hasher.finish();
+    if state.composition_fingerprint == Some(fingerprint) {
+        return;
+    }
+    state.composition_fingerprint = Some(fingerprint);
+
+    let ev = Event::new(
+        ctx.sub_id.clone(),
+        EventMsg::ContextComposition(ContextCompositionEvent { categories }),
+    );
+    let _ = ctx.event_tx.send(ev).await;
 }
 
 #[cfg(test)]

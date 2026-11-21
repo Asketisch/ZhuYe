@@ -5,6 +5,12 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use zhuye_llm::ChatMessage;
+/// v1.12:plan dispatch 在无订阅者构造的测试上下文里用的兜底序号计数器
+/// (按需新建,各自独立计数 —— 仅保证 API 兼容,序号语义无跨流意义)。
+fn fallback_session_seq() -> Arc<std::sync::atomic::AtomicU64> {
+    Arc::new(std::sync::atomic::AtomicU64::new(0))
+}
+
 use zhuye_protocol::{
     ContentBlock, Event, EventMsg, PermissionMode, PlanDraftUpdatedEvent, PlanRejectedEvent,
     RolloutRecord, RolloutRecorder, ToolCallEndEvent,
@@ -285,6 +291,11 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                             let _ = dispatch_plan_request_blocking(
                                 gate,
                                 subs,
+                                // v1.12:扇出序号计数器(测试无订阅者时用
+                                // fallback,序号不参与跨流缺口判定)。
+                                ctx.session_seq
+                                    .clone()
+                                    .unwrap_or_else(|| fallback_session_seq()),
                                 ctx.event_tx.clone(),
                                 ctx.sub_id.clone(),
                                 ctx.cfg.clone(),
@@ -328,6 +339,10 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                         let choice = dispatch_plan_ready_blocking(
                             gate,
                             subs,
+                            // v1.12:扇出序号计数器(同上)。
+                            ctx.session_seq
+                                .clone()
+                                .unwrap_or_else(|| fallback_session_seq()),
                             ctx.event_tx.clone(),
                             ctx.sub_id.clone(),
                             ctx.cfg.clone(),
