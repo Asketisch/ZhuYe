@@ -989,6 +989,8 @@ pub async fn bootstrap_normal(
     );
     cfg = cfg.with_side_channel_driver(side_channel_driver);
     factory.set_parent_config(cfg.clone());
+    factory.set_workspace(cfg.current_workspace());
+    factory.set_rollout_base(zhuye_rollout::path::default_base());
     let cfg_for_reload = cfg.clone(); // 共享 model Arc<RwLock>
     // v1.10 功能2:goal 槽的共享 Arc 先取出(构造 GoalTool 用,避免
     // 工具持有 AgentThread 造成引用环)。
@@ -1297,6 +1299,8 @@ pub async fn bootstrap_resumed(
     cfg.prompt_guard = prompt_guard.clone();
     cfg.guard_stats = guard_stats.clone();
     factory.set_parent_config(cfg.clone());
+    factory.set_workspace(cfg.current_workspace());
+    factory.set_rollout_base(zhuye_rollout::path::default_base());
     let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
         zhuye_core::side_channel::SideChannelRegistry::new(),
         cfg.workspace.clone(),
