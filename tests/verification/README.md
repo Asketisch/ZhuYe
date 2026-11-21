@@ -40,6 +40,18 @@ printf 'crates/protocol/src/lib.rs\n' | python3 tests/verification/select_reliab
    即使基线有相同缺陷也会失败。两侧事件与投影分别写入输出目录的
    `baseline/` 和 `candidate/`。
 
+### CI 门禁口径(2026-11-21 起,挂账至 v0.1.16 发布)
+
+nightly 的两类差分判定强度不同:
+
+- **语义差分**(同提交 release vs debug,`builds` 报告):恒严格,
+  verdict 必须 pass;
+- **发布版本差分**(当前 vs 最新已发布二进制,`published` 报告):跨
+  有意行为变更期(配置 v2、assistant 增量落盘等,均晚于 v0.1.15 基线)
+  重放序列按设计必然分歧,workflow 里暂置 `continue-on-error` +
+  「只记录不判红」。**切 v0.1.16 发布重置基线后恢复严格**(恢复方法见
+  `.github/workflows/ci.yml` 两处注释位)。
+
 ## 运行
 
 ```bash
