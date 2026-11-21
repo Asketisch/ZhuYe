@@ -37,7 +37,9 @@ pub mod worktree;
 
 pub use approval::{
     ApprovalContext, ApprovalGate, ApprovalWaiters, AskUserInputWaiters, AskUserQuestionWaiters,
-    complete_approval, complete_ask_user_input, complete_ask_user_question,
+    PendingLease, PendingRegistry, complete_approval, complete_ask_user_input,
+    complete_ask_user_question, new_pending_registry, pending_register, pending_resolve,
+    pending_snapshot,
 };
 pub use bash_command::{BASH_COMMAND_KEYS, resolve_bash_command};
 pub use bm25::{Bm25Hit, rank_lines, tokenize};
