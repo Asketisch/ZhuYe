@@ -32,9 +32,6 @@ turns. Both the Python / TypeScript SDKs are built on this protocol (see
 [sdks/PROTOCOL.md](../sdks/PROTOCOL.md)).
 - **PyO3 bindings (`zhuye-py` crate)** — a separate crate, not part of the
 `zhuye` library facade, for Python hosts to link directly.
-- **External session import (`zhuye-import`)** — a standalone binary
-(produced by the `bin` of the `zhuye-import` crate) that converts session records from other harnesses
-into rollout; see [plugins/harness-import](../plugins/harness-import).
 - **WASM plugin host / git tools / computer-use / shell** — these are the
 capability core of `plugins/*`, implemented in the integrations layer, but they do **not** enter the SDK
 facade; they are mounted in plugin form.

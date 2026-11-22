@@ -138,7 +138,7 @@ impl ModelClient for AnthropicClient {
         // 当使用自定义 base_url 时（非官方 Anthropic API），自动切换为
         // `Authorization: Bearer` 认证方式以兼容第三方网关（vLLM 等）。
         // v1.10 功能5:`api_key` 为空时**两种认证头都不发** —— 免 Key 的
-        // Anthropic 兼容端点(LM Studio / claude-code-router 等本地网关)
+        // Anthropic 兼容端点(LM Studio / 第三方路由网关等本地网关)
         // 与 `OpenAIClient` 的既有约定对齐(空 key = 不带 Authorization)。
         // 此前空串也会拼出 `x-api-key: ""`,部分网关按「提供了错误凭据」
         // 处理直接 401。
@@ -187,7 +187,7 @@ impl ModelClient for AnthropicClient {
     ///
     /// 此前本 provider 走 trait 默认实现(`Ok(None)` = 无清单端点),
     /// anthropic 格式的接入(内置段与 `[[provider_group]]` endpoint =
-    /// anthropic,含 Magpie / claude-code-router 等网关)在引擎内
+    /// anthropic,含 Magpie / 第三方路由网关等)在引擎内
     /// **连模型清单都拿不到** —— `model = "free"` 动态值与
     /// `zhuye models list` 对这类端点全部失效。桌面端此前用直连 HTTP
     /// 补了这个缺口,现在引擎侧对齐,两侧口径一致。

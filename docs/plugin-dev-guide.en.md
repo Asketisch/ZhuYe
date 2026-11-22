@@ -175,7 +175,7 @@ tools: [bash]
 
 ### 3.4 hooks —— event guards
 
-`hooks.json` (Claude Code style):
+`hooks.json` (external-agent style):
 
 ```json
 {

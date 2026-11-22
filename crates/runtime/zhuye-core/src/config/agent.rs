@@ -124,7 +124,7 @@ pub struct AgentConfig {
     /// `zhuye-tui` 在 bootstrap 时按 `[telemetry]` 配置构造。
     /// `None` = telemetry 关闭(测试 / 旧调用方)。
     pub telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
-    /// v1.2 P1:目标模式 controller(参考 zcode `/goal` 设计)。
+    /// v1.2 P1:目标模式 controller(参考同类 agent 的 `/goal` 设计)。
     /// `None` = 目标模式未激活;`/goal <obj>` 时由 submission_loop 构造。
     /// turn 结束后 `on_turn_end` 自校验。未完成则把续作文本推进
     /// steering 队列,等下一条 `UserInput` 合并,不自行提交新回合。

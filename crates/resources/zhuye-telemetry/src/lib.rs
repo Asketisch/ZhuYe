@@ -1,6 +1,6 @@
 //! 烛夜 Telemetry —— 本地 Langfuse 式日志(TUI 可查看)。
 //!
-//! 两层 JSONL 存储,对齐 zcode 的本地日志结构(不含 SQLite):
+//! 两层 JSONL 存储,对齐同类 agent 的本地日志结构(不含 SQLite):
 //! - **span 日志** `<base>/log/zhuye-YYYY-MM-DD.jsonl` —— 按天 + size 轮转,
 //!   每行一个 [`model::TraceEvent`](turn/model/tool 级 span),带 trace/span
 //!   父子链。相当于 Langfuse 的 trace 事件流。

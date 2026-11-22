@@ -62,8 +62,8 @@ def test_serve_args_每个插件一对flag() -> None:
     from zhuye.agent import ZhuyeAgentOptions, _serve_args
 
     assert _serve_args(
-        ZhuyeAgentOptions(plugins=["harness-import@inline", "demo@inline"])
-    ) == ["serve", "--plugin", "harness-import@inline", "--plugin", "demo@inline"]
+        ZhuyeAgentOptions(plugins=["demo@inline", "browser@inline"])
+    ) == ["serve", "--plugin", "demo@inline", "--plugin", "browser@inline"]
 
 
 def test_新增插件选项不改变既有位置参数() -> None:

@@ -8371,26 +8371,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zhuye-import"
-version = "0.1.15"
-dependencies = [
- "base64 0.23.1",
- "chrono",
- "clap",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "toml 0.8.23",
- "tracing",
- "uuid",
- "zhuye-config",
- "zhuye-protocol",
- "zhuye-rollout",
-]
-
-[[package]]
 name = "zhuye-integration"
 version = "0.1.15"
 dependencies = [

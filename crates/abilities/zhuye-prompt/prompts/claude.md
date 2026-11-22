@@ -1,7 +1,7 @@
 # Claude 厂商层(按需覆盖,缺失 section 落回 default.md)
 
 <!-- 来源: system_prompts_leaks-main/Anthropic/claude-code/claude-code-sonnet-5.5.md
-     (Claude Code Sonnet 5.5 agent system prompt,与 claude-code-opus-5.5.md 同代
+     (Claude Sonnet 5.5 agent system prompt,与 claude-code-opus-5.5.md 同代
      主体一致,仅 reasoning-effort 数值与 1M 上下文 auto-mode 段不同);
      agents/Explore.md、agents/Plan.md 收录为子代理文案。
      许可: 源仓库 CC0 1.0。仅保留通用行为约束,剥离抓取现场的会话残留
