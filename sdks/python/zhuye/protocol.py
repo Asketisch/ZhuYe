@@ -616,6 +616,54 @@ class GuardStats(TypedDict):
     outputs_reviewed: int
 
 
+class _StreamRecoveryOptionalFields(TypedDict, total=False):
+    transient: str
+    anchor: str
+    discarded_text_chars: int
+    discarded_thinking_chars: int
+    retry_in_ms: int
+
+
+class StreamRecovery(_StreamRecoveryOptionalFields):
+    """v1.x:流锚点恢复事件族(四个变体共享载荷,type 区分)——
+    started / anchor_selected / tail_discarded / retry_started。
+    可观察诊断事件,不改变 stream_error / agent_message_reset 语义;
+    tail_discarded 的丢弃留痕落 rollout(resume 不回放)。"""
+
+    type: Literal[
+        "stream_recovery_started",
+        "stream_recovery_anchor_selected",
+        "stream_recovery_tail_discarded",
+        "stream_recovery_retry_started",
+    ]
+    attempt: int
+    reason_code: str
+
+
+class _CacheWarmingOptionalFields(TypedDict, total=False):
+    reason: str
+    prompt_tokens: int
+    warm_cached_tokens: int
+    warm_cost_usd: float
+    expected_savings_usd: float
+    model: str
+
+
+class CacheWarming(_CacheWarmingOptionalFields):
+    """v1.x:prompt cache 保温(cache warming)状态事件 —— 引擎主动推,
+    无对应 Op(镜像 context_composition 形态)。action ∈ scheduled /
+    executed / skipped / cancelled;phase ∈ turn / idle;reason ∈
+    no_economics / no_cache_hits / below_threshold / window_exhausted /
+    stale / replay_failed 等。默认关闭([cache_warming] enabled),开启后
+    可用 warm_cached_tokens 与后续 token_count.cached_tokens 对照验证
+    保温收益。at 为 UNIX 秒。"""
+
+    type: Literal["cache_warming"]
+    action: str
+    phase: str
+    at: int
+
+
 class CollabStarted(TypedDict):
     type: Literal["collab_started"]
     discussion_id: str
@@ -809,6 +857,8 @@ EventMsg = Union[
     PromptSwitched,
     ExtensionsRescanned,
     GuardStats,
+    CacheWarming,
+    StreamRecovery,
     CollabStarted,
     CollabMessage,
     CollabFinished,
