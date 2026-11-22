@@ -112,6 +112,10 @@ pub struct ZhuyeBuilder {
     /// v1.x B6:额外 skills 目录(`with_skills_dir`),与 bootstrap 同语义:
     /// `SkillsCatalog` 追加扫描(优先级最低,同名以既有为准)。
     skills_dirs: Vec<PathBuf>,
+    /// v1.x:prompt cache 保温设置(`cache_warming`)。`None`(默认)=
+    /// 按 `~/.zhuye/config.toml` 的 `[cache_warming]` 段(缺省关闭);
+    /// `Some` = 嵌入方显式设置(优先于文件)。
+    cache_warming: Option<zhuye_llm::CacheWarmingSettings>,
 }
 
 impl std::fmt::Debug for ZhuyeBuilder {
@@ -151,7 +155,17 @@ impl ZhuyeBuilder {
             extra_tools: Vec::new(),
             extra_hooks: Vec::new(),
             skills_dirs: Vec::new(),
+            cache_warming: None,
         }
+    }
+
+    /// v1.x:prompt cache 保温设置(空闲期 / 回合内以廉价重放刷新
+    /// provider prompt cache TTL)。默认关闭 —— 保温是引擎自发花钱的
+    /// 行为;不调用本方法时按 `[cache_warming]` config 段(缺省关)。
+    /// 传入 `enabled: false` 的设置可显式关闭(覆盖 config)。
+    pub fn cache_warming(mut self, settings: zhuye_llm::CacheWarmingSettings) -> Self {
+        self.cache_warming = Some(settings);
+        self
     }
 
     /// 设置 workspace 根目录。工具以此路径为基准做相对路径操作。
@@ -383,6 +397,15 @@ impl ZhuyeBuilder {
         *cfg.prompt_selection.write() = self.prompt_selection.clone();
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
         cfg = cfg.with_telemetry(telemetry_sink);
+        // v1.x:prompt cache 保温 —— config `[cache_warming]` 缺省应用,
+        // Builder 显式设置优先(嵌入方代码覆盖文件)。
+        let warming_settings = self
+            .cache_warming
+            .clone()
+            .or_else(|| app_cfg.cache_warming.as_ref().map(|s| s.resolved()));
+        if let Some(settings) = warming_settings {
+            cfg.enable_cache_warming(settings);
+        }
         // v1.x(WP13):与 build_async / exec 对齐 —— build() 此前
         // sanitizer 与 hook_engine 恒 None,[sanitize] 配置在库路径是死信、
         // Plan mode 的 PlanModeGate 也无从注册。hook 策略与 build_async
@@ -547,6 +570,15 @@ impl ZhuyeBuilder {
         *cfg.prompt_selection.write() = self.prompt_selection.clone();
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
         cfg = cfg.with_telemetry(telemetry_sink);
+        // v1.x:prompt cache 保温 —— config `[cache_warming]` 缺省应用,
+        // Builder 显式设置优先(与 build() 同口径)。
+        let warming_settings = self
+            .cache_warming
+            .clone()
+            .or_else(|| app_cfg.cache_warming.as_ref().map(|s| s.resolved()));
+        if let Some(settings) = warming_settings {
+            cfg.enable_cache_warming(settings);
+        }
         // v1.x(WP13):[sandbox] / side-channel 与 exec / build() 对齐。
         cfg = apply_sandbox_config(cfg, &app_cfg);
         let side_channel_driver = build_side_channel_driver(

@@ -38,6 +38,13 @@ pub mod stream;
 // ── Core(保持原状)─────────────────────────────────────────────────────────
 pub use zhuye_core::{AgentConfig, AgentThread, TurnHandle};
 
+// ── Prompt cache 保温(v1.x)───────────────────────────────────────────────
+pub use zhuye_core::{CacheWarmingScheduler, WarmCandidate, WarmingStats};
+pub use zhuye_llm::{
+    CacheObservation, CacheWarmingDecision, CacheWarmingSettings, SkipReason, WarmingAction,
+    WarmingPhase, effective_ttl_secs, evaluate, refresh_delay,
+};
+
 // ── Side-channel(用户驱动并发 agent,WP9/13)────────────────────────────
 pub use zhuye_core::side_channel::{
     MAX_CONCURRENT, SideChannelDriver, SideChannelEvent, SideChannelId, SideChannelInfo,
