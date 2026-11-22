@@ -122,6 +122,12 @@ pub struct LlmSummarizer {
     /// v1.2 P1:可选 telemetry sink,注入后每次摘要调用落 model-io 记录
     /// (query_source = "compact")。`None`(默认)= 不落库,向后兼容。
     telemetry: Option<Arc<TelemetrySink>>,
+    /// v1.x:主循环前缀提供器(借鉴 ZCode:compact 摘要请求复用主循环
+    /// 的 system + 工具目录,使摘要请求命中主前缀缓存)。`None`(默认)
+    /// = 历史行为(空 system + noop 工具,整段请求不命中任何缓存)。
+    /// 返回 `(system, tools)`;闭包由 exec bootstrap 注入,读取
+    /// `AgentConfig` 的最近成功请求前缀槽。
+    main_prefix_provider: Option<MainPrefixProvider>,
 }
 
 impl std::fmt::Debug for LlmSummarizer {
@@ -132,6 +138,10 @@ impl std::fmt::Debug for LlmSummarizer {
             .finish_non_exhaustive()
     }
 }
+
+/// 主循环前缀提供器类型(摘要请求命中主前缀缓存;见字段文档)。
+pub type MainPrefixProvider =
+    Arc<dyn Fn() -> Option<(zhuye_llm::SystemBlocks, Vec<zhuye_llm::ToolSpec>)> + Send + Sync>;
 
 impl LlmSummarizer {
     /// `policy.compact.primary` 非空时,调用用它;否则用 `model_name`。
@@ -147,7 +157,15 @@ impl LlmSummarizer {
             model_name: model_name.into(),
             timeout: SUMMARIZE_TIMEOUT,
             telemetry: None,
+            main_prefix_provider: None,
         }
+    }
+
+    /// v1.x:注入主循环前缀提供器(compact 摘要请求命中主前缀缓存)。
+    /// 返回 `Self` 供链式调用。
+    pub fn with_main_prefix_provider(mut self, provider: MainPrefixProvider) -> Self {
+        self.main_prefix_provider = Some(provider);
+        self
     }
 
     /// v1.2 P1:注入 telemetry sink。返回 `Self` 供链式调用,不破坏 `new()`
@@ -237,19 +255,38 @@ async fn call_summarizer(
     prompt: &str,
     _previous: Option<&str>,
 ) -> Result<String, SummarizerError> {
-    let request = ChatRequest {
+    // v1.x:优先复用主循环前缀(system + 工具目录与主请求一致 → 摘要
+    // 请求命中主前缀缓存);带 cache_skip_write 标记(provider 不在
+    // compact prompt 上落写锚点,等效锚点前移)。无提供器 → 历史形态。
+    let fallback = || {
+        (
+            SystemBlocks::default(),
+            vec![ToolSpec::Function {
+                name: "noop".into(),
+                description: "no-op tool to satisfy tool-use-only providers".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            }],
+        )
+    };
+    let (system, tools) = s
+        .main_prefix_provider
+        .as_ref()
+        .and_then(|p| p())
+        .unwrap_or_else(fallback);
+    let mut request = ChatRequest {
         model: s.model_name.clone(),
-        system: SystemBlocks::default(),
+        system,
         messages: vec![ChatMessage::User(UserContent {
             blocks: vec![ContentBlock::text(prompt)],
         })],
-        tools: vec![ToolSpec::Function {
-            name: "noop".into(),
-            description: "no-op tool to satisfy tool-use-only providers".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {}}),
-        }],
+        tools,
         ..Default::default()
     };
+    if s.main_prefix_provider.is_some() {
+        request
+            .metadata
+            .insert("cache_skip_write".to_string(), "true".to_string());
+    }
     let cancel = CancellationToken::new();
 
     // primary 非空用 Compact 槽,否则用构造时的 model_name。
