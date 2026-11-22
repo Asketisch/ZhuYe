@@ -42,6 +42,17 @@ pub trait ModelClient: Send + Sync {
         ProviderKind::Custom
     }
 
+    /// v1.x prompt cache 保温:该请求是否可被「1-token 重放」保温
+    /// (重放 = 逐字节复刻请求,仅把 `max_tokens` 改为 1)。
+    ///
+    /// 默认可重放。provider 的 wire 形态里若有「与 `max_tokens` 派生
+    /// 相关 / 被其约束」的缓存键字段时必须 override 为 false —— 否则
+    /// 重放要么改变缓存键(保温无效),要么被 API 拒绝(Anthropic 的
+    /// 显式 thinking:`max_tokens` 必须 > `budget_tokens`)。
+    fn warming_replayable(&self, _request: &ChatRequest) -> bool {
+        true
+    }
+
     /// 流式执行一次 chat completion。返回 `Result` 是为了承载同步失败
     /// (auth、model not found 等)。流式错误以 `ChatEvent::Error` 形式
     /// 上报,可能终止也可能不终止整条流。

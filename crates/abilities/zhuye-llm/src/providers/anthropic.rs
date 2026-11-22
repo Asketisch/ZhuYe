@@ -100,6 +100,16 @@ impl ModelClient for AnthropicClient {
         }
     }
 
+    fn warming_replayable(&self, request: &ChatRequest) -> bool {
+        // 显式 thinking(`Enabled { budget_tokens }`)不可重放:Anthropic
+        // 要求 `max_tokens > budget_tokens`,1-token 重放会被 API 直接
+        // 拒绝(budget 与 max_tokens 虽然解耦,但这个约束无法绕过 ——
+        // 保温重放只能改 max_tokens,不能动 thinking 配置,否则缓存键
+        // 就变了)。wire 上 `OpenAIReasoning` 映射为 thinking = None
+        // (见 `AnthropicRequest::from`),不受影响,仍然可重放。
+        !matches!(request.thinking, Some(ThinkingConfig::Enabled { .. }))
+    }
+
     async fn stream(
         &self,
         request: ChatRequest,
@@ -760,6 +770,28 @@ impl From<ChatRequest> for AnthropicRequest {
         // —— 压缩摘要/hook 注入内容会直接消失;先折叠才能保住内容,
         // 也让 `cache_control.after_message_index` 与实际消息下标对齐。
         req.fold_system_messages();
+        // 断点 TTL 的唯一事实源:请求层写入的配置意图(`inject_cache_control`
+        // 按 `ZHUYE_CACHE_TTL` 写入,默认 1h)。消息锚点断点逐条携带 ttl;
+        // 工具尾部断点与 system 兜底断点沿用同一配置。修复:此前消息锚点 /
+        // 工具尾部 / system 兜底三处硬编码 "5m",配置 TTL 只落在显式携带
+        // cache_control 的 system 块一处 —— 默认配置下每回合增长的消息
+        // 前缀只有 5 分钟寿命,长生命周期设计的意图没有传导到 wire。
+        let configured_ttl = req
+            .cache_control
+            .first()
+            .map(|b| b.ttl)
+            .or_else(|| {
+                req.system
+                    .0
+                    .iter()
+                    .rev()
+                    .find_map(|b| b.cache_control.as_ref().and_then(|c| c.ttl))
+            })
+            .unwrap_or(CacheTtl::FiveMinutes);
+        let ttl_str = match configured_ttl {
+            CacheTtl::FiveMinutes => "5m",
+            CacheTtl::OneHour => "1h",
+        };
         // 在最后一块 system block 上注入 cache_control(若尚无)。
         let mut system_blocks: Vec<Value> = req
             .system
@@ -779,7 +811,7 @@ impl From<ChatRequest> for AnthropicRequest {
                 .and_then(|v| v.get("cache_control"))
                 .is_some()
         {
-            let cc = serde_json::json!({"type": "ephemeral", "ttl": "5m"});
+            let cc = serde_json::json!({"type": "ephemeral", "ttl": ttl_str});
             system_blocks.last_mut().unwrap()["cache_control"] = cc;
         }
 
@@ -793,16 +825,24 @@ impl From<ChatRequest> for AnthropicRequest {
         // `cache_control: ephemeral`(由上游 `zhuye_prompt::inject_cache_control`
         // 写入 `req.cache_control: Vec<CacheBreak>`)。跳过 thinking 块
         // —— Anthropic API 拒绝在 thinking 内容上设置 cache_control。
+        // TTL 逐断点取请求层写入的配置值(见上方 configured_ttl)。
+        // v1.x:`cache_skip_write`(compact 摘要请求,借鉴 ZCode
+        // skipCacheWrite)—— 不在 compact prompt 消息上落写锚点,等效
+        // 「锚点前移到 compact prompt 之前的真实上下文」:压缩前最后一次
+        // 全上下文读吃满存量缓存,只付尾部增量写入。system 断点保留
+        // (前缀与主循环一致,天然命中)。
+        let skip_cache_write =
+            req.metadata.get("cache_skip_write").map(String::as_str) == Some("true");
         let message_break_indices: std::collections::HashSet<usize> = req
             .cache_control
             .iter()
             .map(|b| b.after_message_index)
             .filter(|&i| i < messages.len())
             .collect();
-        if !message_break_indices.is_empty() {
+        if !message_break_indices.is_empty() && !skip_cache_write {
             for idx in &message_break_indices {
                 if let Some(msg) = messages.get_mut(*idx) {
-                    attach_cache_break_to_message(msg, req.thinking.is_some());
+                    attach_cache_break_to_message(msg, req.thinking.is_some(), ttl_str);
                 }
             }
         }
@@ -827,13 +867,14 @@ impl From<ChatRequest> for AnthropicRequest {
         // M8:尾部 N 个工具附加 `cache_control: ephemeral`(由 `caching.rs`
         // 通过 `req.metadata["cache_break_tool"]` 标记启用)。
         // 这是在 system prompt 之后收益最高的 cache breakpoint —— 工具定义
-        // 体积大,且回合间几乎不变。
+        // 体积大,且回合间几乎不变。TTL 沿用请求层配置(见 configured_ttl)。
         if !tools.is_empty()
+            && !skip_cache_write
             && req.metadata.get("cache_break_tool").map(String::as_str) == Some("true")
         {
             let start = tools.len().saturating_sub(CACHE_TAIL_TOOLS);
             for t in &mut tools[start..] {
-                t["cache_control"] = serde_json::json!({"type": "ephemeral", "ttl": "5m"});
+                t["cache_control"] = serde_json::json!({"type": "ephemeral", "ttl": ttl_str});
             }
         }
 
@@ -844,10 +885,21 @@ impl From<ChatRequest> for AnthropicRequest {
         // 上层无感知。
         let tool_choice = match &req.response_format {
             Some(crate::request::ResponseFormat::JsonSchema { name, schema, .. }) => {
+                // v1.x:strict schema 折叠 —— 支持的关键字收紧为 strict 子集,
+                // 不支持的约束以自然语言附进 description(双保险:模型仍读
+                // 得到,引擎侧校验器仍强制);折不掉(anyOf/oneOf/非 object
+                // 根)回退原样发送。
+                let (input_schema, extra_desc) = match crate::schema_fold::fold_to_strict(schema) {
+                    Some(folded) => {
+                        let note = crate::schema_fold::notes_to_description(&folded.folded_notes);
+                        (folded.schema, note)
+                    }
+                    None => (schema.clone(), String::new()),
+                };
                 tools.push(serde_json::json!({
                     "name": STRUCTURED_OUTPUT_TOOL,
-                    "description": format!("Output the final answer as a JSON value conforming to this schema ({name})."),
-                    "input_schema": schema,
+                    "description": format!("Output the final answer as a JSON value conforming to this schema ({name}).{extra_desc}"),
+                    "input_schema": input_schema,
                 }));
                 Some(serde_json::json!({"type": "tool", "name": STRUCTURED_OUTPUT_TOOL}))
             }
@@ -900,13 +952,15 @@ impl From<ChatRequest> for AnthropicRequest {
 
 /// M8:为 Anthropic 消息的最后一块 content block 附加 `cache_control: ephemeral`。
 /// `thinking_enabled = true` 时跳过 thinking 块 —— Anthropic API 拒绝在
-/// thinking 内容上设置 cache_control。
+/// thinking 内容上设置 cache_control。`ttl_str` 为请求层写入的配置 TTL
+/// (5m / 1h;修复前此处硬编码 "5m",配置意图不生效)。
 /// - `{role: "user", content: [tool_result]}`:附加到 tool_result 块;
 /// - `{role: "user", content: [text,...]}`:附加到最后一块 text;
 /// - `{role: "assistant", content: [text|tool_use|thinking]}`:附加到最后一块
 ///   非 thinking 块(全为 thinking 时跳过)。
-fn attach_cache_break_to_message(msg: &mut Value, thinking_enabled: bool) {
-    let cc = || serde_json::json!({"type": "ephemeral", "ttl": "5m"});
+fn attach_cache_break_to_message(msg: &mut Value, thinking_enabled: bool, ttl_str: &str) {
+    let cc = || serde_json::json!({"type": "ephemeral", "ttl": ttl_str});
+    let mut attached = false;
     if let Some(content_arr) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
         // 从右向左遍历 content blocks;取首个非 thinking 块(在启用 thinking 时)。
         for block in content_arr.iter_mut().rev() {
@@ -922,11 +976,29 @@ fn attach_cache_break_to_message(msg: &mut Value, thinking_enabled: bool) {
                 "text" | "image" | "tool_use" | "tool_result" | "document"
             ) {
                 block["cache_control"] = cc();
-                return;
+                attached = true;
             }
             // 未知类型 —— 放弃,以避免发送无效的 wire 形状。
-            return;
+            break;
         }
+    }
+    // 审计改进:全 thinking / 空 content / 未知类型时会静默丢断点 ——
+    // 概率低,但命中率异常时无从排查,补一条 debug 日志。
+    if !attached {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+        let kinds: Vec<&str> =
+            msg.get("content")
+                .and_then(|c| c.as_array())
+                .map_or(Vec::new(), |arr| {
+                    arr.iter()
+                        .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
+                        .collect()
+                });
+        tracing::debug!(
+            role,
+            blocks = ?kinds,
+            "cache 断点未附加:消息无可附加的 content block(全 thinking / 空 / 未知类型)"
+        );
     }
 }
 

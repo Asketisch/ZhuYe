@@ -840,3 +840,69 @@ async fn anthropic_list_models_404_degrades_to_none() {
     let models = client.list_models(CancellationToken::new()).await.unwrap();
     assert!(models.is_none(), "404 = 端点无清单能力,应诚实降级为 None");
 }
+
+/// 审计修复(P1):配置 TTL 必须透传到 wire 的**全部三类断点** ——
+/// 修复前消息锚点(`cc` 闭包)/ 尾部工具 / system 兜底三处硬编码
+/// `"5m"`,`ZHUYE_CACHE_TTL=1h` 的配置意图不生效。本用例:消息锚点
+/// 断点带 1h + 工具尾部标记 + system 块无显式 cc(走兜底注入)→
+/// 三处 wire `cache_control.ttl` 均应为 `"1h"`。
+#[tokio::test]
+async fn anthropic_configured_ttl_reaches_all_breakpoints() {
+    use zhuye_llm::request::{CacheBreak, CacheTtl, SystemBlock, ToolSpec};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw("event: message_stop\ndata: {}\n\n", "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut req = basic_request();
+    // system 块不带 cache_control → 走兜底注入(应沿用配置 TTL)。
+    req.system = SystemBlocks(vec![SystemBlock {
+        text: "be helpful".into(),
+        cache_control: None,
+        ephemeral: false,
+    }]);
+    // 消息锚点断点(1h)+ 工具尾部断点标记。
+    req.cache_control.push(CacheBreak {
+        after_message_index: 0,
+        ttl: CacheTtl::OneHour,
+    });
+    req.tools.push(ToolSpec::Function {
+        name: "read".into(),
+        description: "Read a file".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    });
+    req.metadata
+        .insert("cache_break_tool".to_string(), "true".to_string());
+
+    let client = AnthropicClient::new(AnthropicConfig {
+        api_key: "k".into(),
+        base_url: Some(server.uri()),
+        timeout: Duration::from_secs(5),
+        temperature: None,
+        max_tokens: None,
+    })
+    .unwrap();
+    let mut stream = client.stream(req, CancellationToken::new()).await.unwrap();
+    // 排空 stream 以确保请求已发出。
+    while stream.next().await.is_some() {}
+    let received = server.received_requests().await.unwrap();
+    assert!(!received.is_empty());
+    let body: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("body 应为 JSON");
+
+    // 1. 消息锚点断点:messages[0] 末块 cache_control.ttl == "1h"。
+    let anchor = &body["messages"][0]["content"][0]["cache_control"];
+    assert_eq!(anchor["ttl"], "1h", "消息锚点 ttl 未透传: {body}");
+    // 2. 尾部工具断点。
+    let tool_cc = &body["tools"][0]["cache_control"];
+    assert_eq!(tool_cc["ttl"], "1h", "工具断点 ttl 未透传: {body}");
+    // 3. system 兜底断点(显式 cc 缺席 → 沿用配置 TTL)。
+    let sys_cc = &body["system"][0]["cache_control"];
+    assert_eq!(sys_cc["ttl"], "1h", "system 兜底 ttl 未透传: {body}");
+}
