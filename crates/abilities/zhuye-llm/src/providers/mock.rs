@@ -237,6 +237,34 @@ impl ModelClient for MockClient {
     {
         // 记录请求快照(测试可观测性;失败不影响主流程)。
         self.requests.lock().push(request.clone());
+        // v1.x 保温旁路:带 `warm_replay` 标记的合成重放**不消耗脚本行**
+        // —— 保温是引擎自发的额外调用,若照常 pop 脚本会破坏
+        // 「脚本行 ↔ 真实模型调用」的一一对应契约(离线测试的行序断言
+        // 会被偷行)。仍记录请求快照,`recorded_requests()` 可断言重放
+        // 形状;也不触发 config_error(合成路径不产生配置噪音)。
+        // 真实 provider 忽略未知 metadata 键,wire 不受影响。
+        if request
+            .metadata
+            .get(crate::cache_warming::METADATA_WARM_REPLAY)
+            .map(String::as_str)
+            == Some(crate::cache_warming::METADATA_WARM_REPLAY_VALUE)
+        {
+            let n = self.seq.fetch_add(1, Ordering::Relaxed);
+            let chunks: Vec<Result<ChatEvent, LlmError>> = vec![
+                Ok(ChatEvent::MessageStart {
+                    id: format!("msg_mock_warm_{n}"),
+                    model: DEFAULT_MOCK_MODEL.to_string(),
+                }),
+                Ok(ChatEvent::Usage {
+                    input_tokens: 0,
+                    output_tokens: 1,
+                    cached_tokens: 0,
+                    cache_write_tokens: 0,
+                }),
+                Ok(ChatEvent::MessageStop),
+            ];
+            return Ok(Box::pin(stream::iter(chunks)));
+        }
         // 配置错误(脚本读不到 / 全部行解析失败)显式报错,
         // 走 InvalidRequest(GiveUp 路径)→ engine 发 EventMsg::Error。
         if let Some(err) = &self.config_error {
@@ -593,5 +621,108 @@ mod tests {
                 None => std::env::remove_var(ENV_MOCK_SCRIPT),
             }
         }
+    }
+
+    /// v1.x 保温旁路:`warm_replay` 标记的请求不消耗脚本行,
+    /// 且仍进 `recorded_requests()` 供断言。
+    #[tokio::test]
+    async fn warm_replay_标记不消耗脚本行() {
+        let client = MockClient::with_script(vec![MockReply::Text {
+            text: "第一轮真实调用".into(),
+        }]);
+        // 构造带保温标记的合成请求。
+        let mut warm_req = ChatRequest::default();
+        warm_req.metadata.insert(
+            crate::cache_warming::METADATA_WARM_REPLAY.into(),
+            crate::cache_warming::METADATA_WARM_REPLAY_VALUE.into(),
+        );
+        let events = {
+            let s = client
+                .stream(warm_req, CancellationToken::new())
+                .await
+                .expect("保温重放不应失败");
+            futures::pin_mut!(s);
+            let mut out = Vec::new();
+            while let Some(ev) = s.next().await {
+                out.push(ev.expect("保温重放事件不应出错"));
+            }
+            out
+        };
+        // 重放流是合法的最小流(start → usage → stop)。
+        assert!(matches!(
+            events.first(),
+            Some(ChatEvent::MessageStart { .. })
+        ));
+        assert!(matches!(events.last(), Some(ChatEvent::MessageStop)));
+        // 脚本行未被消耗:下一次真实调用仍拿到第一行。
+        let text = {
+            let s = client
+                .stream(ChatRequest::default(), CancellationToken::new())
+                .await
+                .expect("真实调用不应失败");
+            futures::pin_mut!(s);
+            let mut out = Vec::new();
+            while let Some(ev) = s.next().await {
+                out.push(ev.expect("真实调用事件不应出错"));
+            }
+            out.iter()
+                .filter_map(|e| match e {
+                    ChatEvent::ContentDelta(d) => Some(d.clone()),
+                    _ => None,
+                })
+                .collect::<String>()
+        };
+        assert_eq!(text, "第一轮真实调用");
+        // 快照里有两条:重放在前、真实调用在后。
+        let recorded = client.recorded_requests();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(
+            recorded[0]
+                .metadata
+                .get(crate::cache_warming::METADATA_WARM_REPLAY)
+                .map(String::as_str),
+            Some(crate::cache_warming::METADATA_WARM_REPLAY_VALUE)
+        );
+        assert!(
+            !recorded[1]
+                .metadata
+                .contains_key(crate::cache_warming::METADATA_WARM_REPLAY)
+        );
+    }
+
+    /// Anthropic 的显式 thinking 请求不可保温重放;`OpenAIReasoning`
+    /// (wire 上映射为 thinking=None)可重放。
+    #[test]
+    fn anthropic_warming_replayable_按_thinking_形态判定() {
+        use crate::request::{ReasoningEffort, ThinkingConfig};
+        let client = crate::providers::AnthropicClient::new(crate::providers::AnthropicConfig {
+            api_key: "k".into(),
+            ..Default::default()
+        })
+        .expect("Anthropic client 构造不应失败");
+
+        let enabled = ChatRequest {
+            thinking: Some(ThinkingConfig::Enabled {
+                budget_tokens: 4000,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            !client.warming_replayable(&enabled),
+            "Enabled thinking 请求不可重放(max_tokens 必须 > budget_tokens)"
+        );
+
+        let reasoning = ChatRequest {
+            thinking: Some(ThinkingConfig::OpenAIReasoning {
+                effort: ReasoningEffort::Medium,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            client.warming_replayable(&reasoning),
+            "OpenAIReasoning 在 wire 上无 thinking,可重放"
+        );
+
+        assert!(client.warming_replayable(&ChatRequest::default()));
     }
 }
