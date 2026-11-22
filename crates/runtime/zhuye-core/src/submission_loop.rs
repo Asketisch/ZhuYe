@@ -576,7 +576,21 @@ pub async fn submission_loop(
                 let base: Vec<ChatMessage> =
                     if let Some(rec) = cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
                         match rec.replay(session_id).await {
-                            Ok(records) => crate::resume::records_to_preload(&records),
+                            Ok(records) => {
+                                let mut base = crate::resume::records_to_preload(&records);
+                                // v1.12 回归修复:子代理线程(factory 装配
+                                // rollout_base 后落独立 JSONL)首回合 replay
+                                // 只有 SessionMeta,若就此采用会**丢弃**
+                                // `preload_messages` —— 父上下文按需交接
+                                // (`context_tail` / pass_context_messages)
+                                // 整链断链。rollout 尚无对话记录(全新子
+                                // 会话)时用 preload 作种子历史;已有对话
+                                // 记录时维持 replay 口径,不重复叠加。
+                                if base.is_empty() {
+                                    base = std::mem::take(&mut *cfg.preload_messages.write());
+                                }
+                                base
+                            }
                             Err(e) => {
                                 // 回填失败不致命:退化为无历史轮(与 recorder
                                 // 缺席同款),本轮对话照常进行。

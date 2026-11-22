@@ -111,7 +111,13 @@ def test_并行子代理混合成功失败并汇总给父代理(sandbox, serve_s
                         for message in final_messages if message.get("role") == "tool"}
         assert tool_results["parallel-good"] == "慢速结果", tool_results
         assert "子代理请求被拒绝" in tool_results["parallel-bad"], tool_results
-        records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]
+        # v1.12:子代理会话落独立 JSONL 后,sessions 下有多个文件 ——
+        # 按场景标记定位**父会话**文件(此前 [-1] 依赖字典序恰好落在父
+        # 文件,子会话文件引入后不再成立)。
+        records = [json.loads(line) for line in next(
+            f for f in rollout_files(sandbox.home)
+            if "parallel-good" in f.read_text()
+        ).read_text().splitlines() if line]
         # v1.3 增量落盘:同回合的多条 assistant 分片先按 turn_id 归并
         # (与消费端 coalesce_turn_messages 同语义),再断言整回合块序。
         assistant = next(record for record in coalesce_turn_messages(records)

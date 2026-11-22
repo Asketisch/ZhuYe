@@ -117,8 +117,6 @@ zhuye-compact    = { path = "crates/abilities/zhuye-compact" }
 zhuye-recovery   = { path = "crates/abilities/zhuye-recovery" }
 zhuye-notes      = { path = "crates/abilities/zhuye-notes" }
 zhuye-sanitize   = { path = "crates/abilities/zhuye-sanitize" }
-zhuye-kms        = { path = "crates/integrations/zhuye-kms" }
-zhuye-eval       = { path = "crates/abilities/zhuye-eval" }
 
 # ── resources ── 配置/权限/插件/可观测性
 zhuye-config      = { path = "crates/resources/zhuye-config" }
@@ -127,7 +125,6 @@ zhuye-plugin      = { path = "crates/resources/zhuye-plugin" }
 zhuye-rollout     = { path = "crates/resources/zhuye-rollout" }
 zhuye-telemetry   = { path = "crates/resources/zhuye-telemetry" }
 zhuye-sandbox     = { path = "crates/resources/zhuye-sandbox" }
-zhuye-audit       = { path = "crates/resources/zhuye-audit" }
 zhuye-secrets     = { path = "crates/resources/zhuye-secrets" }
 zhuye-fs          = { path = "crates/resources/zhuye-fs" }
 zhuye-git         = { path = "crates/resources/zhuye-git" }
@@ -146,18 +143,12 @@ zhuye-mcp         = { path = "crates/integrations/zhuye-mcp" }
 zhuye-lsp         = { path = "crates/integrations/zhuye-lsp" }
 zhuye-integration = { path = "crates/integrations/zhuye-integration" }
 zhuye-stream      = { path = "crates/integrations/zhuye-stream" }
-zhuye-import      = { path = "crates/integrations/zhuye-import" }
 zhuye-computer-use = { path = "crates/integrations/zhuye-computer-use" }
-zhuye-browser = { path = "crates/integrations/zhuye-browser" }
-zhuye-shell      = { path = "crates/integrations/zhuye-shell" }
-zhuye-git-tools  = { path = "crates/integrations/zhuye-git-tools" }
 
 # ── runtime ── 运行时与入口
 zhuye-core = { path = "crates/runtime/zhuye-core" }
 zhuye-exec = { path = "crates/runtime/zhuye-exec" }
-zhuye-cli  = { path = "crates/runtime/zhuye-cli" }
 zhuye      = { path = "crates/runtime/zhuye" }
-zhuye-py   = { path = "crates/runtime/zhuye-py" }
 
 # 公共外部依赖
 tokio              = { version = "1", features = ["full"] }
@@ -171,9 +162,6 @@ anyhow             = "1"
 thiserror          = "1"
 tiktoken-rs = "0.12"
 clap               = { version = "4", features = ["derive"] }
-# S2:TUI 反射 `TaskManager::list_tasks`(async)—— 用 pollster 在 sync 上下文
-# block_on,免去给整个 App 套 tokio runtime。pollster 无依赖、~200 LOC。
-pollster           = "0.4"
 # pyo3 ≥ 0.27 才正式支持 Python 3.14 final(0.25/0.26 仅支持 3.14 beta);
 # 0.30 进一步支持 3.15;rmcp / rusqlite 安全升级把仓库 MSRV 提到 1.89。
 # 旧版 0.23 在 CI runner
@@ -205,7 +193,6 @@ uuid     = { version = "1", features = ["v4", "v7", "serde"] }
 eventsource-stream = "0.2"
 
 # 工具
-walkdir = "2"
 ignore  = "0.4"
 similar = "2"
 regex   = "1"
@@ -233,9 +220,6 @@ minijinja = "2"
 
 # Rollout 回放
 chrono = { version = "0.4", features = ["serde"] }
-
-# 记忆(M4 可能切换到 rusqlite)
-sled = "0.34"
 
 # 会话导入(zhuye-import):ZCode 历史存于 SQLite;bundled 自带 C 源,
 # 免系统依赖。仅 zhuye-import 消费,不进 SDK facade。

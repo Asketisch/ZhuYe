@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from wire import first_event, rollout_files, rollout_thread_id
+from wire import first_event, rollout_files
 
 
 @pytest.mark.parametrize("partial", [False, True], ids=["调用前失败", "部分回复后失败"])
@@ -90,13 +90,19 @@ def test_子代理失败不能作为成功结果并可恢复(sandbox, serve_sess
         _assert_failed_tool_history(requests[2], expected_error, expected_message)
         _assert_failed_tool_history(requests[3], expected_error, expected_message)
 
-        records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]
+        # v1.12:子代理会话落独立 JSONL 后,sessions 下有多个文件 ——
+        # 按场景标记(delegate-call 仅出现在父会话)定位父会话文件,
+        # 此前 [-1] 依赖字典序恰好落在父文件,不再成立。resume 目标也
+        # 从该文件取 thread id(rollout_thread_id 的 [-1] 会命中子会话)。
+        parent_file = next(f for f in rollout_files(sandbox.home)
+                           if "delegate-call" in f.read_text())
+        records = [json.loads(line) for line in parent_file.read_text().splitlines() if line]
         blocks = [block for record in records if record.get("role") == "assistant"
                   for block in record.get("content", []) if isinstance(block, dict)]
         result = next(b for b in blocks if b.get("type") == "tool_result" and b.get("call_id") == "delegate-call")
         assert result["output"]["is_error"] is True, result
         assert expected_error in str(result) and expected_message in str(result), result
-        tid = rollout_thread_id(sandbox.home)
+        tid = parent_file.stem
         with serve_session(args=["--resume", tid], env=env) as resumed:
             third = resumed.submit({"type": "user_input", "items": [
                 {"type": "text", "text": "重启后继续"}
