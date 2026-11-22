@@ -55,7 +55,7 @@ def test_默认入口各层只运行一次且不跳过工作区(runner_tree) -> 
         "functional|0", "rust|0", "sdk-python|0", "sdk-ts|0", "native-python|0",
     ]
     builds = (root / "cargo.log").read_text().splitlines()
-    assert any("-p zhuye-cli" in line and "-p zhuye-import" in line for line in builds)
+    assert any("-p zhuye-cli" in line for line in builds)
     assert any("-p zhuye-kms" in line and "-p zhuye-shell" in line for line in builds)
     assert any("-p zhuye-mcp" in line for line in builds)
 
@@ -119,7 +119,7 @@ def test_能力层缺少插件二进制时失败(runner_tree) -> None:
                             capture_output=True, timeout=10)
     assert result.returncode != 0
     assert "缺少能力测试二进制" in result.stderr
-    assert "zhuye-import" in result.stderr
+    assert "zhuye-kms-server" in result.stderr
 
 
 def test_examples隔离HOME时沿用已有工具链(runner_tree) -> None:

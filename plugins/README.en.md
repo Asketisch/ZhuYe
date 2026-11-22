@@ -30,7 +30,6 @@ install / enable / marketplace / troubleshooting see
 | [`computer-use/`](computer-use/) | `computer-use` | Screen / mouse / keyboard control (xcap + enigo; build the binary first) |
 | [`git-tools/`](git-tools/) | `git-tools` | git workflow: branch / PR / diff probing + checkpoint snapshots + Stop auto-checkpoint (build the binary first) |
 | [`shell/`](shell/) | `shell` | Resident shell session pool: launch processes / read output incrementally / write stdin / kill (build the binary first) |
-| [`harness-import/`](harness-import/) | `harness-import` | Imports external Harness (Claude Code / Codex / ZCode) conversation history; one-click import of another local agent's model / MCP config (build the binary first) |
 | [`goal-queue/`](goal-queue/) | `goal-queue` | Goal mode (the goal tool) + FIFO queue mode (the queue tool; gated form, off by default) |
 | [`kms/`](kms/) | `kms` | Local Markdown knowledge base: multi-wiki pagination + grep search + dream consolidation (build the binary first) |
 | [`web-search/`](web-search/) | `web-search` | The `web_search` tool (Brave API; gated form, **on by default**) |

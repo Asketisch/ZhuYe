@@ -18,7 +18,7 @@
 | slash 命令 | `commands` | `commands/*.md` prompt 模板 |
 | 子代理 | `agents` | `agents/*.md`,注册 `call_<role>` 工具 |
 | 技能 | `skills` | `skills/<name>/SKILL.md`,`load_skill` 按需激活 |
-| hooks | `hooks` | Claude Code 风格 `hooks.json`(shell 子进程或 WASM 组件) |
+| hooks | `hooks` | 外部 agent 风格 `hooks.json`(shell 子进程或 WASM 组件) |
 | MCP server | `mcp_servers` | `.mcp.json`,stdio / streamable-http 工具注入 |
 | WASM 组件工具 | `wasm_tools` | 实现 `zhuye:plugin` WIT 世界的 `.wasm` 文件 |
 
@@ -42,7 +42,6 @@ README)。下表中的「id」是启用 / 卸载时用的 `name@marketplace` 全
 | [`computer-use/`](../plugins/computer-use/) | `computer-use` | `computer-use@inline` | 屏幕 / 鼠标 / 键盘操作(xcap + enigo,需先构建二进制;macOS 需授予屏幕录制与辅助功能权限) |
 | [`git-tools/`](../plugins/git-tools/) | `git-tools` | `git-tools@inline` | git 工作流:分支 / PR / diff 探测 + checkpoint 快照 + Stop 自动 checkpoint(需先构建二进制) |
 | [`shell/`](../plugins/shell/) | `shell` | `shell@inline` | 常驻 shell 会话池:后台启动进程、增量读输出、写 stdin、kill,适合 REPL / dev server(需先构建二进制) |
-| [`harness-import/`](../plugins/harness-import/) | `harness-import` | `harness-import@inline` | 导入外部 harness(Claude Code / Codex / ZCode)历史会话;一键导入其他本地 agent 的模型 / MCP 配置(需先构建二进制) |
 | [`goal-queue/`](../plugins/goal-queue/) | `goal-queue` | `goal-queue@inline` | 目标模式 + FIFO 队列模式:启用后注册 `goal` / `queue` 工具并启动队列 driver(门控型,默认关) |
 | [`kms/`](../plugins/kms/) | `kms` | `kms@inline` | 本地 Markdown 知识库:多 wiki 分页 + grep 检索 + 洞见固化(dream)(需先构建二进制) |
 | [`web-search/`](../plugins/web-search/) | `web-search` | `web-search@inline` | `web_search` 工具(Brave API)。**门控型,默认开**;disable 即工具不注册(区别于 `[active].disallowed_tools` 仅隐藏) |
@@ -197,7 +196,7 @@ zhuye plugin marketplace remove local-mkt
 进一步排查:① JSONL 事件流找 `plugin_loaded`(没有 = 挂载失败);
 ② stderr 日志 —— 单插件 / 单能力失败只 `tracing::warn!`
 (如 hook 未知事件名、缺 command、MCP server 启动失败都在这里);
-③ 二进制类插件(computer-use / git-tools / shell / harness-import /
+③ 二进制类插件(computer-use / git-tools / shell /
 kms)确认已跑对应构建脚本(`./scripts/build_*_plugin.sh`),否则
 `${PLUGIN_ROOT}/bin/...` 指向缺失文件;④ CLI 改完 enable / disable
 后重启 `zhuye exec`(CLI 不跨进程热重载)。

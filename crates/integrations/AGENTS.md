@@ -1,4 +1,4 @@
-**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、外部 Harness 会话导入、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki 或安全扫描/通知时读本篇 —— 本层 10 个 crate 均无独立篇,它们的本地契约以本篇为准。
+**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki 或安全扫描/通知时读本篇 —— 本层 9 个 crate 均无独立篇,它们的本地契约以本篇为准。
 
 # crates/integrations/ —— 外部系统接入层
 
@@ -8,7 +8,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ## crate 职责速览表
 
-本层 10 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
+本层 9 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
 
 | crate | 一句话职责 | 本地契约在哪 |
 |---|---|---|
@@ -16,7 +16,6 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 | `zhuye-lsp` | LSP 客户端:以单一 `lsp` 工具承载 definition / references / hover | LSP 客户端 |
 | `zhuye-integration` | 安全扫描(cargo audit 包装)与 Webhook 通知 | 外部集成 |
 | `zhuye-stream` | 流式会话后端:cron 定时 / autopilot 自动驾驶 / FIFO 队列 / 工作区同步 | 流式后端 |
-| `zhuye-import` | 外部 Harness(Claude Code / Codex / ZCode)会话与配置导入 | 会话导入 |
 | `zhuye-computer-use` | Computer Use:截屏与键鼠输入,含 a11y 寻址与动作后验 | Computer Use |
 | `zhuye-browser` | 浏览器控制:CDP 驱动本机浏览器,复用 a11y 寻址与快照绑定 | 浏览器控制 |
 | `zhuye-shell` | 常驻 shell 会话池:启动进程 / 增量读 / 写 stdin / kill | 常驻 shell |
@@ -55,15 +54,6 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 - 模块:`cron`、`autopilot`、`queue`、`workspace_sync`、`postgres_session`、`sse_redis`。
 - `queue` 是 session 级 FIFO 任务队列(`QueueScheduler`),以 `plugins/goal-queue` 形态交付;`cron` / `autopilot` 的类型由 `zhuye` 门面再导出(`crates/runtime/zhuye/src/lib.rs`)。
 - 依赖 `zhuye-protocol` / `zhuye-config` / `zhuye-fs`;持久化路径沿用 `zhuye-config` 的运行时目录约定。
-
-### 会话导入(`zhuye-import`)
-
-- 产物是**独立二进制** `zhuye-import`(`crates/integrations/zhuye-import/src/bin/zhuye-import.rs`),不是 `zhuye` 的子命令(见 `docs/cli.md` 的「独立二进制」一节)。
-- 双模式:直跑模式(终端批量导入)与 MCP 模式(`zhuye-import mcp`,stdio MCP server),后者供 `plugins/harness-import` 经 LLM 调用。
-- 适配器分层固定:`ImportSource → HarnessAdapter::parse → ImportedSession(IR) → convert → RolloutRecord → write`(`crates/integrations/zhuye-import/src/adapter.rs`、`crates/integrations/zhuye-import/src/convert.rs`、`crates/integrations/zhuye-import/src/write.rs`);新增来源只加一个 adapter 模块 + 注册一行。
-- 幂等:源 id 合法 UUID 时原样保留为 thread id,重复导入命中 `AlreadyExists`。
-- 落盘复用 `zhuye-rollout::serialize_redacted`,脱敏与截断口径与原生会话一致。
-- 本 crate 不进 SDK facade,`zhuye` 门面与 `zhuye-cli` 都不依赖它。
 
 ### Computer Use(`zhuye-computer-use`)
 
@@ -109,7 +99,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 - wire 变体只在 `crates/protocol/zhuye-protocol` 定义;本层不得自定义协议变体,需要新能力先在协议层加变体。
 - 对外暴露的能力走 `Tool` trait 并注册进工具注册表,不要绕过注册表直接调用。
-- `zhuye-import` / `zhuye-computer-use` / `zhuye-shell` / `zhuye-git-tools` / `zhuye-kms` 是 `plugins/*` 的能力本体:按插件形态挂载,不进 SDK facade。
+- `zhuye-computer-use` / `zhuye-shell` / `zhuye-git-tools` / `zhuye-kms` 是 `plugins/*` 的能力本体:按插件形态挂载,不进 SDK facade。
 - `zhuye-stream` 的 `cron` / `autopilot` / `queue` 属引擎内建能力(由 `zhuye` 门面再导出),与插件形态分开处理。
 
 ## 本层通用规则
@@ -119,11 +109,11 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 3. 第三方库的错误类型不外泄到本层公开 API:在 crate 内收敛为带上下文的错误变体再上抛。
 4. crate 头部注释里的「已实现 / 未实现」清单是范围声明,增删能力时同步维护,不要让清单与实现漂移。
 5. 改动本层能力面时,按根 `AGENTS.md` 的开发流程检查表同步能力覆盖用例与覆盖矩阵。
-6. **新增外部集成默认走插件形态** —— 接入新的外部系统时,先按根 `AGENTS.md` 检查表第 1 步做形态判断:默认路径是独立二进制或 MCP server + `plugins/*` 挂载(先例见「跨层边界」一节的 computer-use / shell / git-tools / import);只有判断确认内置(进 SDK facade / 全用户必需)才直接新增 integrations crate。
+6. **新增外部集成默认走插件形态** —— 接入新的外部系统时,先按根 `AGENTS.md` 检查表第 1 步做形态判断:默认路径是独立二进制或 MCP server + `plugins/*` 挂载(先例见「跨层边界」一节的 computer-use / shell / git-tools);只有判断确认内置(进 SDK facade / 全用户必需)才直接新增 integrations crate。
 
 ## 深入阅读
 
 - [docs/architecture.md](../../docs/architecture.md) —— 六层分层、依赖方向与本层职责
 - [docs/plugins.md](../../docs/plugins.md) —— 插件机制:本层能力本体如何挂载
-- [docs/cli.md](../../docs/cli.md) —— 独立二进制 `zhuye-import` 与 CLI 子命令边界
+- [docs/cli.md](../../docs/cli.md) —— CLI 子命令边界与独立二进制
 - [crates/protocol/zhuye-protocol/src/op.rs](../../crates/protocol/zhuye-protocol/src/op.rs) —— wire 变体的唯一定义处

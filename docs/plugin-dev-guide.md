@@ -156,7 +156,7 @@ tools: [bash]
 
 ### 3.4 hooks —— 事件守卫
 
-`hooks.json`(Claude Code 风格):
+`hooks.json`(外部 agent 风格):
 
 ```json
 {

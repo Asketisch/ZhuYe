@@ -27,7 +27,6 @@
 | `build_computer_use_plugin.sh` | 构建 Computer Use 插件二进制 |
 | `build_browser_plugin.sh` | 构建 Browser 插件二进制(CDP;装插件前必跑) |
 | `build_git_tools_plugin.sh` | 构建 Git Tools 插件二进制 |
-| `build_import_plugin.sh` | 构建 harness-import 插件二进制并装配进插件目录 |
 | `build_kms_plugin.sh` | 构建 KMS 插件二进制(装插件前必跑) |
 | `build_shell_plugin.sh` | 构建 Shell 插件二进制(装插件前必跑) |
 | `build_plugin_demo_wasm.sh` | 构建 plugin-demo 的 Rust WASM 组件样例 |
@@ -67,6 +66,19 @@
 | 脚本 | 一句话职责 |
 |---|---|
 | `check_prompt_sources.py` | 对比提示词方案固定版与上游分支(`zhuye-prompt/prompts/sources.json` 登记来源),产出维护者审核报告 |
+
+### 门禁
+
+| 脚本 | 一句话职责 |
+|---|---|
+| `check_brand_names.py` | 品牌名门禁:工作树与提交信息命中其它产品品牌名即失败(豁免只限外部生态格式标识符与厂商 API 名 / 模型 id) |
+| `check_stale_doc_phrases.py` | 作废说法门禁:现状文档命中已作废表述即失败 |
+
+- 两者均以 `python3 scripts/<name>.py` 运行;`check_brand_names.py` 还要扫描
+  提交信息,需完整克隆(`git fetch --unshallow`)。品牌名登记表在
+  `BRAND_PATTERNS`,豁免字面量在 `EXEMPT_PATTERNS` —— **豁免必须窄到具体
+  字面量**,不得放宽成整类。`scripts/e2e.sh` 的「品牌残留扫描」一步会调用
+  它(只扫工作树,不扫历史)。
 
 ### 模型目录快照
 

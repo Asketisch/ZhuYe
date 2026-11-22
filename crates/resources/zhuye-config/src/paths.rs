@@ -90,7 +90,7 @@ pub fn user_agents_skills_dir() -> Option<PathBuf> {
 /// 工作区级通用 agent skill 目录：`<workspace>/.agents/skills`。
 ///
 /// 与 [`user_agents_skills_dir`] 同约定，作用域为当前工作区；随仓库
-/// 分发（可入 VCS），供烛夜与其他 agent（Cursor / Codex 等）共享技能。
+/// 分发（可入 VCS），供烛夜与其他 agent 共享技能。
 pub fn project_agents_skills_dir(workspace: &Path) -> PathBuf {
     workspace.join(".agents").join("skills")
 }

@@ -21,7 +21,7 @@
 //!
 //! ## 为什么 `exit 2 = deny` 要显式兼容
 //!
-//! Claude Code 的 shell hook 约定 exit 2 = 阻止。很多社区 hook 按这个
+//! 外部 shell hook 的通用约定 exit 2 = 阻止。很多社区 hook 按这个
 //! 约定写。本模块显式兼容它 —— 不兼容意味着用户从别处搬来的 hook 会
 //! **静默失效**(exit 2 被当成普通错误忽略)。
 
@@ -125,7 +125,7 @@ impl HookVerdict {
         matches!(self, HookVerdict::Deny { .. })
     }
 
-    /// 从 shell hook 的退出码 + stdout 解析(兼容 Claude Code 约定)。
+    /// 从 shell hook 的退出码 + stdout 解析(兼容外部 hook 约定)。
     ///
     /// - exit 0 + 空 stdout → Allow
     /// - exit 0 + 非空 stdout → Inject(把 stdout 当提醒)

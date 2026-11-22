@@ -241,7 +241,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         }),
         ..Default::default()
     };
-    // v1.12:上下文组成计量(六类估算分解)—— 对标 ZCode 的 context
+    // v1.12:上下文组成计量(六类估算分解)—— 对标同类 agent 的 context
     // composition:system_prompt / memory / skills(临时层) /
     // tool_schemas(内置)/ mcp_tools(外部)/ messages。复用 compact 的
     // 全局估算器,估算值非精确计量;组成指纹无变化时省略不发。
@@ -1128,7 +1128,7 @@ mod cancellation_tests {
 
 /// v1.12:上下文组成计量 + `ContextComposition` 事件发射(指纹去重)。
 ///
-/// 六类分解(对齐 ZCode context composition 形态,按烛夜组装段归并):
+/// 六类分解(对齐 context composition 形态,按烛夜组装段归并):
 /// - `system_prompt`:system 块 core 文本扣除记忆与 checklist 注入段
 /// - `memory`:pre_loop 检索注入的记忆文本
 /// - `skills`:ephemeral `<system-reminder>` 块(技能目录 + 工具目录
