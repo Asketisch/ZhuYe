@@ -109,10 +109,10 @@ impl PlanApprovalGate {
         let (tx, rx) = oneshot::channel::<PlanApprovalChoice>();
         self.waiters.lock().insert(plan_id, tx);
         if let Some(reg) = &self.pending {
+            // map_or 形式:满足 clippy 新的 map_unwrap_or 默认 lint(1.100 起)。
             let created_at_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or_default();
+                .map_or(0, |d| d.as_millis() as u64);
             crate::approval::pending_register(
                 reg,
                 PendingInteraction {

@@ -1149,18 +1149,17 @@ async fn emit_context_composition_if_changed(
 ) {
     use std::hash::{Hash, Hasher};
 
+    // map_or_else 形式:满足 clippy 新的 map_unwrap_or 默认 lint(1.100 起)。
     let core_text = state
         .system_blocks
         .0
         .first()
-        .map(|b| b.text.clone())
-        .unwrap_or_default();
+        .map_or_else(String::new, |b| b.text.clone());
     let ephemeral_text = state.ephemeral_text.clone();
     let memory_text = state
         .prompt_core
         .as_ref()
-        .map(|c| c.memory.clone())
-        .unwrap_or_default();
+        .map_or_else(String::new, |c| c.memory.clone());
     let checklist_text = state
         .prompt_core
         .as_ref()
