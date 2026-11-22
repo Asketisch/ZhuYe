@@ -101,6 +101,13 @@ impl Compactor {
         }
     }
 
+    /// v1.x:压缩触发水位(只读)。调用方(rapid-refill 熔断器预检)据
+    /// 此廉价判定「本次 pre_loop 是否会真的触发压缩」—— 只有真触发才
+    /// 计入 refill 连击,避免把未超阈值的普通步也当 refill。
+    pub fn trigger_tokens(&self) -> u32 {
+        self.cfg.trigger_tokens
+    }
+
     /// v1.4 D2:挂载记忆固化目标(bootstrap 在配置开启时调用)。
     pub fn with_memory_consolidation(
         mut self,

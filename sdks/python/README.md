@@ -204,7 +204,7 @@ event = agent.next_global_event(timeout_secs=5)   # 阻塞读一条;超时抛 qu
 ### 会话控制 Op(submit_op)
 
 `submit_op(op)` 发任意协议 Op 并返回事件迭代器(非 turn Op 以
-`submission_closed` 收尾)。Op 全集(26 种,与 Rust 协议一一对应,
+`submission_closed` 收尾)。Op 全集(27 种,与 Rust 协议一一对应,
 类型见 `zhuye.Op`):
 
 | 类别 | Op | 关键字段 |
@@ -306,6 +306,8 @@ evs = list(agent.submit_op({
 | `submission_closed` | submission | 该提交通道排空(非 turn Op 的收尾标记) |
 | `prompt_list` / `prompt_switched` | `selection`, `profile`, `fallback_reason` | 提示词选择结果，包含生效方案和回落原因 |
 | `turn_rewound` / `config_reloaded` / `collab_*` / `mcp_server_*` / `mcp_tool_invoked` / `lsp_server_*` / `plugin_loaded` / `quota_exhausted` / `routing` | — | 其余变体见 protocol.py |
+| `cache_warming` | 全局 | **v1.x 新增(additive)**:prompt cache 保温状态(`[cache_warming] enabled` 开启,默认关)。`action ∈ scheduled/executed/skipped/cancelled`,`phase ∈ turn/idle`;`warm_cached_tokens` 可与后续 `token_count.cached_tokens` 对照验证保温收益 |
+| `stream_recovery_started` / `stream_recovery_anchor_selected` / `stream_recovery_tail_discarded` / `stream_recovery_retry_started` | 全局 | **v1.x 新增(additive)**:流锚点恢复事件族(可重试流错误 + 已有可见增量时从安全锚点重开);`tail_discarded` 的丢弃留痕落 rollout 且 resume 不回放。与 `stream_error` / `agent_message_reset` 并存,后两者管客户端缓冲清理 |
 | `UnknownEventMsg` 形态 | 任意 | 未识别变体降级(`type` 保留原值),保证前向兼容 |
 
 OpenAI 兼容流、Responses 和 Anthropic 的并行工具参数按 `call_id` 归属;首个工具实时发送增量,

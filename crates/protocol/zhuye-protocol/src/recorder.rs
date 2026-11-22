@@ -168,6 +168,56 @@ pub enum RolloutRecord {
         #[serde(default)]
         after_tokens: u32,
     },
+    /// v1.x:流锚点恢复时**丢弃的尾部输出**留痕(审计用,不参与 resume
+    /// 回放)。流式输出中途遇可重试错误时,已累积的半成品文本 / 思考被
+    /// 丢弃并从锚点重开 —— 此前这些字节就地蒸发,命中率排查与审计均无
+    /// 从下手。独立变体而非 `Message` + metadata:resume 回放跳过本变体,
+    /// 丢弃内容**永不**回到模型上下文。
+    StreamRecoveryDiscarded {
+        /// 发生恢复的 turn。
+        turn_id: TurnId,
+        /// 失败原因码(与 `stream_error.code` 同源)。
+        reason_code: String,
+        /// 丢弃的文本字符数。
+        text_chars: u64,
+        /// 丢弃的思考字符数。
+        thinking_chars: u64,
+        /// 丢弃文本的前 200 字符预览(审计可读;全量不落盘)。
+        preview: String,
+        /// 发生时间。
+        at: chrono::DateTime<chrono::Utc>,
+    },
+    /// v1.x:Prompt Snapshot —— 会话级 system 前缀字节快照(借鉴 ZCode
+    /// prompt-snapshot:跨重启 / 跨升级保持已发送前缀字节不变,prompt
+    /// cache 不因重新渲染而全量失效)。首个成功模型调用后写入;压缩 /
+    /// 工具集变更 / prompt 切换等代际失效由内存槽管理(见 zhuye-core),
+    /// 本记录是**恢复源**:resume 时取最后一条、model 匹配当前模型才激活。
+    /// system_json = `Vec<SystemBlock>` 的序列化(serde 直存)。
+    PromptSnapshot {
+        /// 快照适用的完整 model spec(如 `"anthropic/claude-sonnet-4-latest"`)。
+        model: String,
+        /// system 块数组(`zhuye_llm::SystemBlocks` 序列化)。
+        system_json: serde_json::Value,
+        /// 快照时间。
+        at: chrono::DateTime<chrono::Utc>,
+    },
+    /// v1.x:输入守恒 ledger(借鉴 ZCode session_input)—— 每个进入
+    /// 引擎的 turn 的**终态处置**显式落盘。与 turn 的 Message 记录配对:
+    /// 有 Message 而无对应 InputDisposition = 崩溃窗口(引擎在 turn 进行
+    /// 中被杀),resume 对账据此显式告知「该输入未完成」,**永不静默重放**
+    /// (是否重发由用户决定)。
+    InputDisposition {
+        /// 处置的 turn。
+        turn_id: TurnId,
+        /// 处置结果:`promoted`(turn 正常完成)/ `aborted`(用户中断 /
+        /// 会话关闭)/ `failed`(turn 内部错误)/ `discarded`
+        /// (`session_resumed`:重启对账判定为崩溃遗留)。
+        disposition: String,
+        /// 细分原因(如 `user_interrupt` / `shutdown` / `error:<code>`)。
+        reason: String,
+        /// 处置时间。
+        at: chrono::DateTime<chrono::Utc>,
+    },
     /// 由 `SubAgentFactory::fork` 发出,标记一个分支会话。
     Fork {
         /// 父会话 ID(派生子代理的会话)。

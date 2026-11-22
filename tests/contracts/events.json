@@ -440,6 +440,43 @@
           "tokens": 3400
         }
       ]
+    },
+    "cache_warming": {
+      "type": "cache_warming",
+      "action": "executed",
+      "phase": "idle",
+      "prompt_tokens": 12000,
+      "warm_cached_tokens": 11500,
+      "warm_cost_usd": 0.0173,
+      "expected_savings_usd": 0.12,
+      "model": "anthropic/claude-sonnet-5-5",
+      "at": 1700000000
+    },
+    "stream_recovery_started": {
+      "type": "stream_recovery_started",
+      "reason_code": "sse_parse_error",
+      "attempt": 1,
+      "transient": "provider_stream_error"
+    },
+    "stream_recovery_anchor_selected": {
+      "type": "stream_recovery_anchor_selected",
+      "reason_code": "sse_parse_error",
+      "attempt": 1,
+      "anchor": "previous_message"
+    },
+    "stream_recovery_tail_discarded": {
+      "type": "stream_recovery_tail_discarded",
+      "reason_code": "sse_parse_error",
+      "attempt": 1,
+      "discarded_text_chars": 1200,
+      "discarded_thinking_chars": 300
+    },
+    "stream_recovery_retry_started": {
+      "type": "stream_recovery_retry_started",
+      "reason_code": "sse_parse_error",
+      "attempt": 1,
+      "anchor": "previous_message",
+      "retry_in_ms": 500
     }
   }
 }

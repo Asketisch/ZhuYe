@@ -170,9 +170,21 @@ pub struct ToolExecutionQueue {
     /// `None`(未注入)时维持旧行为,向后兼容。
     session_permission_mode: Option<Arc<parking_lot::RwLock<PermissionMode>>>,
     permission_resolver: Option<Arc<dyn zhuye_permissions::PermissionResolver>>,
+    /// v1.x:工具结果预算(超长输出落盘 + 信封替换)。`None`(默认,
+    /// 未接线)= 历史 no-op 行为;exec/bootstrap 按 `[tool_results]` 配置
+    /// 构造注入。应用点:成功输出的 sanitizer 之后、PostToolUse hook
+    /// 之前(hook 与模型看到同一份预算后输出)。
+    result_budget: Option<Arc<crate::result_budget::ResultBudget>>,
 }
 
 impl ToolExecutionQueue {
+    /// v1.x:注入工具结果预算(超长输出落盘 + 信封替换)。`None`/未调用
+    /// = 历史 no-op 行为(向后兼容;core 测试与旧嵌入方零变化)。
+    pub fn with_result_budget(mut self, budget: Arc<crate::result_budget::ResultBudget>) -> Self {
+        self.result_budget = Some(budget);
+        self
+    }
+
     /// 用自定义 `base_ctx`、并发上限与
     /// sanitizer. 默认 sanitizer = `Sanitizer::with_defaults()`(10 个
     /// 默认 pattern 启用)。
@@ -188,6 +200,7 @@ impl ToolExecutionQueue {
             max_concurrency
         };
         Self {
+            result_budget: None,
             registry,
             hook_engine,
             base_ctx,
@@ -330,10 +343,35 @@ impl ToolExecutionQueue {
         gate: Option<Arc<ApprovalGate>>,
         forwarder: Option<Arc<crate::tool::ToolEventForwarder>>,
     ) -> Vec<ToolResult> {
+        // v1.x(tool-defer):把 `deferred_call` 调用**在派发前**展开为
+        // 真实工具调用 —— 展开发生在 ApprovalGate 与 PreToolUse 之前,
+        // 审批 / hook / 权限 floor 全部按真实工具走(不是权限旁路)。
+        // 真实工具不存在时保持原样交回(execute_single 以 not found 报错)。
+        let mut calls: Vec<ToolCallRequest> = calls
+            .into_iter()
+            .map(|mut c| {
+                if c.name != crate::builtins::deferred_call::DEFERRED_CALL_TOOL_NAME {
+                    return c;
+                }
+                let real_name = c.args.get("name").and_then(Value::as_str);
+                let Some(real_name) = real_name else {
+                    return c;
+                };
+                if self.registry.get(real_name).is_none() {
+                    return c;
+                }
+                tracing::debug!(from = %c.name, to = real_name, "deferred_call 展开为真实调用");
+                c.name = real_name.to_string();
+                if let Some(args) = c.args.get("args") {
+                    c.args = args.clone();
+                }
+                c
+            })
+            .collect();
         // 按并发安全性切分。需保留原始下标,保证最终结果顺序与输入一致。
         let mut indexed_safe: Vec<(usize, ToolCallRequest)> = Vec::new();
         let mut indexed_unsafe: Vec<(usize, ToolCallRequest)> = Vec::new();
-        for (i, c) in calls.into_iter().enumerate() {
+        for (i, c) in std::mem::take(&mut calls).into_iter().enumerate() {
             match self.registry.get(&c.name) {
                 Some(t) if t.is_concurrency_safe() => indexed_safe.push((i, c)),
                 _ => indexed_unsafe.push((i, c)),
@@ -957,6 +995,12 @@ impl ToolExecutionQueue {
                             };
                         }
                     }
+                }
+                // v1.x:结果预算(超长输出落盘 + 信封替换)在脱敏之后、
+                // PostToolUse hook 之前应用 —— hook 与模型看到同一份
+                // 预算后输出。未接线(None)= 历史 no-op。
+                if let Some(budget) = self.result_budget.as_ref() {
+                    crate::result_budget::apply(&mut output, &call.name, &call.id, budget);
                 }
                 // v1.9 C1/C2:登记成功输出指纹(进度证据)。
                 let success_text = output

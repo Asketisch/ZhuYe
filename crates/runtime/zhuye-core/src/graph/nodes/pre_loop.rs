@@ -117,6 +117,71 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     } else {
         llm_reported
     };
+    // v1.x:rapid-refill 熔断(借鉴 ZCode `CompactRapidRefillError`)——
+    // 「压缩 → 立即填满 → 再压缩」是纯烧钱的死循环,专门熔断。预检只在
+    // 「本次真的会触发压缩」(LLM 上报 ≥ 阈值,或手动 force)时进行:
+    // 窗口内 refill 前两次跳过压缩并注入提醒让模型收敛,连续第 3 次
+    // 直接以结构化错误收口当前 turn。手动 `/compact`(force)绕过守卫
+    // —— 用户显式指令不被熔断拦截。
+    let step_no = ctx
+        .cfg
+        .model_step_counter
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let will_trigger = force_compact
+        || llm_reported.is_some_and(|reported| {
+            ctx.m4
+                .as_ref()
+                .is_some_and(|m4| reported >= m4.compactor.trigger_tokens())
+        });
+    let refill_skip_reminder: Option<String> = if !will_trigger {
+        None
+    } else {
+        let decision = {
+            let mut guard = ctx.cfg.compact_refill.lock();
+            guard.pre_check(
+                step_no,
+                zhuye_compact::RAPID_REFILL_WINDOW_STEPS,
+                zhuye_compact::RAPID_REFILL_MAX_CONSECUTIVE,
+            )
+        };
+        match decision {
+            zhuye_compact::RefillDecision::Allow => None,
+            zhuye_compact::RefillDecision::Skip => Some(format!(
+                "<system-reminder>\n上下文刚压缩过又在很短的几步内再次逼近阈值\
+                 (rapid refill,连续第 {} 次)。为避免无限压缩循环,本次已跳过\
+                 自动压缩。请立即收敛:减少产出规模、不要再次读取大文件、\
+                 尽快完成任务并给出最终答复。\n</system-reminder>",
+                {
+                    let g = ctx.cfg.compact_refill.lock();
+                    g.consecutive()
+                }
+            )),
+            zhuye_compact::RefillDecision::Abort => {
+                // 连续 refill 达上限:放弃压缩并收口当前 turn(与
+                // model_call 的 GiveUp 同路径 —— deferred_error 由
+                // submission_loop 统一转为 Error + TurnAborted)。
+                let consecutive = ctx.cfg.compact_refill.lock().consecutive();
+                tracing::warn!(
+                    step = step_no,
+                    consecutive,
+                    "rapid refill 死循环熔断:放弃压缩并终止当前 turn"
+                );
+                state.deferred_error = Some(zhuye_protocol::ErrorEvent {
+                    code: "compact_rapid_refill".into(),
+                    message: format!(
+                        "连续 {consecutive} 次压缩后立即再次触发压缩(rapid refill \
+                         死循环),已停止当前 turn。建议开启新会话或把任务拆小。"
+                    ),
+                    details: Some(serde_json::json!({
+                        "consecutive": consecutive,
+                        "window_steps": zhuye_compact::RAPID_REFILL_WINDOW_STEPS,
+                        "model_step": step_no,
+                    })),
+                });
+                return None;
+            }
+        }
+    };
     // v1.5 E1:PreCompact hook —— 压缩前最后关口。Deny 跳过本轮压缩
     // (本轮照常执行,阈值下一轮再议);InjectMessage 在压缩后追加
     // System 提醒。ctx 无 hook_engine 的测试路径跳过 dispatch。
@@ -151,8 +216,15 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // 的事实),供下方落盘 MemoryAccess 审计。
     // 消息列表按借用传入;压缩判定每迭代执行且绝大多数走 Noop ——
     // None 表示未压缩,保持原列表不回写,不为「借一下」深拷贝整个会话。
-    let (compacted, evt, memory_write) = if compact_denied {
-        tracing::info!("PreCompact hook denied; skipping compaction this round");
+    let (compacted, evt, memory_write) = if compact_denied || refill_skip_reminder.is_some() {
+        if refill_skip_reminder.is_some() {
+            tracing::info!(
+                step = step_no,
+                "rapid refill:跳过本轮自动压缩(窗口内连续触发),已注入收敛提醒"
+            );
+        } else {
+            tracing::info!("PreCompact hook denied; skipping compaction this round");
+        }
         (
             None,
             zhuye_protocol::ContextCompactedEvent {
@@ -174,6 +246,8 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     };
     state.compact_triggered = !matches!(evt.strategy, ContextCompactedStrategy::Noop);
     if state.compact_triggered {
+        // v1.x:压缩实际发生 → 登记守卫窗口锚点(rapid-refill 计时起点)。
+        ctx.cfg.compact_refill.lock().on_compacted(step_no);
         // 在 `evt` 被移入 wire event 之前捕获我们需要的字段。
         let strategy = evt.strategy;
         let removed_count = evt.removed_messages;
@@ -287,10 +361,75 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     if let Some(compacted) = compacted {
         state.messages.messages = compacted;
     }
-    // v1.5 E1:PreCompact 的 InjectMessage 以 System 消息追加(压缩后
-    // 可见,天然进入下一请求上下文)。
+    // v1.5 E1:PreCompact 的 InjectMessage 注入(压缩后可见,天然进入
+    // 下一请求上下文)。
+    // 修复原因(缓存审计):此前以**内联 System 消息**追加 —— 下一请求
+    // fold_system_messages 会把它折叠进顶层 system 块,改写已发送的
+    // 前缀字节,缓存全量失效。改为尾部 user system-reminder 追加
+    // (append-only,不改写已发送前缀;与 steering / 收敛提醒同先例)。
     for content in compact_injected {
-        state.messages.messages.push(ChatMessage::System(content));
+        state
+            .messages
+            .messages
+            .push(ChatMessage::User(zhuye_llm::UserContent {
+                blocks: vec![zhuye_llm::ContentBlock::Text {
+                    text: format!("<system-reminder>\n{content}\n</system-reminder>"),
+                }],
+            }));
+    }
+
+    // v1.x:rapid-refill 跳过时注入收敛提醒。尾部 user 追加(append-only,
+    // 不改写已发送前缀 —— 缓存友好),与 model_call 自动续写提醒同先例。
+    if let Some(reminder) = refill_skip_reminder {
+        state
+            .messages
+            .messages
+            .push(ChatMessage::User(zhuye_llm::UserContent {
+                blocks: vec![zhuye_llm::ContentBlock::Text { text: reminder }],
+            }));
+    }
+
+    // v1.x(tool-defer 门控,默认关):MCP 工具目录公告。目录**不变不重发**
+    // (指纹比对,append-only 尾部追加,缓存友好);变化(插件热挂载 /
+    // rescan)时按新目录整份重发 —— 旧目录条目被新公告覆盖语义。
+    // 落盘一致性:提醒进 state.messages,随 assistant 步骤的持久化节奏
+    // 走(与 steering 注入同先例),resume 后由注入条件重推导。
+    if ctx.cfg.tool_defer_enabled {
+        let names = ctx.tools_queue.registry().deferred_tool_names();
+        if !names.is_empty() {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for n in &names {
+                n.hash(&mut hasher);
+            }
+            let fingerprint = hasher.finish();
+            let announced = ctx.cfg.deferred_dir_announced.lock();
+            if announced.as_ref() != Some(&fingerprint) {
+                let registry = ctx.tools_queue.registry();
+                let mut listing = String::new();
+                for name in &names {
+                    let desc = registry
+                        .get(name)
+                        .map_or_else(String::new, |t| t.description().chars().take(100).collect());
+                    listing.push_str(&format!("- {name}:{desc}\n"));
+                }
+                let announcement = format!(
+                    "<system-reminder>\n以下 MCP 工具已启用按需加载(deferred),\
+                     完整定义未随本次请求下发。目录:\n{listing}\n\
+                     调用方式:使用 deferred_call 工具(name = 工具名,args = 参数对象)。\n\
+                     需要确认某工具的参数细节时,先用 tool_search 查询该工具。\n\
+                     </system-reminder>"
+                );
+                state
+                    .messages
+                    .messages
+                    .push(ChatMessage::User(zhuye_llm::UserContent {
+                        blocks: vec![zhuye_llm::ContentBlock::Text { text: announcement }],
+                    }));
+                drop(announced);
+                *ctx.cfg.deferred_dir_announced.lock() = Some(fingerprint);
+            }
+        }
     }
 
     // 1.5 v1.4 A2:回合中途转向收割。ToolExec → PreLoop 回环的每次入口
@@ -419,6 +558,14 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // (GUI 的 MCP/LSP 全部走 Runtime/Mcp 源;CLI 的 MCP 走 Mcp 源,同受益)。
     // 只并集不删减:Builtin 集仍由 catalog 策略(curated)管理。
     effective.extend(ctx.tools_queue.registry().external_tool_names());
+    // v1.x:入口型 builtin 工具恒可见。修复原因:tool_search(搜索工具的
+    // 入口)与 deferred_call(tool-defer 门控插件的调用入口)都不在 skills
+    // catalog 的 always_on curated 表 —— 模型永远看不到「找工具 / 调按需
+    // 加载工具」的入口,deferred 工具目录公告形同虚设。未注册时
+    // `list_specs` 的 contains 过滤自然消失,恒并无副作用。
+    for entry_tool in ["tool_search", "deferred_call"] {
+        effective.insert(entry_tool.to_string());
+    }
 
     // v1.x Plan mode：从 LLM 可见工具集中移除通用 `write` / `edit`，强制 LLM
     // 使用 `PlanWrite`（`required_permission = Auto`，审批层跳过）。否则 LLM

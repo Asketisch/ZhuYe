@@ -20,8 +20,10 @@
 //!
 //! 进程内全局目录懒加载:磁盘缓存(`$ZHUYE_HOME > $HOME/.zhuye` 下的
 //! `cache/models-dev.json`)与**内嵌快照**(构建期 `scripts/fetch-models-dev.sh`
-//! 产出)取 `fetched_at` 较新者;[`refresh_if_stale`] 由调用方(桌面清单
-//! 命令 / CLI)显式触发,**引擎启动不主动联网**。
+//! 产出)取 `fetched_at` 较新者;[`refresh_if_stale`] 由 exec/serve 启动
+//! 时后台按 TTL 触发(模型为 mock 或 env `ZHUYE_MODELS_DEV_REFRESH=0`
+//! 时跳过 —— 离线测试零网络;detached task,不阻塞启动),桌面清单
+//! 命令 / CLI 亦可显式调用。
 //!
 //! 消费级联(用户显式配置永远压过目录):
 //! - 窗口:`context_window_for` = override → **本目录** → 静态表;
