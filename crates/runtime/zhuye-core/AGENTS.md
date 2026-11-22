@@ -15,6 +15,7 @@
 | `src/graph/state.rs` | `AgentState` 回合状态载体，节点间传递 |
 | `src/submission_loop.rs` | 消费 `Submission`、组装 `NodeContext`、驱动 StateGraph 并发射事件 |
 | `src/agent_thread.rs` | `AgentThread`：持有 submission 通道与每 turn / 每 session 的事件分发 |
+| `src/cache_warming.rs` | v1.x prompt cache 保温调度器:候选槽 / 单飞 / 代际失效 / 事件出口 |
 | `src/side_channel/` | side-channel 旁路 agent 的注册表与驱动（并发旁路） |
 | `src/resume.rs` | `RolloutRecord` → `ChatMessage` 的纯映射，恢复历史用 |
 | `src/steering_queue.rs` | 下一轮 steer 输入队列 |
@@ -27,7 +28,13 @@
 - **Stop hook 否决续跑链路**在 `src/graph/nodes/check_stop.rs`：节点派发 `HookEvent::Stop`，被否决时累加尝试计数、把 hook 注入的提醒投递给下一轮，并让循环回到 `PreLoop` 强制续作；只有放行才终止本轮。
 - **SessionMeta 落盘前的通告不持久化**（`src/submission_loop.rs`）：权限模式切换 / plan 派发发生在会话头未写（`meta_written=false`）时只广播内存事件，待会话头落地后按需补记 —— 保证 JSONL 物理首行是 `SessionMeta`，rollout 索引依赖此前置（索引侧的恢复兜底见 resources 层篇 `zhuye-rollout` 条目）。
 - **assistant 内容按步骤增量落盘**：`graph/nodes/mod.rs::persist_assistant_step` 在每次 `model_call` 产出（文本 + 工具调用）和每批 `tool_exec` 结果后立即写一条同 `turn_id` 的 assistant 记录。回合收尾不再整体重写，否则回填会把历史读两遍。流被取消时，已流出的半截文本由 `preserve_interrupted_text` 就地落盘。消费端 `RolloutRecord::coalesce_turn_messages` 按回合同角色把数组内容拼回一条，块顺序与旧的整体记录一致。
-- **side-channel 并发上限**由 `src/side_channel/registry.rs` 的 `MAX_CONCURRENT` 约束，它与子代理工厂的在途上限是两套独立计数器。
+- **side-channel 并发上限**由 `src/side_channel/registry.rs` 的 `MAX_CONCURRENT` 约束，它与子代理工厂的在途上限是两套独立计数器。side-channel 的三条不变式：①取消令牌**独立于主令牌**（非 `cfg.cancel` 子级，registry.start 显式声明）；②事件**不进主历史**——终态经 `fan_out_session` 扇出仅供观察，rollout 由工厂以 `recorder=None` 承诺不落盘；③审批/问答经 approval_bridge 回注原 thread 的 submission sender，**不得**在 side-channel 内绕过主会话审批门。
+- **prompt cache 保温(`src/cache_warming.rs`)有四条不变式**,改动调度器或其钩子点前必读:
+  1. **候选 = wire 请求逐字节克隆**:重放只允许改 `max_tokens=1` 与 `warm_replay` 标记,其余一律不动;且必须用 `model_call` 成功那次的同一 client(同凭据同缓存),不经 `ModelRegistry` 轮询。
+  2. **零污染**:保温重放不写 rollout、不触发 hook、不进 `session_usage`、不发 `TokenCount`、不喂 `CacheBreakDetector`(旁路 `model_call` 天然成立);花费只进 quota_tracker、`WarmingStats` 与 `CacheWarming` 事件 —— 从 TokenCount 流算命中率 / 成本的口径不得被扰动。
+  3. **代际失效**:`AgentConfig::cache_generation` 在 rewind / compact / model / effort / tools / prompt 切换 / 配置重载 / `RegisterTools`(serve)处 bump;任何新增「改变下一请求 wire 前缀」的变更点**必须**同步 bump,否则保温会刷新过期前缀。
+  4. **决策在 zhuye-llm**:本模块只管调度;`evaluate` / TTL / 延时全部来自 `zhuye_llm::cache_warming` 纯函数,不得在本模块复刻算式。
+- **缓存前缀稳定性纪律(5.3 审计结论)**:一切 turn 边界注入必须走**尾部 user `<system-reminder>` 追加**(append-only),禁止内联 `ChatMessage::System`(fold_system_messages 会折叠进 system 块,改写已发送前缀 → 缓存全量失效;实例修复:PreCompact InjectMessage)。已知仍影响前缀的动态点(诚实登记,后续演进方向 = 移入公告):①todos checklist 注入 `compose_prompt_core`(todo 变更即改写 system 首块);②memory 检索结果注入 system 首块(演化/整合时变化);③子代理登记 / 恢复注入(已走 `<system-reminder>` 追加 ✓)。开启 Prompt Snapshot 的会话冻结这些内容(见 model_call 快照文档),快照失效后可见。
 - 改了节点行为或事件发射顺序，要同步 `tests/functional/` 下对应的能力用例（断言到字段级），并按根 `AGENTS.md` 的验证矩阵跑 `./tests/run_all.sh functional`。
 
 ## 禁止事项
