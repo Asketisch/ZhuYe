@@ -349,10 +349,10 @@ impl ApprovalGate {
 
     /// v1.12:当前 unix 毫秒。
     fn now_ms() -> u64 {
+        // map_or 形式:满足 clippy 新的 map_unwrap_or 默认 lint(1.100 起)。
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or_default()
+            .map_or(0, |d| d.as_millis() as u64)
     }
 
     /// v1.12:摘要截断(注册表 / 审计记录里的 summary 有界,防止超大
