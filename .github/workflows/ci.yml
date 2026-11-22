@@ -239,17 +239,11 @@ jobs:
           cp "$binary" target/previous-release/zhuye-baseline
           chmod +x target/previous-release/zhuye-baseline
           printf '%s\n' "$tag" > target/previous-release/tag.txt
-      # 挂账(配置 v2 时代):发布版本差分与 v0.1.15 基线存在**有意**行为
-      # 分歧 —— 「assistant 内容按步骤增量落盘」改变了 message 记录顺序,
-      # 提示词选择新增 prompt_selection_changed 记录;rollout 序列严格
-      # 比对按设计不设豁免通道(differential.py),跨有意变更期必然红
-      # (2026-11-19 起挂账)。语义差分(同提交 release vs debug,builds
-      # 报告)不受影响,恒严格判定。
-      # 恢复条件:切 v0.1.16 发布重置基线后,移除本 step 的
-      # continue-on-error,并在「Check differential reports」恢复
-      # published 报告的严格断言(该 step 内有对应注释位)。
+      # v0.1.16 发布已重置发布差分基线(2026-11-22),此前因配置 v2 等
+      # 有意行为变更挂账的「只记录不判红」解除,恢复恒严格判定:
+      # 候选(HEAD)与最新发布基线(v0.1.16)同语义,重放应零分歧。
+      # 语义差分(同提交 release vs debug,builds 报告)不变,恒严格。
       - name: Run published version differential
-        continue-on-error: true
         env:
           ZHUYE_DIFF: "1"
           ZHUYE_DIFF_BASELINE: ${{ github.workspace }}/target/previous-release/zhuye-baseline
@@ -263,22 +257,11 @@ jobs:
           from pathlib import Path
           expected = {json.loads(path.read_text())['id'] for path in Path('tests/verification/cases').glob('*.json')}
           assert expected
-          # 语义差分(同提交 release vs debug)恒严格:verdict 必须 pass、
-          # 用例覆盖完整、逐用例 pass。
-          builds = json.loads(Path('target/verification/builds/report.json').read_text())
-          assert builds['verdict'] == 'pass', 'builds verdict'
-          assert {result['id'] for result in builds['results']} == expected, 'builds coverage'
-          assert all(result['verdict'] == 'pass' for result in builds['results']), 'builds results'
-          # 发布版本差分:跨有意行为变更期(配置 v2 等)基线重放序列按设计
-          # 必然分歧,此处置为「只记录不判红」。切 v0.1.16 发布重置基线后,
-          # 恢复严格断言并与上方 Run step 的 continue-on-error 一并移除:
-          #   assert published['verdict'] == 'pass', 'published verdict'
-          #   assert {r['id'] for r in published['results']} == expected
-          #   assert all(r['verdict'] == 'pass' for r in published['results'])
-          published = json.loads(Path('target/verification/published/report.json').read_text())
-          if published['verdict'] != 'pass':
-              print(f"[warn] published differential verdict={published['verdict']}"
-                    "(挂账:v0.1.16 发布重置基线前预期分歧,仅记录不判红)")
+          for path in (Path('target/verification/builds/report.json'), Path('target/verification/published/report.json')):
+              report = json.loads(path.read_text())
+              assert report['verdict'] == 'pass', path
+              assert {result['id'] for result in report['results']} == expected, path
+              assert all(result['verdict'] == 'pass' for result in report['results']), path
           PY
       - name: Upload semantic differential evidence
         if: always()
