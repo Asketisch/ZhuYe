@@ -35,7 +35,20 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 能力域 | 能力覆盖层 | CLI 参数面 | SDK 绑定层 | crate 单测 | 实模型层 |
 |---|---|---|---|---|---|
 | 基础通信(握手/单轮/多轮/事件流/终态/工具参数增量/整段消息) | D1–D5、D9–D10、D13 | cli_core | K1–K2、K5 | ✅(build/build_async 对齐断言) | L1–L4 |
-| EventMsg 全变体线格式 | —(逐场景事件断言见能力层) | — | 双 SDK 共用最小及可选字段样本,验证透传和未知字段 | ✅(`tests/contracts/events.json` 50 变体 + 完整字段样本 + serde roundtrip) | — |
+| EventMsg 全变体线格式 | —(逐场景事件断言见能力层) | — | 双 SDK 共用最小及可选字段样本,验证透传和未知字段 | ✅(`tests/contracts/events.json` 55 变体 + 完整字段样本 + serde roundtrip) | — |
+| Prompt cache 保温(排程/重放/观测门控/零污染/脚本行不消耗) | `tests/functional/test_cache_warming.py`(默认关闭零行为、scheduled/executed 字段级、`no_cache_hits` 决策跳过、rollout 零新增、第二轮脚本行不被偷) | — | 双 SDK `CacheWarming` 类型 + README 事件表 | ✅(zhuye-llm `evaluate` 表驱动 + mock `warm_replay` 旁路;zhuye-core 调度器 8 条:重放形状/取消/代际 stale/关闭 no-op/scheduled 事件/不可重放/事件字段/父令牌级联) | — |
+| 流锚点恢复(可重试流错误 + 可见增量 → 丢弃留痕 + 4 恢复事件 + 瞬态分类) | mock 流错误场景隐含覆盖(v1.10 重试);wire 层 `tests/sse_timeline.rs`(时间线吐帧 / 中途断流 TCP) | — | `StreamRecovery` 类型 + README 事件表 | ✅(`stream.rs` recovery_tests:事件序 / discarded 字符数 / 瞬态分类;协议 serde roundtrip) | — |
+| 压缩 rapid-refill 熔断(窗口 3 步 / 连续 3 次 → `compact_rapid_refill`) | — | — | — | ✅(`zhuye-compact/src/refill.rs` 表驱动 5 条:窗口/升级/清零/同步号) | — |
+| 空/可疑模型结果防护(0 输出 + input>0 → `suspicious_empty_model_result`) | — | — | — | ✅(守卫条件单测随 core lib) | — |
+| Steer 输入字节上限(200KB wire 实测 → `steer_input_too_large`) | — | — | — | ✅(协议常量 + 分支条件) | — |
+| 工具结果预算(超限落盘 artifacts + persisted-output 信封 / 中间截断 / 空占位) | — | — | — | ✅(`result_budget.rs` 5 条:边界 / 信封 / 头尾保留 / 非文本保护) | — |
+| stop_turn 级联(工具 metadata 请求结算后收口) | — | — | — | ✅(tool_exec 置 force_final_answer 分支) | — |
+| strict schema 折叠(不支持约束写进 description,折不掉降级) | — | — | — | ✅(`schema_fold.rs` 4 条:保留/移除/组合子放弃/嵌套) | — |
+| tool-defer 按需加载(MCP 目录公告 + deferred_call 派发前展开,审批照走) | 门控插件用例(gated_plugins 同款;默认关) | — | — | ✅(registry deferred_tool_names / queue 展开分支) | — |
+| Prompt Snapshot(resume system 字节冻结 / 代际失效 / todos 拼回) | — | — | — | ✅(model_call 应用/捕获分支;`resume::last_prompt_snapshot`) | — |
+| 输入守恒 ledger(终态 InputDisposition / 崩溃窗口对账 / 永不自动重放) | — | — | — | ✅(`resume::unsettled_input_turns` + submission_loop 终态分支) | — |
+| provider 能力回归矩阵(文本/工具/JSON/上下文锚定 4 维考卷) | — | — | — | — | `tests/live/test_live_provider_matrix.py`(ZHUYE_LIVE 门控,默认 skip) |
+| models.dev 目录后台刷新(24h TTL / mock 与 ZHUYE_MODELS_DEV_REFRESH=0 跳过) | mock 模型零网络 | — | — | ✅(headless spawn_models_dev_refresh 分支) | — |
 | 协议信封与 Op 随机往返 | — | — | — | ✅(proptest:Op / Submission / Event serde) | — |
 | 真实任务效果与版本比较 | 本地网关驱动真进程的评分设施自检 | — | — | ✅(zhuye-eval 评分器) | `agent.quality`:12 个合成任务、默认三次重复、客观产物验收及失败轨迹;需显式启用 |
 | 质量门禁判定(observe/enforce) | — | — | — | ✅(`tests/eval/eval_policy.py` 纯函数 + `test_policy.py` 合成报告 24 条;退化可阻断、infra 不误判) | — |
