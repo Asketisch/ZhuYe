@@ -149,7 +149,7 @@ pub struct FileRange {
 pub enum PermissionMode {
     /// 默认模式:自动批准文件编辑类工具(`write`/`edit`/`delete` 等),
     /// 其余工具按权限规则放行、高危仍确认(对齐主流 harness 的
-    /// default/auto 档;Claude Code 2026-08 起 auto 档即为默认)。
+    /// default/auto 档;主流 harness 2026-08 起 auto 档即为默认)。
     #[default]
     Auto,
     /// Ask 模式:每个工具调用前询问(经 approval modal)。
@@ -192,7 +192,7 @@ impl PermissionMode {
     }
 
     /// TUI `/mode` / Tab / Shift+Tab 的循环顺序(三段工作模式)。
-    /// 循环 = `Auto(默认)→Prompt(Ask)→Plan→Auto`,与 Codex 的
+    /// 循环 = `Auto(默认)→Prompt(Ask)→Plan→Auto`,与主流 harness 的
     /// Read Only / Auto / Full Access 三预设同构(Yolo 在审批策略轴)。
     /// 弃用档(`AcceptEdits`/`Deny`/`Bubble`/`Bypass`)不进循环:
     /// 从它们循环落到 `Auto`;直达仍经 `/mode <name>` 兼容。

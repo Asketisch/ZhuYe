@@ -49,7 +49,7 @@ for s in "${SUITES[@]}"; do
 done
 if [ -z "$CUSTOM_ZHUYE_BIN" ] && [ "$NEED_ZHUYE_BIN" -eq 1 ]; then
     echo "── 构建当前源码的 release 二进制 ──"
-    cargo build --release -p zhuye-cli -p zhuye-import --quiet || exit 2
+    cargo build --release -p zhuye-cli --quiet || exit 2
     for s in "${SUITES[@]}"; do
         if [ "$s" = "functional" ] || [ "$s" = "functional-layer" ]; then
             cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-shell -p zhuye-git-tools --bins --quiet || exit 2

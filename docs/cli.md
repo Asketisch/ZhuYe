@@ -5,7 +5,7 @@
 > `zhuye` 二进制的子命令全量一览与用法。单一 `zhuye` 二进制由
 > `zhuye-cli` crate 产出,共 22 个顶层子命令,**不含 `tui` 子命令**
 > (TUI 已拆至独立仓库 [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI)),
-> **也没有 `import` 子命令**(`zhuye-import` 是独立二进制,见 §5)。
+> **也没有 `import` 子命令**。
 > 每个命令的完整参数以 `zhuye <命令> --help` 为准。
 
 ## 总览
@@ -122,17 +122,6 @@ github / git / url / file / directory)、`ls`、`refresh`、`discover`
 - **init**:`--force` 覆盖已存在的 AGENTS.md(默认跳过)。
 
 ## 独立二进制
-
-- **`zhuye-import`**(`crates/integrations/zhuye-import` 产物,不是
-  `zhuye` 的子命令):把 Claude Code / Codex / ZCode 的历史会话导入成
-  烛夜会话,导入后就能 `zhuye exec --resume` 接着跑;还能一键导入其他
-  本地 agent 的配置:
-
-  ```bash
-  zhuye-import config            # 扫描 claude-code / codex / gemini / opencode / crush
-                                  # 的 provider 与 MCP 配置,增量合并进 config.toml
-  zhuye-import config --from claude-code --dry-run   # 只看会导入什么
-  ```
 
 - **Reflect-TUI**:独立仓库提供的 TUI 二进制,核心仓库的 `zhuye`
   不含 `tui` 子命令。

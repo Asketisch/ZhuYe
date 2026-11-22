@@ -1,13 +1,13 @@
-//! Telemetry 数据模型 —— 对齐 zcode 的本地日志两层结构。
+//! Telemetry 数据模型 —— 对齐同类 agent 的本地日志两层结构。
 //!
-//! 参考 zcode(`~/.zcode/cli/log/zcode-YYYY-MM-DD.jsonl` 与
-//! `~/.zcode/cli/rollout/model-io-sess_<id>.jsonl`)的 schema:
+//! 参考同类 agent(`<log_dir>/<agent>-YYYY-MM-DD.jsonl` 与
+//! `<rollout_dir>/model-io-sess_<id>.jsonl`)的 schema:
 //! - [`TraceEvent`] 是一条 JSONL span 事件(turn/model/tool 级别),
 //!   带 `trace_id` / `span_id` / `parent_span_id` 父子链,支持 span 树。
 //! - [`ModelIoRecord`] 是一次完整 LLM 调用的请求/响应/usage/cost/latency,
 //!   相当于 Langfuse 的 `generation` 记录。
 //!
-//! 两类记录都按 zcode 的 key 元组 `(trace_id, session_id, turn_id)` 关联,
+//! 两类记录都按 key 元组 `(trace_id, session_id, turn_id)` 关联,
 //! 便于跨文件 join 与 `/traces` TUI overlay 按会话过滤浏览。
 
 use chrono::{DateTime, Utc};
@@ -34,10 +34,10 @@ pub const MAX_FIELD_CHARS: usize = 16 * 1024;
 /// 截断后追加的标记。
 pub const REDACTION_MARKER: &str = "[redacted]";
 
-/// span id 的字符前缀长度(对齐 zcode 的 13-char 前缀 uuid)。
+/// span id 的字符前缀长度(13-char 前缀 uuid)。
 pub const SPAN_ID_LEN: usize = 13;
 
-/// span 事件级别(对齐 zcode 的 `level` 字段)。
+/// span 事件级别(`level` 字段)。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
@@ -90,7 +90,7 @@ pub struct UsageSnapshot {
     pub cost_usd: Option<f64>,
 }
 
-/// 模型引用(provider/model/role/source),对齐 zcode `model-io` 的 `model` 字段。
+/// 模型引用(provider/model/role/source),对齐 `model-io` 记录的 `model` 字段。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelRef {
     pub model_id: String,
@@ -103,7 +103,7 @@ pub struct ModelRef {
     pub source: Option<String>,
 }
 
-/// 一条 span 事件(一行 JSONL)。对齐 zcode Store A 的 envelope:
+/// 一条 span 事件(一行 JSONL)。对齐 Store A 的 envelope:
 /// `timestamp / level / event / module / traceId / spanId / parentSpanId /
 /// sessionId / turnId / toolCallId / status / durationMs / context`。
 ///
@@ -137,7 +137,7 @@ pub struct TraceEvent {
     pub context: Option<serde_json::Value>,
 }
 
-/// 一次完整 LLM 调用的请求/响应记录(一行 JSONL)。对齐 zcode Store B
+/// 一次完整 LLM 调用的请求/响应记录(一行 JSONL)。对齐 Store B
 /// 的 `model-io` schema:timing / model / request / response / usage。
 ///
 /// 这是 Langfuse `generation` 记录的本地等价物 —— 含完整 prompt 概要 +
@@ -147,7 +147,7 @@ pub struct ModelIoRecord {
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
     pub duration_ms: u64,
-    /// 重试序号(从 1 起,对齐 zcode `attempt`)。
+    /// 重试序号(从 1 起,对齐 `attempt`)。
     pub attempt: u32,
     pub request_id: String,
     pub trace_id: String,
@@ -222,12 +222,12 @@ impl TraceEvent {
     }
 }
 
-/// 生成一个 13-char 前缀的 span id(对齐 zcode)。
+/// 生成一个 13-char 前缀的 span id。
 pub fn new_span_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..SPAN_ID_LEN].to_string()
 }
 
-/// 生成一个完整 trace id(= 完整 uuid 字符串,对齐 zcode `traceId`)。
+/// 生成一个完整 trace id(= 完整 uuid 字符串,对齐 `traceId`)。
 pub fn new_trace_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }

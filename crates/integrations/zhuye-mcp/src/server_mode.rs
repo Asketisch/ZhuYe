@@ -1,6 +1,6 @@
 //! # 自暴露 MCP server(F30)
 //!
-//! ZhuYe 自己当 MCP 工具服务器,让 Cursor / Copilot 等 agent 反过来调用
+//! ZhuYe 自己当 MCP 工具服务器,让外部 IDE agent 反过来调用
 //! 它的能力。这是**生态位**,不是普通功能:别的 agent 能把 ZhuYe 的
 //! 代码智能 / 记忆 / 评测当工具用。
 //!

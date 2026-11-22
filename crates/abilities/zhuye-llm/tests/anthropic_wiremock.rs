@@ -726,7 +726,7 @@ async fn request_timeout_maps_to_retryable_http_error() {
 }
 
 /// v1.10 功能5:空 `api_key` 时**任何认证头都不发** —— 免 Key 的
-/// Anthropic 兼容端点(LM Studio / claude-code-router 等本地网关)。
+/// Anthropic 兼容端点(LM Studio / 第三方路由网关等本地网关)。
 /// 此前空串也会拼出 `Authorization: Bearer `,部分网关按「提供了错误
 /// 凭据」直接 401。
 #[tokio::test]

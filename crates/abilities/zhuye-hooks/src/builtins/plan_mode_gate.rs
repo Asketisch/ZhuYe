@@ -238,7 +238,7 @@ impl Hook for PlanModeGate {
             // write/edit 特例：Plan mode 下允许写入 plan 文件（.zhuye/plan/
             // 目录），让 agent 能把完整 plan markdown 落盘为持久产物，再调用
             // ExitPlanMode 从文件读取。其他路径的 write/edit 仍被 deny。
-            // 对齐 Claude Code 的 isSessionPlanFile 白名单机制。
+            // 对齐主流 harness 的 isSessionPlanFile 白名单机制。
             //
             // 0.5:`.contains(".zhuye/plan/")` 是子串判断,`/tmp/.zhuye/
             // plan/../../etc/passwd` 或任何路径里**含**该子串的都能过。

@@ -103,7 +103,6 @@ fn provider_hint(model: &str) -> Option<&'static str> {
         ("o3", "gpt"),
         ("o4", "gpt"),
         ("chatgpt", "gpt"),
-        ("codex", "gpt"),
         ("gemini", "gemini"),
         ("deepseek", "deepseek"),
         ("kimi", "kimi"),

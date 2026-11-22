@@ -21,7 +21,7 @@ plugin mounts into the engine; there are six:
 | slash commands | `commands` | `commands/*.md` prompt templates |
 | sub-agents | `agents` | `agents/*.md`, registering `call_<role>` tools |
 | skills | `skills` | `skills/<name>/SKILL.md`, activated on demand via `load_skill` |
-| hooks | `hooks` | Claude Code-style `hooks.json` (shell subprocesses or WASM components) |
+| hooks | `hooks` | External-agent-style `hooks.json` (shell subprocesses or WASM components) |
 | MCP server | `mcp_servers` | `.mcp.json`, stdio / streamable-http tool injection |
 | WASM component tools | `wasm_tools` | `.wasm` files implementing the `zhuye:plugin` WIT world |
 
@@ -48,7 +48,6 @@ installs the marketplace is always `inline`:
 | [`computer-use/`](../plugins/computer-use/) | `computer-use` | `computer-use@inline` | Screen / mouse / keyboard control (xcap + enigo; build the binary first; on macOS grant Screen Recording and Accessibility permissions) |
 | [`git-tools/`](../plugins/git-tools/) | `git-tools` | `git-tools@inline` | git workflow: branch / PR / diff probing + checkpoint snapshots + Stop auto-checkpoint (build the binary first) |
 | [`shell/`](../plugins/shell/) | `shell` | `shell@inline` | Resident shell session pool: launch background processes, read output incrementally, write to stdin, kill — good for REPL / dev servers (build the binary first) |
-| [`harness-import/`](../plugins/harness-import/) | `harness-import` | `harness-import@inline` | Imports external harness (Claude Code / Codex / ZCode) conversation history; one-click import of another local agent's model / MCP config (build the binary first) |
 | [`goal-queue/`](../plugins/goal-queue/) | `goal-queue` | `goal-queue@inline` | Goal mode + FIFO queue mode: enabling registers the `goal` / `queue` tools and starts the queue driver (gated form, off by default) |
 | [`kms/`](../plugins/kms/) | `kms` | `kms@inline` | Local Markdown knowledge base: multi-wiki pagination + grep search + insight consolidation (dream) (build the binary first) |
 | [`web-search/`](../plugins/web-search/) | `web-search` | `web-search@inline` | The `web_search` tool (Brave API). **Gated, on by default**; disable removes the tool from the registry (unlike `[active].disallowed_tools`, which only hides it) |
@@ -227,7 +226,7 @@ Deeper investigation: ① find `plugin_loaded` in the JSONL event stream
 (missing = mount failure); ② stderr logs — a single plugin / capability
 failure only `tracing::warn!`s (unknown hook event names, missing
 commands, MCP server start failures all land here); ③ for binary plugins
-(computer-use / git-tools / shell / harness-import / kms), make sure the
+(computer-use / git-tools / shell / kms), make sure the
 corresponding build script (`./scripts/build_*_plugin.sh`) has been run,
 otherwise `${PLUGIN_ROOT}/bin/...` points at a missing file; ④ after
 changing enable / disable via the CLI, restart `zhuye exec` (the CLI does

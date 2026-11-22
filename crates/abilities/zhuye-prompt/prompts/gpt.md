@@ -1,7 +1,7 @@
 # GPT 厂商层(按需覆盖,缺失 section 落回 default.md)
 
-<!-- 来源: system_prompts_leaks-main/OpenAI/Codex/gpt-5.6.md(最新代 Codex
-     agent system prompt;旧版 codex-full.md 为 GPT-5 时代,重复段落以 5.6 为准)。
+<!-- 来源: system_prompts_leaks-main/OpenAI/Codex/gpt-5.6.md(最新代 GPT
+     agent system prompt;旧版全量版为 GPT-5 时代,重复段落以 5.6 为准)。
      许可: 源仓库 CC0 1.0。剥离 channel/commentary 机制(烛夜走自己的
      Submission/Event 协议)与抓取现场残留,保留通用行为约束。 -->
 

@@ -1,4 +1,4 @@
-//! `PathSandbox` —— 路径沙箱(对齐 Codex workspace-write 的取舍)。
+//! `PathSandbox` —— 路径沙箱(对齐主流 harness 的 workspace-write 取舍)。
 //!
 //! - **读**:全盘可读(相对路径仍以 workspace 为基)。编译 / 分析常需读
 //!   系统头与依赖,限制读会大面积破坏可用性;仅拒绝用户主目录下的
@@ -106,7 +106,7 @@ fn sensitive_read_match(abs: &Path) -> Option<String> {
 /// 读路径解析:全盘可读,相对路径以 `workspace` 为基。
 ///
 /// 与旧 [`resolve_sandbox_path`] 的差别:不再要求路径落在 workspace 内
-/// (对齐 Codex 的「全盘只读」),但凭证路径拒绝。文件不存在仍是 `Io`
+/// (对齐主流 harness 的「全盘只读」),但凭证路径拒绝。文件不存在仍是 `Io`
 /// (与旧行为一致,调用方靠 open 报错)。
 pub fn resolve_readable_path(workspace: &Path, path: &Path) -> Result<PathBuf, ToolError> {
     let abs_workspace = workspace

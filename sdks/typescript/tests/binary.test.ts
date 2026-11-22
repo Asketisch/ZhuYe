@@ -76,12 +76,12 @@ describe('serveArgs 插件旗标映射', () => {
 
   it('每个插件 id 展开为一对 --plugin <id>,顺序保持', async () => {
     const { serveArgs } = await import('../src/agent.js');
-    expect(serveArgs(['harness-import@inline', 'demo@inline'])).toEqual([
+    expect(serveArgs(['demo@inline', 'browser@inline'])).toEqual([
       'serve',
       '--plugin',
-      'harness-import@inline',
-      '--plugin',
       'demo@inline',
+      '--plugin',
+      'browser@inline',
     ]);
   });
 });

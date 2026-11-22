@@ -1,6 +1,6 @@
 //! `zhuye init` —— 在当前目录生成 AGENTS.md 项目说明文件。
 //!
-//! 对齐 Claude Code / Codex CLI 的 `/init`:为 agent 提供项目上下文锚点
+//! 对齐主流 agent CLI 的 `/init`:为 agent 提供项目上下文锚点
 //! (构建命令、代码约定、目录结构)。检测常见构建工具(Rust / Node /
 //! Python / Go),生成对应模板;已存在时跳过(`--force` 覆盖)。
 

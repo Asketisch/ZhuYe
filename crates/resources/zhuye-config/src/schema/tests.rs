@@ -819,7 +819,7 @@ fn permissions_section_absent_is_none() {
     assert!(cfg.permissions.is_none(), "无 [permissions] 段应为 None");
 }
 
-// ── Claude Code 式 allow/deny 紧凑数组 ────────────────────────────────
+// ── allow/deny 紧凑数组 ───────────────────────────────────────────
 
 /// `[permissions] allow` / `deny` 数组应正确反序列化为字符串列表。
 #[test]
