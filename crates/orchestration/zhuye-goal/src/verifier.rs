@@ -1,4 +1,4 @@
-//! Goal 校验器 —— LLM 自校验(参考 zcode `target_completion_verification` +
+//! Goal 校验器 —— LLM 自校验(参考同类 agent 的目标完成度校验 +
 //! 严格基于证据的校验 prompt)。
 //!
 //! 发起一次独立 LLM 调用(query_source = `goal_verification`),prompt 强制

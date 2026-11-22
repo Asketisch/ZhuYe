@@ -117,7 +117,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     } else {
         llm_reported
     };
-    // v1.x:rapid-refill 熔断(借鉴 ZCode `CompactRapidRefillError`)——
+    // v1.x:rapid-refill 熔断(借鉴同类 agent 的 compact rapid-refill 熔断)——
     // 「压缩 → 立即填满 → 再压缩」是纯烧钱的死循环,专门熔断。预检只在
     // 「本次真的会触发压缩」(LLM 上报 ≥ 阈值,或手动 force)时进行:
     // 窗口内 refill 前两次跳过压缩并注入提醒让模型收敛,连续第 3 次

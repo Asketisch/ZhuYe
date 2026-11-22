@@ -1,6 +1,6 @@
 //! `deferred_call` — tool-defer 门控插件的模型侧调用入口。
 //!
-//! 机制(借鉴 ZCode ToolSearch local 模式):开启 `tool-defer` 后,MCP
+//! 机制(借鉴同类 agent 的 ToolSearch local 模式):开启 `tool-defer` 后,MCP
 //! source 工具**不下发完整 schema**,只以目录公告(名字 + 描述摘要)进入
 //! 模型上下文;模型经本工具按名调用 —— queue 在派发前把 `deferred_call`
 //! 展开为真实调用,**审批 / hook / 权限 floor 全部按真实工具走**(展开

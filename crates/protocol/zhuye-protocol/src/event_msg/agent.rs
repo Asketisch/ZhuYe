@@ -110,7 +110,7 @@ pub struct TokenCountEvent {
 }
 
 /// v1.12:上下文组成类别的稳定 id。六类覆盖「这个 turn 的 input 上下文
-/// 由什么构成」;对齐 ZCode 的 context composition 形态(其 11 细类在此
+/// 由什么构成」;对齐 context composition 形态(上游 11 细类在此
 /// 归并为 6 粗类:提示词库主体 / 记忆注入 / 技能与临时层 / 内置工具
 /// schema / 外部(MCP·LSP·插件)工具 schema / 对话消息)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]

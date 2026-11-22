@@ -168,11 +168,11 @@ await agent.close();
 
 ```python
 # 按需加载插件(不装则完全不加载,零影响)
-agent = ZhuyeAgent.spawn(ZhuyeAgentOptions(plugins=["harness-import@inline"]))
+agent = ZhuyeAgent.spawn(ZhuyeAgentOptions(plugins=["demo@inline"]))
 ```
 
 ```ts
-await ZhuyeAgent.spawn({ plugins: ['harness-import@inline'] });
+await ZhuyeAgent.spawn({ plugins: ['demo@inline'] });
 ```
 
 ## 协议速览

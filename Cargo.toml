@@ -49,13 +49,12 @@ members = [
     "crates/integrations/zhuye-lsp",
     "crates/integrations/zhuye-integration",
     "crates/integrations/zhuye-stream",
-    "crates/integrations/zhuye-import",
     "crates/integrations/zhuye-computer-use",
     "crates/integrations/zhuye-browser",
     "crates/integrations/zhuye-shell",
     "crates/integrations/zhuye-git-tools",
     # kms:本地知识库 wiki,plugins/kms 的能力本体(plugins/* 能力核心
-    # 不进 SDK facade,与 computer-use/shell/git-tools/import 同款归位)。
+    # 不进 SDK facade,与 computer-use/shell/git-tools 同款归位)。
     "crates/integrations/zhuye-kms",
 
     # ── runtime ── 运行时与入口
@@ -221,8 +220,8 @@ minijinja = "2"
 # Rollout 回放
 chrono = { version = "0.4", features = ["serde"] }
 
-# 会话导入(zhuye-import):ZCode 历史存于 SQLite;bundled 自带 C 源,
-# 免系统依赖。仅 zhuye-import 消费,不进 SDK facade。
+# 本地 SQLite 条目版本库(FTS5 中文检索):bundled 自带 C 源,
+# 免系统依赖;经 SDK facade 传递依赖。
 rusqlite = { version = "0.41", features = ["bundled"] }
 
 # 并发原语

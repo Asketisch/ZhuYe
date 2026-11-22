@@ -202,7 +202,7 @@ fn list_installed_returns_in_id_order() {
 }
 
 #[test]
-fn cache_path_matches_claude_code_layout() {
+fn cache_path_matches_compat_layout() {
     let tmp = TempDir::new().unwrap();
     let mgr = PluginManager::new(tmp.path());
     let id = PluginId::parse("demo@anthropic-tools").unwrap();

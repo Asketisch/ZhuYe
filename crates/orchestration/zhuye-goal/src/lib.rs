@@ -1,4 +1,4 @@
-//! Zhuye Goal —— 目标模式(参考 zcode `/goal` 设计)。
+//! Zhuye Goal —— 目标模式(参考同类 agent 的 `/goal` 设计)。
 //!
 //! 让 agent 围绕目标持续迭代:每轮 turn 结束自动校验。未完成时生成续作文本,
 //! 推进 `steering_queue`,等下一条 `UserInput` 合并;引擎不会自己再开一轮。

@@ -441,7 +441,7 @@ pub struct SandboxSection {
 ///    shell_pattern = "git *"     # 命令 glob 模式
 ///    ```
 ///
-/// 2. Claude Code 式紧凑数组([`allow`] / [`deny`]),适合批量放行/拒绝:
+/// 2. 紧凑数组式([`allow`] / [`deny`]),适合批量放行/拒绝:
 ///    ```toml
 ///    [permissions]               # 权限段
 ///    allow = ["Bash", "Edit", "Write", "Read", "Bash(git:*)", "Bash(npm:*)"]   # 放行列表
@@ -454,11 +454,11 @@ pub struct PermissionsSection {
     /// 权限规则列表。`rename = "rule"` 与 `permissions.toml` 的 `[[rule]]` 对齐。
     #[serde(default, rename = "rule")]
     pub rules: Vec<zhuye_permissions::PermissionRule>,
-    /// Claude Code 式放行列表。加载时经 [`Self::expanded_rules`] 展平为
+    /// 紧凑写法放行列表。加载时经 [`Self::expanded_rules`] 展平为
     /// `PermissionRule`(action = `Allow`),与 `rules` 合并。
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Claude Code 式拒绝列表。加载时展平为 `PermissionRule`(action = `Deny`)。
+    /// 紧凑写法拒绝列表。加载时展平为 `PermissionRule`(action = `Deny`)。
     /// matcher 对 deny 做全局短路,故展开时置于 allow 之前以确保拒绝优先。
     #[serde(default)]
     pub deny: Vec<String>,

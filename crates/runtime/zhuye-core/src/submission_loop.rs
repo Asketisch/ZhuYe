@@ -1359,8 +1359,8 @@ pub async fn submission_loop(
             zhuye_protocol::Op::Steer { priority, items } => {
                 // v1.x 保温:新指令将在下一 turn 边界合入 → 取消在飞保温。
                 cfg.cache_warming.cancel_active();
-                // v1.x:转向输入字节上限(借鉴 ZCode `MAX_TURN_STEER_INPUT_BYTES`
-                // 按 UTF-8 实测而非字符数)—— 防止一条巨型 steer 把下一轮
+                // v1.x:转向输入字节上限(借鉴同类 agent 的「按字节而非字符数」做法——
+                // 按 UTF-8 实测)—— 防止一条巨型 steer 把下一轮
                 // 上下文一次性撑爆(绕过压缩水位的正常节奏)。超限拒绝入队,
                 // 以结构化错误应答。
                 let payload_bytes = serde_json::to_vec(&items).map_or(0usize, |v| v.len());

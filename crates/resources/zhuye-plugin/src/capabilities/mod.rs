@@ -168,7 +168,7 @@ pub struct CapabilityError {
 ///
 /// 插件安装后会被复制到 `~/.zhuye/plugins/cache/...`,manifest 里写的
 /// 相对路径不再成立;命令 / hook / MCP server 的可执行入口因此约定用
-/// `${PLUGIN_ROOT}` 引用插件内文件(对齐 Claude Code 的
+/// `${PLUGIN_ROOT}` 引用插件内文件(对齐外部 agent 插件生态的
 /// `${CLAUDE_PLUGIN_ROOT}` 约定)。
 pub(crate) fn expand_plugin_root(s: &str, plugin_root: &std::path::Path) -> String {
     s.replace("${PLUGIN_ROOT}", &plugin_root.to_string_lossy())

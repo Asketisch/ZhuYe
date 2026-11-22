@@ -1,8 +1,8 @@
-//! `permission_syntax` —— Claude Code 式紧凑权限字符串解析糖。
+//! `permission_syntax` —— 紧凑权限字符串解析糖。
 //!
 //! 把 `"Bash(git:*)"` / `"Edit"` 这类紧凑字符串解析成底层
 //! [`PermissionRule`](zhuye_permissions::PermissionRule),
-//! 让用户能用类似 Claude Code `settings.json` 的写法配置 shell 命令放行:
+//! 让用户能用紧凑写法配置 shell 命令放行:
 //!
 //! ```toml
 //! [permissions]
@@ -36,16 +36,16 @@ fn has_glob_meta(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[') || s.contains(']')
 }
 
-/// 把 Claude 的 `prefix:*` 约定规整成烛夜的 `prefix*` glob。
+/// 把 `prefix:*` 约定规整成烛夜的 `prefix*` glob。
 ///
-/// Claude 用 `:` 作分隔(`git diff:*`),烛夜的 `globset` 不认 `:`,
+/// 该约定用 `:` 作分隔(`git diff:*`),烛夜的 `globset` 不认 `:`,
 /// 这里把尾部 `:*`(或裸 `*`)规整为 `*` 结尾;中间若有 `:` 也转成空格,
 /// 适配「命令 + 空格 + 参数」的自然形态。例:
 /// - `git:*`   → `git*`    # 转换样例
 /// - `git:* ` → `git*`     # 转换样例
 /// - `npm:* ` → `npm*`     # 转换样例
 /// - `git diff:*` → `git diff*`    # 转换样例
-fn globify_claude_shell(inner: &str) -> String {
+fn globify_prefix_colon_shell(inner: &str) -> String {
     // 去掉首尾空白。
     let trimmed = inner.trim();
     // 找到最后一个 `:*`,把其后缀规整为单个 `*`。
@@ -59,7 +59,7 @@ fn globify_claude_shell(inner: &str) -> String {
     }
 }
 
-/// 解析单条 Claude 式权限字符串。
+/// 解析单条紧凑权限字符串。
 ///
 /// 返回 `None` 表示格式无效(空串 / 括号不闭合 / 工具名为空),调用方可忽略。
 /// `action` 决定生成规则的允许/拒绝/询问语义。
@@ -86,7 +86,7 @@ pub fn parse_permission_entry(s: &str, action: PermissionAction) -> Option<Permi
         // 仅 Bash 类工具生成 shell_pattern;其它工具暂不支持参数 glob,
         // 退化为「整工具放行」(Read/Write 路径 glob 属后续扩展)。
         if is_bash_like(tool) && !inner.is_empty() {
-            let shell_pattern = globify_claude_shell(inner);
+            let shell_pattern = globify_prefix_colon_shell(inner);
             if shell_pattern.is_empty() {
                 return Some(PermissionRule {
                     tool: tool.to_string(),

@@ -1,6 +1,6 @@
 //! Rapid-refill 熔断器 —— 阻断「压缩 → 立即填满 → 再压缩」死循环。
 //!
-//! 修复背景(借鉴 ZCode `CompactRapidRefillError`):上下文满 → 压缩 →
+//! 修复背景(借鉴同类 agent 的 compact rapid-refill 熔断):上下文满 → 压缩 →
 //! 新一轮立刻又被塞满 → 再压缩……每一轮 LLM 摘要都是全上下文读,死循环
 //! 纯粹烧钱且毫无进展。本守卫在**会话级**跟踪「最近一次实际压缩发生的
 //! 模型步号」:压缩后 ≤[`RAPID_REFILL_WINDOW_STEPS`] 步内再次触发压缩 =
@@ -68,7 +68,7 @@ impl RapidRefillGuard {
     pub fn on_compacted(&mut self, step: u64) {
         self.last_compact_step = Some(step);
         // 窗口锚点前移本身不代表 refill 结束:consecutive 只在窗口外
-        // 触发时清零(pre_check 内),与 ZCode 语义一致。
+        // 触发时清零(pre_check 内),与同类 agent 语义一致。
     }
 
     /// 当前连续 refill 计数(诊断 / 测试)。

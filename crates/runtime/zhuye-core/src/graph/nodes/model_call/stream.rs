@@ -363,7 +363,7 @@ pub async fn process_stream_events(
             // 本地累积,按分类动作自动重试;重试从头重新生成,防止两次
             // 输出拼接污染。
             //
-            // v1.x:流锚点恢复事件化(借鉴 ZCode streaming-recovery)——
+            // v1.x:流锚点恢复事件化(借鉴同类 agent 的 streaming-recovery 做法)——
             // 此前丢弃了什么、从哪里重开、第几次尝试,客户端与审计侧均
             // 不可见。现在:丢弃的尾部以 `RolloutRecord::StreamRecoveryDiscarded`
             // 留痕(resume 不回放,永不回流模型上下文),恢复过程以
@@ -782,7 +782,7 @@ mod tests {
 }
 
 /// v1.x:瞬态错误分类 —— 判定流中断是否属于可自动恢复的网络 / 流层面
-/// 故障(借鉴 ZCode streaming-recovery 的瞬态判定)。分类结果进
+/// 故障(借鉴同类 agent 的 streaming-recovery 瞬态判定)。分类结果进
 /// `stream_recovery_*` 事件的 `transient` 字段,供客户端与审计区分
 /// 「网络抖动恢复」与「provider 真实拒绝」。判定两层:
 /// 1. 变体级:`LlmError` 自带的瞬态家族(RateLimited / Overloaded /

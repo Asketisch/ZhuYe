@@ -8,8 +8,8 @@ use crate::event_msg::EventMsg;
 pub const EVENT_ID_NONE: &str = "";
 
 /// v1.x:`Op::Steer` 输入的字节上限 —— 按 wire 序列化后的 UTF-8 字节实测
-/// (借鉴 ZCode `MAX_TURN_STEER_INPUT_BYTES`:字节数而非字符数,巨字符
-/// 场景下二者差距巨大)。超限以 `steer_input_too_large` 错误拒绝入队:
+/// (借鉴同类 agent 的「按字节而非字符数」做法:巨字符场景下二者差距
+/// 巨大)。超限以 `steer_input_too_large` 错误拒绝入队:
 /// 防止一条巨型转向把下一轮上下文一次性撑爆,绕过压缩水位的正常节奏。
 pub const MAX_STEER_INPUT_BYTES: usize = 200_000;
 

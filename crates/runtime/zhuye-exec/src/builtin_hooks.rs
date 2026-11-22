@@ -3,7 +3,7 @@
 //! 两个特性原先实现在 `zhuye-core` 的 `pre_loop` 节点(core prompt 组装),
 //! 按「核心层稳定、特性外移」原则改为 **UserPromptSubmit 内置 hook**:
 //! 注入通道从 core prompt 块变为 `<system-reminder>` 包裹的 user 消息
-//! (与 Claude Code 的 CLAUDE.md 注入同款形态),引擎循环零触碰。
+//! (与外部 agent 的项目指令文件注入同款形态),引擎循环零触碰。
 //!
 //! - [`AgentsMdHook`] —— 会话首轮注入 AGENTS.md(用户级 + 项目级合并,
 //!   `[active] agents_md = false` 时由注册方跳过注册);`AtomicBool`

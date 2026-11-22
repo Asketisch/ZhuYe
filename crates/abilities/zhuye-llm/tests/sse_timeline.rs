@@ -1,4 +1,4 @@
-//! SSE 时间线回放(v1.x,借鉴 ZCode e2e-sse-capture-replay)——
+//! SSE 时间线回放(v1.x,借鉴同类 agent 的 e2e-sse-capture-replay 做法)——
 //! wiremock 只能静态 stub;时间线 server 按 `offset_ms` 分段吐 chunk、
 //! 支持 `mid_stream_abort`(吐到一半直接断 TCP),把「慢首字 / 中途断流 /
 //! 恢复」这些真实网络边缘变成确定性回归资产。批次 2 流锚点恢复的

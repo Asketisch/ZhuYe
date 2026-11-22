@@ -1,6 +1,6 @@
 //! 工具结果预算(result budget)—— 超长输出的落盘 + 信封替换。
 //!
-//! 修复背景(借鉴 ZCode result-serialization 三层预算):此前的处理是
+//! 修复背景(借鉴同类 agent 的 result-serialization 三层预算):此前的处理是
 //! 「各工具独立截断上限,超长直接砍掉」—— 被砍掉的内容**彻底蒸发**,
 //! 模型既拿不到全文,也没有任何"还有更多"的信号。现在:文本总量超过
 //! [`ResultBudget::max_inline_bytes`] 时,全文落盘到
@@ -156,7 +156,7 @@ fn write_artifact(tool: &str, call_id: &str, full_text: &str) -> Option<PathBuf>
         return None;
     }
     // 文件名清洗:call_id 来自 provider,tool 名来自注册表 —— 只保留
-    // 白名单字符,防路径逃逸(与 ZCode session-data-files 同纪律)。
+    // 白名单字符,防路径逃逸(与会话数据落盘同纪律)。
     let sanitize = |s: &str| -> String {
         s.chars()
             .map(|c| {

@@ -8,7 +8,6 @@
     {"id":"kimi","path":"Kimi/kimi-3.md","sha256":"ad1cc66f2577e1767aeca45da439e55cc0c9119ccbbe4747fa4e9efdf401f961","models":["kimi-3"],"evaluation":"unverified"},
     {"id":"qwen","path":"Qwen/qwen3.8-max.md","sha256":"cc4544648ab13abd1f390fb2666c866f05c95f5f4a8c193e7f13d40fe8d12ef9","models":["qwen3.8-max"],"evaluation":"unverified"},
     {"id":"grok","path":"xAI/grok-4.7-cli.md","sha256":"027b871997e0cbfc1a5f03c90c4a48d55839e43d90540a309e38559c8591db91","models":["grok-4.7"],"evaluation":"unverified"},
-    {"id":"glm","path":"GLM/zcode-desktop.md","sha256":"e8575a7d602c67ab32e57628a7c49c55de74c0751f82c3254788b028d5c8ffa9","models":["glm"],"evaluation":"unverified","note":"跟踪候选；当前适配文案另见 glm.md 中的来源。"},
     {"id":"minimax","path":"MiniMax/minimax-m2.5.md","sha256":"65129f1d2f3c783bdc4974fe7d9dd098e75cb52f57025da8eac924271028b869","models":["minimax-m2.5"],"evaluation":"unverified"}
   ],
   "additional_sources": [

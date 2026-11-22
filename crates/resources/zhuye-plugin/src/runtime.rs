@@ -125,7 +125,7 @@ impl PluginRuntime {
             .lookup_entry(&id)
             .ok_or_else(|| format!("plugin not installed: {id_str}"))?;
         // manifest 定位必须与**安装**路径同款(`PluginManifest::find_in_dir`):
-        // 装 Claude Code 格式插件(`.claude-plugin/plugin.json`)时,安装
+        // 装外部 agent 插件格式(`.claude-plugin/plugin.json`)时,安装
         // 侧能读到 manifest,但此处若硬编码 `plugin.toml` 就会读不到 →
         // 插件「装得上、启用不了」(能力全部挂不上)。此前无覆盖,现按
         // 同一约定解析。
