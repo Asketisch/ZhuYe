@@ -137,13 +137,15 @@ SDK 关心的核心变体(完整列表见 `event_msg/mod.rs`):
 | `tool_call_begin` / `tool_call_end` | `call_id`, `tool_name`, `output`, `is_error` | 内置工具调用 |
 | `tool_execution_request` | `call_id`, `tool`, `args` | **远程工具**:请求客户端本地执行(见 §5) |
 | `approval_request` | `request_id`, `kind`, `risk` | 等待 `tool_approval` 回执 |
-| `error` | `code`, `message` | 会话级错误 |
+| `error` | `code`, `message`, `details?` | 会话级错误。v1.x 新增 code:`compact_rapid_refill`(压缩→立即填满死循环熔断,连续 3 次后收口当前 turn)/ `suspicious_empty_model_result`(模型正常结束但零产出,details 含 `raw_finish_reason` / `provider`)/ `steer_input_too_large`(转向输入超 200KB,details 含 `payload_bytes` / `max_bytes`) |
 | `turn_complete` | `turn_id`, `status`, `usage` | turn 终态(`success` / `max_iterations` / `stopped` / `token_budget_exceeded`) |
 | `turn_aborted` | `turn_id`, `reason` | turn 被打断(终态) |
 | `shutdown_complete` | — | 会话收尾完成(终态,见 §6) |
 | `submission_closed` | — | 该 submission 的 per-turn 通道已排空(终态,见下) |
 | `extensions_rescanned` | `skills: usize`, `commands: bool` | **v1.x 新增(additive)**:`rescan_extensions` 的应答 —— skills 目录重扫后的条目总数;`commands` 当前恒 `false`。事件经 per-turn 通道 + 会话扇出双路送达(客户端按 submission id 去重) |
 | `guard_stats` | `enabled`, `definitions_blocked`, `definitions_reviewed`, `outputs_blocked`, `outputs_reviewed` | **F01 新增(additive)**:`query_guard_stats` 的应答 —— prompt_guard 裁决统计快照(会话累计)。双路送达同上 |
+| `cache_warming` | `action`, `phase`, `reason?`, `prompt_tokens?`, `warm_cached_tokens?`, `warm_cost_usd?`, `expected_savings_usd?`, `model?`, `at` | **v1.x 新增(additive)**:prompt cache 保温状态(引擎主动推,无对应 Op;`[cache_warming] enabled` 开启)。`action ∈ scheduled/executed/skipped/cancelled`,`phase ∈ turn/idle`;`warm_cached_tokens` 与后续 `token_count.cached_tokens` 同语义,可对照验证保温收益。经会话扇出送达(id 为空) |
+| `stream_recovery_started` / `stream_recovery_anchor_selected` / `stream_recovery_tail_discarded` / `stream_recovery_retry_started` | `attempt`, `reason_code`, `transient?`, `anchor?`, `discarded_text_chars?`, `discarded_thinking_chars?`, `retry_in_ms?` | **v1.x 新增(additive)**:流锚点恢复事件族 —— 可重试流错误 + 已有可见增量时,从安全锚点重开流;`tail_discarded` 的丢弃留痕落 rollout(resume 不回放,永不回流模型上下文)。与 `stream_error` / `agent_message_reset` 并存:后两者管客户端缓冲清理,本族管恢复过程可观察性 |
 
 OpenAI 兼容流、Responses 与 Anthropic 的并行工具参数可能交错到达。
 首个工具的参数增量实时转发,其余工具的参数在该次模型输出结束时按调用顺序转发,

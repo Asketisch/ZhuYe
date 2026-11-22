@@ -200,6 +200,10 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
 - **强制:注释一律使用中文** —— 新增或修改代码时,行注释(`//`)、doc-comment
   (`///`、`//!`)、测试说明等必须用中文书写,不得使用英文注释;commit message
   亦用中文,遵循 `type(scope): 描述` conventional 风格
+- **强制:修复必须留字条** —— 非显然的防御性代码(守卫、熔断、降级、兜底
+  路径、反直觉常量)必须用中文注明「修复原因/依据」:当初怎么坏的(触发
+  场景)、现在的机制为什么能防住。让人能靠搜索定位历史缺陷,不当无字据
+  的暗知识
 - 约一半 lib.rs 顶部有 `#![allow(clippy::...)]` 宽松头(clippy.toml 中
   `avoid-breaking-exported-api = false`);新代码仍以 `-D warnings` 全绿为门槛
 - `[profile.dev]` 刻意关闭 incremental、`[profile.release-fast]` 供本地快速迭代

@@ -19,7 +19,7 @@
 | `zhuye-memory` | 三 scope 持久记忆与检索 | 并入本篇 |
 | `zhuye-agent-def` | Markdown + frontmatter 的 agent 定义解析 | 并入本篇 |
 | `zhuye-prompt` | 提示词模板装配、provider 提示词资源、三态方案选择（default / auto / manual）与上游来源维护 | 并入本篇 |
-| `zhuye-compact` | 上下文压缩策略 | 并入本篇 |
+| `zhuye-compact` | 上下文压缩策略 + v1.x rapid-refill 熔断器(`refill.rs`:压缩后 ≤3 步再触发 = refill,连续 3 次 Abort 收口,force 绕过) | 并入本篇 |
 | `zhuye-recovery` | 上下文恢复(元消息收集与回填) | 并入本篇 |
 | `zhuye-notes` | 会话级增量笔记 | 并入本篇 |
 | `zhuye-sanitize` | 密钥脱敏叶 crate | 并入本篇 |
