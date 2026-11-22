@@ -20,11 +20,17 @@
 /// F26:上下文治理(可搜索溢出句柄 + 输出预算自适应 + 缓存友好度)。
 pub mod context_gov;
 pub mod microcompact;
+/// v1.x:rapid-refill 熔断器(阻断「压缩 → 立即填满」死循环)。
+pub mod refill;
 pub mod smart_prune;
 pub mod strategy;
 pub mod summarizer;
 pub mod tokens;
 pub mod tool_pair;
+
+pub use refill::{
+    RAPID_REFILL_MAX_CONSECUTIVE, RAPID_REFILL_WINDOW_STEPS, RapidRefillGuard, RefillDecision,
+};
 
 pub use context_gov::{
     CacheFriendly, SpillHandle, SpillStore, adaptive_output_cap, cache_friendly, stable_prefix_len,
