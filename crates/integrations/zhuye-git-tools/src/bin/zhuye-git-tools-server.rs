@@ -1,5 +1,5 @@
 //! `zhuye-git-tools-server` — git 工作流的 MCP stdio server(WP17,复用
-//! `zhuye-git` 的能力族;harness-import 同范式:手写 JSON-RPC 2.0 over
+//! `zhuye-git` 的能力族;同范式:手写 JSON-RPC 2.0 over
 //! stdio,stdout 只走协议,日志走 stderr)。
 //!
 //! 协议派发逻辑在 lib(可单测);本文件只做 stdio I/O。

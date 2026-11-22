@@ -28,9 +28,6 @@
   构建在这套协议之上(见 [sdks/PROTOCOL.md](../sdks/PROTOCOL.md))。
 - **PyO3 绑定(`zhuye-py` crate)** —— 走独立 crate,不进 `zhuye` 库门面,供
   Python 宿主直接链接。
-- **外部会话导入(`zhuye-import`)** —— 独立二进制(由 `zhuye-import` crate
-  的 `bin` 产出),把其他 Harness 的会话记录转换进 rollout,见
-  [plugins/harness-import](../plugins/harness-import)。
 - **WASM 插件宿主 / git 工具 / computer-use / shell** —— 这些是 `plugins/*`
   的能力本体,在 integrations 层实现,但**不进** SDK facade,按插件形态挂载。
 
@@ -49,7 +46,7 @@ workspace 共 **46 个 crate**,按 6 层分组于 `crates/<layer>/<crate>/`,
 | `abilities/` | `llm`, `tools`, `bm25`, `hooks`, `skills`, `memory`, `agent-def`, `prompt`, `compact`, `recovery`, `notes`, `sanitize`, `kms`, `eval` | 能力原语:`ModelClient` trait + providers、`Tool` trait + 内置工具、BM25 相关性排序、`HookEngine`、skills 目录、跨会话记忆、Agent 定义、提示词库、压缩 escalation、断点恢复、会话笔记、输出脱敏、密钥管理、评测体系 |
 | `resources/` | `config`, `permissions`, `plugin`, `rollout`, `telemetry`, `sandbox`, `audit`, `secrets`, `fs`, `git`, `ast`, `wasm` | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、可观测性遥测、OS 沙箱(macOS Seatbelt / Linux Landlock)、审计日志、密钥加密存储、共享文件原语(原子写)、git 能力族(checkpoint/branch/指令解析)、tree-sitter AST 搜索、WASM 组件插件宿主 |
 | `orchestration/` | `subagent`, `discussion`, `task`, `pipeline`, `goal` | 多 agent 编排:子代理工厂(并发在途 ≤16)、角色讨论、任务/团队/squad 委派、DAG 流水线、目标模式 |
-| `integrations/` | `mcp`, `lsp`, `integration`, `stream`, `import`, `computer-use`, `shell`, `git-tools` | MCP 客户端(stdio / streamable-http)、LSP、外部集成、流式会话后端(含 cron / autopilot / 队列)、外部 Harness 会话导入、Computer Use(截屏/键鼠,`real` feature 门控)、常驻 shell 会话池、git 工作流 MCP server |
+| `integrations/` | `mcp`, `lsp`, `integration`, `stream`, `computer-use`, `shell`, `git-tools` | MCP 客户端(stdio / streamable-http)、LSP、外部集成、流式会话后端(含 cron / autopilot / 队列)、Computer Use(截屏/键鼠,`real` feature 门控)、常驻 shell 会话池、git 工作流 MCP server |
 | `runtime/` | `core`, `exec`, `cli`, `zhuye`, `py` | `AgentThread` + `StateGraph`(core)、headless + serve(exec)、CLI 入口(cli)、库门面 + Builder(zhuye)、PyO3 绑定(py) |
 
 分层规则:依赖只允许从上往下流动。`protocol` 在最底,任何层都可以依赖它;

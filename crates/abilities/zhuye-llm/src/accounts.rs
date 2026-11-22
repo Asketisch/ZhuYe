@@ -1,6 +1,6 @@
 //! # OAuth 登录与账号池(F31)
 //!
-//! 像正常软件一样「登录账号」用订阅额度(Claude Pro / Codex 等),告别
+//! 像正常软件一样「登录账号」用订阅额度(各家订阅套餐等),告别
 //! 手搞 API key。
 //!
 //! ## 三块
@@ -10,8 +10,8 @@
 //! 2. **账号池**([`AccountPool`])—— 多账号轮换:会话亲和(同一会话
 //!    尽量用同一账号,保住 prompt cache)+ 配额排名(接近上限的降权)+
 //!    自动暂停恢复。
-//! 3. **订阅凭据桥**([`SubscriptionCredential`])—— 读 `~/.claude/
-//!    .credentials.json` 这类外部工具的凭据,直接复用其订阅。
+//! 3. **账号档案** —— 账号的配额 / 状态 / 归属元信息,供 UI 展示与
+//!    手工排查使用。
 //!
 //! ## 为什么「会话亲和」很重要
 //!
@@ -292,70 +292,6 @@ impl AccountPool {
     }
 }
 
-/// 订阅凭据(从外部工具读取)。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SubscriptionCredential {
-    /// 来源(`"claude-code"` / `"codex"` / `"copilot"`)。
-    pub source: String,
-    /// 凭据文件路径。
-    pub path: String,
-    /// access token(读取后应立即存入 secrets,不落 config)。
-    pub access_token: String,
-    /// refresh token。
-    #[serde(default)]
-    pub refresh_token: Option<String>,
-    /// 过期时间。
-    #[serde(default)]
-    pub expires_at: Option<u64>,
-    /// 订阅档位(pro / max / …)。
-    #[serde(default)]
-    pub plan: Option<String>,
-}
-
-impl SubscriptionCredential {
-    /// 在 `now` 时刻是否有效。
-    pub fn is_valid_at(&self, now: u64) -> bool {
-        match self.expires_at {
-            Some(deadline) => now + 60 < deadline,
-            None => true,
-        }
-    }
-
-    /// 是否可刷新。
-    pub fn can_refresh(&self) -> bool {
-        self.refresh_token.is_some()
-    }
-
-    /// 脱敏展示(日志 / UI)。
-    pub fn redacted(&self) -> String {
-        let token = &self.access_token;
-        let shown = if token.chars().count() <= 8 {
-            "*".repeat(token.chars().count())
-        } else {
-            let head: String = token.chars().take(4).collect();
-            let tail: String = token
-                .chars()
-                .rev()
-                .take(4)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            format!("{head}…{tail}")
-        };
-        format!("{} ({}, plan={:?})", self.source, shown, self.plan)
-    }
-}
-
-/// 已知的订阅凭据位置。
-pub fn known_credential_paths() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("claude-code", "~/.claude/.credentials.json"),
-        ("codex", "~/.codex/auth.json"),
-        ("copilot", "~/.config/github-copilot/hosts.json"),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,60 +447,6 @@ mod tests {
         assert_eq!(counts["available"], 1);
         assert_eq!(counts["disabled"], 1);
         assert_eq!(counts["paused"], 1);
-    }
-
-    #[test]
-    fn subscription_credential_validity() {
-        let cred = SubscriptionCredential {
-            source: "claude-code".into(),
-            path: "~/.claude/.credentials.json".into(),
-            access_token: "sk-ant-oat-abcdefghijklmn".into(),
-            refresh_token: Some("refresh".into()),
-            expires_at: Some(1000),
-            plan: Some("max".into()),
-        };
-        assert!(cred.is_valid_at(500));
-        assert!(!cred.is_valid_at(950), "留 60s 余量");
-        assert!(cred.can_refresh());
-    }
-
-    #[test]
-    fn subscription_credential_redaction() {
-        let cred = SubscriptionCredential {
-            source: "claude-code".into(),
-            path: "p".into(),
-            access_token: "sk-ant-oat-abcdefghijklmn".into(),
-            refresh_token: None,
-            expires_at: None,
-            plan: Some("max".into()),
-        };
-        let redacted = cred.redacted();
-        assert!(redacted.contains("claude-code"), "{redacted}");
-        assert!(
-            !redacted.contains("abcdefghijklmn"),
-            "token 主体不得泄漏:{redacted}"
-        );
-        assert!(redacted.contains('…'), "{redacted}");
-    }
-
-    #[test]
-    fn short_token_fully_masked() {
-        let cred = SubscriptionCredential {
-            source: "x".into(),
-            path: "p".into(),
-            access_token: "short".into(),
-            refresh_token: None,
-            expires_at: None,
-            plan: None,
-        };
-        assert!(!cred.redacted().contains("short"));
-    }
-
-    #[test]
-    fn known_paths_listed() {
-        let paths = known_credential_paths();
-        assert_eq!(paths.len(), 3);
-        assert!(paths.iter().any(|(s, _)| *s == "claude-code"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-"""实模型演练层 · provider 能力回归矩阵(借鉴 ZCode provider-regression)。
+"""实模型演练层 · provider 能力回归矩阵(借鉴同类 agent 的 provider-regression 做法)。
 
 考卷 = 按能力维度的固定最小用例,每个接入的真实模型都跑一遍;判定规则
 文档化在模块头:**HTTP 200 不够** —— 流必须正常结束(`turn_complete`

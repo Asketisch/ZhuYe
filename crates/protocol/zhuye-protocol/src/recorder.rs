@@ -187,8 +187,8 @@ pub enum RolloutRecord {
         /// 发生时间。
         at: chrono::DateTime<chrono::Utc>,
     },
-    /// v1.x:Prompt Snapshot —— 会话级 system 前缀字节快照(借鉴 ZCode
-    /// prompt-snapshot:跨重启 / 跨升级保持已发送前缀字节不变,prompt
+    /// v1.x:Prompt Snapshot —— 会话级 system 前缀字节快照(借鉴同类 agent
+    /// 的 prompt-snapshot 做法:跨重启 / 跨升级保持已发送前缀字节不变,prompt
     /// cache 不因重新渲染而全量失效)。首个成功模型调用后写入;压缩 /
     /// 工具集变更 / prompt 切换等代际失效由内存槽管理(见 zhuye-core),
     /// 本记录是**恢复源**:resume 时取最后一条、model 匹配当前模型才激活。
@@ -201,7 +201,7 @@ pub enum RolloutRecord {
         /// 快照时间。
         at: chrono::DateTime<chrono::Utc>,
     },
-    /// v1.x:输入守恒 ledger(借鉴 ZCode session_input)—— 每个进入
+    /// v1.x:输入守恒 ledger(借鉴同类 agent 的 session_input ledger)—— 每个进入
     /// 引擎的 turn 的**终态处置**显式落盘。与 turn 的 Message 记录配对:
     /// 有 Message 而无对应 InputDisposition = 崩溃窗口(引擎在 turn 进行
     /// 中被杀),resume 对账据此显式告知「该输入未完成」,**永不静默重放**

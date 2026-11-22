@@ -200,7 +200,7 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         if r.metadata.get("timeout_ms").is_some() {
             state.turn_tool_timeouts += 1;
         }
-        // v1.x:stop_turn 级联(借鉴 ZCode `stopTurnAfterResult`)—— 工具
+        // v1.x:stop_turn 级联(借鉴同类 agent 的「工具结果后停止」做法)—— 工具
         // 可通过 `metadata["stop_turn"]=true` 请求「结果结算后结束本 turn,
         // 不再发起新的模型调用」。实现:本批结果落盘后直接返回 CheckStop
         // 终止(结果已在 ToolCallEnd 事件与 rollout 中,无需回灌模型)。

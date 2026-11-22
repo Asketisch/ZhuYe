@@ -124,7 +124,7 @@ pub struct AgentConfig {
     /// `zhuye-tui` 在 bootstrap 时按 `[telemetry]` 配置构造。
     /// `None` = telemetry 关闭(测试 / 旧调用方)。
     pub telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
-    /// v1.2 P1:目标模式 controller(参考 zcode `/goal` 设计)。
+    /// v1.2 P1:目标模式 controller(参考同类 agent 的 `/goal` 设计)。
     /// `None` = 目标模式未激活;`/goal <obj>` 时由 submission_loop 构造。
     /// turn 结束后 `on_turn_end` 自校验。未完成则把续作文本推进
     /// steering 队列,等下一条 `UserInput` 合并,不自行提交新回合。
@@ -256,7 +256,7 @@ pub struct AgentConfig {
     /// 摘要请求命中主前缀缓存(带 cache_skip_write)。`None` = 尚无
     /// 成功请求(摘要器回落历史形态)。
     pub compact_main_prefix: CompactPrefixSlot,
-    /// v1.x:Prompt Snapshot 激活槽(借鉴 ZCode prompt-snapshot)。`Some`
+    /// v1.x:Prompt Snapshot 激活槽(借鉴同类 agent 的 prompt-snapshot 做法)。`Some`
     /// 且校验通过(model 一致 + 代际一致)时,`model_call` 的 system 按
     /// 快照字节发送 —— 跨重启 / 跨升级已发送前缀字节不变,缓存不因重新
     /// 渲染而失效。捕获:本进程首个成功模型调用后;失效:代际 bump

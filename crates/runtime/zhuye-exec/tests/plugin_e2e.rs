@@ -222,7 +222,7 @@ fn home_path() -> std::path::PathBuf {
 }
 
 // ============================================================================
-// 能力快照 + Claude Code 格式启用
+// 能力快照 + 外部 agent 插件格式启用
 // ============================================================================
 
 /// 挂载后 runtime 留存能力快照 —— GUI 侧据此把插件带来的 MCP server /
@@ -303,12 +303,12 @@ async fn run_capability_snapshot_scenario() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Claude Code 格式插件(`<root>/.claude-plugin/plugin.json`,JSON manifest)
+/// 外部 agent 插件格式(`<root>/.claude-plugin/plugin.json`,JSON manifest)
 /// 必须能**装上并启用** —— 桌面端「插件市场支持其他 agent 插件」主打
 /// 该格式。此前 manifest 解析只走 TOML、启用路径硬编码 `plugin.toml`,
 /// 结果是「装得上、启用不了」(能力全挂不上)。
 #[tokio::test]
-async fn claude_code_format_plugin_installs_and_enables() {
+async fn compat_format_plugin_installs_and_enables() {
     let _lock = HOME_MUTEX.lock().await;
     let orig_home = std::env::var("HOME").ok();
     let home = tempfile::tempdir().expect("tempdir");
@@ -316,7 +316,7 @@ async fn claude_code_format_plugin_installs_and_enables() {
     unsafe {
         std::env::set_var("HOME", home.path());
     }
-    let result = run_claude_code_format_scenario().await;
+    let result = run_compat_format_scenario().await;
     // SAFETY: 同上,结束时还原 HOME。
     unsafe {
         match orig_home {
@@ -324,11 +324,11 @@ async fn claude_code_format_plugin_installs_and_enables() {
             None => std::env::remove_var("HOME"),
         }
     }
-    result.expect("Claude Code 格式插件场景应成功");
+    result.expect("外部 agent 插件格式场景应成功");
 }
 
-async fn run_claude_code_format_scenario() -> anyhow::Result<()> {
-    // 1. 构造 Claude Code 格式插件目录(JSON manifest + 命令目录)。
+async fn run_compat_format_scenario() -> anyhow::Result<()> {
+    // 1. 构造外部 agent 插件格式目录(JSON manifest + 命令目录)。
     let src = tempfile::tempdir()?;
     let root = src.path().join("cc-plugin");
     std::fs::create_dir_all(root.join(".claude-plugin"))?;
@@ -338,7 +338,7 @@ async fn run_claude_code_format_scenario() -> anyhow::Result<()> {
         r#"{
             "name": "cc-plugin",
             "version": "1.0.0",
-            "description": "Claude Code 格式",
+            "description": "外部 agent 格式",
             "commands": "./commands"
         }"#,
     )?;
@@ -388,11 +388,11 @@ async fn run_claude_code_format_scenario() -> anyhow::Result<()> {
     let rt = guard.as_ref().expect("HOME 已隔离,PluginRuntime 应存在");
     assert!(
         rt.commands().lookup("cc-plugin:hello").is_some(),
-        "Claude Code 格式插件的命令应挂上"
+        "外部 agent 格式插件的命令应挂上"
     );
     assert!(
         rt.plugin_capabilities(&plugin_id).is_some(),
-        "Claude Code 格式插件应有能力快照"
+        "外部 agent 格式插件应有能力快照"
     );
     Ok(())
 }

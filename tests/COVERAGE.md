@@ -96,7 +96,6 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 加密密钥存储(CLI 接线 + 损坏字段处理) | C19(secrets 全链路) | — | — | ✅(zhuye-secrets) | — |
 | 文件权限规则并发持久化 | —(库接口无 serve 入口) | — | — | ✅(多实例并发更新) | — |
 | Autopilot 调度(首次到期 / 并发占位 / 发送失败) | — | — | — | ✅(zhuye-stream) | — |
-| 会话导入(Claude Code / Codex / ZCode;插件 + 独立二进制) | I1–I11、I20–I28 | —(独立二进制 `zhuye-import`,非 cli 参数面) | — | ✅ | — |
 | KMS 知识库插件(install → serve --plugin → MCP 读写 → 磁盘落盘) | I12 | —(独立二进制 `zhuye-kms-server`) | — | ✅(zhuye-kms 28 例) | — |
 | Computer Use 插件(headless 降级及无效输入拒绝;真机截屏走 real feature 手动验) | I13、I23 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
 | Browser 插件(headless 降级不 panic;真机快照/点击走 real feature 手动验) | F39 | —(独立二进制 `zhuye-browser-server`) | — | ✅(降级 1 例) | — |
@@ -123,7 +122,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 提示词选择与会话恢复 | A12(默认、手动、智能回退、无效方案、重扫及恢复) | — | — | ✅(提示词解析与请求组装) | — |
 | 模型自动输出预算与配置优先级 | ✔(本地 HTTP 网关断言模型、输出字段、中文输入余量,见 `test_bugfixes.py`) | — | — | ✅(模型上限、余量、未知型号及请求体) | — |
 | 提示注入检测库(凭据外传规则) | —(尚无运行时入口) | — | — | ✅(zhuye-sanitize 检测及误报边界) | — |
-| v1.10 功能:配置一键导入 / goal+队列插件 / 上下文窗口 / 思考强度分级 / 空 key | V1–V10 | —(独立二进制 `zhuye-import config`,非 zhuye 参数面) | ✅(effort 阶梯字面量双侧断言) | ✅(llm 能力表钳制 / override 表 / builder 免 key / queue 调度 / config_import 合并) | — |
+| v1.10 功能:goal+队列插件 / 上下文窗口 / 思考强度分级 / 空 key | V1–V10 | — | ✅(effort 阶梯字面量双侧断言) | ✅(llm 能力表钳制 / override 表 / builder 免 key / queue 调度) | — |
 | v1.11 基建#9:AGENTS.md 默认读取(内置 UserPromptSubmit hook 注入 `## Project Instructions`) | ✔(4 条,见 `test_agents_md.py`:默认注入 / 用户级+项目级顺序 / `[active] agents_md=false` 关闭 / 无文件不注入空段) | —(serve 内部行为,非 CLI 参数) | —(无 Op/EventMsg 变更) | ✅(zhuye-prompt 段落插桩 3 例;zhuye-exec builtin_hooks 8 例:来源标注 / 空白与缺失 / 超长截断 / 合并顺序 / 单源与双缺失 / hook 首轮注入次轮放行 / 无文件不注入 / 跨会话召回 hook 命中·空查询·排除自身;zhuye-config 三态解析 3 例 None/false/true) | — |
 | v1.11 基建#11:显式完全托管模式(`exec/serve --full-auto`/`--yolo`,Bubble 启动 + 初始模式通告 + Prompt 工具 bubble 自动批准) | ✔(5 条,见 `test_full_auto.py`:启动通告 / 别名等效 / ZHUYE_APPROVALS=1 下 write 免阻塞自动批准 / 默认不发通告 / 与 --plan-mode 互斥) | ✅(clap 互斥由用例 5 直接驱动) | —(复用既有 PermissionModeChanged / PermissionBubble 事件,无新变体) | ✅(zhuye-exec headless `initial_permission_mode` 纯函数 1 例:三分支与 full_auto>plan_mode 优先级;zhuye-core `with_initial_permission_mode` Bubble 例;submission_loop 通告分支由功能层覆盖) | — |
 | v1.11 基建#6:队列支持多 goal(`queue add_goal` + driver 探针驱动目标模式执行) | ✔(2 条,见 `test_goal_queue.py`:单 goal EnterGoalMode→met→ExitGoalMode→done 字段级 / 两 goal 严格串行 started_at 先后) | —(工具参数面) | —(无新 Op/EventMsg 变体;复用 EnterGoalMode/ExitGoalMode) | ✅(zhuye-stream goal watcher 4 例:跑到底 / 双 goal 串行 / 无探针拒绝 / 失败结清;zhuye-exec queue_tool add_goal 3 例:roundtrip 字段透传 / 参数校验 / Prompt 权限;zhuye-goal outcome 记忆) | — |
@@ -336,49 +335,6 @@ P15 覆盖 Autopilot 真实调度:`~/.zhuye/autopilot/config.json` opt-in
 注入真实新回合并完成(mock 回复标记进 wire);`history.json` 落盘恰一条
 运行记录且终态回填 `success`(camelCase 字段级:id / executedAtMs / status)。
 
-### I 组 会话导入(`test_import.py`)
-独立二进制 `zhuye-import`(crate `crates/integrations/zhuye-import`,
-插件 `plugins/harness-import` 的能力核心):
-- **I1 Claude Code**:源 uuid 保留为 thread id、`cwd → workspace`、
-  assistant content 时序折叠(tool_use/tool_result 配对)、`isMeta` 行
-  过滤、`token_count` 带 provider、落盘按源日期分桶、`ai-title` → `.name`;
-- **I2 Codex**:developer / 注入 user 行过滤、`function_call.arguments`
-  字符串解析为对象、`compacted → compaction`、轮用量挂 `token_count`;
-- **I3 ZCode**:schema 同构 SQLite fixture,`sess_` 前缀剥 uuid、
-  `visibility:"model-only"` 与注入块过滤、tool 配对、`turn_usage` 挂轮;
-- **I4 幂等**:`--dry-run` 不落盘 / 重复导入 skipped(退出码 0)/
-  `--force` 覆盖等量;
-- **I5 auto**:`--from auto` 混合目录逐文件嗅探 + `--json` 逐源一行;
-- **I6 原生可见**:导入产物 `session ls` 列出、`session show` 可读
-  (含数组 content 预览修复)、`.name` 自定义名;
-- **I7 插件全链路**:plugin install + `serve --plugin` → mock 模型调用
-  `mcp__plugin:harness-import@inline:importer__import_session` → 工具
-  成功、会话落盘、`turn_complete`;
-- **I8 可续跑**:`exec --resume <导入id>` 续跑追加同一文件,且文件内全部
-  `session_meta.session_id` 一致(resume 回填 session_id 的回归断言);
-- **I9 三个 CLI 开关端到端**:`--include-thinking`(thinking 折叠为
-  `<thinking>` 文本 / 默认丢弃)、`--keep-injected`(Codex 注入行与
-  developer 行默认过滤 / 开启后**前置到真实 user 所在轮**而非独立成轮
-  —— 回归:修复前注入各自开轮,产生只有 user 无 assistant 的孤立消息)、
-  `--include-sidechain`(Claude 子代理行默认跳过 / 开启后成轮);
-- **I10 `--all` discover**:claude-code(`~/.claude/projects/*`)与
-  codex(`~/.codex/sessions/**` 递归)目录扫描各自导入成功,重复 `--all`
-  全部 skipped 且退出码 0;I24 覆盖符号链接环和目录别名,断言自动发现、目录导入及 MCP 扫描均只返回一个会话;
-- **I11 MCP 与批量语义**:直连 `zhuye-import mcp` 调 `list_importable`
-  成功返回来源清单;全失败 → 退出码 1,部分失败 → 退出码 0 且 failed
-  行可见(批量语义);
-- **I16 shell 进程组清理**:通过插件启动后台子进程,终止后断言工具回执与子进程无后续文件副作用。
-
-- **I20 跨日期强制导入**:同一会话更正日期后替换已有文件并清理旧轮转分片,记录字段更新且不产生重复会话。
-
-- **I21 ZCode 在线快照**:源库 WAL 正在写入时只导入已提交数据,不读未提交事务。
-- **I25 Codex 图片导入**:图文和纯图片回合保留内容顺序、MIME 与字节,无法恢复的图片产生告警。
-- **I26 大图片自动识别**:首行超过 64 KiB 时仍能识别 Claude 会话并完整导入图片字节。
-- **I27 损坏图片编码**:Claude 图片 base64 无效时保留文本、报告告警且不生成损坏图片。
-- **I28 导入目录隔离**:导入器与 session 命令共用 `ZHUYE_HOME/sessions`。
-- **I22 工具历史恢复**:过滤重复及跨回合工具回执,断言恢复时模型请求中的调用和回执顺序。
-- **I23 Computer Use 参数校验**:拒绝溢出坐标、未知鼠标按钮和无效组合键。
-
 ### O 组 编排(`test_orchestration.py`)
 子代理 `call_explorer`(子代理执行 → 回执进历史)/ 讨论编排(transcript +
 Result + rounds_completed)/ 任务与团队(create → ls)/ 流水线错误路径
@@ -436,22 +392,6 @@ O11–O16 组集成链路(原 `tests/rust/integrations.sh` 44 断言迁入):
   / settle_task_is_id_attributed / submitter_closed_channel_marks_failed);
 - **V8 goal 工具**:`goal status` 报未激活;`goal enter` 提交 Op(输出
   回显目标)、无 `GOAL_NO_CLIENT` 错误;
-- **V9 一键导入**:`zhuye-import config --home <fixture> --output` dry-run
-  不写文件 + 报告集合断言(claude-code / opencode×2 / codex 凭证与
-  fetch / http-one / local-arr / linter MCP;`written=false`);真实导入
-  逐字段断言(凭证 label / api_key / base_url / model;MCP command /
-  args / env / url;opencode 真实形状 `options.baseURL/apiKey` +
-  数组 `command` + `environment`;codex env_key → 进程 env 解析;空 key
-  本地端点照常导入;`written=true`);重复导入幂等(providers_skipped /
-  mcp_skipped 集合、`written=false`、文件逐字节不变);**坏目标文件硬
-  失败**(退出码非 0、stderr 含「解析失败」且不泄露密钥所在源码行、原
-  文件原样保留 —— 此前降级为 Default 后无条件写回,等于清空用户全部
-  既有配置)。各来源解析形状(opencode V1/V2、crush.json、Claude Code
-  AUTH_TOKEN 回落、codex 一律 OpenAI wire、Gemini httpUrl/url 语义、
-  legacy 单值 api_key 先 wrap 再追加)由 `zhuye-import` 单测覆盖;
-- **V10 导入产物可运行**:导入后的 config.toml 下 serve 以 mock 正常
-  起会话并收尾 turn。
-
 ### 缺陷修复回归(`test_bugfixes.py`)
 - **预算耗尽显性化(P-13)**:迭代预算 / token 预算耗尽且**零文本**时,
   turn 在 `turn_complete` 之前显式发 `error` 事件,字段级断言
@@ -706,7 +646,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 - D8:当前 `classify_action` 对 `InvalidRequest` 返回 `GiveUp`,不会进入构造冷却原因的分支;旧记录所述一小时冷却不成立。
 - D10:双 SDK 新增 `ToolCallOutputDelta` 类型,逻辑测试覆盖输出增量字段透传及未知变体兼容。
 - D11:TS SDK 新增 `nextGlobalEvent` 公开读取口(此前 `id=""` 全局事件被静默丢弃),并补齐 K5/K7/K7b/K8/K9 真二进制用例与 Python 侧对齐;TS `prompt()` 遇 `turn_aborted` 改为抛错(不再静默返回部分文本);Python 补 `SubmissionClosed` 类型声明;TS stdout EOF 现在会唤醒挂起的迭代器(对齐 Python `_on_eof`);发布名落定为 `zhuye`,`__version__` 纳入四处版本联动。
-- D12:SDK 随包分发平台二进制(参考 Codex / ruff 模式)—— npm 主包按平台安装 `zhuye-<slug>` 子包(optional dependencies,清单由 CI 动态生成),Python 切 maturin 出平台 wheel(二进制以 `zhuye/bin/` 包数据单份携带);双 SDK 二进制解析链统一为 `options.bin → ZHUYE_BIN → 内嵌二进制 → PATH`,平台不匹配回退 PATH;安装冒烟与发布后 registry 验证升级为断言内嵌二进制 `--version` 可执行。
+- D12:SDK 随包分发平台二进制(参考 npm 平台子包 / ruff 模式)—— npm 主包按平台安装 `zhuye-<slug>` 子包(optional dependencies,清单由 CI 动态生成),Python 切 maturin 出平台 wheel(二进制以 `zhuye/bin/` 包数据单份携带);双 SDK 二进制解析链统一为 `options.bin → ZHUYE_BIN → 内嵌二进制 → PATH`,平台不匹配回退 PATH;安装冒烟与发布后 registry 验证升级为断言内嵌二进制 `--version` 可执行。
 - Python 3.10 兼容性:移除 Python 3.11 才提供的 `typing.NotRequired` 依赖,用 `TypedDict` 继承区分必填与可选字段,保持零运行时依赖。
 
 ### 缺陷修复记录(2026-10,实测问题清单全 17 项)
@@ -850,11 +790,6 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
   的真实上报(见 `test_telemetry_otlp.py`);其余传输变体按需补充。
 - **其他兼容网关的交错工具分片**:OpenAI 兼容 SSE、Responses 与
   Anthropic 已有本地网关场景;其他私有协议按需补充。
-- **会话导入的真实数据面**:I 组全部使用同构 fixture(按本机实测形状
-  构造),CI 不读 `~/.claude` / `~/.codex` / `~/.zcode` 真实数据(隐私 +
-  非封闭);ZCode 真实 SQLite 的 schema 漂移风险由 adapter 侧容错解析 +
-  模块文档的 schema 快照兜底。DeepSeek Harness 无公开格式,adapter 仅留
-  位未实现(`zhuye-import/src/adapter.rs` 注册表追加即可)。
 
 ## 9. bash 参数面 → Python 迁移路线(✅ 已完成)
 

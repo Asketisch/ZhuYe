@@ -16,7 +16,7 @@ commands = "./commands"
 agents = "./agents"
 # skills:SKILL.md 技能(模型用 load_skill 按需激活)
 skills = "./skills"
-# hooks:Claude Code 风格 hooks.json,包装为外部进程 ShellHook
+# hooks:外部 agent 风格 hooks.json,包装为外部进程 ShellHook
 hooks = "./hooks/hooks.json"
 # mcp_servers:MCP server 声明(工具以 mcp__plugin:demo:<名>__<工具> 注入)
 mcp_servers = "./.mcp.json"

@@ -73,7 +73,7 @@ agent.close()
 |------|------|
 | [docs/architecture.md](docs/architecture.md) | 架构:分层、协议、状态转移、设计决策 |
 | [docs/features.md](docs/features.md) | 特性列表与边界 |
-| [docs/cli.md](docs/cli.md) | CLI 参考:子命令、zhuye-import |
+| [docs/cli.md](docs/cli.md) | CLI 参考:子命令 |
 | [docs/sdk.md](docs/sdk.md) | SDK 与使用说明(Python / TS) |
 | [docs/plugins.md](docs/plugins.md) | 插件使用(manifest、安全模型、WASM) |
 | [docs/plugin-dev-guide.md](docs/plugin-dev-guide.md) | 插件开发指南 |

@@ -1,5 +1,5 @@
 //! `zhuye-computer-use-server` — Computer Use 的 MCP stdio server
-//! (harness-import 同范式:手写 JSON-RPC 2.0 over stdio;line-delimited;
+//! (同范式:手写 JSON-RPC 2.0 over stdio;line-delimited;
 //! stdout 只输出协议响应,日志一律 stderr)。
 //!
 //! 工具:`computer_screenshot` / `computer_click` / `computer_type` /

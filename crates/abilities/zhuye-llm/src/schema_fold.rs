@@ -1,6 +1,6 @@
 //! Strict schema 折叠 —— 把任意 JSON Schema 折进 provider 的 strict 子集。
 //!
-//! 修复背景(借鉴 ZCode `strict-tool-schema.ts` 的折衷哲学):strict /
+//! 修复背景(借鉴同类 agent 的 strict-tool-schema 折衷哲学):strict /
 //! 结构化输出只支持 JSON Schema 的一个子集;此前不支持的关键字(pattern、
 //! minimum、format……)只有两条路 —— 要么原样发送(provider 拒绝或静默
 //! 忽略,约束丢失),要么整个放弃 strict。折衷:**支持的关键字保留在

@@ -122,7 +122,7 @@ pub struct LlmSummarizer {
     /// v1.2 P1:可选 telemetry sink,注入后每次摘要调用落 model-io 记录
     /// (query_source = "compact")。`None`(默认)= 不落库,向后兼容。
     telemetry: Option<Arc<TelemetrySink>>,
-    /// v1.x:主循环前缀提供器(借鉴 ZCode:compact 摘要请求复用主循环
+    /// v1.x:主循环前缀提供器(借鉴同类 agent:compact 摘要请求复用主循环
     /// 的 system + 工具目录,使摘要请求命中主前缀缓存)。`None`(默认)
     /// = 历史行为(空 system + noop 工具,整段请求不命中任何缓存)。
     /// 返回 `(system, tools)`;闭包由 exec bootstrap 注入,读取

@@ -73,7 +73,7 @@ agent.close()
 |------|------|
 | [docs/architecture.md](docs/architecture.md) | Architecture: layering, protocol, state transitions, design decisions |
 | [docs/features.md](docs/features.md) | Feature list and boundaries |
-| [docs/cli.md](docs/cli.md) | CLI reference: subcommands, zhuye-import |
+| [docs/cli.md](docs/cli.md) | CLI reference: subcommands |
 | [docs/sdk.md](docs/sdk.md) | SDK and usage guide (Python / TS) |
 | [docs/plugins.md](docs/plugins.md) | Plugin usage (manifest, security model, WASM) |
 | [docs/plugin-dev-guide.md](docs/plugin-dev-guide.md) | Plugin development guide |

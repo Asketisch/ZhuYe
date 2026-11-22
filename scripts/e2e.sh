@@ -124,6 +124,9 @@ step "7/13 brand residual scan (legacy names)" \
         fi
         # docs/ + CLAUDE.md 在映射上下文里合法引用旧名。
         echo "[ok] zero residual hits in source/CI"
+        # 其它产品品牌名门禁(工作树 + 提交信息):归属表述与功能性引用都
+        # 不该留在仓库里。脚本自身含要扫的字面量,已由门禁自身豁免。
+        python3 scripts/check_brand_names.py
     '
 
 # 9. (M7) config watcher 端到端 —— 写配置,期望 registry 重建。

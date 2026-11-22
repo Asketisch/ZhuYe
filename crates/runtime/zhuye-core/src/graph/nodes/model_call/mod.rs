@@ -249,7 +249,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     let mut system = base_system.clone();
     resolve_for_request(&spec, &mut tools, &mut system);
 
-    // v1.x:Prompt Snapshot(借鉴 ZCode prompt-snapshot)—— resume /
+    // v1.x:Prompt Snapshot(借鉴同类 agent 的 prompt-snapshot 做法)—— resume /
     // 升级后按快照字节发送 system,已发送前缀不因重新渲染而全量失效。
     // 校验:model 一致 + 代际一致(压缩 / 工具集 / prompt 切换即失效,
     // 下一成功调用按新前缀重捕获)。冻结语义的诚实标注见
@@ -308,7 +308,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         }),
         ..Default::default()
     };
-    // v1.12:上下文组成计量(六类估算分解)—— 对标 ZCode 的 context
+    // v1.12:上下文组成计量(六类估算分解)—— 对标同类 agent 的 context
     // composition:system_prompt / memory / skills(临时层) /
     // tool_schemas(内置)/ mcp_tools(外部)/ messages。复用 compact 的
     // 全局估算器,估算值非精确计量;组成指纹无变化时省略不发。
@@ -759,7 +759,7 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         }
     };
 
-    // v1.x:空结果三连防护(借鉴 ZCode suspicious-empty 检查)—— 模型
+    // v1.x:空结果三连防护(借鉴同类 agent 的 suspicious-empty 检查)—— 模型
     // 正常结束(MessageStop,非截断)却**什么都没产出**(无文本 / 无工具
     // 调用 / 无思考),几乎必然是内容过滤或 provider 异常,静默放行会让
     // 下游把「空」当合法回复无限空转。分类后以结构化错误收口当前 turn,
@@ -1347,7 +1347,7 @@ mod cancellation_tests {
 
 /// v1.12:上下文组成计量 + `ContextComposition` 事件发射(指纹去重)。
 ///
-/// 六类分解(对齐 ZCode context composition 形态,按烛夜组装段归并):
+/// 六类分解(对齐 context composition 形态,按烛夜组装段归并):
 /// - `system_prompt`:system 块 core 文本扣除记忆与 checklist 注入段
 /// - `memory`:pre_loop 检索注入的记忆文本
 /// - `skills`:ephemeral `<system-reminder>` 块(技能目录 + 工具目录

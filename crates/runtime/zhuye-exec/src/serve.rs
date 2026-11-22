@@ -73,7 +73,7 @@ pub struct ServeArgs {
     /// 按序号 resume(1-indexed,newest first)。
     #[arg(long, short = 'r', value_name = "N", conflicts_with_all = ["resume", "continue_last"])]
     pub resume_by: Option<usize>,
-    /// 显式启用的插件 id(可多次,如 `--plugin harness-import@inline`)。
+    /// 显式启用的插件 id(可多次,如 `--plugin demo@inline`)。
     /// 传入时**覆盖** config 的 `[plugins].enabled_plugins`,SDK 嵌入方
     /// 据此按需精确加载;未传维持配置驱动。
     #[arg(long = "plugin", value_name = "ID")]
