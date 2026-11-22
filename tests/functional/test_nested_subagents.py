@@ -96,7 +96,14 @@ def test_多级委派结果与状态逐级传播(sandbox, serve_session, review_
         parent_result = next(m for m in requests[4]["messages"]
                              if m.get("role") == "tool" and m.get("tool_call_id") == "explore-call")
         assert parent_result["content"] == "探索已处理审阅"
-        records = [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line]
+        # v1.12:子/孙代理会话各自落独立 JSONL 后,sessions 下有多个文件 ——
+        # Fork 血缘记录在父会话文件里,按「branch_name + 双分支名」标记定位
+        # 父文件(此前 [-1] 依赖字典序恰好落在父文件,不再成立)。
+        parent_file = next(f for f in rollout_files(sandbox.home)
+                           if "branch_name" in f.read_text()
+                           and "explorer" in f.read_text()
+                           and "reviewer" in f.read_text())
+        records = [json.loads(line) for line in parent_file.read_text().splitlines() if line]
         assert {r["branch_name"] for r in records if r.get("type") == "fork"} >= {"explorer", "reviewer"}, records
     finally:
         gateway.shutdown()
