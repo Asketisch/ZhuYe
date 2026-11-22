@@ -151,7 +151,12 @@ pub fn build_default_m4_with_prompts(
             Arc::new(NoopSummarizer)
         }
     };
-    let compactor_cfg = compactor_config_from_env_and_toml(None);
+    // v1.12 修复:`[compact].trigger_tokens` 此前在本 facade 路径写死
+    // `None`(exec bootstrap_m4 有传,facade 漏了)—— 桌面 / SDK 等
+    // build_default_m4 用户的压缩阈值配置静默失效,恒回落默认 10k,
+    // 表现为「配置了阈值仍逐轮自动压缩」。
+    let compactor_cfg =
+        compactor_config_from_env_and_toml(cfg.compact.trigger_tokens);
     let compactor = Arc::new(Compactor::new(compactor_cfg, summarizer));
 
     // ── Prompt builder(coordinator mode 注入对应 section) ────
