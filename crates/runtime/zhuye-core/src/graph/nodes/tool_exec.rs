@@ -1003,6 +1003,13 @@ mod tests {
         }
         fn write_plan(&self, name: &str, content: &str) -> PathBuf {
             let p = self.ws.join(".zhuye/plan").join(name);
+            // 并行测试线程各自持有独立 TempWorkspace,但 macOS runner 上
+            // 曾实测 create_dir_all 成功后数微秒内 fs::write 报 ENOENT
+            // (目录瞬间消失,疑与并发 Drop 的 remove_dir_all 竞态相关)。
+            // 写前兜底重建目录,消除这层测试夹具竞态。
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
             fs::write(&p, content).unwrap();
             p
         }
