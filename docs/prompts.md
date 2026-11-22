@@ -34,8 +34,8 @@ prompt(来源与许可见各 `prompts/<vendor>.md` 文件头注释):
 
 | 厂商层 | 来源 | 说明 |
 |--------|------|------|
-| claude | Claude Code Sonnet 5.5(leaks) | Harness/上下文管理/子代理(Explore/Plan)文案 |
-| gpt | Codex GPT-5.6(leaks) | 编辑约束/自治边界/破坏性操作守则 |
+| claude | Claude Sonnet 5.5(leaks) | Harness/上下文管理/子代理(Explore/Plan)文案 |
+| gpt | GPT-5.6(leaks) | 编辑约束/自治边界/破坏性操作守则 |
 | gemini | Gemini CLI(leaks) | 上下文效率/工具并行与确认协议 |
 | kimi | Kimi K3(leaks) | 沟通/搜索与时效信息守则 |
 | qwen | Qwen3.8 Max(leaks) | 函数调用格式/时效基准 |

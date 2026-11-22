@@ -39,8 +39,8 @@ time, distilled from each vendor's official agent system prompts
 
 | Vendor layer | Source | Notes |
 |--------|------|------|
-| claude | Claude Code Sonnet 5.5 (leaks) | Harness / context management / subagents (Explore/Plan) wording |
-| gpt | Codex GPT-5.6 (leaks) | edit constraints / autonomy boundaries / destructive-action rules |
+| claude | Claude Sonnet 5.5 (leaks) | Harness / context management / subagents (Explore/Plan) wording |
+| gpt | GPT-5.6 (leaks) | edit constraints / autonomy boundaries / destructive-action rules |
 | gemini | Gemini CLI (leaks) | context efficiency / tool parallelism & confirmation protocol |
 | kimi | Kimi K3 (leaks) | communication / search & time-sensitive info rules |
 | qwen | Qwen3.8 Max (leaks) | function-calling format / time reference baseline |

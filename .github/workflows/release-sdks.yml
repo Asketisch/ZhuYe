@@ -1,6 +1,6 @@
 # SDK 双仓库发布流水线:Python SDK → PyPI,TS SDK → npm。
 # 自 v0.1.x 起携带平台二进制:pip / npm 安装后开箱即用,不再要求
-# 用户自装 `zhuye`(参考 Codex 的 npm 平台子包与 ruff 的 Python 平台
+# 用户自装 `zhuye`(参考 npm 平台子包与 ruff 的 Python 平台
 # wheel 模式)。
 #
 # 触发:

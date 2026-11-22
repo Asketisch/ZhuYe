@@ -1,6 +1,6 @@
 //! v1.5 E1 — 新增 hook 触点端到端:UserPromptSubmit / PreCompact。
 //!
-//! 用 ShellHook 作数据驱动的裁决源(Claude Code 式外部命令),验证:
+//! 用 ShellHook 作数据驱动的裁决源(外部命令式),验证:
 //! - UserPromptSubmit deny → prompt 不进模型、不落盘,Error + TurnAborted;
 //! - UserPromptSubmit inject → 引导文本以 system-reminder 进入首请求;
 //! - PreCompact deny → 压缩被跳过(ContextCompacted 不发)。

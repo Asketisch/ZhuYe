@@ -195,11 +195,11 @@ Shared capabilities of both SDKs:
 
 ```python
 # Load plugins on demand (if not installed, nothing is loaded at all, zero impact)
-agent = ZhuyeAgent.spawn(ZhuyeAgentOptions(plugins=["harness-import@inline"]))
+agent = ZhuyeAgent.spawn(ZhuyeAgentOptions(plugins=["demo@inline"]))
 ```
 
 ```ts
-await ZhuyeAgent.spawn({ plugins: ['harness-import@inline'] });
+await ZhuyeAgent.spawn({ plugins: ['demo@inline'] });
 ```
 
 ## Protocol Overview

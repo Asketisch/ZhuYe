@@ -1,5 +1,5 @@
 //! `zhuye-kms-server` — KMS 知识库的 MCP stdio server(plugins/kms 的
-//! 能力本体,harness-import 同范式:手写 JSON-RPC 2.0 over stdio,
+//! 能力本体,同范式:手写 JSON-RPC 2.0 over stdio,
 //! line-delimited;stdout 只输出协议响应,日志一律 stderr)。
 //!
 //! 工具面:`kms_list_wikis` / `kms_get_page` / `kms_list_pages` /

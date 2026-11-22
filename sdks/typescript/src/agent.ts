@@ -77,7 +77,7 @@ export interface ZhuyeAgentOptions {
    */
   onStderr?: (chunk: Buffer) => void;
   /**
-   * 显式启用的插件 id 列表(如 `['harness-import@inline']`)。传入时以
+   * 显式启用的插件 id 列表(如 `['demo@inline']`)。传入时以
    * `--plugin <id>` 传给 serve,**覆盖** config 的
    * `[plugins].enabled_plugins`;缺省 / 空数组 = 维持配置驱动。
    */

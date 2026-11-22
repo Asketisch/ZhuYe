@@ -1,4 +1,4 @@
-//! Goal 状态机 —— 参考 `thread_goals` 表设计 + zcode 的 LLM 自校验。
+//! Goal 状态机 —— 参考 `thread_goals` 表设计 + 同类 agent 的 LLM 自校验。
 //!
 //! 状态枚举 `GoalStatus` 镜像状态机约束设计:
 //! `active / paused / blocked / budget_limited / complete`。
@@ -54,7 +54,7 @@ impl std::fmt::Display for GoalStatus {
     }
 }
 
-/// LLM 自校验的判定结果(对齐 zcode `target_completion_verification`)。
+/// LLM 自校验的判定结果(对齐同类 agent 的目标完成度校验)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum GoalVerdict {

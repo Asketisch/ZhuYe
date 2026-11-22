@@ -1,8 +1,8 @@
 //! v1.5 R3:`ShellHook` —— 外部命令式 hook。
 //!
-//! 把 hook 逻辑委托给外部进程(Claude Code 的 shell command hooks 对
+//! 把 hook 逻辑委托给外部进程(外部 agent 的 shell command hooks 对
 //! 等物):事件序列化为 JSON 写入子进程 stdin,进程以 shell 执行;
-//! 决策经 stdout JSON 回传,支持与 Claude Code 兼容的形态:
+//! 决策经 stdout JSON 回传,支持与主流 hook 生态兼容的形态:
 //!
 //! - `{"decision":"deny","reason":"..."}` / `"block"` → [`HookDecision::Deny`]
 //! - `{"decision":"ask","reason":"..."}` → [`HookDecision::Ask`]
@@ -40,7 +40,7 @@ use crate::event::{HookEvent, HookEventKind};
 use crate::hook::Hook;
 use crate::hook::HookError;
 
-/// 默认命令超时(与 Claude Code 的 60s 对齐)。
+/// 默认命令超时(与主流 hook 生态的 60s 对齐)。
 pub const DEFAULT_SHELL_HOOK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 环境变量名里出现这些子串(大写比较)即视为敏感,默认不传给 hook 子进程。

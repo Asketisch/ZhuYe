@@ -7,8 +7,8 @@
 > 22 top-level subcommands, **no `tui` subcommand** (the TUI has been
 > split out into the separate repository
 > [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI)), and **no
-> `import` subcommand either** (`zhuye-import` is a standalone
-> binary, see §5). For the complete parameter list of each command,
+> `import` subcommand either**. For the complete parameter list of each
+> command,
 > use `zhuye <command> --help`.
 
 ## Overview
@@ -136,20 +136,6 @@ directory itself as the install location, and `remove` will execute
   default).
 
 ## Standalone binaries
-
-- **`zhuye-import`** (produced by
-  `crates/integrations/zhuye-import`; not a subcommand of
-  `zhuye`): imports Claude Code / Codex / ZCode conversation history
-  into ZhuYe sessions — after importing you can `zhuye exec
-  --resume` to pick up where you left off; it can also import other
-  local agents' configuration in one shot:
-
-  ```bash
-  zhuye-import config            # scans the provider and MCP configuration of
-                                  # claude-code / codex / gemini / opencode / crush,
-                                  # incrementally merged into config.toml
-  zhuye-import config --from claude-code --dry-run   # preview what would be imported
-  ```
 
 - **Reflect-TUI**: the TUI binary provided by a separate repository;
   the `zhuye` binary in this core repo has no `tui` subcommand.
