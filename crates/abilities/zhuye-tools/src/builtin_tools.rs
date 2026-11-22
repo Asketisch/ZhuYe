@@ -33,6 +33,8 @@ pub struct BundledToolGates {
     pub web_search: bool,
     /// `notebook` 插件(notebook_edit 工具)。
     pub notebook_edit: bool,
+    /// `tool-defer` 插件(deferred_call 工具:MCP 工具按需加载)。
+    pub tool_defer: bool,
 }
 
 impl BundledToolGates {
@@ -46,6 +48,7 @@ impl BundledToolGates {
         Self {
             web_search: true,
             notebook_edit: true,
+            tool_defer: true,
         }
     }
 
@@ -58,6 +61,12 @@ impl BundledToolGates {
     /// 链式设置 notebook_edit 门。
     pub fn notebook_edit(mut self, on: bool) -> Self {
         self.notebook_edit = on;
+        self
+    }
+
+    /// 链式设置 tool_defer 门。
+    pub fn tool_defer(mut self, on: bool) -> Self {
+        self.tool_defer = on;
         self
     }
 }
@@ -142,13 +151,22 @@ pub fn register_builtin_tools_with_gates(
     // git checkpoint / rewind(v1.2 P0-3;底层已下沉 zhuye-git)。
     tools.register(Arc::new(CheckpointTool));
     tools.register(Arc::new(RewindTool));
+    // tool-defer 门控插件(默认关):deferred_call 转发工具。MCP 工具的
+    // 「目录公告 + 不下发完整 schema」由 core 侧按 cfg.tool_defer_enabled
+    // 实现;本工具是模型侧的调用入口(queue 在派发前展开成真实调用,
+    // 审批 / hook / 权限 floor 全部按真实工具走)。
+    if gates.tool_defer {
+        tools.register(Arc::new(builtins::deferred_call::DeferredCallTool::new(
+            tools.clone(),
+        )));
+    }
 }
 
 /// 内置工具数量(门控全开时的总数;清单变更时同步更新测试期望)。
-pub const BUILTIN_TOOL_COUNT: usize = 27;
+pub const BUILTIN_TOOL_COUNT: usize = 28;
 
 /// 无条件内置工具数(不含门控项)。
-pub const UNGATED_BUILTIN_TOOL_COUNT: usize = BUILTIN_TOOL_COUNT - 2;
+pub const UNGATED_BUILTIN_TOOL_COUNT: usize = BUILTIN_TOOL_COUNT - 3;
 
 #[cfg(test)]
 mod tests {
