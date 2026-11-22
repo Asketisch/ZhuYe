@@ -31,6 +31,9 @@ pub const BUNDLED_PLUGIN_DEFAULTS: &[(&str, bool)] = &[
     ("lsp", false),
     // goal / queue 工具 —— 维持 v1.10 手动启用语义。
     ("goal-queue", false),
+    // deferred_call 工具(MCP 工具按需加载:目录公告 + 转发调用)——
+    // 默认关:改变大 MCP 集的 tools 段下发形态,显式 opt-in。
+    ("tool-defer", false),
 ];
 
 /// 查 bundled 插件的默认开关;未登记的名字一律默认关(保守)。
@@ -71,6 +74,7 @@ pub fn bundled_tool_gates(
     zhuye_tools::BundledToolGates::new()
         .web_search(bundled_plugin_enabled("web-search", enabled, disabled))
         .notebook_edit(bundled_plugin_enabled("notebook", enabled, disabled))
+        .tool_defer(bundled_plugin_enabled("tool-defer", enabled, disabled))
 }
 
 #[cfg(test)]
@@ -85,6 +89,7 @@ mod tests {
         assert!(!bundled_plugin_default_on("verify-hooks"));
         assert!(!bundled_plugin_default_on("lsp"));
         assert!(!bundled_plugin_default_on("goal-queue"));
+        assert!(!bundled_plugin_default_on("tool-defer"));
         // 未登记名字保守关。
         assert!(!bundled_plugin_default_on("unknown-plugin"));
     }
@@ -129,5 +134,27 @@ mod tests {
         let gates = bundled_tool_gates(&[], &["notebook".to_string()]);
         assert!(gates.web_search);
         assert!(!gates.notebook_edit);
+    }
+}
+
+#[cfg(test)]
+mod tool_defer_tests {
+    use super::*;
+
+    /// v1.x:tool-defer 门控 —— config enabled_plugins 纯名字比对
+    /// (@inline 后缀容忍)生效;默认关。
+    #[test]
+    fn tool_defer_gate_follows_enabled_list() {
+        let gates = bundled_tool_gates(&["tool-defer@inline".to_string()], &[]);
+        assert!(
+            gates.tool_defer,
+            "@inline 后缀的 enabled 条目应打开 tool_defer 门"
+        );
+        let gates = bundled_tool_gates(&["tool-defer".to_string()], &[]);
+        assert!(gates.tool_defer, "裸名 enabled 条目应打开 tool_defer 门");
+        let gates = bundled_tool_gates(&[], &[]);
+        assert!(!gates.tool_defer, "默认关");
+        let gates = bundled_tool_gates(&[], &["tool-defer@inline".to_string()]);
+        assert!(!gates.tool_defer, "显式禁用优先");
     }
 }

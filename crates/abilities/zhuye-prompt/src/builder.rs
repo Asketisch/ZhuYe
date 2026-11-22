@@ -539,6 +539,27 @@ impl PromptBuilder {
         let (changed, _) = self.detector.observe_parts(&system, tools, model);
         changed
     }
+
+    /// 以**已装配**的 system blocks 直接观测指纹,不构造完整请求。
+    ///
+    /// 修复备注:`model_call` 的实际 system 经 `compose_prompt_core` 在
+    /// 请求侧组装(含 memory / skills / reminder 注入),并不经过
+    /// [`Self::observe_fingerprint`] 的 `LayeredPrompt` 参数 —— 该调用点
+    /// 此前传空 layers,指纹退化为 tools+model,真实的 system 变化
+    /// (cache miss 主驱动)完全不参与观测。本方法供「system 在请求侧
+    /// 最终成型」的调用方使用;`observe_fingerprint` 保留给仍以分层装配
+    /// 为事实源的调用方。
+    ///
+    /// 返回值语义同 [`Self::observe_fingerprint`]。
+    pub fn observe_system(
+        &mut self,
+        system: &SystemBlocks,
+        tools: &[ToolSpec],
+        model: &str,
+    ) -> bool {
+        let (changed, _) = self.detector.observe_parts(system, tools, model);
+        changed
+    }
 }
 
 fn layer_to_system_blocks(layers: &LayeredPrompt) -> SystemBlocks {
@@ -1080,5 +1101,35 @@ mod tests {
         assert!(req.system.0[0].text.contains("core"));
         assert!(req.system.0[0].text.contains("## Coord"));
         assert!(req.system.0[1].text.contains("appendix"));
+    }
+
+    /// 审计修复(P2):`observe_system` 以**已装配**的 system blocks 参与
+    /// 指纹 —— 此前 model_call 传空 LayeredPrompt,指纹退化为
+    /// tools+model,真实 system 变化(miss 主驱动)不触发 changed。
+    #[test]
+    fn observe_system_detects_system_text_change() {
+        use zhuye_llm::SystemBlocks;
+        let mut b = PromptBuilder::new();
+        let tools: Vec<ToolSpec> = vec![];
+        let mk = |text: &str| {
+            SystemBlocks(vec![SystemBlock {
+                text: text.into(),
+                cache_control: None,
+                ephemeral: false,
+            }])
+        };
+        // 首次观测:恒 changed。
+        assert!(b.observe_system(&mk("v1"), &tools, "m"));
+        // 相同 system:不 changed。
+        assert!(!b.observe_system(&mk("v1"), &tools, "m"));
+        // system 文本变化:changed(此前空 layers 观测下此路径不触发)。
+        assert!(b.observe_system(&mk("v2"), &tools, "m"));
+        // 工具集变化:同样 changed。
+        let tools2: Vec<ToolSpec> = vec![ToolSpec::Function {
+            name: "read".into(),
+            description: "Read".into(),
+            parameters: json!({"type": "object"}),
+        }];
+        assert!(b.observe_system(&mk("v2"), &tools2, "m"));
     }
 }

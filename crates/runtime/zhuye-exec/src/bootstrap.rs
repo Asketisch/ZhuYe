@@ -122,6 +122,7 @@ pub(crate) fn bootstrap_m4(
     toml_trigger_tokens: Option<u32>,
     cfg: &zhuye_config::ReflectConfig,
     telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
+    compact_prefix_slot: zhuye_core::config::CompactPrefixSlot,
 ) -> Option<zhuye_core::config::M4Deps> {
     // Agent 定义:从 workspace + home agent 目录加载。
     let user_data_dir = zhuye_config::data_path_or_relative(&[]);
@@ -262,7 +263,13 @@ pub(crate) fn bootstrap_m4(
         if registry.next_for(&spec, &[]).is_some() {
             Arc::new(
                 LlmSummarizer::new(registry.clone(), Arc::new(policy), spec)
-                    .with_telemetry(telemetry),
+                    .with_telemetry(telemetry)
+                    // v1.x:compact 摘要请求复用主循环前缀(命中主缓存)。
+                    // 槽由 exec 创建并与 AgentConfig 共享(模型每步更新)。
+                    .with_main_prefix_provider({
+                        let slot = compact_prefix_slot;
+                        Arc::new(move || slot.read().clone())
+                    }),
             )
         } else {
             Arc::new(NoopSummarizer)
@@ -741,9 +748,16 @@ pub(crate) async fn bootstrap_resume(thread_id_str: &str) -> anyhow::Result<Resu
     // v1.x:记录 → ChatMessage 的映射抽到 `zhuye_core::resume`
     // (GUI 等非 exec 宿主复用同一语义;exec 只保留 uuid 解析 + replay 外壳)。
     let messages = zhuye_core::resume::records_to_preload(&records);
+    // v1.x:提取 Prompt Snapshot(resume 恢复源;model 匹配校验在
+    // bootstrap_resumed 激活槽时做)。
+    let prompt_snapshot = zhuye_core::resume::last_prompt_snapshot(&records);
+    // v1.x:输入守恒对账 —— 崩溃窗口里未完成 turn 的 user 输入。
+    let unsettled_inputs = zhuye_core::resume::unsettled_input_turns(&records);
     Ok(ResumeBundle {
         thread_id: tid,
         initial_messages: messages,
+        prompt_snapshot,
+        unsettled_inputs,
     })
 }
 
@@ -751,6 +765,12 @@ pub(crate) async fn bootstrap_resume(thread_id_str: &str) -> anyhow::Result<Resu
 pub struct ResumeBundle {
     pub thread_id: ThreadId,
     pub initial_messages: Vec<zhuye_llm::ChatMessage>,
+    /// v1.x:最后一条 Prompt Snapshot(`(model, system_json)`);无快照
+    /// 为 `None`。激活条件(model 匹配 + 代际)由消费方判定。
+    pub prompt_snapshot: Option<(String, serde_json::Value)>,
+    /// v1.x:输入守恒对账 —— 崩溃窗口里未完成 turn 的 id(≤5 条)。
+    /// 消费方据此显式告知「上次有输入未完成」,**永不自动重放**。
+    pub unsettled_inputs: Vec<String>,
 }
 
 /// 无可用 LLM 客户端时使用的 fallback summarizer。始终报错,让

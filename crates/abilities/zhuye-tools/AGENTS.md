@@ -48,6 +48,12 @@
 | `src/builtins/` | 各内置工具实现(按工具分文件) |
 | `src/loop_guard.rs` | 重复调用 / 无进展的循环守卫 |
 
+## v1.x 新增能力
+
+- **工具结果预算**(`src/result_budget.rs`):超限文本落盘 `artifacts/` + `<persisted-output>` 信封(路径/字节/预览),落盘失败退中间截断(保头尾),空输出显式占位。`ToolExecutionQueue::with_result_budget` 注入,None = 历史 no-op。应用点:sanitizer 后、PostToolUse 前(hook 与模型看同一份)。
+- **deferred_call**(tool-defer 门控插件,默认关):queue 在**派发前**把 `deferred_call` 展开为真实调用 —— 审批/hook/floor 按真实工具走,不是权限旁路;`registry.deferred_tool_names()` 供 core 目录公告。
+- **stop_turn 级联**:工具以 `metadata["stop_turn"]=true` 请求结算后收口 turn(置 `force_final_answer`,结果仍完整回灌)。
+
 ## 禁止事项
 
 - 不得在本 crate 与 `zhuye-hooks` 之间另造错误类型 —— 一律复用 `zhuye-protocol` 的 `ToolError`。

@@ -122,6 +122,14 @@ pub struct ReflectConfig {
     pub model_discovery: Option<ModelDiscoverySection>,
     #[serde(default)]
     pub goal: Option<GoalSection>,
+    /// v1.x:prompt cache 保温(cache warming)。默认关闭 —— 保温是引擎
+    /// 自发花钱的行为,必须显式 opt-in。见 `CacheWarmingSection`。
+    #[serde(default)]
+    pub cache_warming: Option<CacheWarmingSection>,
+    /// v1.x:工具结果预算(TOML:`[tool_results]`)。缺省 = 引擎默认
+    /// (启用,100KB 内联预算,超限落盘 artifacts)。
+    #[serde(default)]
+    pub tool_results: Option<ToolResultsSection>,
     #[serde(default)]
     pub telemetry: Option<TelemetrySection>,
     #[serde(default)]
@@ -313,6 +321,8 @@ impl Default for ReflectConfig {
             ask_user_question: None,
             model: None,
             goal: None,
+            cache_warming: None,
+            tool_results: None,
             telemetry: None,
             analytics: None,
             notifications: None,
@@ -631,6 +641,125 @@ pub struct GoalSection {
     pub max_turns: Option<u32>,
     pub verification_model: Option<String>,
     pub verify_timeout_seconds: Option<u64>,
+}
+
+/// v1.x:工具结果预算配置(超长输出落盘 + 信封替换)。
+/// ```toml
+/// [tool_results]
+/// max_inline_bytes = 100000   # 文本字节上限,超过落盘 artifacts + 信封
+/// preview_chars = 2000        # 信封内预览字符数
+/// persist = true              # false = 不落盘,超限走中间截断
+/// ```
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ToolResultsSection {
+    /// 文本字节上限(超限落盘 / 截断)。
+    pub max_inline_bytes: Option<usize>,
+    /// 信封内预览字符数。
+    pub preview_chars: Option<usize>,
+    /// 是否落盘全文;false = 中间截断不写文件。
+    pub persist: Option<bool>,
+}
+
+/// 归一化后的预算设置(引擎无关的镜像结构 —— zhuye-config 不依赖
+/// zhuye-tools,tools→hooks→config 的依赖环由本结构规避;exec bootstrap
+/// 负责转换成 `zhuye_tools::result_budget::ResultBudget`)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResultsSettings {
+    pub max_inline_bytes: usize,
+    pub preview_chars: usize,
+    pub persist: bool,
+}
+
+impl ToolResultsSection {
+    /// 归一化:逐字段回落默认(`Some` 才覆盖)。
+    pub fn resolved(&self) -> ToolResultsSettings {
+        let (max_inline, preview) = zhuye_tools_defaults();
+        ToolResultsSettings {
+            max_inline_bytes: self.max_inline_bytes.unwrap_or(max_inline),
+            preview_chars: self.preview_chars.unwrap_or(preview),
+            persist: self.persist.unwrap_or(true),
+        }
+    }
+}
+
+/// 引擎默认值镜像(与 `zhuye_tools::result_budget::ResultBudget::default`
+/// 对齐;此处字面量与该 Default 保持同步,测试锁定)。
+pub fn zhuye_tools_defaults() -> (usize, usize) {
+    (100_000, 2_000)
+}
+
+/// v1.x:prompt cache 保温(cache warming)配置。全部字段可选,
+/// 缺省回落引擎默认(`zhuye_llm::CacheWarmingSettings::default()`)。
+///
+/// ```toml
+/// [cache_warming]
+/// enabled = true                  # 默认 false —— 自发花钱,必须显式开启
+/// min_expected_savings_usd = 0.05 # 期望节省低于此值不保温
+/// idle_probability = 0.15         # 空闲期延续概率
+/// ttl_secs = 300                  # 缓存 TTL 覆盖(缺省按断点推导:5m/1h)
+/// min_context_tokens = 1024       # 低于此规模不保温
+/// max_idle_window_secs = 1800     # 空闲保温最长窗口
+/// max_turn_window_secs = 3600     # 回合内保温最长窗口
+/// force = false                   # 测试逃生门:跳过定价/命中观测门控
+/// ```
+///
+/// 注意:含 `f64` 字段,故只 derive `PartialEq`(热重载 diff 依赖)。
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+pub struct CacheWarmingSection {
+    /// 总开关,默认 false。
+    pub enabled: Option<bool>,
+    /// 期望节省阈值(USD)。
+    pub min_expected_savings_usd: Option<f64>,
+    /// 空闲期延续概率(0.0-1.0)。
+    pub idle_probability: Option<f64>,
+    /// TTL 显式覆盖(秒);缺省取请求各断点 TTL 的最小值(默认配置 1h)。
+    pub ttl_secs: Option<u64>,
+    /// prompt 规模门槛(token)。
+    pub min_context_tokens: Option<u32>,
+    /// 刷新安全边际(秒)。
+    pub refresh_margin_secs: Option<u64>,
+    /// 空闲保温最长窗口(秒)。
+    pub max_idle_window_secs: Option<u64>,
+    /// 回合内保温最长窗口(秒)。
+    pub max_turn_window_secs: Option<u64>,
+    /// 测试逃生门:跳过定价 / 命中观测 / 规模门控(配合 mock provider
+    /// 的端到端测试)。生产配置不应开启。
+    pub force: Option<bool>,
+}
+
+impl CacheWarmingSection {
+    /// 归一化为引擎设置:逐字段回落默认(`Some` 才覆盖)。
+    pub fn resolved(&self) -> zhuye_llm::CacheWarmingSettings {
+        let mut s = zhuye_llm::CacheWarmingSettings::default();
+        if let Some(v) = self.enabled {
+            s.enabled = v;
+        }
+        if let Some(v) = self.min_expected_savings_usd {
+            s.min_expected_savings_usd = v;
+        }
+        if let Some(v) = self.idle_probability {
+            s.idle_continuation_probability = v;
+        }
+        if let Some(v) = self.ttl_secs {
+            s.ttl_secs = Some(v);
+        }
+        if let Some(v) = self.min_context_tokens {
+            s.min_context_tokens = v;
+        }
+        if let Some(v) = self.refresh_margin_secs {
+            s.refresh_margin_secs = v;
+        }
+        if let Some(v) = self.max_idle_window_secs {
+            s.max_idle_window_secs = v;
+        }
+        if let Some(v) = self.max_turn_window_secs {
+            s.max_turn_window_secs = v;
+        }
+        if let Some(v) = self.force {
+            s.force = v;
+        }
+        s
+    }
 }
 
 // ── 脱敏 / 钩子 ──────────────────────────────────────────

@@ -14,6 +14,8 @@
 
 /// F31:OAuth 登录(device flow)+ 账号池(会话亲和 + 配额排名)。
 pub mod accounts;
+/// v1.x:prompt cache 保温(cache warming)决策 —— 纯函数,零 I/O。
+pub mod cache_warming;
 pub mod capabilities;
 pub mod client;
 pub mod cooldown;
@@ -32,9 +34,16 @@ pub mod registry;
 pub mod request;
 /// F43:动态选模(回合分类 + 迟滞 + 角色绑定 + 能力槽位)。
 pub mod routing;
+/// v1.x:strict schema 折叠(不支持约束写进 description,双保险)。
+pub mod schema_fold;
 /// F44/F55:USD 预算账本(reservation 语义)+ 成本归因。
 pub mod spend;
 
+pub use cache_warming::{
+    CacheObservation, CacheWarmingDecision, CacheWarmingSettings, METADATA_WARM_REPLAY,
+    METADATA_WARM_REPLAY_VALUE, SkipReason, WarmingAction, WarmingPhase, effective_ttl_secs,
+    evaluate, refresh_delay, refresh_delay_secs,
+};
 pub use capabilities::{Capabilities, ProviderKind};
 pub use client::ModelClient;
 pub use cooldown::{CooldownEntry, CooldownReason};
@@ -68,3 +77,4 @@ pub use request::{
     ChatRequest, ContentBlock, ReasoningEffort, ResponseFormat, SystemBlock, SystemBlocks,
     ThinkingConfig, ToolCallRequest, ToolResult, ToolSpec, UserContent,
 };
+pub use schema_fold::{FoldedSchema, fold_to_strict, notes_to_description};

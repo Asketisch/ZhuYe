@@ -11,6 +11,8 @@
 
 pub mod agent_thread;
 pub mod background_tasks;
+/// v1.x:prompt cache 保温(cache warming)调度器。
+pub mod cache_warming;
 pub mod config;
 pub mod eval;
 pub mod graph;
@@ -31,6 +33,7 @@ pub use agent_thread::AgentThread;
 pub use background_tasks::{
     BackgroundTask, BackgroundTaskQueue, BackgroundTaskStatus, spawn_background_stub,
 };
+pub use cache_warming::{CacheWarmingScheduler, WarmCandidate, WarmingStats};
 pub use config::AgentConfig;
 pub use eval::{
     EvalExpectations, EvalOp, EvalReport, EvalScenario, FinalStatus, run_all, run_scenario,

@@ -320,7 +320,11 @@ async fn async_main(args: ExecArgs) -> anyhow::Result<i32> {
         // ── resume 分支:回放历史 + 合成续跑 prompt ──
         let session = headless::bootstrap_resumed(common, &hargs, thread_id_str).await?;
         apply_prompt_profile(&session.thread, args.prompt_profile.as_deref()).await?;
-        let prompt = headless::resumed_prompt(thread_id_str, session.prior_messages);
+        let prompt = headless::resumed_prompt_with_unsettled(
+            thread_id_str,
+            session.prior_messages,
+            session.unsettled_inputs,
+        );
         let sub = Submission::user_input(prompt);
         let mut handle = session.thread.submit(sub).await;
         let stdout = std::io::stdout();

@@ -43,7 +43,7 @@ In one sentence: the engine is a library; the binaries are just a thin shell aro
 
 ## 2. The Six-Layer Workspace Structure
 
-The workspace has **45 crates**, grouped into 6 layers under `crates/<layer>/<crate>/`, with dependencies
+The workspace has **46 crates**, grouped into 6 layers under `crates/<layer>/<crate>/`, with dependencies
 flowing **top-down** (upper layers depend on lower ones; `protocol` is the common contract of all layers
 and is depended on by every layer). The complete member list in the root [Cargo.toml](../Cargo.toml)
 `members` section is the single source of truth; the table below corresponds to it line by line.

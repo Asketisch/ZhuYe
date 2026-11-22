@@ -141,8 +141,8 @@ pub use self::mock::{
 pub use self::ollama::{OllamaClient, OllamaConfig};
 pub use self::openai::{OpenAIClient, OpenAIConfig};
 pub use self::pricing::{
-    ModelPricing, RateCard, cumulative_cost_usd, is_priced, price, pricing_for, pricing_table,
-    rate_card, rate_cards,
+    ModelPricing, RateCard, WarmingPrices, cumulative_cost_usd, is_priced, price, pricing_for,
+    pricing_table, rate_card, rate_cards, warming_prices,
 };
 pub use self::quota::{
     KimiQuotaProvider, MinimaxQuotaProvider, QuotaError, QuotaProvider, QuotaSnapshot,
