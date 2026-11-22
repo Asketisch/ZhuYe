@@ -7,6 +7,12 @@ use crate::event_msg::EventMsg;
 /// 用于标识不与具体 Submission 绑定的全局事件(如 SessionConfigured、ShutdownComplete)。
 pub const EVENT_ID_NONE: &str = "";
 
+/// v1.x:`Op::Steer` 输入的字节上限 —— 按 wire 序列化后的 UTF-8 字节实测
+/// (借鉴 ZCode `MAX_TURN_STEER_INPUT_BYTES`:字节数而非字符数,巨字符
+/// 场景下二者差距巨大)。超限以 `steer_input_too_large` 错误拒绝入队:
+/// 防止一条巨型转向把下一轮上下文一次性撑爆,绕过压缩水位的正常节奏。
+pub const MAX_STEER_INPUT_BYTES: usize = 200_000;
+
 /// Event 表示 core 发往客户端的一条事件(serve 模式下即 stdout 的一行 JSON)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {

@@ -27,12 +27,13 @@ pub mod text;
 pub use actor::{Actor, ActorKind, ActorType};
 pub use bash_command::{BASH_COMMAND_KEYS, resolve_bash_command, split_shell_segments};
 pub use error::ProtocolError;
-pub use event::{EVENT_ID_NONE, Event};
+pub use event::{EVENT_ID_NONE, Event, MAX_STEER_INPUT_BYTES};
 pub use event_msg::{
     AbortReason, AgentMessage, AgentMessageDelta, AgentMessageResetEvent, ApprovalKind,
-    ApprovalRequestEvent, AskUserInputEvent, CollabFinishedEvent, CollabMessageEvent,
-    CollabStartedEvent, CompositionCategory, CompositionCategoryId, ConfigReloadedEvent,
-    ContextCompactedEvent, ContextCompactedStrategy, ContextCompositionEvent, ErrorEvent, EventMsg,
+    ApprovalRequestEvent, AskUserInputEvent, CacheWarmingAction, CacheWarmingEvent,
+    CacheWarmingPhase, CollabFinishedEvent, CollabMessageEvent, CollabStartedEvent,
+    CompositionCategory, CompositionCategoryId, ConfigReloadedEvent, ContextCompactedEvent,
+    ContextCompactedStrategy, ContextCompositionEvent, ErrorEvent, EventMsg,
     ExtensionsRescannedEvent, GuardStatsEvent, InteractionKind, InteractionOutcome,
     InteractionResolvedEvent, LspServerFailedEvent, LspServerStartedEvent, McpServerFailedEvent,
     McpServerStartedEvent, McpToolInvokedEvent, McpTransportMirror, PendingInteraction,
@@ -40,11 +41,12 @@ pub use event_msg::{
     PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent, PlanStepEvent, PlanStepStatus,
     PluginLoadedEvent, PromptListEvent, PromptSwitchedEvent, QuotaExhaustedEvent, RoutingEvent,
     RoutingEventKind, SideChannelEvent, SideChannelInfo, SideChannelStatusMirror,
-    SideChannelStatusSnapshot, StreamErrorEvent, SubagentProgressEvent, SubagentProgressKind,
-    SubagentRunStateMirror, SubagentStatusEvent, SubagentStatusSnapshot, ThinkingDelta,
-    ThinkingDeltaKind, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent,
-    ToolCallEndEvent, ToolCallOutputDeltaEvent, ToolExecutionRequestEvent, TriedCredential,
-    TurnAbortedEvent, TurnCompleteEvent, TurnRewoundEvent, TurnStartedEvent, TurnStatus,
+    SideChannelStatusSnapshot, StreamErrorEvent, StreamRecoveryEvent, SubagentProgressEvent,
+    SubagentProgressKind, SubagentRunStateMirror, SubagentStatusEvent, SubagentStatusSnapshot,
+    ThinkingDelta, ThinkingDeltaKind, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent,
+    ToolCallBeginEvent, ToolCallEndEvent, ToolCallOutputDeltaEvent, ToolExecutionRequestEvent,
+    TriedCredential, TurnAbortedEvent, TurnCompleteEvent, TurnRewoundEvent, TurnStartedEvent,
+    TurnStatus,
 };
 pub use item::{
     ApprovalPolicy, ContentBlock, PermissionMode, PlanApprovalChoice, PlanId,
