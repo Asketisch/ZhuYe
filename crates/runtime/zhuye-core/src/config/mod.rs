@@ -13,7 +13,7 @@ mod agent;
 mod env;
 mod m4;
 
-pub use agent::AgentConfig;
+pub use agent::{AgentConfig, CompactPrefixSlot, PromptSnapshotSlot};
 pub use env::{
     AUTO_COMPACT_INPUT_TOKENS_ENV, DEFAULT_MAX_ITERATIONS, MAX_ITERATIONS_ENV, TOKEN_BUDGET_ENV,
     compactor_config_from_env_and_toml, compactor_config_with_window, max_iterations_from_env,

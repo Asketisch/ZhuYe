@@ -45,6 +45,11 @@ fn retry_budget_exhausted(elapsed: Duration) -> bool {
 /// `model_call` —— 调用 LLM 并流式返回响应。
 pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<GraphNode> {
     state.iteration = state.iteration.saturating_add(1);
+    // v1.x:会话级模型步号 +1 —— rapid-refill 熔断器等跨 turn 机制的
+    // 单调时间轴(见 AgentConfig::compact_refill)。
+    ctx.cfg
+        .model_step_counter
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if state.iteration > ctx.max_iterations {
         if state.force_final_answer {
             state.completed_normally = true;
@@ -194,6 +199,21 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             })
             .collect()
     };
+    // v1.x(tool-defer 门控,默认关):开启后 MCP source 工具不下发完整
+    // schema —— 从请求工具清单里移除(它们仍在注册表里,queue 派发前把
+    // `deferred_call` 展开成真实调用,审批照走)。目录公告由 pre_loop 在
+    // turn 边界注入(append-only 尾部追加)。
+    if ctx.cfg.tool_defer_enabled {
+        let deferred: std::collections::HashSet<String> = ctx
+            .tools_queue
+            .registry()
+            .deferred_tool_names()
+            .into_iter()
+            .collect();
+        if !deferred.is_empty() {
+            tools.retain(|t| !deferred.contains(t.name()));
+        }
+    }
     // v1.6:兜底路径(pre_loop 未写入 effective_tools)也应用模型层
     // 工具描述覆盖;正常路径已在 pre_loop 应用过,这里是防御性对齐。
     // resolved_spec 已含 provider/model 拆分,直接复用。
@@ -228,6 +248,53 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         };
     let mut system = base_system.clone();
     resolve_for_request(&spec, &mut tools, &mut system);
+
+    // v1.x:Prompt Snapshot(借鉴 ZCode prompt-snapshot)—— resume /
+    // 升级后按快照字节发送 system,已发送前缀不因重新渲染而全量失效。
+    // 校验:model 一致 + 代际一致(压缩 / 工具集 / prompt 切换即失效,
+    // 下一成功调用按新前缀重捕获)。冻结语义的诚实标注见
+    // AgentConfig::prompt_snapshot 文档。
+    let snapshot_generation = ctx.cfg.current_cache_generation();
+    let snapshot_active = {
+        let snap = ctx.cfg.prompt_snapshot.read();
+        snap.as_ref()
+            .is_some_and(|s| s.model == spec && s.generation == snapshot_generation)
+    };
+    if snapshot_active {
+        let blocks_json = ctx
+            .cfg
+            .prompt_snapshot
+            .read()
+            .as_ref()
+            .map(|s| s.system_json.clone());
+        if let Some(blocks_json) = blocks_json
+            && let Ok(mut blocks) = serde_json::from_value::<zhuye_llm::SystemBlocks>(blocks_json)
+        {
+            // todos 拼回:清单随 TodoWrite 每 turn 变化,快照应用时把当前
+            // 清单替换回「## Current Todo List」段(清单**变化才**破缓存
+            // —— 与无快照行为一致;不变则字节稳定)。清单在 compose 中
+            // 恒为 core 块末段,从标记替换到块尾。
+            if let Some(first) = blocks.0.first_mut()
+                && let Some(checklist) = state
+                    .prompt_core
+                    .as_ref()
+                    .and_then(|c| c.checklist.clone())
+                    .filter(|t| !t.trim().is_empty())
+            {
+                let section = format!(
+                    "\n\n## Current Todo List\n{checklist}\nThis is your own \
+                     working checklist — keep it up to date with the `TodoWrite` \
+                     tool, and work through the remaining items.\n"
+                );
+                let text = &mut first.text;
+                match text.find("\n\n## Current Todo List\n") {
+                    Some(pos) => text.replace_range(pos.., &section),
+                    None => text.push_str(&section),
+                }
+            }
+            system = blocks;
+        }
+    }
     let mut request = ChatRequest {
         model: spec
             .split_once('/')
@@ -262,20 +329,22 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             .registry
             .resolve(&spec)
             .map_or_else(|| Default::default(), |c| c.capabilities());
-        // 指纹只由 system/工具/模型名构成(不含 messages),这里只需
-        // 预热 cache 断点观测 —— 借用参与,不为拼装完整请求而克隆
-        // 整个消息列表与工具列表。
+        // 指纹只由 system/工具/模型名构成(不含 messages)。修复:观测
+        // 必须用**实际请求**的 system 块 —— 此前传空 LayeredPrompt,指纹
+        // 退化为 tools+model,真实 system(memory / skills / reminder
+        // 注入,miss 主驱动)不参与观测。request.system 此时已 final
+        // (resolve_for_request 组装 + fold 完成;下方 inject 只补
+        // cache_control 字段,不参与指纹)。
         let mut builder = m4.prompt_builder.lock();
-        let _ = builder.observe_fingerprint(
-            &zhuye_prompt::LayeredPrompt::new(),
-            &request.tools,
-            &request.model,
-        );
+        let _ = builder.observe_system(&request.system, &request.tools, &request.model);
         if caps.prompt_caching {
             let _ = zhuye_prompt::inject_cache_control(&mut request, &caps);
         }
     }
 
+    // v1.x:TTFT 拆解 —— prepare 段(spec 解析 → 消息/工具组装 → 缓存
+    // 注入)耗时;first_byte 由流循环回填。二者随 telemetry 落库。
+    let prepare_started = std::time::Instant::now();
     // v1.0 多 Provider 路由:池轮询 retry loop。
     let mut exclude: Vec<Arc<dyn zhuye_llm::ModelClient>> = Vec::new();
     let mut tried: Vec<TriedCredential> = Vec::new();
@@ -284,8 +353,19 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     let max_attempts = ctx.policy.max_attempts;
     let default_cooldown_rate_limited = ctx.policy.default_cooldown_rate_limited;
     let llm_call_started = std::time::Instant::now();
+    // v1.x:TTFT 出参(每次尝试覆盖;resp_record 取成功尝试的值)。
+    let mut first_byte_ms: Option<u64> = None;
 
-    let (text_buf, tool_calls, usage, success_provider, success_label, truncated, thinking_buf) = loop {
+    let (
+        text_buf,
+        tool_calls,
+        usage,
+        success_provider,
+        success_label,
+        truncated,
+        thinking_buf,
+        success_client,
+    ) = loop {
         // v1.10:重试总时长预算 —— `max_attempts` 限制次数,本预算限制
         // 时间。死端点(建连超时 / 读空闲超时)下 10 次重试可空转几十
         // 分钟,用户会误以为程序卡死;超预算即以
@@ -599,11 +679,12 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             state,
             ctx,
             default_cooldown_rate_limited,
+            &mut first_byte_ms,
         )
         .await
         {
             Ok((tb, tc, usg, prov, lbl, trunc, think)) => {
-                break (tb, tc, usg, prov, lbl, trunc, think);
+                break (tb, tc, usg, prov, lbl, trunc, think, client.clone());
             }
             Err(action) => match action {
                 RetryAction::RetrySame { delay_ms } => {
@@ -677,6 +758,55 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             },
         }
     };
+
+    // v1.x:空结果三连防护(借鉴 ZCode suspicious-empty 检查)—— 模型
+    // 正常结束(MessageStop,非截断)却**什么都没产出**(无文本 / 无工具
+    // 调用 / 无思考),几乎必然是内容过滤或 provider 异常,静默放行会让
+    // 下游把「空」当合法回复无限空转。分类后以结构化错误收口当前 turn,
+    // details 持久化 provider 原始归因(raw_finish_reason),冷恢复可查。
+    // 注意:reasoning-only(thinking 有内容)不在此列 —— 部分模型合法
+    // 返回纯思考轮;截断路径由下方 auto-continue 接管。**且**要求 usage
+    // 回执满足「input > 0 且 output == 0」才判可疑 —— 双零是 eval 框架
+    // 空脚本形态的合法收尾(mock 恒报 output=4、input=0),input>0 证明
+    // 真实 provider 处理过请求,output==0 = provider 自证「什么都没生成」。
+    // 真实内容过滤响应恰好落在这个特征上,误报面最小。
+    if text_buf.is_empty()
+        && tool_calls.is_empty()
+        && thinking_buf.is_empty()
+        && !truncated
+        && usage.input_tokens > 0
+        && usage.output_tokens == 0
+    {
+        let raw_finish_reason = "stop";
+        tracing::warn!(
+            provider = %success_provider,
+            model = %model,
+            input_tokens = usage.input_tokens,
+            "模型正常结束但产出为空,判为可疑空结果并终止当前 turn"
+        );
+        record_failed_model_call(
+            ctx,
+            &spec,
+            Some(&success_provider),
+            0,
+            "suspicious empty model result",
+            llm_call_started,
+        );
+        state.deferred_error = Some(ErrorEvent {
+            code: "suspicious_empty_model_result".into(),
+            message: "模型正常结束但未产出任何内容(可能被内容过滤或 provider \
+                      异常);已终止当前 turn,可重试或更换模型。"
+                .into(),
+            details: Some(serde_json::json!({
+                "raw_finish_reason": raw_finish_reason,
+                "provider": success_provider,
+                "credential_label": success_label,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            })),
+        });
+        return None;
+    }
 
     // 构造 latest_content:text + tool_use 块。
     // v1.5 持久化保真:上一轮步骤的 content(text + tool_use + tool_result)
@@ -857,6 +987,12 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         // 文件按 session 隔离 + 256 KiB×3 轮转,无膨胀失控风险。
         let resp_record = serde_json::json!({
             "finish_reason": if tool_calls.is_empty() { "stop" } else { "tool-calls" },
+            // v1.x:TTFT 拆解(毫秒)—— prepare = spec 解析到请求发出;
+            // first_byte = 请求发出到首个流事件。
+            "stage_ms": {
+                "prepare": prepare_started.elapsed().as_millis() as u64,
+                "first_byte": first_byte_ms,
+            },
             "text": text_for_telemetry,
             "tool_calls": tool_calls.iter().map(|(id, name, args)| serde_json::json!({
                 "id": id,
@@ -938,6 +1074,89 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                     // OpenAI/Responses provider 忽略该字段(安全)。
                     thinking: (!thinking_buf.is_empty()).then_some(thinking_buf),
                 }));
+        }
+    }
+
+    // v1.x prompt cache 保温:成功调用后把本请求登记为保温候选,并在
+    // 「下一步还有模型调用」(产生了工具调用)时排程回合内保温。
+    // 候选 = 本次 wire 请求(已 fold + 注入断点)逐字节克隆 + 同一凭据
+    // 的 client 句柄 —— 重放仅改 max_tokens=1 与 warm_replay 标记,
+    // 前缀字节一致(见 crate::cache_warming 零污染不变式)。
+    // v1.x:更新 compact 主前缀槽(摘要请求命中主前缀缓存)。指纹
+    // (system 块数 + 首块长度 + 工具数)未变则跳过,避免每步深拷贝。
+    {
+        let fingerprint = (
+            request.system.0.len(),
+            request.system.0.first().map_or(0, |b| b.text.len()),
+            request.tools.len(),
+        );
+        let needs_update =
+            ctx.cfg
+                .compact_main_prefix
+                .read()
+                .as_ref()
+                .is_none_or(|(sys, tools)| {
+                    (
+                        sys.0.len(),
+                        sys.0.first().map_or(0, |b| b.text.len()),
+                        tools.len(),
+                    ) != fingerprint
+                });
+        if needs_update {
+            *ctx.cfg.compact_main_prefix.write() =
+                Some((request.system.clone(), request.tools.clone()));
+        }
+    }
+    // v1.x:Prompt Snapshot 捕获 —— 本进程内首个成功调用(或代际失效
+    // 后的首次成功)按当前 system 定格;有 recorder 时同步落盘(resume
+    // 恢复源)。快照激活中(校验通过)则不重复捕获。
+    {
+        let snapshot_generation = ctx.cfg.current_cache_generation();
+        let needs_capture = {
+            let snap = ctx.cfg.prompt_snapshot.read();
+            snap.as_ref()
+                .is_none_or(|s| s.model != spec || s.generation != snapshot_generation)
+        };
+        if needs_capture {
+            let system_json =
+                serde_json::to_value(&request.system).unwrap_or(serde_json::Value::Null);
+            *ctx.cfg.prompt_snapshot.write() = Some(crate::config::PromptSnapshotSlot {
+                model: spec.clone(),
+                system_json: system_json.clone(),
+                generation: snapshot_generation,
+            });
+            if let Some(rec) = ctx.recorder.as_ref() {
+                let _ = rec
+                    .record(zhuye_protocol::RolloutRecord::PromptSnapshot {
+                        model: spec.clone(),
+                        system_json,
+                        at: chrono::Utc::now(),
+                    })
+                    .await;
+            }
+        }
+    }
+    if ctx.cfg.cache_warming.settings().enabled {
+        let warming = &ctx.cfg.cache_warming;
+        let replayable = success_client.warming_replayable(&request);
+        warming.record_candidate(crate::cache_warming::WarmCandidate {
+            request: request.clone(),
+            model_spec: spec.clone(),
+            prompt_tokens: usage.input_tokens,
+            observation: zhuye_llm::CacheObservation {
+                cached_tokens: usage.cached_tokens,
+                cache_write_tokens: usage.cache_write_tokens,
+            },
+            client: Arc::clone(&success_client),
+            credential_label: success_label.clone(),
+            generation: ctx.cfg.current_cache_generation(),
+            created_at: std::time::Instant::now(),
+            replayable,
+        });
+        // 显式 thinking(Anthropic Enabled)不可重放:不排程,不发事件
+        // (每步工具后都走这里,发事件是噪声;枚举值保留供防御分支)。
+        if !tool_calls.is_empty() && replayable {
+            warming.schedule(zhuye_llm::WarmingPhase::Turn);
         }
     }
 
