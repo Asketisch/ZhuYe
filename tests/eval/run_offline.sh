@@ -6,7 +6,9 @@
 # 基线必须用 tests/eval/run_quality.sh(真模型)产出。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUT="${ZHUYE_EVAL_OFFLINE_OUTPUT:-$(mktemp -d -t zhuye-eval-offline)}"
+# mktemp 模板必须自带尾部 X(GNU/BSD 通用);BSD 专有的 `-t 前缀` 语义在
+# Linux 上会报 "too few X's" 导致 CI 挂。
+OUT="${ZHUYE_EVAL_OFFLINE_OUTPUT:-$(mktemp -d "${TMPDIR:-/tmp}/zhuye-eval-offline.XXXXXX")}"
 SCORER="$ROOT/target/debug/zhuye-eval-score"
 BIN="${ZHUYE_BIN:-$ROOT/target/release/zhuye}"
 
