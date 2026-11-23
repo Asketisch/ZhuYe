@@ -7,8 +7,8 @@ use futures::{Stream, StreamExt};
 use zhuye_llm::{ChatEvent, LlmError};
 use zhuye_protocol::{
     AgentMessage, AgentMessageDelta, AgentMessageResetEvent, ContentBlock, ErrorEvent, Event,
-    EventMsg, StreamErrorEvent, ThinkingDelta, ThinkingDeltaKind, TokenUsage, ToolCallBeginEvent,
-    TriedCredential,
+    EventMsg, StreamErrorEvent, StreamRecoveryEvent, ThinkingDelta, ThinkingDeltaKind, TokenUsage,
+    ToolCallBeginEvent, TriedCredential,
 };
 
 use super::super::retry::{
@@ -91,6 +91,8 @@ pub async fn process_stream_events(
     state: &mut AgentState,
     ctx: &NodeContext,
     default_cooldown_rate_limited: std::time::Duration,
+    // v1.x:首字节耗时出参(TTFT 拆解;None = 流结束仍无任何事件)。
+    first_byte_ms: &mut Option<u64>,
 ) -> Result<StreamResult, RetryAction> {
     let AttemptCtx {
         provider_name,
@@ -98,6 +100,7 @@ pub async fn process_stream_events(
         label,
         attempt,
     } = *attempt_ctx;
+    let started = std::time::Instant::now();
     let mut text_buf = String::new();
     let mut thinking_buf = String::new();
     let mut tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
@@ -302,6 +305,11 @@ pub async fn process_stream_events(
                     Some(Err(e)) => { error = Some(e); stop = true; }
                     Some(Ok(_)) => {}
                 }
+                // v1.x:TTFT —— 首个事件(含错误)到达即停表。
+                if first_byte_ms.is_none() {
+                    *first_byte_ms =
+                        Some(started.elapsed().as_millis() as u64);
+                }
                 if stop {
                     // 流中出错:立即结束,不排空(错误优先)。
                     if error.is_some() {
@@ -354,6 +362,74 @@ pub async fn process_stream_events(
             // 改为:发 `AgentMessageReset` 让客户端清掉半成品缓冲,丢弃
             // 本地累积,按分类动作自动重试;重试从头重新生成,防止两次
             // 输出拼接污染。
+            //
+            // v1.x:流锚点恢复事件化(借鉴同类 agent 的 streaming-recovery 做法)——
+            // 此前丢弃了什么、从哪里重开、第几次尝试,客户端与审计侧均
+            // 不可见。现在:丢弃的尾部以 `RolloutRecord::StreamRecoveryDiscarded`
+            // 留痕(resume 不回放,永不回流模型上下文),恢复过程以
+            // `stream_recovery_*` 四事件广播。锚点语义:`previous_message`
+            // = ZhuYe 的重试本就复用完整 `state.messages`(已提交内容
+            // 不重跑,前缀缓存友好),即「重放同一请求」。
+            let transient = classify_transient(&e);
+            {
+                if let Some(rec) = ctx.recorder.as_ref() {
+                    let preview: String = text_buf.chars().take(200).collect();
+                    let _ = rec
+                        .record(zhuye_protocol::RolloutRecord::StreamRecoveryDiscarded {
+                            turn_id: ctx.turn_id,
+                            reason_code: error_code(&e).into(),
+                            text_chars: text_buf.chars().count() as u64,
+                            thinking_chars: thinking_buf.chars().count() as u64,
+                            preview,
+                            at: chrono::Utc::now(),
+                        })
+                        .await;
+                }
+                let recovery =
+                    |anchor: Option<&str>, discarded: Option<(u64, u64)>, retry_ms: Option<u64>| {
+                        StreamRecoveryEvent {
+                            attempt,
+                            reason_code: error_code(&e).into(),
+                            transient: transient.map(str::to_string),
+                            anchor: anchor.map(str::to_string),
+                            discarded_text_chars: discarded.map(|(t, _)| t),
+                            discarded_thinking_chars: discarded.map(|(_, th)| th),
+                            retry_in_ms: retry_ms,
+                        }
+                    };
+                let _ = ctx
+                    .event_tx
+                    .send(Event::new(
+                        ctx.sub_id.clone(),
+                        EventMsg::StreamRecoveryStarted(recovery(None, None, None)),
+                    ))
+                    .await;
+                let _ = ctx
+                    .event_tx
+                    .send(Event::new(
+                        ctx.sub_id.clone(),
+                        EventMsg::StreamRecoveryAnchorSelected(recovery(
+                            Some("previous_message"),
+                            None,
+                            None,
+                        )),
+                    ))
+                    .await;
+                let _ = ctx
+                    .event_tx
+                    .send(Event::new(
+                        ctx.sub_id.clone(),
+                        EventMsg::StreamRecoveryTailDiscarded(recovery(
+                            None,
+                            Some((
+                                text_buf.chars().count() as u64,
+                                thinking_buf.chars().count() as u64,
+                            )),
+                            None,
+                        )),
+                    ))
+                    .await;
+            }
             if let RetryAction::CooldownAndFailover { cooldown } = action {
                 ctx.registry
                     .mark_cooldown(pool_name, label, cooldown, build_cooldown_reason(&e));
@@ -386,6 +462,21 @@ pub async fn process_stream_events(
                     EventMsg::AgentMessageReset(AgentMessageResetEvent {
                         reason_code: error_code(&e).into(),
                         retry_in_ms,
+                    }),
+                ))
+                .await;
+            let _ = ctx
+                .event_tx
+                .send(Event::new(
+                    ctx.sub_id.clone(),
+                    EventMsg::StreamRecoveryRetryStarted(StreamRecoveryEvent {
+                        attempt,
+                        reason_code: error_code(&e).into(),
+                        transient: transient.map(str::to_string),
+                        anchor: Some("previous_message".into()),
+                        discarded_text_chars: None,
+                        discarded_thinking_chars: None,
+                        retry_in_ms: Some(retry_in_ms),
                     }),
                 ))
                 .await;
@@ -576,7 +667,7 @@ mod tests {
 
     /// 最小 `NodeContext`(与 check_stop 测试同款),额外保留 event 接收端,
     /// 供断言转发的事件序列。
-    fn minimal_ctx() -> (
+    pub(super) fn minimal_ctx() -> (
         NodeContext,
         tokio::sync::mpsc::Receiver<zhuye_protocol::Event>,
     ) {
@@ -660,6 +751,7 @@ mod tests {
             &mut state,
             &ctx,
             std::time::Duration::from_secs(1),
+            &mut None,
         )
         .await;
         let (_text, tool_calls, _usage, _provider, _label, _truncated, _think) = result.unwrap();
@@ -685,6 +777,147 @@ mod tests {
                 ("call-2".to_string(), "{\"x\":1}".to_string()),
             ],
             "ToolCallArgsDelta 必须按 Start 边界归属 call_id"
+        );
+    }
+}
+
+/// v1.x:瞬态错误分类 —— 判定流中断是否属于可自动恢复的网络 / 流层面
+/// 故障(借鉴同类 agent 的 streaming-recovery 瞬态判定)。分类结果进
+/// `stream_recovery_*` 事件的 `transient` 字段,供客户端与审计区分
+/// 「网络抖动恢复」与「provider 真实拒绝」。判定两层:
+/// 1. 变体级:`LlmError` 自带的瞬态家族(RateLimited / Overloaded /
+///    Provider 5xx / SSE 解析);
+/// 2. 消息正则兜底:provider 差异的超时 / 断流措辞(timeout /
+///    stalled / connection reset / ECONNRESET / broken pipe / 解码中断)。
+///
+/// 返回 `None` = 无法归类(真实 4xx / 逻辑错误,恢复意义存疑)。
+fn classify_transient(e: &LlmError) -> Option<&'static str> {
+    // 变体级:传输 / 服务端瞬态家族。
+    match e {
+        LlmError::RateLimited { .. } | LlmError::Overloaded { .. } => {
+            return Some("provider_stream_error");
+        }
+        LlmError::Provider { status, .. } if *status >= 500 => {
+            return Some("provider_stream_error");
+        }
+        // Http 不在变体级短路:超时 / 断连的措辞差异交给下方正则细分
+        // (timeout → provider_timeout,reset/broken pipe → network…)。
+        LlmError::SseParse(_) => {
+            return Some("provider_stream_error");
+        }
+        _ => {}
+    }
+    // 消息正则兜底(provider 措辞差异;小写匹配)。
+    let msg = e.to_string().to_lowercase();
+    const PATTERNS: &[(&str, &str)] = &[
+        ("timeout", "provider_timeout"),
+        ("timed out", "provider_timeout"),
+        ("stalled", "provider_stream_error"),
+        ("connection reset", "provider_network_error"),
+        ("econnreset", "provider_network_error"),
+        ("broken pipe", "provider_network_error"),
+        ("stream disconnected", "provider_stream_error"),
+        ("error decoding response body", "provider_stream_error"),
+    ];
+    PATTERNS
+        .iter()
+        .find(|(needle, _)| msg.contains(needle))
+        .map(|(_, kind)| *kind)
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::tests::minimal_ctx;
+    use super::*;
+    use futures::stream;
+
+    /// 审计修复(批次 2):流中途可重试错误 + 已有可见增量时,必须发出
+    /// `stream_recovery_*` 四事件(started → anchor_selected →
+    /// tail_discarded → … → retry_started,与 stream_error/reset 交错),
+    /// 且 discarded 字符数与丢弃的半成品一致。
+    #[tokio::test]
+    async fn mid_stream_error_emits_recovery_events() {
+        let (ctx, mut rx) = minimal_ctx();
+        let mut state = AgentState::default();
+        let mut tried = Vec::new();
+        let attempt_ctx = AttemptCtx {
+            provider_name: "stub",
+            pool_name: "stub",
+            label: "c1",
+            attempt: 1,
+        };
+        // 半成品:一段文本 delta,随后流中 SSE 解析错误(可重试)。
+        let mut s = stream::iter(vec![
+            Ok(ChatEvent::ContentDelta("说到一半".into())),
+            Err(LlmError::SseParse("stream stalled".into())),
+        ]);
+        let result = process_stream_events(
+            &mut s,
+            &mut tried,
+            &attempt_ctx,
+            &mut state,
+            &ctx,
+            std::time::Duration::from_secs(1),
+            &mut None,
+        )
+        .await;
+        assert!(result.is_err(), "流中错误应返回 RetryAction 交给上层重试");
+        // 收集事件(上限防挂死;RetrySame 延迟发生在上层,本函数不发)。
+        let mut stages: Vec<String> = Vec::new();
+        let mut discarded_text: Option<u64> = None;
+        while let Ok(ev) = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+        {
+            let Some(ev) = ev else { break };
+            match ev.msg {
+                EventMsg::StreamRecoveryStarted(_) => stages.push("started".into()),
+                EventMsg::StreamRecoveryAnchorSelected(e) => {
+                    assert_eq!(e.anchor.as_deref(), Some("previous_message"));
+                    stages.push("anchor_selected".into());
+                }
+                EventMsg::StreamRecoveryTailDiscarded(e) => {
+                    discarded_text = e.discarded_text_chars;
+                    stages.push("tail_discarded".into());
+                }
+                EventMsg::StreamError(_) => stages.push("stream_error".into()),
+                EventMsg::AgentMessageReset(_) => stages.push("reset".into()),
+                EventMsg::StreamRecoveryRetryStarted(e) => {
+                    assert!(e.retry_in_ms.is_some());
+                    stages.push("retry_started".into());
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            stages,
+            vec![
+                "started",
+                "anchor_selected",
+                "tail_discarded",
+                "stream_error",
+                "reset",
+                "retry_started"
+            ],
+            "恢复事件序:started → anchor → discarded → stream_error → reset → retry_started"
+        );
+        assert_eq!(discarded_text, Some("说到一半".chars().count() as u64));
+    }
+
+    /// 瞬态分类:变体级与消息正则兜底各验一条;4xx 不归类。
+    #[test]
+    fn classify_transient_covers_variants_and_message_regex() {
+        assert_eq!(
+            classify_transient(&LlmError::Overloaded { retry_after_ms: 0 }),
+            Some("provider_stream_error")
+        );
+        assert_eq!(
+            classify_transient(&LlmError::Http("operation timed out".into())),
+            Some("provider_timeout")
+        );
+        assert_eq!(
+            classify_transient(&LlmError::Auth),
+            None,
+            "鉴权错误不属于瞬态网络故障"
         );
     }
 }

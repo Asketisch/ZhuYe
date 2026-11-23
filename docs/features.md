@@ -124,6 +124,38 @@ side-channel 让用户发起的并发 agent 与主轮次并行互不干扰(由 `
 - **提示词库外置**(`zhuye-prompt`)—— 提示词按模型匹配外置,见
   [docs/prompts.md](prompts.md)。
 
+## Prompt cache 保温(需配置)
+
+空闲期 / 回合内以一条廉价重放请求(`max_tokens=1`)刷新 provider prompt
+cache 的 TTL,让交互间隙(读输出、跑验证)之后的第一条真实消息命中缓存。
+决策是纯函数(`zhuye-llm::cache_warming`,与 pi 同构):期望节省
+`= 延续概率 × miss成本 − 保温成本 ≥ 阈值` 才发,ZhuYe 用**真实命中回执**
+(`cached_tokens` 观测)做门控与成本精化。默认关闭 —— 保温是引擎自发
+花钱的行为,`[cache_warming] enabled = true` 显式开启。调度在
+`zhuye-core::cache_warming`:同凭据重放、代际失效(rewind / compact /
+model / effort / tools / prompt 切换任一变更即弃)、零污染不变式(不写
+rollout、不进 session_usage、不发 TokenCount、不喂 CacheBreakDetector)。
+状态经 `cache_warming` 事件可见,`warm_cached_tokens` 可与后续
+`token_count.cached_tokens` 对照验证收益。详见
+[docs/configuration.md](configuration.md) 的 `[cache_warming]` 段。
+
+## 可靠性与可观测性增强(v1.x)
+
+- **流锚点恢复** —— 可重试流错误(断流 / 网络 / 5xx)已有可见增量时,
+  从安全锚点重开而非整段重来;丢弃的尾部以 `StreamRecoveryDiscarded`
+  留痕(resume 不回放),恢复过程经 `stream_recovery_*` 四事件可观察;
+- **压缩 rapid-refill 熔断** —— 「压缩 → 立即填满」连续 3 次即收口
+  (`compact_rapid_refill`),窗口内前几次跳过并注入收敛提醒;
+- **空结果防护** —— provider 自证零产出的正常结束判为可疑
+  (`suspicious_empty_model_result`),details 持久化原始归因;
+- **工具结果预算** —— 宿主接收原始输出,模型上下文超限时按配置截断或在工作区落盘供读回;
+- **stop_turn 级联** —— 工具可请求结算后收口当前 turn;
+- **输入守恒** —— 每个进入引擎的 turn 终态显式落盘
+  (`InputDisposition`),崩溃窗口在 resume 时显式告知,**永不自动重放**;
+- **TTFT 拆解** —— telemetry 记录 prepare / first_byte 毫秒;
+- **models.dev 目录后台刷新** —— exec/serve 启动按 24h TTL 后台刷新
+  (mock / `ZHUYE_MODELS_DEV_REFRESH=0` 跳过)。
+
 ## 安全闸门(默认)
 
 三层闸门叠加,默认全部生效:

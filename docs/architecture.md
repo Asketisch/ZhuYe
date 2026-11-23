@@ -35,7 +35,7 @@
 
 ## 2. Workspace 六层分层
 
-workspace 共 **45 个 crate**,按 6 层分组于 `crates/<layer>/<crate>/`,
+workspace 共 **46 个 crate**,按 6 层分组于 `crates/<layer>/<crate>/`,
 依赖方向**自上而下**(上层依赖下层;`protocol` 是所有层的公共契约,被所有
 层依赖)。完整成员清单以根目录 [Cargo.toml](../Cargo.toml) 的 `members` 段
 为唯一事实源;下表与其逐行对应。

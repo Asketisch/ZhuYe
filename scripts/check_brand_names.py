@@ -20,6 +20,13 @@
 不是品牌归属表述;厂商 API 名(provider vendor)与模型名由用户在
 [AGENTS.md](../AGENTS.md) 的「开发流程检查表」中显式划为不处理范围。
 
+豁免还有第二类:**路径限定的豁免**(EXEMPT_SCOPED_PATTERNS)—— 同一批
+字面量只在登记的路径前缀内不作数。用于「上游公开提示词数据集的工具目录
+名 / 展示名 / 策展正文」这类情形:提示词目录(sources.json 的 tools 段 +
+prompts/tools/** 的英文策展正文)按上游目录布局登记工具 id,并原样保留
+上游提示词的第一人称正文 —— 那是**发给模型的内容**,不是对来源的归属
+表述。路径限定使同名品牌在其它位置(源码注释 / 提交信息等)仍被拦下。
+
 用法:
     python3 scripts/check_brand_names.py            # 扫描工作树 + 提交信息
     python3 scripts/check_brand_names.py --list     # 只打印登记表
@@ -77,6 +84,10 @@ EXEMPT_PATTERNS: list[tuple[str, str]] = [
         "上游公开提示词数据集内的目录名 —— 按路径取文件校验 sha256 必需(格式标识符)",
     ),
     (
+        r"claude-code/codex/kimi/qwen/",
+        "提示词目录登记的一级工具 id 清单字面量 —— 目录清单本身(格式标识符)",
+    ),
+    (
         r"anthropic/claude-[\w.\-]+",
         "Anthropic 模型 id —— 厂商 API 名 / 模型名,非产品品牌名",
     ),
@@ -90,6 +101,37 @@ EXEMPT_PATTERNS: list[tuple[str, str]] = [
     (
         r"io::Cursor",
         "Rust 标准库的 io::Cursor —— 标准库类型名,与 Cursor 产品无关",
+    ),
+]
+
+# 路径限定的豁免(路径前缀, pattern, 依据)。仅当被扫文件落在该前缀下
+# 且该行命中登记的字面量时才不作数 —— 比全局豁免更窄:同名品牌在其它
+# 位置仍应被拦下。目录路径以 "/" 结尾,文件路径写全。
+#
+# 依据:提示词两级目录(catalog)按上游公开数据集的目录布局登记工具 id
+# (`claude-code` / `codex`)与展示名,并原样策展上游提示词的英文正文。
+# 两者都是**格式标识符 / 发给模型的内容**,不是对本项目来源的归属表述。
+EXEMPT_SCOPED_PATTERNS: list[tuple[str, str, str]] = [
+    (
+        "crates/abilities/zhuye-prompt/",
+        r"(?i)claude[-_ ]code|\bcodex\b",
+        "提示词目录子树 —— 上游数据集的工具 id / 展示名与英文策展正文"
+        "(格式标识符 + 发给模型的内容)",
+    ),
+    (
+        "crates/protocol/zhuye-protocol/src/event_msg/config.rs",
+        r"(?i)claude[-_ ]code|\bcodex\b",
+        "协议文档注释里的提示词目录标识符(与目录登记同源)",
+    ),
+    (
+        "docs/prompts.md",
+        r"(?i)claude[-_ ]code|\bcodex\b",
+        "提示词目录文档里的工具 id / 展示名(与目录登记同源)",
+    ),
+    (
+        "docs/prompts.en.md",
+        r"(?i)claude[-_ ]code|\bcodex\b",
+        "提示词目录英文文档里的工具 id / 展示名(与目录登记同源)",
     ),
 ]
 
@@ -132,9 +174,18 @@ def commit_messages() -> list[tuple[str, str]]:
     return pairs
 
 
-def scan_text(text: str, label: str, violations: list[str]) -> None:
+def scan_text(
+    text: str, label: str, violations: list[str], path: str | None = None
+) -> None:
     brand = [(re.compile(p), r) for p, r in BRAND_PATTERNS]
     exempt = [(re.compile(p), r) for p, r in EXEMPT_PATTERNS]
+    # 路径限定的豁免:只有被扫文件落在登记前缀下才参与判定(提交信息无
+    # 路径,只吃全局豁免)。
+    scoped = [
+        (re.compile(p), r)
+        for prefix, p, r in EXEMPT_SCOPED_PATTERNS
+        if path is not None and (path == prefix.rstrip("/") or path.startswith(prefix))
+    ]
     for line_no, line in enumerate(text.splitlines(), start=1):
         hits = [(rx, why) for rx, why in brand if rx.search(line)]
         if not hits:
@@ -142,7 +193,9 @@ def scan_text(text: str, label: str, violations: list[str]) -> None:
         # 同一行若命中豁免字面量,则该行的违禁命中不作数 —— 豁免必须窄到
         # 具体字面量,故按「整行豁免」处理(登记表里的豁免项都是完整路径或
         # 完整 id,不会掩盖同行的其它品牌名)。
-        if any(rx.search(line) for rx, _ in exempt):
+        if any(rx.search(line) for rx, _ in exempt) or any(
+            rx.search(line) for rx, _ in scoped
+        ):
             continue
         for rx, why in hits:
             violations.append(
@@ -164,6 +217,9 @@ def main() -> int:
         print("\n豁免字面量:")
         for pattern, reason in EXEMPT_PATTERNS:
             print(f"- /{pattern}/\n    依据: {reason}")
+        print("\n路径限定的豁免(仅在该路径下不作数):")
+        for prefix, pattern, reason in EXEMPT_SCOPED_PATTERNS:
+            print(f"- {prefix} :: /{pattern}/\n    依据: {reason}")
         return 0
 
     violations: list[str] = []
@@ -175,7 +231,7 @@ def main() -> int:
         except (UnicodeDecodeError, OSError):
             continue  # 二进制产物不扫
         scanned += 1
-        scan_text(text, rel, violations)
+        scan_text(text, rel, violations, rel)
 
     if not args.worktree:
         for sha, body in commit_messages():

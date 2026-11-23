@@ -263,6 +263,21 @@ pub async fn submission_loop(
     // 据此检测缺口;per-turn 专属流不赋号(`seq = 0`)。`Arc` 包装以便
     // 进入 spawn 的转发任务 / plan waiter。
     let session_seq = Arc::new(SessionSeq::new(0));
+    // v1.x 保温:开启时挂事件出口 —— forwarder 把调度器的
+    // `CacheWarming` 事件 stamp seq 后扇出到 session 订阅者
+    // (与 side-channel 转发任务同形;channel 满则 try_send 丢帧,
+    // 可观测性事件不阻塞引擎)。
+    if cfg.cache_warming.settings().enabled {
+        let (warm_tx, mut warm_rx) = mpsc::channel::<Event>(32);
+        cfg.cache_warming.set_event_tx(warm_tx);
+        let warm_subs = Arc::clone(&session_subs);
+        let warm_seq = Arc::clone(&session_seq);
+        tokio::spawn(async move {
+            while let Some(ev) = warm_rx.recv().await {
+                fan_out_session(&warm_subs, &warm_seq, &ev);
+            }
+        });
+    }
     // v1.x:从首条 Submission(通常是首条 UserInput)携带的 `workspace`
     // 字段捕获。GUI 主动注入当前激活工作区;CLI / 测试场景不指定 →
     // 后续 `cfg.current_workspace()` 作为回退。捕获后保持不变,即使
@@ -299,6 +314,9 @@ pub async fn submission_loop(
                 items,
                 thread_settings,
             } => {
+                // v1.x 保温:新请求即将到来 → 取消在飞保温任务(真实请求
+                // 会刷新缓存,重放已无意义)。候选槽保留,代际兜底。
+                cfg.cache_warming.cancel_active();
                 // v1.1.0 P1 #14 inline QuestionAnswer:用户在 input bar 直接
                 // 回答挂起的 `AskUserQuestion`(与 dedicated `Op::Answer` 平行)。
                 // 先分流并走与 `Op::AskUserQuestionResponse` 完全相同的 gate
@@ -822,6 +840,11 @@ pub async fn submission_loop(
                 let turn_cancel_clone = turn_cancel.clone();
                 let session_cancel_clone = cfg.cancel.clone();
                 let active_turns_clone = active_turns.clone();
+                // v1.x 保温:turn 终态排程 / 取消需要调度器句柄(cfg 的
+                // Arc 字段,clone 共享)。
+                let warming_clone = cfg.cache_warming.clone();
+                // v1.x 输入守恒:终态处置落盘需要 cfg(recorder 槽)。
+                let cfg_ledger = cfg.clone();
                 // v1.2 P1:turn 级 telemetry span(RAII guard,drop 时自动写
                 // `turn.completed` + duration)。guard 在 spawned task 内创建,
                 // 这样 drop 时机 = turn 真正完成(而非 spawn 时刻)。
@@ -868,6 +891,9 @@ pub async fn submission_loop(
                                     cached_tokens: final_state.total_usage.cached_tokens,
                                     cache_write_tokens: final_state.total_usage.cache_write_tokens,
                                     total_tokens: final_state.total_usage.total_tokens,
+                                    // v1.x:标记本条为**回合累计** —— 消费方据此避免
+                                    // 与逐次调用的快照重复累计(否则会话总量与费用翻倍)。
+                                    turn_total: true,
                                     // v1.x S4:用当前 model spec + total_usage 算
                                     // per-turn USD cost;model 不在 pricing 表里
                                     // (未知 / 本地无标价的 model) → None,TUI
@@ -1132,9 +1158,57 @@ pub async fn submission_loop(
                     // 在飞回合表条目。陈旧条目(极端时序下 Interrupt 先到)
                     // 的 remove 是幂等 no-op。
                     active_turns_clone.lock().remove(&turn_id);
+                    // v1.x:输入守恒 ledger —— turn 终态处置显式落盘(与
+                    // turn 的 Message 记录配对;缺失即崩溃窗口,resume 对账
+                    // 据此告知,**永不自动重放**)。
+                    {
+                        let (disposition, reason): (String, String) =
+                            if final_state.completed_normally {
+                                ("promoted".into(), "turn_complete".into())
+                            } else if final_state.budget_exceeded {
+                                ("promoted".into(), "token_budget_exceeded".into())
+                            } else if turn_cancel_clone.is_cancelled() {
+                                (
+                                    "aborted".into(),
+                                    if session_cancel_clone.is_cancelled() {
+                                        "shutdown".into()
+                                    } else {
+                                        "user_interrupt".into()
+                                    },
+                                )
+                            } else {
+                                (
+                                    "failed".into(),
+                                    final_state.deferred_error.as_ref().map_or_else(
+                                        || "error".to_string(),
+                                        |e| format!("error:{}", e.code),
+                                    ),
+                                )
+                            };
+                        persist_rollout_best_effort(&cfg_ledger, || {
+                            RolloutRecord::InputDisposition {
+                                turn_id,
+                                disposition,
+                                reason,
+                                at: chrono::Utc::now(),
+                            }
+                        });
+                    }
+                    // v1.x 保温:turn 终态 → 取消回合内在飞保温;正常完成
+                    // 则布防空闲保温(预算耗尽同样布防 —— 上下文仍在,
+                    // 空闲期保温依然有效)。排程器内部自判 enabled / 候选
+                    // 可重放,关闭时全部 no-op。
+                    warming_clone.cancel_active();
+                    if final_state.completed_normally {
+                        warming_clone.schedule(zhuye_llm::WarmingPhase::Idle);
+                    }
                 });
             }
             zhuye_protocol::Op::Compact => {
+                // v1.x 保温:压缩将改写历史 → 取消在飞保温 + bump 代际
+                // (候选前缀即将失效)。
+                cfg.cache_warming.cancel_active();
+                cfg.bump_cache_generation();
                 // v1.2 P1-12(已有-B):`/compact` 设置 `force_compact_next`
                 // 标志,让下一个 turn 的 `pre_loop` 强制运行 compactor(无视
                 // trigger_tokens 阈值)。架构原因:`Op::Compact` 到达时无活跃
@@ -1159,6 +1233,8 @@ pub async fn submission_loop(
                     .await;
             }
             zhuye_protocol::Op::Interrupt { child_id } => {
+                // v1.x 保温:中断意味着用户介入 → 取消在飞保温任务。
+                cfg.cache_warming.cancel_active();
                 // v1.x Plan mode:把 abort reason 同步写到 `AgentConfig` 上,
                 // 让下一次 turn 的 `pre_loop` 一次性消费并注入 ephemeral
                 // system block("## Previous Turn"),提醒 LLM 上轮被中断、
@@ -1229,6 +1305,10 @@ pub async fn submission_loop(
             // 内存 history 也能正确回退。`None` = 回退到最后一个 turn(最常用)。
             // truncate 失败不致命:warn 后降级为纯事件回执(旧行为)。
             zhuye_protocol::Op::Rewind { to_turn_id } => {
+                // v1.x 保温:rewind 截断历史 → 取消在飞保温 + bump 代际
+                // (候选前缀已失效)。
+                cfg.cache_warming.cancel_active();
+                cfg.bump_cache_generation();
                 let target = to_turn_id
                     .as_deref()
                     .and_then(|s| zhuye_protocol::TurnId::parse_str(s).ok());
@@ -1280,18 +1360,47 @@ pub async fn submission_loop(
             // 下一次 pre_loop(ToolExec 回环入口)收割注入;若无在飞
             // turn,消息留队,下一个 UserInput turn 边界合并(既有行为)。
             zhuye_protocol::Op::Steer { priority, items } => {
-                let p = match priority {
-                    zhuye_protocol::SteeringPriorityMirror::Now => SteeringPriority::Now,
-                    zhuye_protocol::SteeringPriorityMirror::Attachment => {
-                        SteeringPriority::Attachment
-                    }
-                };
-                tracing::info!(
-                    priority = ?p,
-                    items = items.len(),
-                    "steer: mid-turn steering queued"
-                );
-                steering_queue.lock().push(p, items);
+                // v1.x 保温:新指令将在下一 turn 边界合入 → 取消在飞保温。
+                cfg.cache_warming.cancel_active();
+                // v1.x:转向输入字节上限(借鉴同类 agent 的「按字节而非字符数」做法——
+                // 按 UTF-8 实测)—— 防止一条巨型 steer 把下一轮
+                // 上下文一次性撑爆(绕过压缩水位的正常节奏)。超限拒绝入队,
+                // 以结构化错误应答。
+                let payload_bytes = serde_json::to_vec(&items).map_or(0usize, |v| v.len());
+                if payload_bytes > zhuye_protocol::MAX_STEER_INPUT_BYTES {
+                    let ev = Event::new(
+                        sub.id.clone(),
+                        EventMsg::Error(zhuye_protocol::ErrorEvent {
+                            code: "steer_input_too_large".into(),
+                            message: format!(
+                                "转向输入过大:{payload_bytes} 字节 > 上限 \
+                                 {} 字节;请拆分后分批发送。",
+                                zhuye_protocol::MAX_STEER_INPUT_BYTES
+                            ),
+                            details: Some(serde_json::json!({
+                                "payload_bytes": payload_bytes,
+                                "max_bytes": zhuye_protocol::MAX_STEER_INPUT_BYTES,
+                                "items": items.len(),
+                            })),
+                        }),
+                    );
+                    let _ = turn_tx.send(ev.clone()).await;
+                    fan_out_session(&session_subs, &session_seq, &ev);
+                } else {
+                    let p = match priority {
+                        zhuye_protocol::SteeringPriorityMirror::Now => SteeringPriority::Now,
+                        zhuye_protocol::SteeringPriorityMirror::Attachment => {
+                            SteeringPriority::Attachment
+                        }
+                    };
+                    tracing::info!(
+                        priority = ?p,
+                        items = items.len(),
+                        payload_bytes,
+                        "steer: mid-turn steering queued"
+                    );
+                    steering_queue.lock().push(p, items);
+                }
             }
             // v1.4 C1:子代理状态查询 —— 从状态中心取快照(全 clone,不
             // 阻塞任何子代理),SubagentStatus 事件经 per-turn 通道 + 会话
@@ -1532,6 +1641,10 @@ pub async fn submission_loop(
             // `ChatRequest::thinking`)。不 emit 任何 Event —— slash 派发
             // 端已直接推 Pill 反馈用户;这里只做审计行 + 写槽。
             zhuye_protocol::Op::SetEffort { effort } => {
+                // v1.x 保温:effort 改变 thinking 配置 → 下一请求 wire
+                // 形态变化 → 取消在飞保温 + bump 代际。
+                cfg.cache_warming.cancel_active();
+                cfg.bump_cache_generation();
                 tracing::info!(
                     ?effort,
                     "effort override applied; will take effect on next model_call"
@@ -1716,12 +1829,17 @@ pub async fn submission_loop(
                                 selection: cfg.current_prompt_selection(),
                                 profile: resolved.profile,
                                 fallback_reason: resolved.fallback_reason,
+                                groups: zhuye_prompt::tool_catalog(),
                             }),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
                         fan_out_session(&session_subs, &session_seq, &ev);
                     }
                     PromptAction::Switch { layer } => {
+                        // v1.x 保温:提示词库切换改写 system prompt →
+                        // 取消在飞保温 + bump 代际。
+                        cfg.cache_warming.cancel_active();
+                        cfg.bump_cache_generation();
                         // layer 槽位当前固定走全量重扫;预留未来聚焦切换。
                         let dirs = cfg
                             .m4
@@ -1865,6 +1983,10 @@ pub async fn submission_loop(
             // 不开 turn —— 应答经 per-submission 通道 + 会话扇出双路送达
             // (与 PromptCommand 同款),收尾由 serve/SDK 层负责。
             zhuye_protocol::Op::RescanExtensions { skills, commands } => {
+                // v1.x 保温:skills / 工具集可能变化 → 取消在飞保温 +
+                // bump 代际。
+                cfg.cache_warming.cancel_active();
+                cfg.bump_cache_generation();
                 let mut skills_count = 0usize;
                 if skills && let Some(m4) = cfg.m4.as_ref() {
                     // 目录序与 bootstrap 同源(M4Deps.skill_dirs,core 不

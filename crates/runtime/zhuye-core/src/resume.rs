@@ -178,6 +178,15 @@ pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
             // TokenCount 同类 —— 记忆内容本身已随 system prompt 走
             // telemetry 层,回放不重复)。
             | RolloutRecord::MemoryAccess { .. }
+            // v1.x:流锚点恢复丢弃的尾部留痕 —— 纯审计,resume **绝不**
+            // 回放(丢弃内容永不回到模型上下文)。
+            | RolloutRecord::StreamRecoveryDiscarded { .. }
+            // v1.x:Prompt Snapshot 由 bootstrap 侧单独提取(见
+            // `last_prompt_snapshot`),消息映射忽略。
+            | RolloutRecord::PromptSnapshot { .. }
+            // v1.x:输入守恒 ledger —— 由 bootstrap 侧对账提取
+            // (`unsettled_input_turns`),消息映射忽略。
+            | RolloutRecord::InputDisposition { .. }
             // v1.12:人机交互审计。**有意不重发**未决交互:进程重启后原
             // 回合(及其 waiter)已不存在,重发只会造出「无人接听的幽灵
             // 弹窗」—— 用户应答会打到空 waiter 上(submission_loop 只能
@@ -264,4 +273,49 @@ pub fn repair_orphan_tool_calls(messages: Vec<ChatMessage>) -> Vec<ChatMessage> 
         tracing::debug!("resume:修复未完成、重复或错位的工具调用和结果");
     }
     repaired
+}
+
+/// v1.x:提取最后一条 Prompt Snapshot(取记录尾部向前第一条)。
+///
+/// 返回 `(model, system_json)`;无快照返回 `None`。调用方(bootstrap
+/// resume 路径)在 model 与当前模型一致时激活快照槽。
+pub fn last_prompt_snapshot(records: &[RolloutRecord]) -> Option<(String, serde_json::Value)> {
+    records.iter().rev().find_map(|r| match r {
+        RolloutRecord::PromptSnapshot {
+            model, system_json, ..
+        } => Some((model.clone(), system_json.clone())),
+        _ => None,
+    })
+}
+
+/// v1.x:输入守恒对账 —— 找出**崩溃窗口**里未完成的 turn(有 user 消息
+/// 落盘但无 `InputDisposition` 终态记录)。
+///
+/// 返回这些 turn 的 id 列表(最多 5 条,按文件顺序)。resume 消费方据此
+/// 显式告知「上次会话有 N 条输入未完成,是否重发」—— **永不自动重放**。
+pub fn unsettled_input_turns(records: &[RolloutRecord]) -> Vec<String> {
+    let mut settled: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut submitted: Vec<String> = Vec::new();
+    let mut seen_turns: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for r in records {
+        match r {
+            RolloutRecord::Message { turn_id, role, .. } => {
+                let tid = turn_id.to_string();
+                if matches!(role, zhuye_protocol::MessageRole::User)
+                    && seen_turns.insert(tid.clone())
+                {
+                    submitted.push(tid);
+                }
+            }
+            RolloutRecord::InputDisposition { turn_id, .. } => {
+                settled.insert(turn_id.to_string());
+            }
+            _ => {}
+        }
+    }
+    submitted
+        .into_iter()
+        .filter(|t| !settled.contains(t))
+        .take(5)
+        .collect()
 }

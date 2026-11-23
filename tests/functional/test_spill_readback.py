@@ -48,9 +48,12 @@ def test_read字节分页保持字符边界并可续读(serve_session, mock_scri
         assert end["output"]["metadata"]["has_more"] is more
 
 
-def test_远程工具大输出进入模型前溢出并可读回(serve_session, mock_script, sandbox) -> None:
+@pytest.mark.parametrize("configured_budget", [False, True])
+def test_远程工具大输出进入模型前溢出并可读回(serve_session, mock_script, sandbox, configured_budget) -> None:
     """宿主收到原始输出，模型收到有读回路径的有界文本。"""
     require_binary()
+    if configured_budget:
+        sandbox.write_config("\n[tool_results]\nmax_inline_bytes = 8000\n")
     original = "中文内容" * 5000 + "TAIL-MARKER"
     script = mock_script([
         '{"type":"tool_call","name":"remote_large","args":{}}',
@@ -96,6 +99,29 @@ def _tool_end(events: list[dict[str, Any]]) -> dict[str, Any]:
     m = first_event(events, "tool_call_end")
     assert m is not None, f"未见 tool_call_end:{msg_types(events)}"
     return m["msg"]
+
+
+def test_禁用预算落盘时宿主保留全文且模型保留首尾(serve_session, mock_script, sandbox) -> None:
+    """禁用持久化时,宿主事件不被截断,模型看到首尾与省略提示。"""
+    sandbox.write_config("\n[tool_results]\nmax_inline_bytes = 3000\npersist = false\n")
+    original = "开头" + "中" * 5000 + "结尾"
+    script = mock_script([
+        '{"type":"tool_call","name":"remote_budget","args":{}}',
+        '{"type":"request_echo"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        session.send({"type": "register_tools", "tools": [{"name": "remote_budget", "description": "大输出", "parameters": {"type": "object"}}]})
+        time.sleep(0.5)
+        sid = session.send({"type": "user_input", "items": [{"type": "text", "text": "请求输出"}]})
+        req = session.wait_global(lambda event: event.get("msg", {}).get("type") == "tool_execution_request")
+        session.send({"type": "tool_execution_response", "call_id": req["msg"]["call_id"], "output": {"content": [{"type": "text", "text": original}], "is_error": False, "metadata": {}, "elapsed_ms": 1}})
+        events = session.collect(sid, timeout=DRAIN_TIMEOUT)
+    assert _tool_text(_tool_end(events)) == original
+    chunks = [e["msg"].get("delta", "") for e in events if e["msg"].get("type") == "agent_message_delta"]
+    model = json.loads("".join(chunks))
+    text = next(m["text"] for m in model["messages"] if m.get("role") == "tool")
+    assert text.startswith("开头") and text.endswith("结尾") and "中间省略" in text
+    assert not (sandbox.cwd / ".zhuye/spill").exists()
 
 
 def _tool_text(msg: dict[str, Any]) -> str:

@@ -190,6 +190,7 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
     // 在写入结果前归档本批模型输出,保持调用与结果在 rollout 中成对。
     // 若只移除 ToolUse,恢复时会把孤立结果丢弃,导致重连后模型失去工具上下文。
     state.turn_content.append(&mut state.latest_content);
+    let mut stop_turn_requested = false;
     for mut r in results {
         // v1.9 C3:本 turn 工具证据计数(供中毒会话检测器在 turn 末读取)。
         state.turn_tool_calls += 1;
@@ -198,6 +199,20 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         }
         if r.metadata.get("timeout_ms").is_some() {
             state.turn_tool_timeouts += 1;
+        }
+        // v1.x:stop_turn 级联(借鉴同类 agent 的「工具结果后停止」做法)—— 工具
+        // 可通过 `metadata["stop_turn"]=true` 请求「结果结算后结束本 turn,
+        // 不再发起新的模型调用」。实现:本批结果落盘后直接返回 CheckStop
+        // 终止(结果已在 ToolCallEnd 事件与 rollout 中,无需回灌模型)。
+        // 修复原因:最初实现置 `force_final_answer`,但该标志只在
+        // model_call 成功之后短路 —— 第二次模型调用仍会发生,违背语义。
+        // 典型用途:目标达成的自检工具、子代理汇总工具、审批类哨兵工具。
+        if r.metadata.get("stop_turn").and_then(|v| v.as_bool()) == Some(true) {
+            stop_turn_requested = true;
+            tracing::info!(
+                call_id = %r.call_id,
+                "工具请求 stop_turn:本批结果结算后终止本 turn"
+            );
         }
         // 取出 call_meta 提前 —— v1.x Plan mode 分支要在 ToolCallEnd 之后
         // 立刻 dispatch(成功走 request / ready;失败走 PlanRejected),需要
@@ -438,7 +453,12 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         // (图内决策用),模型永远看不到工具输出,导致重复调用同一工具。
         // 宿主事件已收到完整结果；只对送入模型与持久化历史的文本做预算治理。
         // 所有来源共享此入口，保留图片块并使用安全写入提供按需读回。
-        limit_model_tool_output(&mut r.content, &ctx.cfg.current_workspace()).await;
+        limit_model_tool_output(
+            &mut r.content,
+            &ctx.cfg.current_workspace(),
+            ctx.cfg.result_budget.as_deref(),
+        )
+        .await;
         let call_id = r.call_id.clone();
         let is_error = r.is_error;
         let tool_output = zhuye_protocol::ToolOutput {
@@ -537,6 +557,11 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
     if ctx.cancel.is_cancelled() {
         return None;
     }
+    // v1.x:stop_turn —— 结果已结算且落盘,直接终止 turn(CheckStop:
+    // Stop hook 可否决;终止后 completed_normally 置位)。
+    if stop_turn_requested {
+        return Some(GraphNode::CheckStop);
+    }
     // v1.x progress-nudge:本轮所有工具执行完后,根据 web_fetch 次数 / 域名
     // 重复 / 迭代剩余注入结构化「已收集事实」+「请立即作答」提示。这是循环
     // 检测器(同签名)之外的额外机制,处理两类真实失败模式:① 不同 URL 但同
@@ -556,7 +581,17 @@ const MODEL_TOOL_TEXT_PREVIEW_BYTES: usize = 8 * 1024;
 const MODEL_TOOL_TEXT_LIMIT_BYTES: usize = 12 * 1024;
 
 /// 限制进入模型的工具文本，图片仍保持独立内容块。
-async fn limit_model_tool_output(content: &mut Vec<ContentBlock>, workspace: &std::path::Path) {
+async fn limit_model_tool_output(
+    content: &mut Vec<ContentBlock>,
+    workspace: &std::path::Path,
+    budget: Option<&zhuye_tools::result_budget::ResultBudget>,
+) {
+    if content.is_empty() && budget.is_some_and(|b| b.enabled) {
+        content.push(ContentBlock::text(
+            zhuye_tools::result_budget::EMPTY_OUTPUT_PLACEHOLDER,
+        ));
+        return;
+    }
     let text_parts: Vec<String> = content
         .iter()
         .filter_map(|block| match block {
@@ -566,10 +601,37 @@ async fn limit_model_tool_output(content: &mut Vec<ContentBlock>, workspace: &st
         })
         .collect();
     let text = text_parts.join("\n");
-    if text.len() <= MODEL_TOOL_TEXT_LIMIT_BYTES {
+    let budget = budget.filter(|b| b.enabled);
+    let limit = budget.map_or(MODEL_TOOL_TEXT_LIMIT_BYTES, |b| {
+        b.max_inline_bytes.min(MODEL_TOOL_TEXT_LIMIT_BYTES)
+    });
+    if text.len() <= limit {
         return;
     }
-    let preview = zhuye_protocol::truncate_str(&text, MODEL_TOOL_TEXT_PREVIEW_BYTES).to_owned();
+    if budget.is_some_and(|b| !b.persist) {
+        let truncated = zhuye_tools::result_budget::truncate_middle(&text, limit / 3);
+        let mut emitted = false;
+        *content = content
+            .drain(..)
+            .filter_map(|block| match block {
+                ContentBlock::Image { .. } => Some(block),
+                _ if !emitted => {
+                    emitted = true;
+                    Some(ContentBlock::text(truncated.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        return;
+    }
+    let preview = match budget {
+        Some(b) => {
+            let preview: String = text.chars().take(b.preview_chars).collect();
+            zhuye_protocol::truncate_str(&preview, MODEL_TOOL_TEXT_PREVIEW_BYTES.min(limit))
+                .to_owned()
+        }
+        None => zhuye_protocol::truncate_str(&text, MODEL_TOOL_TEXT_PREVIEW_BYTES).to_owned(),
+    };
     let workspace = workspace.to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         zhuye_tools::sandbox::write_spill_text(&workspace, &text)
@@ -916,7 +978,7 @@ mod tests {
             },
             ContentBlock::text("末尾"),
         ];
-        limit_model_tool_output(&mut content, workspace.path()).await;
+        limit_model_tool_output(&mut content, workspace.path(), None).await;
         let ContentBlock::Text { text: preview } = &content[0] else {
             panic!("缺少文本回执")
         };
@@ -934,12 +996,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_budget_without_persistence_preserves_both_ends() {
+        let workspace = tempfile::tempdir().unwrap();
+        let original = format!("起始{}末尾", "中".repeat(5000));
+        let mut content = vec![ContentBlock::text(original)];
+        let budget = zhuye_tools::result_budget::ResultBudget {
+            enabled: true,
+            max_inline_bytes: 3000,
+            preview_chars: 200,
+            persist: false,
+        };
+        limit_model_tool_output(&mut content, workspace.path(), Some(&budget)).await;
+        let ContentBlock::Text { text } = &content[0] else {
+            panic!("缺少文本回执")
+        };
+        assert!(text.starts_with("起始"));
+        assert!(text.ends_with("末尾"));
+        assert!(text.len() < 3100);
+        assert!(!workspace.path().join(".zhuye/spill").exists());
+    }
+
+    #[tokio::test]
     async fn failed_spill_reports_loss_without_claiming_readback() {
         let workspace = tempfile::tempdir().unwrap();
         let mut content = vec![ContentBlock::text(
             "x".repeat(MODEL_TOOL_TEXT_LIMIT_BYTES + 1),
         )];
-        limit_model_tool_output(&mut content, &workspace.path().join("missing")).await;
+        limit_model_tool_output(&mut content, &workspace.path().join("missing"), None).await;
         let ContentBlock::Text { text } = &content[0] else {
             panic!("缺少失败回执")
         };

@@ -212,6 +212,9 @@ pub struct HeadlessCommon {
     pub sandbox_writable: Vec<PathBuf>,
     /// v1.x:`[sandbox].allow_network`。
     pub sandbox_network: Option<bool>,
+    /// v1.x(tool-defer 门控插件,默认关):MCP 工具按需加载开关。
+    /// `bootstrap_normal` / `bootstrap_resumed` 据此设置 `AgentConfig`。
+    pub tool_defer_enabled: bool,
 }
 
 /// [`bootstrap_normal`] / [`bootstrap_resumed`] 的产物。
@@ -221,10 +224,38 @@ pub struct HeadlessSession {
     /// resume 分支回放进 thread 的历史消息数(普通分支为 0)。exec 用它
     /// 拼合成 reminder 文案;serve 忽略。
     pub prior_messages: usize,
+    /// v1.x:输入守恒对账 —— 崩溃窗口里未完成 turn 的输入条数。
+    /// `resumed_prompt` 据此在续跑提示中显式告知(永不自动重放)。
+    pub unsettled_inputs: usize,
     /// 运行时插件状态 —— exec / serve 用它在 submit 前展开
     /// `/plugin:ns:name args` 形式的 slash 命令(`expand_user_input`)。
     /// `HOME` 缺失或 plugins 目录不存在时 `Option` 内为 `None`。
     pub plugin_runtime: SharedPluginRuntime,
+}
+
+/// v1.x:models.dev 社区目录后台刷新(24h TTL,失败仅 debug 日志)。
+/// 审计改进:此前 `refresh_if_stale` 在框架内无任何调用方 —— 长期运行
+/// 的 exec/serve 会一直用内嵌快照或陈旧磁盘缓存。刷新在 detached task
+/// 里跑,**不阻塞启动**;双门控:
+/// - 模型为 mock(`ZHUYE_MODEL=mock` / spec 前缀 `mock/`)→ 跳过,
+///   离线测试零网络;
+/// - env `ZHUYE_MODELS_DEV_REFRESH=0` → 跳过(嵌入方总开关)。
+fn spawn_models_dev_refresh(model_spec: &str) {
+    let provider = model_spec.split_once('/').map_or(model_spec, |(p, _)| p);
+    let is_mock = provider == "mock" || model_spec.starts_with("mock");
+    if is_mock || std::env::var("ZHUYE_MODELS_DEV_REFRESH").as_deref() == Ok("0") {
+        return;
+    }
+    tokio::spawn(async move {
+        match zhuye_llm::refresh_if_stale().await {
+            Ok(true) => tracing::debug!("models.dev 目录已按 TTL 后台刷新"),
+            Ok(false) => {}
+            Err(e) => tracing::debug!(
+                error = %e,
+                "models.dev 目录后台刷新失败(离线可用,沿用快照/磁盘缓存)"
+            ),
+        }
+    });
 }
 
 /// 装配公共前半段:config → tracing → 工具注册表 → task manager →
@@ -479,6 +510,7 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
         tools,
         task_manager,
         cancel,
+        tool_defer_enabled: gates.tool_defer,
         workspace,
         model,
         watcher,
@@ -556,6 +588,8 @@ fn build_side_channel_factory(
                 None,
                 &cfg,
                 telemetry.clone(),
+                // side-channel 独立槽(其摘要请求无主前缀可复用,历史形态)。
+                Arc::new(parking_lot::RwLock::new(None)),
             )
             .ok_or_else(|| {
                 zhuye_core::SideChannelStartError::Factory(format!(
@@ -850,11 +884,14 @@ pub async fn bootstrap_normal(
         sandbox_default,
         sandbox_writable,
         sandbox_network,
+        tool_defer_enabled,
     } = common;
 
     // M4 bootstrap:agent 定义、skills、压缩器、记忆、prompt 构建器。
     let thread_id = ThreadId::new();
     let telemetry_sink = build_telemetry_sink(&initial_cfg);
+    let compact_prefix_slot: zhuye_core::config::CompactPrefixSlot =
+        Arc::new(parking_lot::RwLock::new(None));
     let m4 = bootstrap_m4(
         &workspace,
         &tools,
@@ -865,6 +902,7 @@ pub async fn bootstrap_normal(
         initial_cfg.compact.trigger_tokens,
         &initial_cfg,
         telemetry_sink.clone(),
+        compact_prefix_slot.clone(),
     )
     .expect("bootstrap_m4 must succeed for the normal (non-resume) path");
     let policy = Arc::new(initial_cfg.routing_policy_with(&model));
@@ -932,6 +970,9 @@ pub async fn bootstrap_normal(
         }
     }
 
+    // v1.x:models.dev 目录后台刷新(mock / 显式关闭时跳过;detached,
+    // 不阻塞启动)。
+    spawn_models_dev_refresh(&model);
     let mut cfg = AgentConfig::new(model.clone(), workspace.clone())
         .with_sandbox_default(sandbox_default)
         .with_sandbox_writable(sandbox_writable.clone())
@@ -959,12 +1000,31 @@ pub async fn bootstrap_normal(
         .with_effort_model_routes(initial_cfg.effort_model_routes())
         // v1.11 基建#11 / v1.x plan-mode:初始权限模式选择(纯函数见
         // `initial_permission_mode`,含 full_auto → Bubble 的安全基线注释)。
-        .with_initial_permission_mode(initial_permission_mode(args.full_auto, args.plan_mode));
+        .with_initial_permission_mode(initial_permission_mode(args.full_auto, args.plan_mode))
+        // v1.x:compact 主前缀槽与摘要器共享(摘要请求命中主前缀缓存)。
+        .with_compact_main_prefix_slot(compact_prefix_slot);
     cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
     // v1.x:prompt injection guard 注入(None = 关闭;子代理 factory
     // 自行读同一 config,这里只接主会话与 resume 路径)。
     cfg.prompt_guard = prompt_guard.clone();
     cfg.guard_stats = guard_stats.clone();
+    // v1.x(tool-defer 门控):MCP 工具按需加载开关。
+    cfg.tool_defer_enabled = tool_defer_enabled;
+    // v1.x:`[cache_warming]` 段 → 保温调度器设置(默认关闭,显式
+    // opt-in;quota / telemetry 句柄此时已就位,一并挂入)。
+    if let Some(section) = &initial_cfg.cache_warming {
+        cfg.enable_cache_warming(section.resolved());
+    }
+    // v1.x:`[tool_results]` 段 → 工具结果预算(超长输出落盘 + 信封)。
+    if let Some(section) = &initial_cfg.tool_results {
+        let resolved = section.resolved();
+        cfg.result_budget = Some(Arc::new(zhuye_tools::result_budget::ResultBudget {
+            enabled: true,
+            max_inline_bytes: resolved.max_inline_bytes,
+            preview_chars: resolved.preview_chars,
+            persist: resolved.persist,
+        }));
+    }
     // 侧通道复用主会话策略,避免独立执行绕过权限规则。
     let side_channel_driver = zhuye_core::side_channel::SideChannelDriver::new_with_context(
         zhuye_core::side_channel::SideChannelRegistry::new(),
@@ -1206,6 +1266,7 @@ pub async fn bootstrap_normal(
         tools,
         prior_messages: 0,
         plugin_runtime,
+        unsettled_inputs: 0,
     })
 }
 
@@ -1242,6 +1303,7 @@ pub async fn bootstrap_resumed(
         sandbox_default,
         sandbox_writable,
         sandbox_network,
+        tool_defer_enabled,
     } = common;
 
     let bundle = bootstrap_resume(thread_id_str).await?;
@@ -1250,6 +1312,8 @@ pub async fn bootstrap_resumed(
     // 与普通分支相同的 M4 装配:真实 skills 扫描 + 记忆 + 压缩器 + note
     // 落盘。`bootstrap_m4` 内部按 thread_id 续写同一 JSONL,与旧 resume
     // 的 `resume_recorder` 等价。
+    let compact_prefix_slot: zhuye_core::config::CompactPrefixSlot =
+        Arc::new(parking_lot::RwLock::new(None));
     let m4 = bootstrap_m4(
         &workspace,
         &tools,
@@ -1260,6 +1324,7 @@ pub async fn bootstrap_resumed(
         initial_cfg.compact.trigger_tokens,
         &initial_cfg,
         telemetry_sink.clone(),
+        compact_prefix_slot.clone(),
     )
     .expect("bootstrap_m4 must succeed for the resume path");
     let resume_recorder: Arc<dyn zhuye_protocol::RolloutRecorder> = m4
@@ -1280,6 +1345,8 @@ pub async fn bootstrap_resumed(
     );
     factory.set_telemetry(telemetry_sink.clone());
     factory.set_cancel(cancel.clone());
+    // v1.x:models.dev 目录后台刷新(resume 路径与 normal 同口径)。
+    spawn_models_dev_refresh(&model);
     let cfg = AgentConfig::new(model.clone(), workspace.clone())
         .with_sandbox_default(sandbox_default)
         .with_sandbox_writable(sandbox_writable.clone())
@@ -1298,13 +1365,47 @@ pub async fn bootstrap_resumed(
         // 初始思考强度。
         .with_context_window_overrides(initial_cfg.effective_context_window_overrides(&model))
         .with_initial_effort(initial_cfg.resolve_reasoning_effort())
-        .with_preload_messages(bundle.initial_messages.clone());
+        .with_preload_messages(bundle.initial_messages.clone())
+        // v1.x:compact 主前缀槽与摘要器共享(resume 同口径)。
+        .with_compact_main_prefix_slot(compact_prefix_slot);
+    // v1.x:Prompt Snapshot 激活 —— 快照 model 与当前模型一致时,后续
+    // system 按快照字节发送(跨重启前缀稳定,缓存不失效);代际失效
+    // (压缩 / 工具集 / prompt 切换)与重捕获由 model_call 管理。
+    if let Some((snap_model, snap_system)) = &bundle.prompt_snapshot
+        && *snap_model == model
+    {
+        cfg.prompt_snapshot
+            .write()
+            .replace(zhuye_core::config::PromptSnapshotSlot {
+                model: snap_model.clone(),
+                system_json: snap_system.clone(),
+                generation: cfg.current_cache_generation(),
+            });
+        tracing::info!(model = %snap_model, "prompt snapshot 已从会话记录恢复激活");
+    }
     // 与 normal 分支同权:权限三层装配(config > project > user)+ YOLO
     // 分类器。此前 resume 分支漏装,resume 会话会绕过权限规则。
     let mut cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
     // v1.x:prompt injection guard 注入(resume 路径与新会话一致)。
     cfg.prompt_guard = prompt_guard.clone();
     cfg.guard_stats = guard_stats.clone();
+    // v1.x(tool-defer 门控):MCP 工具按需加载开关(resume 同口径)。
+    cfg.tool_defer_enabled = tool_defer_enabled;
+    // v1.x:`[cache_warming]` 段 → 保温调度器设置(resume 路径与
+    // 新会话同口径)。
+    if let Some(section) = &initial_cfg.cache_warming {
+        cfg.enable_cache_warming(section.resolved());
+    }
+    // v1.x:`[tool_results]` 段 → 工具结果预算(resume 路径同口径)。
+    if let Some(section) = &initial_cfg.tool_results {
+        let resolved = section.resolved();
+        cfg.result_budget = Some(Arc::new(zhuye_tools::result_budget::ResultBudget {
+            enabled: true,
+            max_inline_bytes: resolved.max_inline_bytes,
+            preview_chars: resolved.preview_chars,
+            persist: resolved.persist,
+        }));
+    }
     factory.set_parent_config(cfg.clone());
     factory.set_workspace(cfg.current_workspace());
     factory.set_rollout_base(zhuye_rollout::path::default_base());
@@ -1501,6 +1602,7 @@ pub async fn bootstrap_resumed(
         thread,
         tools,
         prior_messages: bundle.initial_messages.len(),
+        unsettled_inputs: bundle.unsettled_inputs.len(),
         plugin_runtime,
     })
 }
@@ -1570,10 +1672,25 @@ pub fn expand_prompt_slash(prompt: &str) -> Option<Submission> {
 }
 
 /// 给 `bootstrap_resumed` 用的合成 prompt(与 exec 历史行为一致)。
-pub fn resumed_prompt(thread_id: &str, prior_messages: usize) -> String {
-    format!(
-        "<system-reminder>Resumed session {thread_id} ({prior_messages} prior messages)</system-reminder>\n\nContinue."
-    )
+/// v1.x:输入守恒扩展 —— `unsettled > 0` 时显式告知
+/// 「上次会话有输入未完成」,由用户决定是否重发(**永不自动重放**)。
+pub fn resumed_prompt_with_unsettled(
+    thread_id: &str,
+    prior_messages: usize,
+    unsettled: usize,
+) -> String {
+    let base = format!(
+        "<system-reminder>Resumed session {thread_id} ({prior_messages} prior messages)</system-reminder>"
+    );
+    let base = if unsettled > 0 {
+        format!(
+            "{base}\n<system-reminder>上次会话异常退出,有 {unsettled} 条输入未完成\
+             (处置记录缺失)。这些输入**不会自动重发**;如需继续,请重新描述你的请求。</system-reminder>"
+        )
+    } else {
+        base
+    };
+    format!("{base}\n\nContinue.")
 }
 
 /// 展开用户输入中的插件 slash 命令(`/plugin:ns:name args`)并构造

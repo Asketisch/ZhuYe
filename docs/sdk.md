@@ -184,7 +184,7 @@ stderr 是日志(不污染事件流)。类型判别符 snake_case。
   `interrupt`、`rewind`、`shutdown`、`tool_approval`、`steer`、
   `register_tools`、`tool_execution_response`,以及 plan / goal /
   permission / side-channel / guard-stats 等交互族。
-- **EventMsg(serve → 客户端)**:49 种 —— turn 生命周期
+- **EventMsg(serve → 客户端)**:55 种 —— turn 生命周期
   (`turn_started` / `turn_complete` / `turn_aborted`)、增量流
   (`agent_message_delta` / `thinking_delta`)、工具调用
   (`tool_call_begin` / `tool_call_args_delta` / `tool_call_end` /

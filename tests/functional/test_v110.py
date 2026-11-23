@@ -58,10 +58,15 @@ def test_V1_config_set_model_reasoning_effort_字段级(sandbox) -> None:
     run_cli(sandbox, "config", "set", "model.reasoning_effort", "Max", timeout=30)
     assert _read_config(sandbox)["model"]["reasoning_effort"] == "max"
 
+    # 新档位可写入并保持规范化值。
+    xhigh = run_cli(sandbox, "config", "set", "model.reasoning_effort", "XHigh", timeout=30)
+    assert xhigh.returncode == 0
+    assert _read_config(sandbox)["model"]["reasoning_effort"] == "xhigh"
+
     # 非法档位:非零退出 + 提示合法值清单。
     bad = run_cli(sandbox, "config", "set", "model.reasoning_effort", "extreme", timeout=30)
     assert bad.returncode != 0, f"非法档位应拒绝:{bad.stdout}"
-    assert "low|medium|high|max|ultra" in bad.stdout + bad.stderr
+    assert "low|medium|high|xhigh|max|ultra" in bad.stdout + bad.stderr
 
     # ls 可见;unset 清空。
     ls = run_cli(sandbox, "config", "ls", timeout=30)

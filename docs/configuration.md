@@ -52,6 +52,46 @@ reasoning_effort = "high"           # 思考强度:low|medium|high|max|ultra。
 `base_url`，如 LM Studio）；`endpoint = "ollama"` 的组还支持
 `keep_alive_secs` / `num_ctx` / `num_gpu` 三个本地推理专属字段。
 
+## Prompt cache 保温([cache_warming])
+
+空闲期 / 回合内以廉价重放刷新 provider prompt cache 的 TTL(默认关闭,
+保温是引擎自发花钱的行为,必须显式开启)。全部字段可选,缺省回落引擎
+默认:
+
+```toml
+[cache_warming]
+enabled = true                   # 默认 false
+min_expected_savings_usd = 0.05  # 期望节省低于此值(USD)不保温
+idle_probability = 0.15          # 空闲期延续概率(回合内恒为 1.0)
+ttl_secs = 300                   # 缓存 TTL 覆盖;缺省取请求各断点 TTL 的
+                                 # 最小值(默认配置 = 1h,ZHUYE_CACHE_TTL 可调)
+min_context_tokens = 1024        # 低于此规模不保温
+refresh_margin_secs = 10         # 在 TTL-边际 处触发(约 90% TTL)
+max_idle_window_secs = 1800      # 空闲保温最长窗口(30 分钟)
+max_turn_window_secs = 3600      # 回合内保温最长窗口(60 分钟)
+# force = true                   # 测试逃生门:跳过定价/命中观测门控
+                                 # (配合 mock provider;生产勿开)
+```
+
+语义要点:决策消费上次请求的**真实命中回执**(provider 没有缓存行为时
+自动跳过);状态经 `cache_warming` 事件可见(`warm_cached_tokens` 可与
+后续 `token_count.cached_tokens` 对照验证收益);保温花费计入配额窗口与
+telemetry(synthetic 标记),但不进会话 token 预算、不写 rollout。Anthropic
+显式 thinking(`budget_tokens`)的请求不可保温重放(API 要求
+`max_tokens > budget_tokens`)。热重载支持:改本段即生效(关闭即取消
+在飞保温)。
+
+## 工具结果预算([tool_results])
+
+宿主事件保留工具的原始结果；进入模型和会话记录的文本最多为 12 KiB，超限时默认保存到工作区的溢出目录并提供 `read` 路径。配置可设定更低的内联门槛和预览字符数；`persist = false` 时不保存全文，而是保留首尾并截断中间。
+
+```toml
+[tool_results]
+max_inline_bytes = 8000
+preview_chars = 2000
+persist = true
+```
+
 ## 从旧配置迁移（v1 → v2）
 
 v1 的固定接入段 `[anthropic]` / `[openai]` / `[ollama]` **仍可读入** ——
@@ -133,6 +173,7 @@ disallowed_tools  = ["web_search"]        # 工具黑名单:LLM 可见工具集�
 | `ZHUYE_HOME` | 数据目录，默认 `~/.zhuye` |
 | `ZHUYE_BIN` | SDK 去哪找 `zhuye` 二进制(查找顺序:`options.bin` → `ZHUYE_BIN` → 包内二进制 → PATH,见 [sdk.md](sdk.md)) |
 | `ZHUYE_MEMORY_BACKEND` | 记忆后端：默认 `markdown`（MEMORY.md 文件 + BM25 分节检索）；`=sqlite` 启用条目版本库（`memory.db` + FTS5 中文检索，MEMORY.md 退化为可编辑投影；首次打开自动幂等导入既有内容）。sqlite 模式下 compact 固化与后台文件整理暂禁用（自动写入待 M5b 经持久队列提供），新笔记带 workspace 归属、旧无归属笔记不再参加跨项目召回 |
+| `ZHUYE_MODELS_DEV_REFRESH` | models.dev 社区目录后台刷新开关:默认开启(exec/serve 启动时后台按 24h TTL 刷新,detached 不阻塞);`=0` 关闭。mock 模型恒跳过(离线零网络) |
 | `RUST_LOG` | 日志过滤，默认 `warn,zhuye=info` |
 
 其余环境变量散落在各 crate 里，源码里搜 `ZHUYE_` 前缀即可。

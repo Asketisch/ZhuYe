@@ -314,6 +314,38 @@ pub fn rate_cards(models: &[String]) -> Vec<RateCard> {
     models.iter().map(|m| rate_card(m)).collect()
 }
 
+// ── v1.x:prompt cache 保温(cache warming)分段单价 ─────────────────
+
+/// 保温决策用的分段单价(USD / **token**,注意不是 USD / 1M)。
+///
+/// 与 [`ModelPricing`] 倍率同源(`input_price × factor / 1M`),把决策
+/// 需要的四个绝对价一次给全,决策模块不再自行换算。`provider/` 前缀
+/// 容忍,与 [`pricing_for`] 同口径;未定价模型返回 `None`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WarmingPrices {
+    /// 非缓存输入单价。
+    pub input: f64,
+    /// 输出单价。
+    pub output: f64,
+    /// 缓存读取单价。
+    pub cache_read: f64,
+    /// 缓存写入单价。OpenAI 系为 0(无显式写入档):决策模块据此把
+    /// 「失效重读单价」回退为 [`WarmingPrices::input`](与 pi 的
+    /// `cacheMissCost = cacheWrite > 0 ? write : input` 同构)。
+    pub cache_write: f64,
+}
+
+/// 查某模型的保温分段单价。未定价模型返回 `None`(不编造数字)。
+pub fn warming_prices(model_id: &str) -> Option<WarmingPrices> {
+    let p = pricing_for(model_id)?;
+    Some(WarmingPrices {
+        input: p.input_price / 1_000_000.0,
+        output: (p.input_price * p.output_factor) / 1_000_000.0,
+        cache_read: (p.input_price * p.cache_read_factor) / 1_000_000.0,
+        cache_write: (p.input_price * p.cache_write_factor) / 1_000_000.0,
+    })
+}
+
 #[cfg(test)]
 mod rate_card_tests {
     use super::*;

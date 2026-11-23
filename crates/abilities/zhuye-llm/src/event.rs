@@ -59,6 +59,11 @@ pub enum ChatEvent {
     /// (属于 `input_tokens` 的子集);`cache_write_tokens` 是
     /// cache_creation 段(同样计入 `input_tokens`)。
     /// 不支持 prompt 缓存的 provider 上两者均为 0。
+    ///
+    /// **适配器契约**:`input_tokens` 必须是「本次 prompt 的全部输入」。
+    /// Anthropic 线缆只报未命中缓存的部分,**不含**上面两个分段 —— 适配层
+    /// 在发射本事件前折入(`zhuye_protocol::TokenUsage::fold_cache_segments`),
+    /// 让「子集」关系对引擎内所有消费者成立。
     Usage {
         input_tokens: u32,
         output_tokens: u32,

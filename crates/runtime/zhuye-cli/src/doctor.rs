@@ -433,7 +433,7 @@ fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value
             "weights": r.main.weights,
             "complexity": r.main.complexity.as_ref().map(|c| json!({
                 "low": c.low, "medium": c.medium, "high": c.high,
-                "max": c.max, "ultra": c.ultra,
+                "xhigh": c.xhigh, "max": c.max, "ultra": c.ultra,
             })),
         })),
         "compact": routing.map(|r| json!({ "primary": r.compact.primary, "fallbacks": r.compact.fallbacks })),

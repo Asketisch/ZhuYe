@@ -279,6 +279,22 @@ pub async fn handle_reload(
         }
     }
 
+    // v1.x:`[cache_warming]` 段变更 → 更新保温调度器设置(下一轮 fire
+    // 时生效;关闭即取消在飞保温任务)。此外任何配置重载都可能改动
+    // 工具清单 / 提示词(插件热挂载、MCP 增删)→ 统一 bump 缓存代际,
+    // 让保温候选在 fire 时失效重验。
+    if sections_changed.iter().any(|s| s == "cache_warming") {
+        let settings = new_cfg
+            .cache_warming
+            .as_ref()
+            .map_or_else(zhuye_llm::CacheWarmingSettings::default, |s| s.resolved());
+        agent_cfg.enable_cache_warming(settings);
+        tracing::info!("config reload: cache_warming updated");
+    }
+    if !sections_changed.is_empty() {
+        agent_cfg.bump_cache_generation();
+    }
+
     event_tx
         .send(event)
         .await
@@ -385,6 +401,11 @@ pub(crate) fn diff_sections(
     // v1.2 P1: `[goal]` 段变更 → reload 时重新生效(max_turns / 校验模型)。
     if old.goal != new.goal {
         out.push("goal".to_string());
+    }
+    // v1.x:`[cache_warming]` 段变更 → reload 时更新保温设置(下一轮
+    // fire 时生效;关闭即取消在飞保温任务)。
+    if old.cache_warming != new.cache_warming {
+        out.push("cache_warming".to_string());
     }
     // v1.x 功能 2:`[[subagents]]` 段变更 → reload 时重建 spec 注册
     // (用户增删改 subagent 定义)。`Vec<SubagentSpecConfig>` 走 PartialEq。

@@ -55,6 +55,57 @@ chain: both `anthropic/claude-*` and bare `claude-*` hit
 and so on. A same-named file in the user directory overrides any vendor
 layer wholesale.
 
+### Tool × Model Two-Level Catalog (v1.7)
+
+Since v1.7 a **two-level catalog** sits on top of the vendor layers
+(`sources.json` `tools` section + `src/catalog.rs`): level one is the
+**tool** (Claude Code / Codex / Kimi / Qwen / Gemini CLI / DeepSeek /
+GLM / Grok / MiniMax), level two holds the curated **model** variants
+of that tool. Sources come from the same collection
+(`asgeirtj/system_prompts_leaks`) but are pinned by a **separate
+`tools_collection` revision**, so drift detection stays independent.
+
+```text
+crates/abilities/zhuye-prompt/prompts/tools/
+├── claude-code/   # 13 model tiers: opus-4.6 … fable-5.2
+├── codex/         # 8 model/persona tiers: gpt-5.6, gpt-6-[astra|luna|sol], …
+├── kimi/          # kimi-2.6, kimi-3
+└── qwen/          # qwen3.6-plus, qwen3.8-max, qwen4.0-max
+```
+
+Key points:
+
+- **Variant id = file stem** (e.g. `claude-code-opus-4.6`), which is
+  also a valid `PromptSelection::Manual.profile` value; the catalog is
+  kept bidirectionally in sync with the `EMBEDDED_TOOL_PROMPTS`
+  registry in `catalog.rs` (test-locked).
+- **Curated English**: generic behavioral constraints keep their
+  original English wording; tool schemas, session residue (Session
+  context / CLAUDE.md / memory) and product-specific sections (Chrome
+  automation / artifacts / MCP lists) are stripped. Variants carry no
+  `tool.*` / `subagent.*` sections — tool descriptions and subagent
+  wording still come from the vendor and default layers.
+- **Single-file tools** (gemini-cli / deepseek / glm / grok / minimax)
+  reference their existing vendor layer via `profile_ref` without new
+  files; the GUI renders them as level-one leaf items.
+- **Resolution stacking**: selecting a variant stacks
+  `default → family layer (vendor) → variant`; a same-named user-layer
+  file overrides the embedded wording level by level
+  (`~/.zhuye/prompts/claude-code-opus-4.6.md` overrides that variant).
+- **Auto matches by model**: "auto" picks the best variant in the
+  catalog — exact `models` hit > longest `model_prefixes` hit, with
+  `evaluation:passed` preferred on ties, then catalog order;
+  normalized `claude-opus-4-8` ≡ `claude-opus-4.8`. Each family carries
+  a catch-all prefix (e.g. `claude-*` → sonnet-5.5,
+  `gpt-/o1/o3/o4/chatgpt-*` → codex gpt-5.6), aligned with the vendor
+  layer matching semantics; no hit falls back to default with a
+  `fallback_reason`.
+- **GUI consumption**: `PromptListEvent` gains `groups` (additive)
+  carrying the tool → variant grouping rendered as the desktop
+  two-level menu; the TUI `/prompt list` still uses the flat
+  `available` list (now including variant ids, so
+  `/prompt use <id>` selects directly).
+
 ## Matching Chain
 
 Before each request, `model_call` does a three-level fallback using the

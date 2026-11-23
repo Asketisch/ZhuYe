@@ -372,15 +372,24 @@ pub enum ThinkingConfig {
 /// `Ultra`,构成完整阶梯 `Low < Medium < High < Max < Ultra`
 /// (`PartialOrd` 按变体声明序比较,供能力表钳制取 `min`)。
 ///
-/// 不同模型族支持的最高档不同(qwen 系到 High、deepseek 到 Max、OpenAI
-/// 到 Ultra),由 [`crate::reasoning_effort::clamp_effort_for_model`] 在
-/// 发 wire 前按目标模型钳制 —— 本枚举只表达「调用方想要的强度」。
+/// xhigh 批次:在 High 与 Max 之间插入 `XHigh`(wire 词 `xhigh`,显式
+/// rename 避开 snake_case 的 `x_high`),阶梯变为
+/// `Low < Medium < High < XHigh < Max < Ultra`。qwen3.8 系等新厂商词表
+/// 的顶档 `xhigh` 由此获得真实档位,且线性阶梯语义不变。
+///
+/// 不同模型族支持的最高档不同(qwen 系到 High、qwen3.8 系到 XHigh、
+/// deepseek 到 Max、OpenAI 到 Ultra),由
+/// [`crate::reasoning_effort::clamp_effort_for_model`] 在发 wire 前按
+/// 目标模型钳制 —— 本枚举只表达「调用方想要的强度」。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    /// 高于 `high`、低于 `max` 的厂商档(qwen3.8 系顶档)。
+    #[serde(rename = "xhigh")]
+    XHigh,
     Max,
     Ultra,
 }
@@ -389,13 +398,14 @@ pub enum ReasoningEffort {
 ///
 /// 协议层独立枚举是为了避免 `protocol → llm` 反向依赖;`submission_loop`
 /// / `model_call` 是**唯一**需要该转换的地方,集中在 `From` impl 便于
-/// 协议字段扩展(加 `Max` / `Ultra` 等)时单点同步。
+/// 协议字段扩展(加 `XHigh` / `Max` / `Ultra` 等)时单点同步。
 impl From<zhuye_protocol::ReasoningEffortMirror> for ReasoningEffort {
     fn from(m: zhuye_protocol::ReasoningEffortMirror) -> Self {
         match m {
             zhuye_protocol::ReasoningEffortMirror::Low => ReasoningEffort::Low,
             zhuye_protocol::ReasoningEffortMirror::Medium => ReasoningEffort::Medium,
             zhuye_protocol::ReasoningEffortMirror::High => ReasoningEffort::High,
+            zhuye_protocol::ReasoningEffortMirror::XHigh => ReasoningEffort::XHigh,
             zhuye_protocol::ReasoningEffortMirror::Max => ReasoningEffort::Max,
             zhuye_protocol::ReasoningEffortMirror::Ultra => ReasoningEffort::Ultra,
         }

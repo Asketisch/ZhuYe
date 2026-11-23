@@ -228,6 +228,50 @@ pub struct AgentConfig {
     /// initial spec(「简单任务用快模型、复杂任务用旗舰模型」);空表 =
     /// 不启用(纯 effort 档位,模型不变)。
     pub effort_model_routes: Arc<RwLock<HashMap<ReasoningEffortMirror, String>>>,
+    /// v1.x:prompt cache 保温(cache warming)调度器。常驻(默认
+    /// disabled,全部行为 no-op);`config.toml` `[cache_warming]
+    /// enabled = true` / `AgentConfig::enable_cache_warming` 开启。
+    /// 候选槽由 `model_call` 喂,turn 边界排程 —— 见
+    /// [`crate::cache_warming`] 模块文档(零污染不变式)。
+    pub cache_warming: Arc<crate::cache_warming::CacheWarmingScheduler>,
+    /// v1.x:缓存代际计数器。任何改变下一请求 wire 前缀的变更
+    /// (rewind / compact / model / effort / tools / prompt 切换 /
+    /// 配置重载 / 远程工具注册)都 [`Self::bump_cache_generation`]
+    /// 一次;保温调度器 fire 时比对候选代际,不一致即视为前缀过期。
+    pub cache_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// v1.x:会话级模型步号计数器(每次 `model_call` 入口 +1)。供
+    /// rapid-refill 熔断器(见 [`Self::compact_refill`])等需要跨 turn
+    /// 单调步号的机制取值。
+    pub model_step_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// v1.x:工具结果预算(超长输出落盘 + 信封替换)。`None`(默认,
+    /// 未接线)= 历史 no-op;exec bootstrap 按 `[tool_results]` 配置注入。
+    /// 工具执行节点在发送宿主事件后应用于模型上下文。
+    pub result_budget: Option<Arc<zhuye_tools::result_budget::ResultBudget>>,
+    /// v1.x(tool-defer 门控插件,默认关):MCP 工具按需加载。开启后
+    /// MCP source 工具不下发完整 schema,只以目录公告进入上下文,模型
+    /// 经 `deferred_call` 调用(queue 派发前展开成真实调用,审批照走)。
+    pub tool_defer_enabled: bool,
+    /// v1.x:compact 摘要请求的主循环前缀槽(最近一次成功请求的
+    /// system + 工具目录)。compact 运行在 pre_loop,摘要器读本槽使
+    /// 摘要请求命中主前缀缓存(带 cache_skip_write)。`None` = 尚无
+    /// 成功请求(摘要器回落历史形态)。
+    pub compact_main_prefix: CompactPrefixSlot,
+    /// v1.x:Prompt Snapshot 激活槽(借鉴同类 agent 的 prompt-snapshot 做法)。`Some`
+    /// 且校验通过(model 一致 + 代际一致)时,`model_call` 的 system 按
+    /// 快照字节发送 —— 跨重启 / 跨升级已发送前缀字节不变,缓存不因重新
+    /// 渲染而失效。捕获:本进程首个成功模型调用后;失效:代际 bump
+    /// (压缩 / 工具集 / prompt 切换等)或模型切换 → 下一成功调用重捕获。
+    /// **冻结语义(诚实标注)**:快照冻结了 system 内的记忆 / todo 注入,
+    /// 激活期间的新演化在快照失效后可见(resume 会话的已知折衷)。
+    pub prompt_snapshot: Arc<parking_lot::RwLock<Option<crate::config::agent::PromptSnapshotSlot>>>,
+    /// v1.x(tool-defer):目录公告指纹 —— 目录(名字集合)变化才重新
+    /// 公告(append-only 尾部追加;缓存友好)。`None` = 尚未公告过。
+    pub deferred_dir_announced: Arc<parking_lot::Mutex<Option<u64>>>,
+    /// v1.x:压缩 rapid-refill 熔断守卫(会话级,跨 turn 共享)。
+    /// 压缩后 ≤3 个模型步内再次触发压缩视为 refill,连续 3 次 → 收口
+    /// 当前 turn(结构化错误 `compact_rapid_refill`);窗口内的前几次
+    /// 跳过压缩并注入提醒。手动 `/compact`(force)绕过守卫。
+    pub compact_refill: Arc<parking_lot::Mutex<zhuye_compact::RapidRefillGuard>>,
 }
 
 impl Default for AgentConfig {
@@ -236,8 +280,38 @@ impl Default for AgentConfig {
     }
 }
 
+/// v1.x:compact 主前缀槽类型(摘要请求命中主前缀缓存)。
+pub type CompactPrefixSlot =
+    Arc<parking_lot::RwLock<Option<(zhuye_llm::SystemBlocks, Vec<zhuye_llm::ToolSpec>)>>>;
+
+/// v1.x:Prompt Snapshot 激活槽内容。`generation` 为捕获时的缓存代际,
+/// 与 [`AgentConfig::current_cache_generation`] 比对判定失效。
+#[derive(Debug, Clone)]
+pub struct PromptSnapshotSlot {
+    /// 快照适用的完整 model spec。
+    pub model: String,
+    /// system 块数组(`zhuye_llm::SystemBlocks` 序列化)。
+    pub system_json: serde_json::Value,
+    /// 捕获时的缓存代际。
+    pub generation: u64,
+}
+
 impl AgentConfig {
     pub fn new(model: impl Into<String>, workspace: impl Into<PathBuf>) -> Self {
+        // 缓存代际与保温调度器共享同一 Arc(bump 与比对永不分叉);
+        // 调度器默认 disabled,父令牌与 cancel 字段同一实例(Shutdown
+        // 级联取消保温任务)。
+        let cancel = CancellationToken::new();
+        let cache_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cache_warming = Arc::new(crate::cache_warming::CacheWarmingScheduler::new(
+            zhuye_llm::CacheWarmingSettings::default(),
+            cancel.clone(),
+            Arc::clone(&cache_generation),
+        ));
+        let model_step_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let compact_refill = Arc::new(parking_lot::Mutex::new(
+            zhuye_compact::RapidRefillGuard::new(),
+        ));
         Self {
             prompt_library: Arc::new(RwLock::new(Arc::new(
                 zhuye_prompt::PromptLibrary::embedded(),
@@ -249,7 +323,7 @@ impl AgentConfig {
             inherited_approval_mode: None,
             workspace: Arc::new(RwLock::new(workspace.into())),
             worktree: Arc::new(RwLock::new(None)),
-            cancel: CancellationToken::new(),
+            cancel,
             m4: None,
             approvals: false,
             approval_context: ApprovalContext::default(),
@@ -281,6 +355,15 @@ impl AgentConfig {
             sandbox_writable: Vec::new(),
             sandbox_network: None,
             effort_model_routes: Arc::new(RwLock::new(HashMap::new())),
+            cache_generation,
+            cache_warming,
+            model_step_counter,
+            compact_refill,
+            result_budget: None,
+            tool_defer_enabled: false,
+            deferred_dir_announced: Arc::new(parking_lot::Mutex::new(None)),
+            prompt_snapshot: Arc::new(parking_lot::RwLock::new(None)),
+            compact_main_prefix: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -296,6 +379,43 @@ impl AgentConfig {
     /// `zhuye-config` reload 路径,直接调用会绕过 diff / event 通知。
     pub fn set_model(&self, new_spec: impl Into<String>) {
         *self.model.write() = new_spec.into();
+    }
+
+    /// v1.x:缓存代际 +1,返回新代际值。任何改变下一请求 wire 前缀的
+    /// 变更(rewind / compact / model / effort / tools / prompt 切换 /
+    /// 配置重载 / 远程工具注册)都必须调用 —— 保温调度器 fire 时比对
+    /// 候选代际,不一致即弃(见 [`crate::cache_warming`])。
+    pub fn bump_cache_generation(&self) -> u64 {
+        self.cache_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
+    /// v1.x:当前缓存代际快照。
+    pub fn current_cache_generation(&self) -> u64 {
+        self.cache_generation
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// v1.x:以外部槽替换 compact 主前缀槽(exec bootstrap 在 m4 构建
+    /// 时创建槽并在此共享,使摘要器与引擎读写同一份)。
+    pub fn with_compact_main_prefix_slot(mut self, slot: CompactPrefixSlot) -> Self {
+        self.compact_main_prefix = slot;
+        self
+    }
+
+    /// v1.x:开启 / 更新 prompt cache 保温设置。`quota_tracker` /
+    /// `telemetry` 若已装配则一并挂到调度器(保温花费计同一配额窗口、
+    /// model-io 落 synthetic 标记记录)。`enabled = false` 即关闭
+    /// (同时取消在飞保温任务)。
+    pub fn enable_cache_warming(&self, settings: zhuye_llm::CacheWarmingSettings) {
+        self.cache_warming.update_settings(settings);
+        if let Some(q) = &self.quota_tracker {
+            self.cache_warming.set_quota(Arc::clone(q));
+        }
+        if let Some(t) = &self.telemetry {
+            self.cache_warming.set_telemetry(Arc::clone(t));
+        }
     }
 
     /// 当前会话的 `PermissionMode` 快照。

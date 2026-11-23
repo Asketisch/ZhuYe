@@ -29,6 +29,8 @@ pub mod plan_approval;
 pub mod queue;
 pub mod registry;
 pub mod remote;
+/// v1.x:工具结果预算 —— 超长输出落盘 + 信封替换(三层预算)。
+pub mod result_budget;
 pub mod sandbox;
 pub mod sanitize;
 pub mod spec;

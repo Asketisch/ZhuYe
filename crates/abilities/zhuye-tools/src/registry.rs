@@ -441,6 +441,21 @@ impl ToolRegistry {
         count
     }
 
+    /// v1.x(tool-defer 门控):MCP source 工具名清单(排序)。开启
+    /// 按需加载后,这批工具不下发完整 schema,只进目录公告;模型经
+    /// `deferred_call` 调用(queue 派发前展开成真实调用)。
+    pub fn deferred_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .tools
+            .read()
+            .iter()
+            .filter(|(_, (s, _))| matches!(s, ToolSource::Mcp))
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
     /// 为每个已注册工具构建一个 `ToolSpec`(M2 把这些传给 `ChatRequest.tools`)。
     pub fn list_specs(&self) -> Vec<ToolSpec> {
         self.tools
