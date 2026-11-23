@@ -891,6 +891,9 @@ pub async fn submission_loop(
                                     cached_tokens: final_state.total_usage.cached_tokens,
                                     cache_write_tokens: final_state.total_usage.cache_write_tokens,
                                     total_tokens: final_state.total_usage.total_tokens,
+                                    // v1.x:标记本条为**回合累计** —— 消费方据此避免
+                                    // 与逐次调用的快照重复累计(否则会话总量与费用翻倍)。
+                                    turn_total: true,
                                     // v1.x S4:用当前 model spec + total_usage 算
                                     // per-turn USD cost;model 不在 pricing 表里
                                     // (未知 / 本地无标价的 model) → None,TUI
