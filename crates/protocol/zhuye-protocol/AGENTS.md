@@ -28,6 +28,7 @@
 - **带 action 载荷的 `Op` 变体拆独立模块**：`PromptCommand` 的 `PromptAction` / `PromptSelection` 定义在 `src/op_prompt.rs`，应答事件体（`PromptList` / `PromptSwitched`）在 `event_msg` 域 —— 既守住「枚举体外定义」的禁止事项，也让 `check_docs` 不误判变体。新增同类变体照此办理。
 - **门禁命令**：`./scripts/release_sdk.sh check_docs`。协议文档落后于源码，会在 `check` / `tag` 发布前直接失败。
 - **覆盖矩阵**：新增或移除协议能力时同步 `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表。
+- **`TokenUsage` 的不变式**（`src/event_msg/turn.rs`）：`input_tokens` 是「本次 prompt 的全部输入」，`cached_tokens` / `cache_write_tokens` 都是它的**子集**，`total_tokens = input_tokens + output_tokens`。Anthropic 线缆的 `input_tokens` 不含缓存分段，由 provider 适配层在上报前折入（`TokenUsage::fold_cache_segments`）。读取历史 rollout 时用 `TokenUsage::repair_unfolded_cache_segments` 兼容未折入的旧记录（特征：缓存分段之和 > `input_tokens`；幂等）。改动任何 usage 字段语义前，先确认 `zhuye-llm` 的适配器、`zhuye-rollout` 的聚合器与 `pricing::price` 三处口径一致。
 
 ## 禁止事项
 

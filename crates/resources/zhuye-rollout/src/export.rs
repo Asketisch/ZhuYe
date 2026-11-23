@@ -222,6 +222,8 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
                 if let Some(m) = &model {
                     out.push_str(&format!("- model: {m}\n"));
                 }
+                // 旧口径修复:与 `session_stats` 同源,保证导出的数字与统计一致。
+                let usage = usage.repair_unfolded_cache_segments();
                 out.push_str(&format!("- input: {}\n", usage.input_tokens));
                 out.push_str(&format!("- output: {}\n", usage.output_tokens));
                 out.push_str(&format!("- cached: {}\n", usage.cached_tokens));

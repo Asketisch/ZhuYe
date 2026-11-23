@@ -47,20 +47,26 @@ pub struct TurnRewoundEvent {
 
 /// Token 用量快照。镜像 `zhuye-llm` 的 `ChatEvent::Usage`。
 ///
-/// **Token 计费口径(M8)**:`input_tokens` 是 LLM 上报的原始 `input`
-/// 字段(Anthropic 的 `input_tokens` 已折入 `cache_creation_input_tokens`
-/// 这段子片段)。`cached_tokens` 是 `cache_read_input_tokens` 折扣子片段,
+/// **Token 计费口径(M8)**:`input_tokens` 是本次 prompt 的**全部**输入
+/// token,含 `cached_tokens` / `cache_write_tokens` 两个子片段。
+/// `cached_tokens` 是 `cache_read_input_tokens` 折扣子片段,
 /// 是 `input_tokens` 的一个**子集**,而非累加。`cache_write_tokens` 是
 /// `cache_creation_input_tokens` 子片段,同样是 `input_tokens` 的子集。
 /// 计费请使用 `pricing::price(model, usage)`,它会把四段按各自的倍率
 /// 分摊。
+///
+/// **provider 方言归一**:Anthropic 线缆的 `input_tokens` 只报「既未从
+/// 缓存读出、也未为缓存写入」的部分,**不含**上面两个缓存分段,与本契约
+/// 相反。provider 适配层负责在上报前折入(见
+/// [`TokenUsage::fold_cache_segments`]),引擎内一律按本契约的「子集」
+/// 口径消费 —— 否则 `cached > input` 会让缓存命中率算出 > 100% 的荒谬值。
 ///
 /// `total_tokens = input_tokens + output_tokens` 对应线上可计费数量,
 /// **故意保持与 M7 一致**;不要把 `cache_write_tokens` 或 `cached_tokens`
 /// 加进去(否则会重复计费)。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
-    /// 输入 token 数(LLM 上报的原始 input,含 `cached_tokens` /
+    /// 输入 token 数(本次 prompt 的全部输入,含 `cached_tokens` /
     /// `cache_write_tokens` 两段子片段)。
     pub input_tokens: u32,
     /// 输出 token 数。
@@ -86,6 +92,44 @@ impl TokenUsage {
             cached_tokens: cached,
             cache_write_tokens: 0,
             total_tokens: input + output,
+        }
+    }
+
+    /// 把两个缓存分段折入 `input_tokens`,得到「本次 prompt 的全部输入」。
+    ///
+    /// 供 provider 适配层在 Anthropic 方言(线缆 `input_tokens` 不含缓存
+    /// 分段)上报前归一口径使用 —— 折入后 `cached` / `cache_write` 才是
+    /// `input_tokens` 的真子集。
+    pub fn fold_cache_segments(input: u32, cached: u32, cache_write: u32) -> u32 {
+        input.saturating_add(cached).saturating_add(cache_write)
+    }
+
+    /// 旧口径修复:把**未折入**的缓存分段补进 `input_tokens`。
+    ///
+    /// 旧版 Anthropic 适配器原样透传线缆值,落盘的历史记录里
+    /// `input_tokens` 不含缓存分段 —— 特征是**缓存分段之和大于
+    /// `input_tokens`**。此方法在该特征成立时补齐并重算 `total_tokens`;
+    /// 已折入的新记录满足 `cached + cache_write ≤ input_tokens`,不会被
+    /// 二次补齐(幂等)。
+    ///
+    /// 仅供读取历史 rollout 的兼容路径使用;新记录一律走
+    /// [`TokenUsage::fold_cache_segments`]。
+    pub fn repair_unfolded_cache_segments(&self) -> Self {
+        let segments = self.cached_tokens.saturating_add(self.cache_write_tokens);
+        if segments <= self.input_tokens {
+            return self.clone();
+        }
+        let input = Self::fold_cache_segments(
+            self.input_tokens,
+            self.cached_tokens,
+            self.cache_write_tokens,
+        );
+        Self {
+            input_tokens: input,
+            output_tokens: self.output_tokens,
+            cached_tokens: self.cached_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            total_tokens: input.saturating_add(self.output_tokens),
         }
     }
 }
@@ -121,4 +165,74 @@ pub enum AbortReason {
     },
     /// 会话关闭(`Op::Shutdown`)导致中止(当前引擎未产出该值,保留作协议兼容)。
     Shutdown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fold_cache_segments_makes_cached_a_subset_of_input() {
+        // Anthropic 线缆:input=122 只报未命中缓存的部分,cache_read=7440。
+        let input = TokenUsage::fold_cache_segments(122, 7440, 0);
+        assert_eq!(input, 7562);
+        assert!(7440 <= input, "缓存读分段必须是 input 的子集");
+    }
+
+    #[test]
+    fn repair_unfolded_cache_segments_folds_legacy_records() {
+        // 旧口径记录:input 不含缓存分段(缓存分段之和 > input 是特征)。
+        let legacy = TokenUsage {
+            input_tokens: 122,
+            output_tokens: 136,
+            cached_tokens: 7440,
+            cache_write_tokens: 0,
+            total_tokens: 258,
+        };
+        let fixed = legacy.repair_unfolded_cache_segments();
+        assert_eq!(fixed.input_tokens, 7562);
+        assert_eq!(fixed.total_tokens, 7698, "total 应重算为 input + output");
+        assert_eq!(fixed.cached_tokens, 7440);
+    }
+
+    #[test]
+    fn repair_unfolded_cache_segments_is_idempotent() {
+        // 已折入的新记录:缓存分段之和 ≤ input → 不再补齐。
+        let folded = TokenUsage {
+            input_tokens: 7562,
+            output_tokens: 136,
+            cached_tokens: 7440,
+            cache_write_tokens: 0,
+            total_tokens: 7698,
+        };
+        assert_eq!(folded.repair_unfolded_cache_segments(), folded);
+        // 连续两次修复结果一致(幂等)。
+        assert_eq!(
+            legacy_usage().repair_unfolded_cache_segments(),
+            legacy_usage().repair_unfolded_cache_segments()
+        );
+    }
+
+    #[test]
+    fn repair_unfolded_cache_segments_keeps_normal_records_untouched() {
+        // OpenAI 方言:prompt_tokens 本就含 cached → 缓存分段之和 ≤ input。
+        let openai = TokenUsage {
+            input_tokens: 1000,
+            output_tokens: 200,
+            cached_tokens: 250,
+            cache_write_tokens: 0,
+            total_tokens: 1200,
+        };
+        assert_eq!(openai.repair_unfolded_cache_segments(), openai);
+    }
+
+    fn legacy_usage() -> TokenUsage {
+        TokenUsage {
+            input_tokens: 122,
+            output_tokens: 136,
+            cached_tokens: 7440,
+            cache_write_tokens: 0,
+            total_tokens: 258,
+        }
+    }
 }
