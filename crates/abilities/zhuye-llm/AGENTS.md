@@ -52,6 +52,13 @@
 - **调度器不在这里**:zhuye-core 的 `CacheWarmingScheduler` 管候选槽 / 单飞 / 代际失效 / 零污染不变式;本模块不知道引擎状态的存在,表驱动单测完全离线。
 - `ModelClient::warming_replayable` 是保温重放可行性的 provider 判定点:默认 `true`;**Anthropic override 为「显式 thinking(`Enabled{budget_tokens}`)不可重放」**(API 要求 `max_tokens > budget_tokens`,1-token 重放会被拒绝)。新增 provider 若 wire 形态里有与 `max_tokens` 派生 / 约束相关的缓存键字段,必须同样 override。
 
+### 6. usage 口径归一:provider 必须把缓存分段折入 `input_tokens`
+
+- **协议不变式**:`ChatEvent::Usage.input_tokens` 是「本次 prompt 的全部输入」,`cached_tokens`(cache_read)与 `cache_write_tokens`(cache_creation)都是它的**子集**,不是并列项。引擎内所有消费者(计价、缓存命中率、上下文占用、压缩触发)都按这个不变式写。
+- **Anthropic 线缆相反**:它的 `usage.input_tokens` 只报「既未从缓存读出、也未为缓存写入」的部分,**不含**两个缓存分段。原样透传会让 `cached > input`,后果是缓存命中率算出 > 100%(真实案例 1052%)、`pricing::price` 的 `non_cached` 饱和到 0(新鲜输入按缓存价计费)、`total_tokens` 与上下文占用系统性低报、压缩几乎永不触发。
+- **适配层义务**:Anthropic 适配器在发射 `ChatEvent::Usage` 前调用 `zhuye_protocol::TokenUsage::fold_cache_segments(raw_input, cached, cache_write)` 折入(见 `src/providers/anthropic.rs`);OpenAI 兼容 / Responses 的 `prompt_tokens` 本就含 cached,无需折入;Ollama / mock 无缓存段。
+- **新增 provider 的同步点**:线缆的 `input_tokens` 若**不含**缓存分段,必须在发射前折入,并补一条断言「`cached ≤ input`」的回归测试。
+
 ## 核心文件导航
 
 | 文件 | 一句话职责 |
@@ -89,6 +96,7 @@
 - 不得把 provider 身份退化成裸字符串比较。
 - 不得在 mock provider 里「顺手」加真实网络调用,也不得把固定回复改成不带标记的文案。
 - 不得把 provider 专属的凭据解析逻辑复制到 CLI 层 —— CLI 只做读写。
+- **不得原样透传线缆的 `input_tokens`** —— 若该 provider 的线缆口径不含缓存分段,必须先折入再上报(见本地契约 6)。
 
 ## 深入阅读
 

@@ -277,6 +277,10 @@ impl StatsAccumulator {
                     let key = model
                         .or_else(|| file_meta_model.clone())
                         .unwrap_or_default();
+                    // 旧口径修复:旧版 Anthropic 适配器原样透传线缆值,落盘
+                    // 记录的 `input` 不含缓存分段(特征 = 缓存分段之和 > input)。
+                    // 此处补齐并重算 total;已折入的新记录不受影响(幂等)。
+                    let usage = usage.repair_unfolded_cache_segments();
                     self.input_tokens = self.input_tokens.saturating_add(usage.input_tokens as u64);
                     self.output_tokens = self
                         .output_tokens
@@ -548,6 +552,46 @@ mod tests {
         assert_eq!(m.calls, 1);
         assert_eq!(m.total_tokens, 15);
         assert_eq!(m.provider, None);
+    }
+
+    #[test]
+    fn session_stats_repairs_legacy_unfolded_cache_segments() {
+        // 旧口径记录(旧版 Anthropic 适配器原样透传线缆值):input 不含缓存
+        // 分段 —— 特征是缓存分段之和 > input。聚合时必须补齐,否则缓存
+        // 命中率会算出 > 100%(真实案例:41486 / 3942 = 1052%)。
+        let sid = ThreadId::new();
+        let legacy = format!(
+            r#"{{"type":"token_count","turn_id":"{}","usage":{{"input_tokens":122,"output_tokens":136,"cached_tokens":7440,"cache_write_tokens":0,"total_tokens":258}},"cost_usd":null,"model":"anthropic/claude","provider":"anthropic","at":"2026-01-01T00:00:00Z"}}"#,
+            TurnId::new()
+        );
+        let lines = vec![meta_line(sid, "anthropic/claude"), legacy];
+        let tmp = write_session(sid, &lines);
+        let stats = session_stats(tmp.path(), sid).expect("session should be found");
+
+        // 补齐后 input = 122 + 7440 = 7562,total = 7562 + 136 = 7698。
+        assert_eq!(stats.input_tokens, 7562);
+        assert_eq!(stats.cached_tokens, 7440);
+        assert_eq!(stats.total_tokens, 7698);
+        assert!(stats.cached_tokens <= stats.input_tokens);
+        // 命中率落在 [0,1],不再是 60 倍。
+        let rate = stats.cache_hit_rate().expect("input 非零");
+        assert!(rate <= 1.0, "命中率不得 > 100%,got {rate}");
+    }
+
+    #[test]
+    fn session_stats_keeps_folded_records_untouched() {
+        // 已折入的新记录:缓存分段之和 ≤ input → 聚合不得二次补齐。
+        let sid = ThreadId::new();
+        let folded = format!(
+            r#"{{"type":"token_count","turn_id":"{}","usage":{{"input_tokens":7562,"output_tokens":136,"cached_tokens":7440,"cache_write_tokens":0,"total_tokens":7698}},"cost_usd":null,"model":"anthropic/claude","provider":"anthropic","at":"2026-01-01T00:00:00Z"}}"#,
+            TurnId::new()
+        );
+        let lines = vec![meta_line(sid, "anthropic/claude"), folded];
+        let tmp = write_session(sid, &lines);
+        let stats = session_stats(tmp.path(), sid).expect("session should be found");
+
+        assert_eq!(stats.input_tokens, 7562);
+        assert_eq!(stats.total_tokens, 7698);
     }
 
     #[test]

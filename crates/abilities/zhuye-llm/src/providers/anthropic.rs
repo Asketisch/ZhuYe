@@ -368,18 +368,19 @@ struct StreamState {
     finished: bool,
     /// 当前 content block 是否为 thinking 块。
     in_thinking: bool,
-    /// 累计 input tokens(取自 `message_start.message.usage.input_tokens`)。
-    /// 注意:Anthropic 的 `input_tokens` 已包含
-    /// `cache_creation_input_tokens` 子段。
+    /// 线缆原始 input tokens(取自 `message_start.message.usage.input_tokens`)。
+    /// **注意**:Anthropic 只报「既未从缓存读出、也未为缓存写入」的部分,
+    /// **不含**下面两个缓存分段;发射 `ChatEvent::Usage` 时才折入
+    /// (见 `fold_cache_segments`)。
     input_tokens: u32,
     /// 累计 output tokens(由 `message_delta.usage.output_tokens` 更新)。
     output_tokens: u32,
     /// 已缓存 input tokens(取自 `message_start.message.usage.cache_read_input_tokens`)。
-    /// `input_tokens` 的子集(cache_read 折扣段)。
+    /// 缓存读折扣段;折入后是 `input_tokens` 的子集。
     cached_tokens: u32,
     /// M8:cache_creation input tokens(取自
     /// `message_start.message.usage.cache_creation_input_tokens`)。
-    /// `input_tokens` 的子集(cache_write 计费段)。
+    /// 缓存写计费段;折入后是 `input_tokens` 的子集。
     cache_write_tokens: u32,
     /// Usage 事件是否已发出(我们在 message_stop 时统一发一次)。
     usage_emitted: bool,
@@ -577,8 +578,16 @@ fn parse_sse_event(event: &str, data: &str, state: &mut StreamState) -> Vec<Chat
             }
             // 在 message_delta 阶段发出最终的 Usage 事件(message_stop 紧随其后)。
             if !state.usage_emitted {
+                // Anthropic 线缆的 `input_tokens` **不含**两个缓存分段,而引擎
+                // 契约要求 `cached` / `cache_write` 是 `input_tokens` 的子集
+                // —— 折入后再上报,否则 `cached > input` 会让缓存命中率算出
+                // > 100% 的荒谬值,计价与上下文占用也会一并低报。
                 out.push(ChatEvent::Usage {
-                    input_tokens: state.input_tokens,
+                    input_tokens: zhuye_protocol::TokenUsage::fold_cache_segments(
+                        state.input_tokens,
+                        state.cached_tokens,
+                        state.cache_write_tokens,
+                    ),
                     output_tokens: state.output_tokens,
                     cached_tokens: state.cached_tokens,
                     cache_write_tokens: state.cache_write_tokens,

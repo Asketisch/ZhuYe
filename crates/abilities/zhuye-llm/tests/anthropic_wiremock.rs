@@ -88,9 +88,13 @@ async fn anthropic_happy_path_parses_sse() {
             output_tokens,
             cached_tokens,
             cache_write_tokens,
-        } if *input_tokens == 5 && *output_tokens == 2 && *cached_tokens == 2 && *cache_write_tokens == 0)
+        } if *input_tokens == 7 && *output_tokens == 2 && *cached_tokens == 2 && *cache_write_tokens == 0)
     });
-    assert!(saw_usage, "expected Usage(5,2,2,0) in {events:?}");
+    assert!(
+        saw_usage,
+        "expected Usage(7,2,2,0) — 线缆 input_tokens(5) 不含 cache_read 段,\
+         发射前折入为 5+2=7;got {events:?}"
+    );
     assert!(matches!(events.last(), Some(ChatEvent::MessageStop)));
 }
 
@@ -315,14 +319,15 @@ async fn anthropic_parses_cache_creation_input_tokens() {
             output_tokens,
             cached_tokens,
             cache_write_tokens,
-        } if *input_tokens == 12
+        } if *input_tokens == 22
             && *output_tokens == 2
             && *cached_tokens == 3
             && *cache_write_tokens == 7)
     });
     assert!(
         saw_usage,
-        "expected Usage(12,2,3,7) — cache_creation_input_tokens should surface as cache_write_tokens; got {events:?}"
+        "expected Usage(22,2,3,7) — 线缆 input_tokens(12) 不含两个缓存分段,\
+         发射前折入为 12+3+7=22,cache_creation_input_tokens 应作为 cache_write_tokens; got {events:?}"
     );
 }
 
