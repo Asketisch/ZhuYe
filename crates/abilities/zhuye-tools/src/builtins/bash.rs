@@ -75,7 +75,7 @@ fn shell_quote(path: &Path) -> String {
 /// 需要真正的 shell 解析才能确定 argv,而"解析差异 = 绕过"是这类判定的
 /// 经典坑。空 vec 让调用方回落 `Prompt`(要审批),不会误放行。
 fn naive_argv(segment: &str) -> Vec<String> {
-    if segment.contains(['\'', '"', '`']) || segment.contains("$(") {
+    if segment.contains(['\'', '"', '`', '$', '\\', '<', '>', '(', ')', '{', '}']) {
         return Vec::new();
     }
     segment
@@ -325,6 +325,11 @@ impl Tool for BashTool {
             .unwrap_or(120_000);
         let timeout = Duration::from_millis(timeout_ms);
 
+        // 已取消的请求不能再启动命令产生副作用。
+        if ctx.cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+
         let workspace = ctx.workspace_path();
 
         // v1.7 持久 shell 状态:取本 workspace 记录的上次 `$PWD`。目录已
@@ -412,26 +417,22 @@ impl Tool for BashTool {
         // - 后端可用 → 走 Seatbelt 包裹 / Landlock pre_exec。
         // - strict + 后端不可用 / profile 写失败 → 返回
         //   `ToolError::SandboxUnavailable`,**绝不**回退到裸 `sh -c`。
-        // - 非 strict + 后端不可用 → 保留 v1.2 降级透传语义(供
-        //   ZHUYE_SANDBOX_STRICT=0 显式开启)。
+        // - Linux 只要启用沙箱，非 strict 也不得降级裸执行。
         // v1.5 R1:OS 沙箱来源优先级 —— ToolContext 覆盖(`sandbox_policy`
         // 每 turn 下发)> env(`OsSandbox::from_env`)。
         // v1.x:`[sandbox].writable_dirs` / `allow_network` 经 ToolContext
         // 透传(此前框架内无消费方);空列表 / None 时维持 OsSandbox 自带的
         // env 派生口径。
         let mut sandbox = match ctx.os_sandbox {
-            Some(on) => {
-                let mut s = zhuye_sandbox::OsSandbox::with_enabled(on);
-                if !ctx.os_sandbox_writable.is_empty() {
-                    s.writable_dirs = ctx.os_sandbox_writable.clone();
-                }
-                if let Some(net) = ctx.os_sandbox_network {
-                    s.allow_network = net;
-                }
-                s
-            }
+            Some(on) => zhuye_sandbox::OsSandbox::with_enabled(on),
             None => zhuye_sandbox::OsSandbox::from_env(),
         };
+        if !ctx.os_sandbox_writable.is_empty() {
+            sandbox.writable_dirs = ctx.os_sandbox_writable.clone();
+        }
+        if let Some(net) = ctx.os_sandbox_network {
+            sandbox.allow_network = net;
+        }
         // v1.9 S2:不可信来源强制隔离闸门。模型/流程写的命令不受全局
         // 沙箱开关约束 —— 后端可用时强制沙箱,后端不可用时拒绝执行。
         // 见 zhuye_sandbox::untrusted 模块文档(模块文档即规则)。
@@ -448,6 +449,8 @@ impl Tool for BashTool {
                         &mut sandbox.writable_dirs,
                     ));
                     forced.allow_network = sandbox.allow_network;
+                    forced.protected_paths = std::mem::take(&mut sandbox.protected_paths);
+                    forced.strict_paths = sandbox.strict_paths;
                     sandbox = forced;
                 }
                 // 即使沙箱原本已启用,初始化失败也不能降级为裸执行。
@@ -468,6 +471,13 @@ impl Tool for BashTool {
             warn!(error = %reason, "sandbox fail-closed; refusing bare exec");
             return Err(ToolError::SandboxUnavailable { reason });
         }
+        // 敏感路径保护 fail-closed:宿主明确要求「某路径必须只读」,而当前
+        // 平台无法强制(Landlock 规则按位合并,可写根内的嵌套路径撤不掉
+        // 写权)→ 拒绝执行,不在无保护的情况下跑命令。
+        if let Err(reason) = sandbox.enforce_protected_paths(&workspace) {
+            warn!(error = %reason, "sandbox protected-path fail-closed; refusing bare exec");
+            return Err(ToolError::SandboxUnavailable { reason });
+        }
         // 决定 (program, argv):沙箱激活且为 Seatbelt → sandbox-exec 包裹;
         // 否则 → sh -c(Linux Landlock 在下方 pre_exec 应用)。
         // 注意:strict 模式下 `enforce_or_fail` 已确保 status 不会是
@@ -486,6 +496,10 @@ impl Tool for BashTool {
                         return Err(ToolError::SandboxUnavailable { reason });
                     }
                     warn!(error = %e, "sandbox profile generation failed; falling back to unsandboxed exec");
+                    sandbox.enabled = false;
+                    if let Err(reason) = sandbox.enforce_protected_paths(&workspace) {
+                        return Err(ToolError::SandboxUnavailable { reason });
+                    }
                     ("sh".to_string(), vec!["-c".to_string(), script.clone()])
                 }
             }
@@ -502,37 +516,16 @@ impl Tool for BashTool {
             };
         let mut command = Command::new(&program);
         command.args(&argv);
-        // Linux Landlock:在 fork 后、exec 前应用规则(workspace 内放行,
-        // 其余写拒)。内核不支持时降级(闭包内 Ok,不阻塞)。
+        // Linux Landlock:在 fork 后、exec 前应用规则，安装失败时拒绝启动。
         // 注意:`pre_exec` 来自 tokio::process::Command 的固有方法,
         // 无需(也不能)导入 std 的 CommandExt —— 否则 Linux 上
         // `-D warnings` 会报 unused import(macOS 下该 cfg 块不编译,
         // 本地发现不了;CI ubuntu 实测踩坑)。
         //
-        // v1.6 降级重试:受限环境(GHA runner 等)的 landlock 实现存在
-        // 异常 —— restrict 成功后 execve 仍可能 EACCES,且**间歇出现**。
-        // spawn 报权限类错误时:重建 command(不注入 pre_exec)降级重试
-        // 一次,对齐「沙箱尽力而为,不阻塞工作流」的既有哲学。
-        //
-        // **0.1 收口(安全)**:该重试此前无条件生效,等于给了一个稳定的
-        // 沙箱逃逸口子 —— 只要能让 sandboxed spawn 失败一次,后续命令就
-        // 全部裸执行,且只有 stderr 一行 warn,headless JSONL 客户端完全
-        // 看不到。现在改为**仅非 strict 模式允许**;strict 模式下这条
-        // 路径直接 fail-closed 抛 `SandboxUnavailable`,与模块不变式
-        // (os_sandbox.rs:22-27「strict 绝不回退裸 sh -c」)一致。
-        // 另外 0.1 已修正 handled 位掩码(0xffe → 0x1ff2):EACCES 的
-        // 根因是 READ_FILE/READ_DIR 被误纳入 handled,导致 execve 时
-        // 动态链接器读不到 workspace 外的 .so,修好后这类失败本就不该
-        // 再出现,重试也就从"必需品"退化为"纯逃逸面"。
         #[cfg(target_os = "linux")]
         let landlock_applied = matches!(sandbox.status(), zhuye_sandbox::OsSandboxStatus::Landlock);
         #[cfg(not(target_os = "linux"))]
         let landlock_applied = false;
-        // 非 strict 才允许降级重试(strict → fail-closed)。
-        #[cfg(target_os = "linux")]
-        let allow_degrade_retry = landlock_applied && !sandbox.strict;
-        #[cfg(not(target_os = "linux"))]
-        let allow_degrade_retry = false;
         #[cfg(target_os = "linux")]
         if landlock_applied {
             let ws_clone = workspace.clone();
@@ -555,49 +548,12 @@ impl Tool for BashTool {
             }
         }
 
-        let mut child = match command.spawn() {
+        let mut child = match crate::child_process::GroupedChild::spawn(&mut command) {
             Ok(c) => c,
-            // 权限类失败 + landlock 已注入 + **非 strict** → 降级重试一次
-            // (不带沙箱)。strict 模式走下面的 fail-closed 分支。
-            Err(e)
-                if allow_degrade_retry
-                    && matches!(
-                        e.raw_os_error(),
-                        Some(13) | Some(1) // EACCES / EPERM(避免为此引 libc 依赖)
-                    ) =>
-            {
-                warn!(
-                    cmd,
-                    error = %e,
-                    "landlock sandboxed spawn failed (EACCES/EPERM); \
-                     retrying without sandbox (non-strict mode)"
-                );
-                let mut command = Command::new(&program);
-                command.args(&argv);
-                command
-                    .current_dir(&workspace)
-                    .env_clear()
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .stdin(Stdio::null())
-                    .kill_on_drop(true);
-                for key in ENV_WHITELIST {
-                    if let Ok(v) = std::env::var(key) {
-                        command.env(key, v);
-                    }
-                }
-                command.spawn().map_err(ToolError::from)?
-            }
-            // strict 模式下的权限类失败:fail-closed,绝不裸执行。
-            Err(e)
-                if landlock_applied
-                    && sandbox.strict
-                    && matches!(e.raw_os_error(), Some(13) | Some(1)) =>
-            {
+            // 已请求 Linux 沙箱时，安装失败绝不能退回裸执行。
+            Err(e) if landlock_applied => {
                 let reason = format!(
-                    "landlock sandboxed spawn 失败({e});严格模式下拒绝降级为无沙箱执行。\
-                     若运行环境确实无法在 landlock 下 exec,请显式设置 \
-                     ZHUYE_SANDBOX_STRICT=0 或 ZHUYE_SANDBOX_OS_LEVEL=0。"
+                    "Linux sandboxed spawn 失败({e});无法验证所需的沙箱或断网策略，拒绝无沙箱执行。"
                 );
                 error!(
                     cmd,
@@ -611,56 +567,38 @@ impl Tool for BashTool {
             }
             Err(e) => return Err(ToolError::from(e)),
         };
-        let mut stdout = child.stdout.take();
-        let mut stderr = child.stderr.take();
+        let mut stdout = child.take_stdout();
+        let mut stderr = child.take_stderr();
         let kill_on_cancel = ctx.cancel.clone();
         // v1.4 A3:有进度回调时逐行流式上报(经 queue 转发为
         // ToolCallOutputDelta),无回调时保持原 read_to_end 路径不变。
         let progress = ctx.progress.clone();
-        // M3:持有可变 child 句柄,drain 完 stdout/stderr 后 `wait()` 取 exit code。
-        // 此前 M1 实现靠 `kill_on_drop` 让子进程自生自灭,从不 wait → 拿不到
-        // exit code,`is_error` 恒为 false。现在用 `Option<Child>` 包住,在
-        // drain 后(仍在 timeout 内)调 `wait().await` 真正 reap 并读 status。
-        let mut child_handle = Some(child);
+        // 等待期间保留直接子进程句柄，确保清理进程组时 PID 尚未被回收重用。
+        let result = tokio::select! {
+            biased;
+            _ = kill_on_cancel.cancelled() => None,
+            result = tokio::time::timeout(timeout, async {
+                let stdout_fut = drain_pipe(stdout.as_mut(), progress.as_ref(), false);
+                let stderr_fut = drain_pipe(stderr.as_mut(), progress.as_ref(), true);
+                let (out_bytes, err_bytes) = tokio::join!(stdout_fut, stderr_fut);
+                let status = child.wait().await;
+                (out_bytes, err_bytes, status)
+            }) => Some(result),
+        };
 
-        let result = tokio::time::timeout(timeout, async {
-            // v1.4 C2:取消令牌贯通 —— select! biased 监听 ctx.cancel,
-            // 触发时 start_kill 子进程并 reap(此前 kill_on_cancel 是死变量,
-            // 中断 / 关闭只取消 LLM 流,正在跑的 bash 进程会跑满超时)。
-            // 被 kill 的命令 exit_code 落到信号杀死路径(-1 / None)。
-            tokio::select! {
-                biased;
-                _ = kill_on_cancel.cancelled() => {
-                    if let Some(mut ch) = child_handle.take() {
-                        let _ = ch.start_kill();
-                        let _ = ch.wait().await;
-                    }
-                    (Vec::new(), Vec::new(), -1)
-                }
-                triple = async {
-                    // Concurrently drain both pipes while waiting.
-                    let stdout_fut = drain_pipe(stdout.as_mut(), progress.as_ref(), false);
-                    let stderr_fut = drain_pipe(stderr.as_mut(), progress.as_ref(), true);
-                    let (out_bytes, err_bytes) = tokio::join!(stdout_fut, stderr_fut);
-                    // Reap the child & capture exit code(M3:此前 M1 从不 wait)。
-                    // drain 已把 stdout/stderr 读空,wait 通常立即返回。
-                    let exit_code = if let Some(mut ch) = child_handle.take() {
-                        match ch.wait().await {
-                            Ok(status) => status.code().unwrap_or(-1),
-                            Err(_) => -1,
-                        }
-                    } else {
-                        -1
-                    };
-                    (out_bytes, err_bytes, exit_code)
-                } => triple,
+        let (out_bytes, err_bytes, exit_code) = match result {
+            None => {
+                child.terminate();
+                let _ = child.wait().await;
+                (Vec::new(), Vec::new(), -1)
             }
-        });
-
-        let (out_bytes, err_bytes, exit_code) = match result.await {
-            Ok(triple) => triple,
-            Err(_) => {
+            Some(Ok((out, err, status))) => {
+                (out, err, status.ok().and_then(|s| s.code()).unwrap_or(-1))
+            }
+            Some(Err(_)) => {
                 warn!(cmd, "bash tool timed out");
+                child.terminate();
+                let _ = child.wait().await;
                 if let Some(p) = &seatbelt_profile_path {
                     let _ = std::fs::remove_file(p);
                 }
@@ -673,10 +611,6 @@ impl Tool for BashTool {
         if let Some(p) = &seatbelt_profile_path {
             let _ = std::fs::remove_file(p);
         }
-
-        // M3:child 已在 timeout 块内 `wait()` reap,exit_code 已捕获。
-        // 若 timeout 触发,上面 `Err(_)` 分支已 return;若 child_handle 仍在
-        // (理论上不会,drain+wait 在块内完成),靠 `kill_on_drop` 兜底。
 
         // v1.7:解析 sentinel(退出码 + 最终 `$PWD`),并把该行从两条流的
         // 输出中剥除(sentinel 同时打到 stdout 与 stderr —— 单一流被
@@ -750,6 +684,52 @@ impl Tool for BashTool {
         // 非零 exit code 标记 `is_error = true`(此前恒 false,无法区分失败命令)。
         // exit_code == -1 表示被信号杀死或 wait 失败(无法取 status),按错误处理。
         let is_error = exit_code != 0;
+        // 子进程成功创建后才能确认 pre_exec 限制已安装；禁网路径不会裸跑重试。
+        let network_restriction = if landlock_applied && !sandbox.allow_network {
+            "blocked_sockets"
+        } else if program == "/usr/bin/sandbox-exec" && !sandbox.allow_network {
+            "local_only"
+        } else {
+            "unrestricted"
+        };
+        // 敏感路径保护的实际生效情况(宿主可见)。区分「已强制只读」与
+        // 「平台无法强制」—— 后者不能被当成保护已生效。
+        let path_protection = {
+            let report = sandbox.path_protection_report(&workspace);
+            let enforced: Vec<String> = report
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item.verdict,
+                        zhuye_sandbox::PathProtectionVerdict::Enforced
+                            | zhuye_sandbox::PathProtectionVerdict::EnforcedByDefault
+                    )
+                })
+                .map(|item| item.resolved.display().to_string())
+                .collect();
+            let unsupported: Vec<String> = report
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item.verdict,
+                        zhuye_sandbox::PathProtectionVerdict::Unsupported { .. }
+                    )
+                })
+                .map(|item| {
+                    let reason = match &item.verdict {
+                        zhuye_sandbox::PathProtectionVerdict::Unsupported { reason } => {
+                            reason.clone()
+                        }
+                        _ => String::new(),
+                    };
+                    format!("{}: {reason}", item.resolved.display())
+                })
+                .collect();
+            serde_json::json!({
+                "enforced": enforced,
+                "unsupported": unsupported,
+            })
+        };
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::text(text)],
             is_error,
@@ -757,6 +737,8 @@ impl Tool for BashTool {
                 "stdout_bytes": out_bytes.len(),
                 "stderr_bytes": err_bytes.len(),
                 "exit_code": exit_code,
+                "network_restriction": network_restriction,
+                "path_protection": path_protection,
                 "cwd": final_cwd.or_else(|| effective_prev.map(|p| p.to_string_lossy().into_owned())),
             }),
             elapsed_ms: 0,
@@ -767,6 +749,36 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_network_policy_reaches_foreground_bash() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let command = format!(
+            "bash -c 'echo probe > /dev/tcp/127.0.0.1/{}'",
+            listener.local_addr().unwrap().port()
+        );
+        for (allow, expected) in [(false, false), (true, true)] {
+            let mut ctx = ToolContext::for_workspace(workspace.path());
+            // 无单独的开关覆盖时也必须传递网络配置。
+            ctx.os_sandbox = None;
+            ctx.os_sandbox_network = Some(allow);
+            let output = BashTool::default()
+                .execute(ctx, serde_json::json!({"cmd": command}))
+                .await
+                .unwrap();
+            assert_eq!(!output.is_error, expected, "allow={allow}: {output:?}");
+            assert_eq!(
+                output.metadata["network_restriction"],
+                if allow {
+                    "unrestricted"
+                } else {
+                    "blocked_sockets"
+                }
+            );
+        }
+    }
 
     /// 测试用上下文:显式关闭 OS 沙箱。
     ///
@@ -804,6 +816,22 @@ mod tests {
             }
             _ => panic!("expected text"),
         }
+    }
+
+    #[tokio::test]
+    async fn already_cancelled_command_does_not_spawn() {
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("must-not-run");
+        let ctx = unsandboxed_ctx(workspace.path());
+        ctx.cancel.cancel();
+        let result = BashTool::default()
+            .execute(
+                ctx,
+                serde_json::json!({"cmd": format!("touch '{}'", marker.display())}),
+            )
+            .await;
+        assert!(matches!(result, Err(ToolError::Cancelled)), "{result:?}");
+        assert!(!marker.exists());
     }
 
     // ── v1.4 A3:输出流式增量 ─────────────────────────────────────

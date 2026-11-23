@@ -2,8 +2,7 @@
 //!
 //! MCP 5 个 variant:`Text` / `Image` / `Resource` / `Audio` / `ResourceLink`。
 //! Zhuye `ContentBlock` 有 `Text` / `Image` / `Diff` / `ToolUse` / `ToolResult`。
-//! `Audio` 与 `Resource*` 暂降级为文本 placeholder (`[unsupported MCP content: ...]`),
-//! 留 v0.4 补全。
+//! 资源以 JSON 文本保留 URI、MIME 和正文或 base64 数据；音频暂以占位符表示。
 
 use base64::Engine as _;
 use rmcp::model::ContentBlock as McpContent;
@@ -49,14 +48,29 @@ fn convert_one(raw: &McpContent, invalid: &mut bool) -> ContentBlock {
         McpContent::Audio(a) => ContentBlock::Text {
             text: format!("[unsupported MCP content: audio/{}]", a.mime_type),
         },
-        McpContent::Resource(_) | McpContent::ResourceLink(_) => ContentBlock::Text {
-            text: "[unsupported MCP content: resource]".to_string(),
-        },
+        McpContent::Resource(resource) => {
+            resource_json("MCP resource", &resource.resource, invalid)
+        }
+        McpContent::ResourceLink(resource) => resource_json("MCP resource link", resource, invalid),
         // rmcp 3.x 标记 `non_exhaustive`,未来加 variant 时此分支兜底。
         #[allow(unreachable_patterns)]
         _ => ContentBlock::Text {
             text: format!("[unsupported MCP content: {:?}]", raw),
         },
+    }
+}
+
+fn resource_json<T: serde::Serialize>(
+    label: &str,
+    resource: &T,
+    invalid: &mut bool,
+) -> ContentBlock {
+    match serde_json::to_string(resource) {
+        Ok(json) => ContentBlock::text(format!("{label}: {json}")),
+        Err(_) => {
+            *invalid = true;
+            ContentBlock::text("[无法序列化 MCP 资源]")
+        }
     }
 }
 
@@ -110,5 +124,38 @@ mod tests {
     fn empty_input_yields_empty_output() {
         let out = convert_mcp_content(&[]);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn embedded_resource_preserves_text_and_blob() {
+        use rmcp::model::{EmbeddedResource, ResourceContents};
+        let items = vec![
+            McpContent::Resource(EmbeddedResource::new(ResourceContents::text(
+                "资源正文",
+                "file:///a",
+            ))),
+            McpContent::Resource(EmbeddedResource::new(
+                ResourceContents::blob("AAEC/w==", "file:///b")
+                    .with_mime_type("application/octet-stream"),
+            )),
+        ];
+        let (out, invalid) = convert_mcp_content_checked(&items);
+        assert!(!invalid);
+        assert!(
+            matches!(&out[0], ContentBlock::Text { text } if text.contains("资源正文") && text.contains("file:///a"))
+        );
+        assert!(
+            matches!(&out[1], ContentBlock::Text { text } if text.contains("AAEC/w==") && text.contains("application/octet-stream"))
+        );
+    }
+
+    #[test]
+    fn resource_link_keeps_uri_and_description() {
+        let link =
+            rmcp::model::Resource::new("file:///linked", "linked").with_description("资源说明");
+        let out = convert_mcp_content(&[McpContent::ResourceLink(link)]);
+        assert!(
+            matches!(&out[0], ContentBlock::Text { text } if text.contains("file:///linked") && text.contains("资源说明"))
+        );
     }
 }

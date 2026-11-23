@@ -27,8 +27,12 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Memory",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
 
 [lints]
 workspace = true

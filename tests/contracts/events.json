@@ -295,6 +295,39 @@
       "error": "spawn failed",
       "will_retry": false
     },
+    "mcp_elicitation": {
+      "type": "mcp_elicitation",
+      "request_id": "req-mcp-1",
+      "server": "fs",
+      "message": "补充仓库地址",
+      "kind": {
+        "type": "form",
+        "fields": [
+          {
+            "name": "repo",
+            "title": "仓库",
+            "description": "要访问的仓库",
+            "required": true,
+            "kind": {
+              "type": "text",
+              "secret": false
+            }
+          },
+          {
+            "name": "mode",
+            "required": false,
+            "kind": {
+              "type": "enum",
+              "options": [
+                "fast",
+                "slow"
+              ],
+              "multi": false
+            }
+          }
+        ]
+      }
+    },
     "mcp_tool_invoked": {
       "type": "mcp_tool_invoked",
       "server": "fs",

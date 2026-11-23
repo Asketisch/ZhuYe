@@ -480,6 +480,26 @@ pub(crate) fn bootstrap_m5(
 
 // ── M6 引导 (v0.3: MCP) ────────────────────────────────────────────────
 
+/// MCP server 发起的 elicitation 等待宿主裁决的绝对死线(秒)。
+///
+/// 与 `ApprovalGate` 的审批 TTL(`zhuye_tools::approval::DEFAULT_APPROVAL_TTL_SECS`)
+/// 同口径:elicitation 同样是「要人答」的阻塞请求,等不到答案就必须
+/// fail-closed 了结,不能把 rmcp 请求永久挂在 MCP 连接上。
+const MCP_ELICITATION_TTL_SECS: u64 = 300;
+
+/// 读出本次会话实际生效的 elicitation 死线。
+///
+/// 默认 [`MCP_ELICITATION_TTL_SECS`];`ZHUYE_MCP_ELICITATION_TTL_SECS` 可覆盖
+/// (测试与无人值守场景需要更短的兜底时间)。非正数视为未设置。
+fn mcp_elicitation_ttl() -> std::time::Duration {
+    let secs = std::env::var("ZHUYE_MCP_ELICITATION_TTL_SECS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(MCP_ELICITATION_TTL_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
 /// v0.3: 启动 v0.3 M6 MCP server 集合。
 ///
 /// 流程:
@@ -487,6 +507,10 @@ pub(crate) fn bootstrap_m5(
 /// 2. 构造 `McpConnectionManager` + 内置 mpsc channel `internal_tx` →
 ///    `McpLifecycleEvent`,由后台 task 转成 `EventMsg::McpServerStarted/Failed`
 ///    推到 `event_tx` 经 JSONL stdout drainer 输出(M8 沿用的模式)。
+///    `McpLifecycleEvent::Elicitation` 分支额外把回执 waiter 登记进
+///    `elicitation_waiters`(与 `AgentConfig.approval_context` 同一张表,
+///    父子代理共享),宿主经 `Op::McpElicitationResponse` 按 request_id 解锁;
+///    超过 [`MCP_ELICITATION_TTL_SECS`] 未裁决按 `cancel` 了结。
 /// 3. 对每个 server 并发 `tokio::spawn` 启动任务 → `start_server` → 拿到
 ///    `McpServerHandle` 后逐个 `register_if_absent` 把 adapter 写到
 ///    `ToolRegistry::Runtime`。
@@ -497,6 +521,7 @@ pub(crate) fn bootstrap_m5(
 pub(crate) async fn bootstrap_m6(
     initial_cfg: &zhuye_config::ReflectConfig,
     event_tx: tokio::sync::mpsc::Sender<zhuye_protocol::Event>,
+    elicitation_waiters: zhuye_tools::McpElicitationWaiters,
 ) -> Option<Arc<McpConnectionManager>> {
     let configs = match initial_cfg.mcp_server_configs() {
         Ok(c) if c.is_empty() => return None,
@@ -511,6 +536,15 @@ pub(crate) async fn bootstrap_m6(
 
     // 后台 task:internal event → protocol Event → event_tx (经 JSONL drainer 推到 stdout)。
     let event_tx_clone = event_tx.clone();
+    let elicitations = elicitation_waiters;
+    // 工具注册表必须在**当前线程**取(TOOLS 是 thread_local,后台 task 可能
+    // 跑在别的 worker 线程上,那时 thread_local 取不到 → panic「tools not
+    // initialized」,整个生命周期转发任务会被打挂,连带的 elicitation /
+    // 工具刷新事件全部丢失)。
+    let registry = tools();
+    let registry_for_task = registry.clone();
+    // 工具列表刷新时需要拿活连接重建 adapter。
+    let manager_for_tools = manager.clone();
     tokio::spawn(async move {
         while let Some(evt) = internal_rx.recv().await {
             let msg = match evt {
@@ -542,6 +576,100 @@ pub(crate) async fn bootstrap_m6(
                     // v0.3 不发 protocol event;reload task 已经把反注册事件喂回 caller。
                     continue;
                 }
+                McpLifecycleEvent::ToolsChanged { server, tools } => {
+                    // 服务端主动改了工具清单:注册新增、反注册消失的。
+                    // 工具注册表是 LLM 可见面的唯一真相 —— 不同步就会让模型
+                    // 看见已下线的工具(调用报错)或看不见新工具。
+                    //
+                    // 「消失了哪些」按**注册表现状**求差集(事件里不带
+                    // removed):刷新与启动注册的先后不可预知,注册表才是权威面。
+                    let registry = registry_for_task.clone();
+                    let prefix = format!("mcp__{server}__");
+                    let new_names: std::collections::HashSet<String> = tools
+                        .iter()
+                        .map(|descriptor| descriptor.full_name.clone())
+                        .collect();
+                    let removed: Vec<String> = registry
+                        .list_with_source()
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .filter(|name| name.starts_with(&prefix))
+                        .filter(|name| !new_names.contains(name))
+                        .collect();
+                    for name in &removed {
+                        if registry.unregister(name) {
+                            tracing::info!(server = %server, tool = %name, "MCP 工具已下线,反注册");
+                        }
+                    }
+                    // 新工具必须绑到该 server 的**活连接**上(不是新建 peer)。
+                    let Some((client, timeout)) = manager_for_tools.server_client(&server).await
+                    else {
+                        tracing::warn!(server = %server, "工具清单刷新时找不到活连接,跳过注册");
+                        continue;
+                    };
+                    for descriptor in &tools {
+                        let adapter = zhuye_mcp::McpToolAdapter::from_descriptor(
+                            client.clone(),
+                            descriptor,
+                            &server,
+                            timeout,
+                            Some(event_tx_clone.clone()),
+                        );
+                        let arc: Arc<dyn zhuye_tools::Tool> = Arc::new(adapter);
+                        registry.register_with_source(zhuye_tools::ToolSource::Mcp, arc);
+                    }
+                    tracing::info!(
+                        server = %server,
+                        current = tools.len(),
+                        removed = removed.len(),
+                        "MCP 工具清单已刷新"
+                    );
+                    continue;
+                }
+                McpLifecycleEvent::Elicitation { event, respond } => {
+                    // 顺序关键:先把 waiter 登记进会话级等待表,再发事件 ——
+                    // 反过来的话,宿主可能在登记完成前就回执,回执会被当作
+                    // 「无对应 waiter」丢弃,rmcp 请求只能等 TTL 才解绑。
+                    let request_id = event.request_id.clone();
+                    let server = event.server.clone();
+                    elicitations.lock().insert(request_id.clone(), respond);
+                    let ev = zhuye_protocol::Event::new(
+                        zhuye_protocol::EVENT_ID_NONE,
+                        zhuye_protocol::EventMsg::McpElicitation(event),
+                    );
+                    if event_tx_clone.send(ev).await.is_err() {
+                        // 宿主事件通道已关闭(会话退出中):立即按 cancel 了结,
+                        // 不等 TTL,避免 MCP 子进程里挂着一个永远不会答的请求。
+                        if let Some(tx) = elicitations.lock().remove(&request_id) {
+                            let _ = tx.send(zhuye_protocol::McpElicitationResponse {
+                                id: request_id.clone(),
+                                action: "cancel".into(),
+                                content: None,
+                            });
+                        }
+                        break;
+                    }
+                    // 绝对死线兜底:与审批门同口径的 fail-closed —— 无人应答 /
+                    // 客户端失联时统一按 cancel 了结,请求不会永久挂起。
+                    let waiters = elicitations.clone();
+                    let ttl = mcp_elicitation_ttl();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(ttl).await;
+                        if let Some(tx) = waiters.lock().remove(&request_id) {
+                            tracing::warn!(
+                                server = %server,
+                                request_id = %request_id,
+                                "MCP elicitation 未在 TTL 内获宿主裁决;按 cancel 了结"
+                            );
+                            let _ = tx.send(zhuye_protocol::McpElicitationResponse {
+                                id: request_id.clone(),
+                                action: "cancel".into(),
+                                content: None,
+                            });
+                        }
+                    });
+                    continue;
+                }
             };
             if event_tx_clone
                 .send(zhuye_protocol::Event::new(
@@ -559,7 +687,7 @@ pub(crate) async fn bootstrap_m6(
     // 并发启动每个 server —— stdio spawn + initialize 网络 I/O 受限于
     // server 数通常 <10,tokio::spawn 足够轻量;每个 task 拿到 manager
     // 句柄直接注册 tool 到共享 ToolRegistry。
-    let tools = tools();
+    let tools = registry;
     for cfg_shape in &configs {
         let cfg: McpServerConfig = McpServerConfig::from(cfg_shape.clone());
         let manager_clone = manager.clone();
@@ -570,7 +698,13 @@ pub(crate) async fn bootstrap_m6(
         tokio::spawn(async move {
             match manager_clone.start_server(cfg.clone()).await {
                 Ok(handle) => {
-                    for desc in &handle.tools {
+                    // 用**当前快照**而不是启动时那次列表的结果:工具列表刷新
+                    // 可能与启动注册交错,快照才是最新清单。
+                    let descriptors = manager_clone
+                        .server_tool_snapshot(&cfg.name)
+                        .await
+                        .unwrap_or_else(|| handle.tools.clone());
+                    for desc in &descriptors {
                         let adapter = McpToolAdapter::from_descriptor(
                             handle.inner.clone(),
                             desc,

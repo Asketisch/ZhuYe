@@ -18,6 +18,8 @@ pub mod builtin_tools;
 pub mod builtins;
 pub mod checkpoint;
 pub mod checkpoint_tool;
+/// 子进程组生命周期管理，供前台与后台命令共用。
+pub mod child_process;
 /// F21:Code Mode 批量工具调用计划(受限计划,非任意代码执行)。
 pub mod code_mode;
 pub mod loop_guard;
@@ -37,9 +39,9 @@ pub mod worktree;
 
 pub use approval::{
     ApprovalContext, ApprovalGate, ApprovalWaiters, AskUserInputWaiters, AskUserQuestionWaiters,
-    PendingLease, PendingRegistry, complete_approval, complete_ask_user_input,
-    complete_ask_user_question, new_pending_registry, pending_register, pending_resolve,
-    pending_snapshot,
+    McpElicitationWaiters, PendingLease, PendingRegistry, complete_approval,
+    complete_ask_user_input, complete_ask_user_question, new_pending_registry, pending_register,
+    pending_resolve, pending_snapshot,
 };
 pub use bash_command::{BASH_COMMAND_KEYS, resolve_bash_command};
 pub use bm25::{Bm25Hit, rank_lines, tokenize};

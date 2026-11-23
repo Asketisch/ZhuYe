@@ -79,6 +79,7 @@ agent.close()
 | [docs/plugin-dev-guide.md](docs/plugin-dev-guide.md) | 插件开发指南 |
 | [docs/configuration.md](docs/configuration.md) | 配置与环境变量 |
 | [docs/development.md](docs/development.md) | 开发与发布流程 |
+| [docs/eval-baseline.md](docs/eval-baseline.md) | 真实任务评测基线与前后对比 |
 | [SECURITY.md](SECURITY.md) | 安全说明 |
 
 ## 许可

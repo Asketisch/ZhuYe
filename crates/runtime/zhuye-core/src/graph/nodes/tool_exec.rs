@@ -436,6 +436,9 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         // M2-fix: 把工具结果作为 Tool 消息提交进会话历史,使下一轮 model_call
         // 能看到「assistant 调用了 X → X 返回了 Y」。此前只放进 latest_content
         // (图内决策用),模型永远看不到工具输出,导致重复调用同一工具。
+        // 宿主事件已收到完整结果；只对送入模型与持久化历史的文本做预算治理。
+        // 所有来源共享此入口，保留图片块并使用安全写入提供按需读回。
+        limit_model_tool_output(&mut r.content, &ctx.cfg.current_workspace()).await;
         let call_id = r.call_id.clone();
         let is_error = r.is_error;
         let tool_output = zhuye_protocol::ToolOutput {
@@ -546,6 +549,58 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
     // 导致 agent 在首次工具调用后即停、无法多步工作(M2 多步回退 bug)。
     // max_iterations 安全阀在 model_call 入口兜底,避免无限循环。
     Some(GraphNode::PreLoop)
+}
+
+/// 文本低于 rollout 单字段上限，避免恢复时再次截断并丢失溢出路径。
+const MODEL_TOOL_TEXT_PREVIEW_BYTES: usize = 8 * 1024;
+const MODEL_TOOL_TEXT_LIMIT_BYTES: usize = 12 * 1024;
+
+/// 限制进入模型的工具文本，图片仍保持独立内容块。
+async fn limit_model_tool_output(content: &mut Vec<ContentBlock>, workspace: &std::path::Path) {
+    let text_parts: Vec<String> = content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Image { .. } => None,
+            ContentBlock::Text { text } => Some(text.clone()),
+            other => Some(serde_json::to_string(other).unwrap_or_default()),
+        })
+        .collect();
+    let text = text_parts.join("\n");
+    if text.len() <= MODEL_TOOL_TEXT_LIMIT_BYTES {
+        return;
+    }
+    let preview = zhuye_protocol::truncate_str(&text, MODEL_TOOL_TEXT_PREVIEW_BYTES).to_owned();
+    let workspace = workspace.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        zhuye_tools::sandbox::write_spill_text(&workspace, &text)
+    })
+    .await;
+    let notice = match result {
+        Ok(Ok(path)) => format!(
+            "\n[工具输出已截断，完整文本可用 read 字节分页读取: {}；从 byte_offset=0 开始，按 next_byte_offset 继续]",
+            path.display()
+        ),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "工具输出溢出文件写入失败");
+            "\n[工具输出已截断，完整文本保存失败；请缩小查询范围]".to_string()
+        }
+        Err(error) => {
+            tracing::warn!(%error, "工具输出溢出任务失败");
+            "\n[工具输出已截断，完整文本保存失败；请缩小查询范围]".to_string()
+        }
+    };
+    let mut emitted = false;
+    *content = content
+        .drain(..)
+        .filter_map(|block| match block {
+            ContentBlock::Image { .. } => Some(block),
+            _ if !emitted => {
+                emitted = true;
+                Some(ContentBlock::text(format!("{preview}{notice}")))
+            }
+            _ => None,
+        })
+        .collect();
 }
 
 // ── v1.x Plan mode helpers (LLM-driven path) ──────────────────────────
@@ -848,6 +903,49 @@ fn render_todo_checklist(metadata: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn model_output_spills_text_and_preserves_images() {
+        let workspace = tempfile::tempdir().unwrap();
+        let original = "中文".repeat(4000);
+        let mut content = vec![
+            ContentBlock::text(&original),
+            ContentBlock::Image {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            },
+            ContentBlock::text("末尾"),
+        ];
+        limit_model_tool_output(&mut content, workspace.path()).await;
+        let ContentBlock::Text { text: preview } = &content[0] else {
+            panic!("缺少文本回执")
+        };
+        assert!(preview.len() < MODEL_TOOL_TEXT_LIMIT_BYTES);
+        assert!(preview.contains("完整文本可用 read 字节分页读取"));
+        assert!(matches!(&content[1], ContentBlock::Image { data, .. } if data == &[1, 2, 3]));
+        let files: Vec<_> = std::fs::read_dir(workspace.path().join(".zhuye/spill"))
+            .unwrap()
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(files[0].as_ref().unwrap().path()).unwrap(),
+            format!("{original}\n末尾")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_spill_reports_loss_without_claiming_readback() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut content = vec![ContentBlock::text(
+            "x".repeat(MODEL_TOOL_TEXT_LIMIT_BYTES + 1),
+        )];
+        limit_model_tool_output(&mut content, &workspace.path().join("missing")).await;
+        let ContentBlock::Text { text } = &content[0] else {
+            panic!("缺少失败回执")
+        };
+        assert!(text.contains("完整文本保存失败"));
+        assert!(!text.contains("完整文本可用 read 字节分页读取"));
+    }
 
     fn text(s: &str) -> ContentBlock {
         ContentBlock::Text {

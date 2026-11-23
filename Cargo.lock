@@ -8664,8 +8664,10 @@ name = "zhuye-sandbox"
 version = "0.1.16"
 dependencies = [
  "async-trait",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

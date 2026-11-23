@@ -120,6 +120,24 @@ def test_未知程序与含引号命令保守审批(serve_session, mock_script, 
     assert had_approval, f"{cmd} 应保守审批:{msg_types(evs)}"
 
 
+@pytest.mark.parametrize("cmd", ["echo hi>marker", "sed -i s/a/b/ marker", "sort -omarker input", "find . -fprint marker", "curl -o marker http://127.0.0.1/"])
+def test_可写命令拒绝审批后无副作用(serve_session, mock_script, sandbox, cmd: str) -> None:
+    """附着重定向、写入选项和可执行程序不得绕过审批。"""
+    script = mock_script([json.dumps({"type": "tool_call", "name": "bash", "args": {"cmd": cmd}}), '{"type":"text","text":"done"}'])
+    seen = []
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script), "ZHUYE_APPROVALS": "1"}) as session:
+        def deny(event: dict[str, Any]) -> None:
+            msg = event.get("msg", {})
+            if msg.get("type") == "approval_request":
+                seen.append(msg)
+                session.send({"type": "tool_approval", "id": msg["request_id"], "decision": {"deny": {"reason": "blocked"}}})
+        events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "检查命令"}]}, timeout=DRAIN_TIMEOUT, on_event=deny)
+    assert len(seen) == 1, (cmd, msg_types(events))
+    end = _tool_end(events)
+    assert end["is_error"] is True and "blocked" in str(end["output"])
+    assert not (sandbox.cwd / "marker").exists()
+
+
 # ── 失败路径 ──────────────────────────────────────────────────────────────
 
 

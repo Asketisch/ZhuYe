@@ -181,6 +181,13 @@ pub fn spawn_command(
     let q = queue;
     let handle = tokio::spawn(async move {
         let id = id_for_task;
+        if session_cancel.is_cancelled() {
+            q.fail(&id, "[cancelled] 会话已关闭,后台任务未启动");
+            if let Some(p) = seatbelt_profile {
+                let _ = std::fs::remove_file(p);
+            }
+            return;
+        }
         q.mark_running(&id);
         let mut command = tokio::process::Command::new(&program);
         command
@@ -192,7 +199,7 @@ pub fn spawn_command(
             .stdin(Stdio::null())
             .kill_on_drop(true);
         // Linux Landlock:与前台 BashTool 同款 —— fork 后、exec 前应用
-        // 写白名单规则;内核不支持时仅非严格模式降级。pre_exec 来自
+        // 写白名单规则;内核不支持时失败关闭。pre_exec 来自
         // tokio Command 的固有方法,无需 std CommandExt 导入(多余导入
         // 会在 Linux 上被 -D warnings 的 unused-imports 拦截)。
         #[cfg(target_os = "linux")]
@@ -212,61 +219,11 @@ pub fn spawn_command(
                 command.env(key, v);
             }
         }
-        // Linux Landlock:与前台 BashTool 同款 —— fork 后、exec 前应用
-        // 写白名单规则;内核不支持时仅非严格模式降级。pre_exec 来自
-        // tokio Command 的固有方法,无需 std CommandExt 导入(多余导入
-        // 会在 Linux 上被 -D warnings 的 unused-imports 拦截)。
-        //
-        // v1.6 降级重试:受限环境(GHA runner 等)的 landlock 实现异常,
-        // restrict 成功后 execve 仍可能 EACCES/EPERM —— 权限类失败时
-        // 重建 command(不带沙箱)重试一次,对齐「尽力而为不阻塞」哲学。
-        //
-        // **0.1 收口(安全)**:与前台 BashTool 对齐,该重试**仅非 strict
-        // 模式允许**。strict 下权限类 spawn 失败直接 fail-closed,绝不
-        // 裸执行 —— 否则 `run_in_background: true` 会变成前台收口后的
-        // 剩余逃逸通道。
-        #[cfg(target_os = "linux")]
-        let allow_degrade_retry = landlock && !sandbox.strict;
-        #[cfg(not(target_os = "linux"))]
-        let allow_degrade_retry = false;
-        let child = match command.spawn() {
+        // 与前台一致，Linux 沙箱安装失败时不能重试裸命令。
+        let child = match zhuye_tools::child_process::GroupedChild::spawn(&mut command) {
             Ok(c) => c,
-            Err(e) if allow_degrade_retry && matches!(e.raw_os_error(), Some(13) | Some(1)) => {
-                tracing::warn!(
-                    %program,
-                    error = %e,
-                    "landlock sandboxed background spawn failed; \
-                     retrying without sandbox (non-strict mode)"
-                );
-                let mut command = tokio::process::Command::new(&program);
-                command
-                    .args(&args)
-                    .current_dir(&cwd)
-                    .env_clear()
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .stdin(Stdio::null())
-                    .kill_on_drop(true);
-                for key in ["PATH", "HOME", "LANG", "LC_ALL", "USER", "SHELL", "TMPDIR"] {
-                    if let Ok(v) = std::env::var(key) {
-                        command.env(key, v);
-                    }
-                }
-                match command.spawn() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        q.fail(&id, format!("spawn failed: {e}"));
-                        if let Some(p) = seatbelt_profile {
-                            let _ = std::fs::remove_file(p);
-                        }
-                        return;
-                    }
-                }
-            }
-            // strict 模式下的权限类失败:fail-closed,不降级。
-            Err(e)
-                if landlock && sandbox.strict && matches!(e.raw_os_error(), Some(13) | Some(1)) =>
-            {
+            // 已请求 Linux 沙箱时，安装失败绝不能退回裸执行。
+            Err(e) if landlock => {
                 tracing::error!(
                     %program,
                     error = %e,
@@ -274,10 +231,7 @@ pub fn spawn_command(
                 );
                 q.fail(
                     &id,
-                    format!(
-                        "spawn failed: {e}(严格模式下拒绝降级为无沙箱执行;\
-                         如需降级请设置 ZHUYE_SANDBOX_STRICT=0)"
-                    ),
+                    format!("spawn failed: {e}(无法验证所需的沙箱或断网策略，拒绝无沙箱执行)"),
                 );
                 if let Some(p) = seatbelt_profile {
                     let _ = std::fs::remove_file(p);
@@ -293,8 +247,8 @@ pub fn spawn_command(
             }
         };
         let mut child = child;
-        let mut stdout = child.stdout.take();
-        let mut stderr = child.stderr.take();
+        let mut stdout = child.take_stdout();
+        let mut stderr = child.take_stderr();
         // 并发排空两端管道(防写满阻塞)+ 等退出;会话取消 → 击杀。
         let collect = async {
             let mut out_buf = Vec::new();
@@ -308,7 +262,7 @@ pub fn spawn_command(
         tokio::select! {
             biased;
             _ = session_cancel.cancelled() => {
-                let _ = child.start_kill();
+                child.terminate();
                 let _ = child.wait().await;
                 q.fail(&id, "[cancelled] 会话关闭,后台任务被终止");
             }
@@ -323,7 +277,7 @@ pub fn spawn_command(
                     text.push_str(&format!("stderr:\n{}", String::from_utf8_lossy(&err)));
                 }
                 if text.len() > BG_OUTPUT_LIMIT {
-                    text.truncate(BG_OUTPUT_LIMIT);
+                    zhuye_protocol::truncate_string_in_place(&mut text, BG_OUTPUT_LIMIT);
                     text.push_str("\n... [truncated]");
                 }
                 text.push_str(&format!("\n[exit_code: {exit_code}]"));
@@ -515,6 +469,191 @@ mod spawn_command_tests {
     use super::*;
     use std::time::Duration;
 
+    /// 会话已取消时，后台命令不得启动，即使任务已登记。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_session_does_not_spawn_background_command() {
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("must-not-run");
+        let queue = Arc::new(BackgroundTaskQueue::new());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let id = spawn_command(
+            queue.clone(),
+            cancel,
+            workspace.path().to_owned(),
+            BackgroundCommand {
+                display: "已取消命令".into(),
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "touch must-not-run".into()],
+                landlock: false,
+                sandbox: zhuye_sandbox::OsSandbox::passthrough(),
+                seatbelt_profile: None,
+            },
+        );
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let task = queue
+                    .snapshot()
+                    .into_iter()
+                    .find(|task| task.id == id)
+                    .unwrap();
+                if task.status == BackgroundTaskStatus::Failed {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(result.result.unwrap().contains("未启动"));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_background_bash_honors_network_policy() {
+        use zhuye_tools::TaskSpawner;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let queue = Arc::new(BackgroundTaskQueue::new());
+        let spawner = CoreTaskSpawner::new(
+            queue.clone(),
+            Arc::new(parking_lot::RwLock::new(workspace.path().to_owned())),
+            CancellationToken::new(),
+        );
+        let cmd = format!(
+            "bash -c 'echo probe > /dev/tcp/127.0.0.1/{}'",
+            listener.local_addr().unwrap().port()
+        );
+        for (allow, expected) in [
+            (false, BackgroundTaskStatus::Failed),
+            (true, BackgroundTaskStatus::Completed),
+        ] {
+            let policy = zhuye_tools::BackgroundBashSandbox {
+                os_sandbox: Some(true),
+                writable_dirs: Vec::new(),
+                network: Some(allow),
+            };
+            let id = spawner.spawn_bash(&cmd, workspace.path(), &policy).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let task = queue
+                        .snapshot()
+                        .into_iter()
+                        .find(|task| task.id == id)
+                        .unwrap();
+                    if matches!(
+                        task.status,
+                        BackgroundTaskStatus::Completed | BackgroundTaskStatus::Failed
+                    ) {
+                        break task;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                result.status, expected,
+                "allow={allow}: {:?}",
+                result.result
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_background_non_strict_sandbox_failure_never_executes_bare() {
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("must-not-run");
+        let mut sandbox = zhuye_sandbox::OsSandbox::enabled(vec![workspace.path().join("missing")]);
+        sandbox.strict = false;
+        sandbox.allow_network = true;
+        let queue = Arc::new(BackgroundTaskQueue::new());
+        let id = spawn_command(
+            queue.clone(),
+            CancellationToken::new(),
+            workspace.path().to_owned(),
+            BackgroundCommand {
+                display: "不得裸执行".into(),
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), format!("touch '{}'", marker.display())],
+                landlock: true,
+                sandbox,
+                seatbelt_profile: None,
+            },
+        );
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let task = queue
+                    .snapshot()
+                    .into_iter()
+                    .find(|task| task.id == id)
+                    .unwrap();
+                if matches!(
+                    task.status,
+                    BackgroundTaskStatus::Completed | BackgroundTaskStatus::Failed
+                ) {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.status, BackgroundTaskStatus::Failed);
+        assert!(result.result.unwrap().contains("拒绝无沙箱执行"));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_multibyte_background_output_completes() {
+        let queue = Arc::new(BackgroundTaskQueue::new());
+        let id = spawn_command(
+            queue.clone(),
+            CancellationToken::new(),
+            std::env::temp_dir(),
+            BackgroundCommand {
+                display: "大量多字节输出".into(),
+                program: "sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "yes 中 | head -c 102388; printf x; yes 文 | head -c 4000 >&2".into(),
+                ],
+                landlock: false,
+                sandbox: zhuye_sandbox::OsSandbox::passthrough(),
+                seatbelt_profile: None,
+            },
+        );
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let task = queue
+                    .snapshot()
+                    .into_iter()
+                    .find(|task| task.id == id)
+                    .unwrap();
+                if matches!(
+                    task.status,
+                    BackgroundTaskStatus::Completed | BackgroundTaskStatus::Failed
+                ) {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            result.status,
+            BackgroundTaskStatus::Completed,
+            "{:?}",
+            result.result
+        );
+        assert!(result.result.unwrap().contains("[truncated]"));
+    }
+
     /// review 回归:输出远超捕获上限(100KB)的后台命令必须正常完成,
     /// 不能因管道无人排空而卡在 Running(修复前:子进程写满 pipe 后
     /// 永久阻塞,任务挂死)。透传沙箱,聚焦管道语义本身。
@@ -602,5 +741,58 @@ mod spawn_command_tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("取消后任务未终止");
+    }
+
+    /// 会话取消时后台 shell 的子进程也不能继续写入。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_cancel_kills_background_descendants() {
+        let workspace = tempfile::tempdir().unwrap();
+        let ready = workspace.path().join("ready");
+        let escaped = workspace.path().join("escaped");
+        let queue = Arc::new(BackgroundTaskQueue::new());
+        let cancel = CancellationToken::new();
+        let id = spawn_command(
+            queue.clone(),
+            cancel.clone(),
+            workspace.path().to_owned(),
+            BackgroundCommand {
+                display: "后台后代".into(),
+                program: "/bin/sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "(printf ready > ready; sleep 1; printf escaped > escaped) & wait".into(),
+                ],
+                landlock: false,
+                sandbox: zhuye_sandbox::OsSandbox::passthrough(),
+                seatbelt_profile: None,
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let task = queue
+                    .snapshot()
+                    .into_iter()
+                    .find(|task| task.id == id)
+                    .unwrap();
+                if task.status == BackgroundTaskStatus::Failed {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(result.result.unwrap().contains("cancelled"));
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert!(!escaped.exists());
     }
 }

@@ -186,9 +186,21 @@ mod platform {
             self.replace_with(|file| file.write_all(content))
         }
 
+        pub(crate) fn create_private(&self, content: &[u8]) -> io::Result<()> {
+            self.replace_with_options(|file| file.write_all(content), true)
+        }
+
         pub(super) fn replace_with(
             &self,
             write: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+        ) -> io::Result<()> {
+            self.replace_with_options(write, false)
+        }
+
+        fn replace_with_options(
+            &self,
+            write: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+            private: bool,
         ) -> io::Result<()> {
             let read_flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
             let source = match fs::openat(&self.dir, &self.name, read_flags, Mode::empty()) {
@@ -217,6 +229,12 @@ mod platform {
                 Err(rustix::io::Errno::NOENT) => None,
                 Err(error) => return Err(error.into()),
             };
+            if private && source.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "private spill already exists",
+                ));
+            }
             let mut stage = Stage::new(&self.dir)?;
             let temp = stage.temp.clone();
             let temp = temp.as_str();
@@ -226,7 +244,11 @@ mod platform {
                 &self.dir,
                 temp,
                 flags,
-                Mode::from_raw_mode(if source.is_some() { 0o600 } else { 0o666 }),
+                Mode::from_raw_mode(if source.is_some() || private {
+                    0o600
+                } else {
+                    0o666
+                }),
             )?);
             // 先在目标目录创建空文件以继承其新文件 ACL，再移入私有暂存目录。
             // 移动失败时该目录项仍在本目录，必须清掉，否则工作区留下垃圾文件。
@@ -251,8 +273,20 @@ mod platform {
                     }
                 }
                 #[cfg(target_os = "macos")]
-                if source.is_some() {
+                if source.is_some() || private {
                     super::metadata::clear_inherited_acl(&file)?;
+                }
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                if private {
+                    match fs::fremovexattr(&file, "system.posix_acl_access") {
+                        Ok(())
+                        | Err(rustix::io::Errno::NODATA)
+                        | Err(rustix::io::Errno::OPNOTSUPP) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                if private {
+                    fs::fchmod(&file, Mode::from_raw_mode(0o600))?;
                 }
                 write(&mut file)?;
                 if let Some(source) = &source {

@@ -86,6 +86,11 @@ pub(crate) fn expired_reason() -> String {
 /// `Op::AskUserQuestionResponse` 由 `complete_ask_user_question` 全局函数路由。
 pub type AskUserQuestionWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<AskUserAnswer>>>>;
 
+/// MCP server elicitation 等待表。`submission_loop` 按 request_id 路由
+/// `Op::McpElicitationResponse` 回执到阻塞中的 rmcp 请求处理器。
+pub type McpElicitationWaiters =
+    Arc<Mutex<HashMap<String, oneshot::Sender<zhuye_protocol::McpElicitationResponse>>>>;
+
 /// 待处理 `ask_user` 的 `request_id` → oneshot waiter,负责把用户自由文本
 /// 回执送到 `AskUserTool::execute`。
 pub type AskUserInputWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
@@ -108,6 +113,8 @@ pub struct ApprovalContext {
     /// 共享同一 Arc)。plan 审批经 `PlanApprovalGate::with_pending_registry`
     /// 也写入这张表。
     pub pending: PendingRegistry,
+    /// MCP elicitation 会话级等待表。默认空表；由 zhuye-exec 装配。
+    pub mcp_elicitations: McpElicitationWaiters,
 }
 
 /// v1.2 review P2:bug-2:`ask_user` 工具 prompt 字节上限。LLM 误发

@@ -326,6 +326,31 @@ class ZhuyeAgent:
             )
         )
 
+    def respond_mcp_elicitation(
+        self,
+        request_id: str,
+        action: str,
+        content: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """响应 `EventMsg::McpElicitation`。
+
+        `action` 取 `"accept"` / `"decline"` / `"cancel"`;`content` 是表单值
+        对象,键名取事件 `kind.fields[].name`(服务端 schema 属性名,不可改写)。
+        `link` 形态可省略 `content`。
+
+        不回执时引擎按 TTL(默认 300s)以 `cancel` 了结该请求 —— fail-closed。
+        """
+        self._write_submission(
+            _build_submission(
+                {
+                    "type": "mcp_elicitation_response",
+                    "id": request_id,
+                    "action": action,
+                    "content": content,
+                }
+            )
+        )
+
     def next_global_event(self, timeout_secs: Optional[float] = None) -> Optional[Event]:
         """读取一条全局事件;超时抛 queue.Empty,stdout EOF 后返回 None。
 

@@ -18,14 +18,18 @@ def runner_tree(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     tests.mkdir()
     shutil.copy2(ROOT / "tests/run_all.sh", tests / "run_all.sh")
     shutil.copy2(ROOT / "tests/lib.sh", tests / "lib.sh")
-    for suite in ("functional", "rust", "sdk-python", "sdk-ts", "native-python", "live"):
-        target = tests / suite / "run.sh"
-        target.parent.mkdir()
+    for suite in ("functional", "rust", "sdk-python", "sdk-ts", "native-python", "live", "eval"):
+        if suite == "eval":
+            target = tests / "eval" / "run_offline.sh"
+        else:
+            target = tests / suite / "run.sh"
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             '#!/usr/bin/env bash\n'
             'printf "%s|%s\\n" "$(basename "$(dirname "$0")")" '
             '"${ZHUYE_SKIP_WORKSPACE:-0}" >> "$RUNNER_TEST_LOG"\n'
         )
+        target.chmod(0o755)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     cargo = bin_dir / "cargo"
@@ -56,7 +60,7 @@ def test_默认入口各层只运行一次且不跳过工作区(runner_tree) -> 
     ]
     builds = (root / "cargo.log").read_text().splitlines()
     assert any("-p zhuye-cli" in line for line in builds)
-    assert any("-p zhuye-kms" in line and "-p zhuye-shell" in line for line in builds)
+    assert any("-p zhuye-kms" in line and "-p zhuye-shell" in line and "-p zhuye-browser" in line for line in builds)
     assert any("-p zhuye-mcp" in line for line in builds)
 
 
@@ -65,7 +69,7 @@ def test_功能门禁跳过标志不泄漏到后续rust套件(runner_tree) -> No
     result = _run(root, env, "functional", "rust")
     assert result.returncode == 0, result.stderr + result.stdout
     assert (root / "runners.log").read_text().splitlines() == [
-        "functional|0", "rust|1", "sdk-python|0", "sdk-ts|0", "native-python|0", "rust|0",
+        "functional|0", "rust|1", "sdk-python|0", "sdk-ts|0", "native-python|0", "eval|0", "rust|0",
     ]
 
 

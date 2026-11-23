@@ -1079,7 +1079,14 @@ pub async fn bootstrap_normal(
     }
 
     // MCP / LSP bootstrap(失败仅 warn,不阻塞主流程)。
-    let mcp_manager = bootstrap_m6(&initial_cfg, reload_tx.clone()).await;
+    // elicitation 等待表必须与 `AgentConfig.approval_context` 同一份 Arc,
+    // 否则宿主回执找不到 waiter(factory 的 context 就是 cfg 用的那份)。
+    let mcp_manager = bootstrap_m6(
+        &initial_cfg,
+        reload_tx.clone(),
+        factory.approval_context().mcp_elicitations.clone(),
+    )
+    .await;
     let _lsp_manager = bootstrap_lsp(
         &initial_cfg,
         reload_tx.clone(),
@@ -1410,7 +1417,14 @@ pub async fn bootstrap_resumed(
     thread.register_hook(rbe_hook);
     tracing::info!("resume path: registered PlanModeGate + agents_md + recall + read_before_edit");
     // resume 也跑 MCP bootstrap,方便继续使用之前挂的 MCP server。
-    let mcp_manager = bootstrap_m6(&initial_cfg, reload_tx.clone()).await;
+    // elicitation 等待表必须与 `AgentConfig.approval_context` 同一份 Arc,
+    // 否则宿主回执找不到 waiter(factory 的 context 就是 cfg 用的那份)。
+    let mcp_manager = bootstrap_m6(
+        &initial_cfg,
+        reload_tx.clone(),
+        factory.approval_context().mcp_elicitations.clone(),
+    )
+    .await;
     let _lsp_manager = bootstrap_lsp(
         &initial_cfg,
         reload_tx.clone(),

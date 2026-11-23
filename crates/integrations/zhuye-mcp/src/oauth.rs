@@ -569,3 +569,374 @@ mod tests {
         assert_eq!(back, sub);
     }
 }
+
+// ── 客户端侧运行时:发现 + 换 token ─────────────────────────────────────
+
+use crate::McpError;
+
+/// MCP 客户端关心的 OAuth 端点(受保护资源元数据 + 授权服务器元数据)。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OAuthEndpoints {
+    /// 受保护资源元数据 URL(RFC 9728)。
+    pub resource_metadata_url: Option<String>,
+    /// 授权端点(授权码流程由宿主完成)。
+    pub authorization_url: Option<String>,
+    /// token 端点。
+    pub token_url: Option<String>,
+    /// 动态客户端注册端点。
+    pub registration_url: Option<String>,
+    /// 授权服务器 issuer。
+    pub issuer: Option<String>,
+    /// 服务端声明支持的 scope。
+    pub scopes_supported: Vec<String>,
+}
+
+impl OAuthEndpoints {
+    /// 面向宿主的可读摘要(出现在失败事件里,宿主据此完成授权)。
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(url) = &self.authorization_url {
+            parts.push(format!("授权端点={url}"));
+        }
+        if let Some(url) = &self.token_url {
+            parts.push(format!("token 端点={url}"));
+        }
+        if let Some(url) = &self.resource_metadata_url {
+            parts.push(format!("受保护资源元数据={url}"));
+        }
+        if !self.scopes_supported.is_empty() {
+            parts.push(format!("scope={}", self.scopes_supported.join(",")));
+        }
+        if parts.is_empty() {
+            "服务端未提供可发现的端点".to_string()
+        } else {
+            parts.join("；")
+        }
+    }
+}
+
+/// 从 `WWW-Authenticate: Bearer resource_metadata="..."` 里取元数据 URL。
+pub fn parse_resource_metadata_url(header: &str) -> Option<String> {
+    let lowered = header.to_ascii_lowercase();
+    if !lowered.contains("bearer") {
+        return None;
+    }
+    let marker = "resource_metadata=";
+    let start = lowered.find(marker)? + marker.len();
+    let rest = &header[start..];
+    let value = rest.trim_start();
+    let value = value.strip_prefix('"').unwrap_or(value);
+    let end = value.find('"').unwrap_or(value.len());
+    let url = value[..end].trim();
+    (!url.is_empty()).then(|| url.to_string())
+}
+
+/// 受保护资源元数据(RFC 9728)。
+#[derive(Debug, Clone, Deserialize)]
+struct ProtectedResourceMetadata {
+    #[serde(default)]
+    authorization_servers: Vec<String>,
+    #[serde(default)]
+    scopes_supported: Vec<String>,
+}
+
+/// 授权服务器元数据(RFC 8414)。
+#[derive(Debug, Clone, Deserialize)]
+struct AuthorizationServerMetadata {
+    #[serde(default)]
+    issuer: Option<String>,
+    #[serde(default)]
+    authorization_endpoint: Option<String>,
+    #[serde(default)]
+    token_endpoint: Option<String>,
+    #[serde(default)]
+    registration_endpoint: Option<String>,
+    #[serde(default)]
+    scopes_supported: Vec<String>,
+}
+
+/// 取受保护资源元数据(默认 well-known 路径;也接受显式 URL)。
+pub async fn discover_protected_resource(
+    http: &reqwest::Client,
+    resource_url: &str,
+    explicit_metadata_url: Option<&str>,
+) -> Result<OAuthEndpoints, McpError> {
+    let metadata_url = match explicit_metadata_url {
+        Some(url) => url.to_string(),
+        None => {
+            let base = resource_url.trim_end_matches('/');
+            // RFC 9728:路径插入式 —— <origin>/.well-known/oauth-protected-resource<path>
+            let (origin, path) = split_origin_path(base);
+            format!("{origin}/.well-known/oauth-protected-resource{path}")
+        }
+    };
+    let response = http.get(&metadata_url).send().await.map_err(|error| {
+        McpError::Initialize(format!("取受保护资源元数据失败({metadata_url}): {error}"))
+    })?;
+    if !response.status().is_success() {
+        return Err(McpError::Initialize(format!(
+            "受保护资源元数据不可用({metadata_url}): HTTP {}",
+            response.status()
+        )));
+    }
+    let metadata: ProtectedResourceMetadata = response
+        .json()
+        .await
+        .map_err(|error| McpError::Initialize(format!("受保护资源元数据解析失败: {error}")))?;
+    let mut endpoints = OAuthEndpoints {
+        resource_metadata_url: Some(metadata_url),
+        scopes_supported: metadata.scopes_supported,
+        ..OAuthEndpoints::default()
+    };
+    // 授权服务器元数据:优先用 authorization_servers[0]。
+    if let Some(issuer) = metadata.authorization_servers.first() {
+        let discovered = discover_authorization_server(http, issuer).await?;
+        endpoints.authorization_url = discovered.authorization_url;
+        endpoints.token_url = discovered.token_url;
+        endpoints.registration_url = discovered.registration_url;
+        endpoints.issuer = discovered.issuer.or_else(|| Some(issuer.clone()));
+        if endpoints.scopes_supported.is_empty() {
+            endpoints.scopes_supported = discovered.scopes_supported;
+        }
+    }
+    Ok(endpoints)
+}
+
+/// 取授权服务器元数据(RFC 8414)。
+pub async fn discover_authorization_server(
+    http: &reqwest::Client,
+    issuer: &str,
+) -> Result<OAuthEndpoints, McpError> {
+    let base = issuer.trim_end_matches('/');
+    let (origin, path) = split_origin_path(base);
+    let candidates = [
+        format!("{origin}/.well-known/oauth-authorization-server{path}"),
+        format!("{origin}/.well-known/openid-configuration{path}"),
+        format!("{base}/.well-known/oauth-authorization-server"),
+    ];
+    let mut last_error = String::new();
+    for candidate in candidates {
+        let response = match http.get(&candidate).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = error.to_string();
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            last_error = format!("HTTP {}", response.status());
+            continue;
+        }
+        let metadata: AuthorizationServerMetadata = match response.json().await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                last_error = error.to_string();
+                continue;
+            }
+        };
+        return Ok(OAuthEndpoints {
+            resource_metadata_url: None,
+            authorization_url: metadata.authorization_endpoint,
+            token_url: metadata.token_endpoint,
+            registration_url: metadata.registration_endpoint,
+            issuer: metadata.issuer.or_else(|| Some(base.to_string())),
+            scopes_supported: metadata.scopes_supported,
+        });
+    }
+    Err(McpError::Initialize(format!(
+        "授权服务器元数据不可用({base}): {last_error}"
+    )))
+}
+
+/// 极简 urlencoded 转义(键值都是 ASCII 配置值)。
+fn url_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// 拆出 origin 与 path(`https://h/p` → (`https://h`, `/p`))。
+fn split_origin_path(url: &str) -> (String, String) {
+    match url.split_once("://") {
+        Some((scheme, rest)) => match rest.split_once('/') {
+            Some((host, path)) => (format!("{scheme}://{host}"), format!("/{path}")),
+            None => (format!("{scheme}://{rest}"), String::new()),
+        },
+        None => (url.to_string(), String::new()),
+    }
+}
+
+/// token 端点的请求体参数。
+#[derive(Debug, Clone)]
+pub enum TokenGrant {
+    /// `client_credentials`。
+    ClientCredentials {
+        client_id: String,
+        client_secret: Option<String>,
+        scope: Option<String>,
+    },
+    /// `refresh_token`。
+    RefreshToken {
+        client_id: Option<String>,
+        refresh_token: String,
+        scope: Option<String>,
+    },
+}
+
+/// 用授权码换 token(client_credentials / refresh_token)。
+pub async fn request_token(
+    http: &reqwest::Client,
+    token_url: &str,
+    grant: &TokenGrant,
+) -> Result<OAuthToken, McpError> {
+    let mut form: Vec<(&str, String)> = Vec::new();
+    match grant {
+        TokenGrant::ClientCredentials {
+            client_id,
+            client_secret,
+            scope,
+        } => {
+            form.push(("grant_type", "client_credentials".to_string()));
+            form.push(("client_id", client_id.clone()));
+            if let Some(secret) = client_secret {
+                form.push(("client_secret", secret.clone()));
+            }
+            if let Some(scope) = scope {
+                form.push(("scope", scope.clone()));
+            }
+        }
+        TokenGrant::RefreshToken {
+            client_id,
+            refresh_token,
+            scope,
+        } => {
+            form.push(("grant_type", "refresh_token".to_string()));
+            form.push(("refresh_token", refresh_token.clone()));
+            if let Some(client_id) = client_id {
+                form.push(("client_id", client_id.clone()));
+            }
+            if let Some(scope) = scope {
+                form.push(("scope", scope.clone()));
+            }
+        }
+    }
+    // 手写 urlencoded body:reqwest 的 `form()` 需要额外 feature,
+    // 这里不引入 —— body 就是几个键值对,手写更可控。
+    let body = form
+        .iter()
+        .map(|(key, value)| format!("{}={}", url_encode(key), url_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let response = http
+        .post(token_url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| McpError::Initialize(format!("token 请求失败({token_url}): {error}")))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(McpError::Initialize(format!(
+            "token 请求被拒({token_url}): HTTP {status} {body}"
+        )));
+    }
+    let token: OAuthToken = response
+        .json()
+        .await
+        .map_err(|error| McpError::Initialize(format!("token 响应解析失败: {error}")))?;
+    Ok(token)
+}
+
+/// 按配置解析出可用的 bearer token。
+///
+/// 顺序:静态 `token` → `token_env` 环境变量 → 客户端凭据换 token
+/// (token 端点缺省时按受保护资源元数据发现)。
+pub async fn resolve_token(
+    http: &reqwest::Client,
+    oauth: &crate::config::McpOAuthConfig,
+    resource_url: &str,
+) -> Result<Option<String>, McpError> {
+    if let Some(token) = oauth
+        .token
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(Some(token.trim().to_string()));
+    }
+    if let Some(env_name) = oauth.token_env.as_ref().filter(|name| !name.is_empty())
+        && let Ok(value) = std::env::var(env_name)
+        && !value.trim().is_empty()
+    {
+        return Ok(Some(value.trim().to_string()));
+    }
+    // 需要换 token:必须有 client_id(或 refresh_token)。
+    let refresh_token = oauth
+        .refresh_token
+        .clone()
+        .filter(|value| !value.is_empty());
+    let client_id = oauth.client_id.clone().filter(|value| !value.is_empty());
+    if client_id.is_none() && refresh_token.is_none() {
+        return Ok(None);
+    }
+    let token_url = match oauth.token_url.clone().filter(|value| !value.is_empty()) {
+        Some(url) => url,
+        None => {
+            let endpoints = discover_protected_resource(http, resource_url, None).await?;
+            let summary = endpoints.summary();
+            endpoints.token_url.ok_or_else(|| {
+                McpError::AuthRequired(format!("MCP 服务端要求授权,但未发现 token 端点({summary})"))
+            })?
+        }
+    };
+    let grant = if let Some(refresh) = refresh_token {
+        TokenGrant::RefreshToken {
+            client_id,
+            refresh_token: refresh,
+            scope: oauth.scope.clone(),
+        }
+    } else {
+        TokenGrant::ClientCredentials {
+            client_id: client_id.unwrap_or_default(),
+            client_secret: oauth.client_secret.clone(),
+            scope: oauth.scope.clone(),
+        }
+    };
+    let token = request_token(http, &token_url, &grant).await?;
+    Ok(Some(token.access_token))
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn parses_resource_metadata_from_www_authenticate() {
+        let header = r#"Bearer realm="mcp", resource_metadata="https://h/.well-known/oauth-protected-resource/mcp""#;
+        assert_eq!(
+            parse_resource_metadata_url(header).as_deref(),
+            Some("https://h/.well-known/oauth-protected-resource/mcp")
+        );
+        assert!(parse_resource_metadata_url("Basic realm=\"x\"").is_none());
+    }
+
+    #[test]
+    fn splits_origin_and_path() {
+        assert_eq!(
+            split_origin_path("https://h/mcp"),
+            ("https://h".to_string(), "/mcp".to_string())
+        );
+        assert_eq!(
+            split_origin_path("https://h"),
+            ("https://h".to_string(), String::new())
+        );
+    }
+}

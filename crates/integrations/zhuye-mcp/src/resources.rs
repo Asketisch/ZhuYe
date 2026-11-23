@@ -47,7 +47,7 @@ impl Tool for ListMcpResourcesTool {
 
     async fn execute(
         &self,
-        _ctx: ToolContext,
+        ctx: ToolContext,
         _args: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
         let peers = self.manager.server_peers().await;
@@ -57,7 +57,12 @@ impl Tool for ListMcpResourcesTool {
         let mut errors: Vec<String> = Vec::new();
 
         for (server, peer) in peers {
-            match peer.list_all_resources().await {
+            let result = tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
+                result = peer.list_all_resources() => result,
+            };
+            match result {
                 Ok(resources) => {
                     for r in resources {
                         total += 1;
@@ -138,7 +143,7 @@ impl Tool for ReadMcpResourceTool {
 
     async fn execute(
         &self,
-        _ctx: ToolContext,
+        ctx: ToolContext,
         args: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
         let server =
@@ -171,44 +176,59 @@ impl Tool for ReadMcpResourceTool {
             })?;
 
         let params = rmcp::model::ReadResourceRequestParams::new(uri);
-        let result = peer
-            .read_resource(params)
-            .await
-            .map_err(|e| ToolError::Execution(format!("ReadMcpResource: rmcp error: {e}")))?;
+        let result = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
+            result = peer.read_resource(params) => result,
+        }
+        .map_err(|e| ToolError::Execution(format!("ReadMcpResource: rmcp error: {e}")))?;
 
-        // 把 ResourceContents(text/blob)渲染成文本给 LLM 消费。
-        let mut lines: Vec<String> = Vec::new();
-        let mut text_parts: Vec<String> = Vec::new();
+        // 按原顺序保留所有内容；非文本资源使用带 URI、MIME 的 JSON 和 base64。
+        let mut content = Vec::new();
+        let mut descriptors = Vec::new();
         for c in &result.contents {
             match c {
-                ResourceContents::TextResourceContents { uri, text, .. } => {
-                    text_parts.push(text.clone());
-                    lines.push(format!("text <{uri}>"));
+                ResourceContents::TextResourceContents {
+                    uri,
+                    mime_type,
+                    text,
+                    ..
+                } => {
+                    content.push(zhuye_protocol::ContentBlock::text(text.clone()));
+                    descriptors.push(
+                        serde_json::json!({"uri": uri, "mime_type": mime_type, "kind": "text"}),
+                    );
                 }
-                ResourceContents::BlobResourceContents { uri, blob, .. } => {
-                    lines.push(format!(
-                        "blob <{uri}> ({} bytes base64, omitted from text view)",
-                        blob.len()
+                ResourceContents::BlobResourceContents { uri, mime_type, .. } => {
+                    let serialized = serde_json::to_string(c).map_err(|e| {
+                        ToolError::Execution(format!("ReadMcpResource: 序列化资源失败: {e}"))
+                    })?;
+                    content.push(zhuye_protocol::ContentBlock::text(format!(
+                        "MCP resource: {serialized}"
+                    )));
+                    descriptors.push(serde_json::json!({"uri": uri, "mime_type": mime_type, "kind": "blob", "encoding": "base64"}));
+                }
+                _ => {
+                    return Err(ToolError::Execution(
+                        "ReadMcpResource: 不支持的资源内容类型".into(),
                     ));
                 }
-                _ => lines.push("[unsupported MCP resource content]".to_string()),
             }
         }
-        let body = if !text_parts.is_empty() {
-            text_parts.join("\n\n---\n\n")
-        } else if !lines.is_empty() {
-            lines.join("\n")
-        } else {
-            format!("resource <{uri}>: empty contents")
-        };
+        if content.is_empty() {
+            content.push(zhuye_protocol::ContentBlock::text(format!(
+                "resource <{uri}>: empty contents"
+            )));
+        }
 
         Ok(ToolOutput {
-            content: vec![zhuye_protocol::ContentBlock::text(body)],
+            content,
             is_error: false,
             metadata: serde_json::json!({
                 "server": server,
                 "uri": uri,
                 "contents": result.contents.len(),
+                "content_descriptors": descriptors,
             }),
             elapsed_ms: 0,
         })

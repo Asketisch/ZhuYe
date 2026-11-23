@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::event_msg::McpElicitationResponse;
 use crate::item::{
     PlanApprovalChoice, ReasoningEffortMirror, ReviewDecision, ThreadSettingsOverrides, ToolOutput,
     UserInputItem,
@@ -139,6 +140,10 @@ pub enum Op {
         /// 用户输入的明文文本;空串表示 Esc 取消或未填。
         text: String,
     },
+
+    /// MCP server elicitation 回执。`action` 使用服务器协议值
+    /// `accept` / `decline` / `cancel`，`content` 仅在 accept 时有值。
+    McpElicitationResponse(McpElicitationResponse),
 
     /// v1.1.0 P1:切换会话级 `PermissionMode`(TUI `/mode` / Shift+Tab)。
     /// `submission_loop` 写入 `AgentConfig.permission_mode` 并 emit
@@ -325,6 +330,7 @@ impl Op {
             Op::SetEffort { .. } => "set_effort",
             Op::AskUserQuestionResponse { .. } => "ask_user_question_response",
             Op::AskUserInputResponse { .. } => "ask_user_input_response",
+            Op::McpElicitationResponse { .. } => "mcp_elicitation_response",
             Op::SetPermissionMode { .. } => "set_permission_mode",
             Op::CyclePermissionMode => "cycle_permission_mode",
             Op::EnterGoalMode { .. } => "enter_goal_mode",

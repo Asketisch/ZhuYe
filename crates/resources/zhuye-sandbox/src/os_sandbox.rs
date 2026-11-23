@@ -10,10 +10,10 @@
 //!   `.sb` profile(`(version 1)(allow default deny) ...`)。允许写
 //!   workspace + 可选额外目录 + 临时目录;读全盘保留(编译/分析常需读
 //!   系统头文件);网络默认关。
-//! - **Linux**:Landlock(v1+),经 `libc` syscall(`landlock_create_ruleset`
+//! - **Linux**:Landlock ABI v3+,经 syscall(`landlock_create_ruleset`
 //!   / `landlock_add_rule`),在 `pre_exec` 之间(子进程 fork 后、exec 前)
 //!   应用。对 workspace 写、workspace 外读写按规则放行,其余写拒。
-//!   不支持时(老内核 / 无 CAP)→ 静默跳过(降级,不阻塞执行)。
+//!   沙箱启用时，内核不支持或安装失败会拒绝执行。
 //!
 //! ## 不变式
 //!
@@ -23,12 +23,15 @@
 //! - `strict = true`(默认)→ 后端不可用 / profile 写失败 / Landlock
 //!   不支持 时 `enforce_or_fail()` 返回 `Err`,由 BashTool 把
 //!   `ToolError::SandboxUnavailable` 抛出,**绝不**回退裸 `sh -c`。
-//! - `strict = false` → 保留旧降级语义(降级为透传 + warn)以便逐
-//!   步迁移;新代码默认 `strict = true`。
+//! - Linux 已启用沙箱时无论 strict 如何都失败关闭；显式关闭才可裸执行。
+//!   其他平台的非严格模式保留原有降级语义。
 //!
 //! 验证标准(gap doc):sandbox 内执行 `rm -rf /` 应被阻止。
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+#[path = "network_filter.rs"]
+mod network_filter;
 // 仅 seatbelt(macOS)使用;其余平台保持 import 干净,避免 -D warnings 下
 // unused import 报错。
 #[cfg(target_os = "macos")]
@@ -53,6 +56,58 @@ pub enum OsSandboxStatus {
     /// 已启用且 backend 为 Windows Job Object(+ AppContainer,F24)。
     /// Job Object 在任意 Windows 上可用,无需特权。
     WindowsJobObject,
+}
+
+/// 默认受保护的元数据目录名(位于每个可写根的顶层)。
+///
+/// 与 `zhuye-tools::sandbox` 的 `PROTECTED_WRITE_COMPONENTS` 同口径:
+/// `.git`(改 hook 即提权)、`.agents`、`.aws`(凭据)都是「改了就能借宿主
+/// 身份提权」的位置。macOS Seatbelt 可用 deny 规则强制只读;Linux
+/// Landlock 的规则按位合并,无法在可写根内撤销嵌套路径的写权(见
+/// [`PathProtectionVerdict::Unsupported`])。
+pub const DEFAULT_PROTECTED_ENTRIES: [&str; 3] = [".git", ".agents", ".aws"];
+
+/// 单条敏感路径的保护结论。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathProtectionVerdict {
+    /// 平台后端已强制该路径只读(写被内核拒绝)。
+    Enforced,
+    /// 该路径落在所有可写根之外 —— 写本就被默认拒绝,等价于只读。
+    EnforcedByDefault,
+    /// 平台无法表达该策略:可写根**内**的嵌套路径无法被单独撤销写权。
+    Unsupported {
+        /// 面向宿主的原因说明(中文,可直接展示)。
+        reason: String,
+    },
+}
+
+/// 一条敏感路径的保护状态(报告给宿主的能力面)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathProtection {
+    /// 请求方给出的路径(相对路径按 workspace 解析前保留原样)。
+    pub requested: PathBuf,
+    /// 解析符号链接后的真实路径(不存在时退回请求路径)。
+    pub resolved: PathBuf,
+    /// 是否为宿主显式要求的路径(`false` = 默认元数据条目)。
+    pub explicit: bool,
+    /// 平台是否真的强制了只读。
+    pub verdict: PathProtectionVerdict,
+}
+
+/// Landlock 无法在可写根内撤销嵌套路径写权的原因(统一文案)。
+const LANDLOCK_NESTED_UNSUPPORTED: &str = "Landlock 的规则按位合并:可写根授予的写权会传播到其下的嵌套路径,\
+     内核没有按路径撤销(deny)规则的能力,因此可写根内的嵌套敏感路径无法被强制只读";
+
+/// `ZHUYE_SANDBOX_STRICT_PATHS` → 敏感路径保护必须落地(默认关)。
+fn strict_paths_from_env() -> bool {
+    std::env::var("ZHUYE_SANDBOX_STRICT_PATHS")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 /// 检测当前平台可用的沙箱 backend。
@@ -103,8 +158,17 @@ pub struct OsSandbox {
     pub allow_network: bool,
     /// v1.3:严格模式。`true` 时后端不可用 / profile 写失败 → 返回
     /// `Err` 而不是降级透传(BashTool 据此抛 `ToolError::SandboxUnavailable`)。
-    /// `false` 时保留 v1.2 降级语义。
+    /// `false` 时其他平台保留降级语义；Linux 启用沙箱时仍失败关闭。
     pub strict: bool,
+    /// 宿主显式要求只读的敏感路径(绝对路径,或相对 workspace 的路径)。
+    ///
+    /// 这些路径**必须**在沙箱内不可写。若当前平台无法表达该策略
+    /// (见 [`PathProtectionVerdict::Unsupported`]),且 `strict_paths` 为真,
+    /// [`OsSandbox::enforce_or_fail`] 会失败关闭 —— 平台做不到的事不静默放过。
+    pub protected_paths: Vec<PathBuf>,
+    /// 敏感路径保护是否必须落地。`true` 时任何「平台无法强制」的受保护
+    /// 路径都会让沙箱拒绝执行(默认 false:报告但不阻断)。
+    pub strict_paths: bool,
     /// 探测到的 backend(`enabled=false` 时为 `Disabled`)。
     backend: OsSandboxStatus,
 }
@@ -117,6 +181,8 @@ impl Default for OsSandbox {
             writable_dirs: Vec::new(),
             allow_network: false,
             strict: true,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: detect_backend(),
         }
     }
@@ -131,6 +197,8 @@ impl OsSandbox {
             writable_dirs: Vec::new(),
             allow_network: false,
             strict: false,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: OsSandboxStatus::Disabled,
         }
     }
@@ -143,6 +211,8 @@ impl OsSandbox {
             writable_dirs,
             allow_network: false,
             strict: true,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: detect_backend(),
         }
     }
@@ -151,8 +221,8 @@ impl OsSandbox {
     /// - `0` / `false` / `no` / `off` → 关闭(`passthrough`)
     /// - 未设置 / `1` / `true` / `yes` / `on` → 启用(默认严格)
     ///
-    /// `ZHUYE_SANDBOX_OS_LEVEL=1` 加 `ZHUYE_SANDBOX_STRICT=0` 可临时
-    /// 回到旧降级语义(用于本地调试 / 过渡期)。
+    /// `ZHUYE_SANDBOX_STRICT=0` 在非 Linux 平台保留旧降级语义；
+    /// Linux 启用沙箱后仍要求成功安装规则。
     pub fn from_env() -> Self {
         Self::with_enabled(resolve_enabled(
             std::env::var("ZHUYE_SANDBOX_OS_LEVEL").ok().as_deref(),
@@ -199,12 +269,28 @@ impl OsSandbox {
         if on {
             let mut s = Self::enabled(extra_writable_from_env());
             s.strict = strict;
+            s.strict_paths = strict_paths_from_env();
             s
         } else {
             let mut s = Self::passthrough();
             s.strict = strict;
+            s.strict_paths = strict_paths_from_env();
             s
         }
+    }
+
+    /// 追加「必须只读」的敏感路径(相对路径按 workspace 解析)。
+    ///
+    /// 与 [`OsSandbox::enforce_protected_paths`] 配套:`strict_paths` 为真时,
+    /// 平台无法强制的路径会让执行失败关闭。
+    pub fn with_protected_paths(
+        mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        strict: bool,
+    ) -> Self {
+        self.protected_paths = paths.into_iter().collect();
+        self.strict_paths = strict;
+        self
     }
 
     /// 当前生效状态(综合 enabled + backend)。
@@ -220,11 +306,8 @@ impl OsSandbox {
     /// v1.3:状态行同时标注严格模式 / 网络边界 / 敏感读规则,便于运维
     /// 一眼看到当前安全下限。
     ///
-    /// 网络边界**按 backend 如实报告**:Landlock 的 `handled_access_net`
-    /// 恒为 0(ABI v1 无网络限制原语,需 v4+ 且本实现未启用),所以
-    /// Linux 上"网络:拒绝"是虚假宣传 —— 此前无条件按 `allow_network`
-    /// 打印,会让运维误以为出站被拦住。Seatbelt 关网时仍放行 localhost
-    /// 与 Unix socket,报告为「仅本机」。
+    /// 网络策略按后端报告；Linux 断网经子进程 seccomp 安装，安装失败时
+    /// 命令不启动。Seatbelt 关网时仍放行 localhost 与 Unix socket。
     pub fn status_line(&self) -> String {
         let net = match self.status() {
             // Seatbelt 真拦出站(默认放行 localhost / Unix socket)。
@@ -235,20 +318,32 @@ impl OsSandbox {
                     "网络:仅本机(localhost+Unix socket)".to_string()
                 }
             }
-            // Landlock:handled_access_net = 0,网络不受本沙箱约束。
-            OsSandboxStatus::Landlock => "网络:不受沙箱约束".to_string(),
-            _ => {
+            OsSandboxStatus::Landlock => {
                 if self.allow_network {
-                    "网络:允许".to_string()
+                    "网络:不受沙箱约束".to_string()
                 } else {
-                    "网络:仅本机(localhost+Unix socket)".to_string()
+                    "网络:请求禁止创建和连接套接字(seccomp，命令成功启动后生效；允许 socketpair)"
+                        .to_string()
                 }
             }
+            OsSandboxStatus::Disabled => "网络:不受沙箱约束".to_string(),
+            OsSandboxStatus::NoBackend if self.strict || cfg!(target_os = "linux") => {
+                "网络:不适用(无法执行)".to_string()
+            }
+            OsSandboxStatus::NoBackend => "网络:不受沙箱约束".to_string(),
+            OsSandboxStatus::WindowsJobObject => {
+                "网络:未实施(Windows 后端未接入 bash spawn 路径)".to_string()
+            }
         };
-        let sensitive = if self.enabled {
-            "敏感读:默认拒绝(凭据/SSH/钥匙串)"
-        } else {
-            "敏感读:不受约束"
+        let sensitive = match self.status() {
+            OsSandboxStatus::Seatbelt => "敏感读:默认拒绝(凭据/SSH/钥匙串)",
+            OsSandboxStatus::NoBackend if self.strict || cfg!(target_os = "linux") => {
+                "敏感读:不适用(无法执行)"
+            }
+            OsSandboxStatus::WindowsJobObject => {
+                "敏感读:未实施(Windows 后端未接入 bash spawn 路径)"
+            }
+            _ => "敏感读:不受沙箱约束",
         };
         match self.status() {
             OsSandboxStatus::Disabled => {
@@ -259,26 +354,29 @@ impl OsSandbox {
             }
             OsSandboxStatus::Seatbelt => {
                 format!(
-                    "os-sandbox: macOS Seatbelt 已启用(bash 受 sandbox-exec 约束);{net};{sensitive};strict={}",
+                    "os-sandbox: 已请求 macOS Seatbelt(bash 启动成功后受 sandbox-exec 约束);{net};{sensitive};strict={}",
                     self.strict
                 )
             }
             OsSandboxStatus::Landlock => {
                 format!(
-                    "os-sandbox: Linux Landlock 已启用(bash 受 landlock 约束);{net};{sensitive};strict={}",
+                    "os-sandbox: 已请求 Linux Landlock(bash 启动成功后生效);{net};{sensitive};strict={}",
                     self.strict
                 )
             }
             OsSandboxStatus::WindowsJobObject => {
+                // 诚实口径:Windows 后端(Job Object + AppContainer)已实现,
+                // 但**尚未接入 bash 的 spawn 路径** —— 命令实际未受文件/网络
+                // 约束,且未在 Windows 真机验证过行为。宿主据此判断能力边界。
                 format!(
-                    "os-sandbox: Windows Job Object 已启用(进程树 kill-on-close;AppContainer 由 spawn 路径应用);{net};{sensitive};strict={}",
+                    "os-sandbox: Windows Job Object 后端已实现但未接入 bash spawn 路径(命令未受文件/网络约束,未在真机验证);{net};{sensitive};strict={}",
                     self.strict
                 )
             }
             OsSandboxStatus::NoBackend => {
-                if self.strict {
+                if self.strict || cfg!(target_os = "linux") {
                     format!(
-                        "os-sandbox: 已请求启用但当前平台无可用 backend — 严格模式下 BashTool 会失败关闭;{net};{sensitive};strict={}",
+                        "os-sandbox: 已请求启用但当前平台无可用 backend — BashTool 会失败关闭;{net};{sensitive};strict={}",
                         self.strict
                     )
                 } else {
@@ -299,23 +397,148 @@ impl OsSandbox {
         )
     }
 
+    /// 敏感路径保护报告 —— 逐条说明平台**是否真的**强制了只读。
+    ///
+    /// 报告对象 = 默认元数据条目([`DEFAULT_PROTECTED_ENTRIES`],位于每个
+    /// 可写根顶层)+ 宿主显式要求的 [`OsSandbox::protected_paths`]。
+    ///
+    /// 判定口径:
+    /// - 路径落在所有可写根**之外** → 写本就被默认拒绝(`EnforcedByDefault`);
+    /// - 路径落在可写根**之内**且后端是 macOS Seatbelt → deny 规则强制
+    ///   只读(`Enforced`);
+    /// - 路径落在可写根**之内**且后端是 Linux Landlock → 内核无法按路径
+    ///   撤销写权(`Unsupported`,附原因)。
+    ///
+    /// 符号链接按真实路径判定:软链指向可写根外 → `EnforcedByDefault`;
+    /// 指向可写根内 → 与目标同口径(不能用软链把「受保护」降级成
+    /// 「不受保护」,也不能靠软链把「不可写」说成「可写」)。
+    pub fn path_protection_report(&self, workspace: &Path) -> Vec<PathProtection> {
+        let roots: Vec<PathBuf> = std::iter::once(workspace.to_path_buf())
+            .chain(self.writable_dirs.iter().cloned())
+            .map(|root| root.canonicalize().unwrap_or(root))
+            .collect();
+        let mut report: Vec<PathProtection> = Vec::new();
+
+        // 默认元数据条目:每个可写根顶层的 `.git` / `.agents` / `.aws`。
+        for root in &roots {
+            for name in DEFAULT_PROTECTED_ENTRIES {
+                let candidate = root.join(name);
+                report.push(self.classify(candidate.clone(), candidate, false, &roots));
+            }
+        }
+        // 宿主显式要求的路径(相对路径按 workspace 解析)。
+        for requested in &self.protected_paths {
+            let absolute = if requested.is_absolute() {
+                requested.clone()
+            } else {
+                workspace.join(requested)
+            };
+            let resolved = absolute.canonicalize().unwrap_or_else(|_| absolute.clone());
+            report.push(self.classify(requested.clone(), resolved, true, &roots));
+        }
+        report
+    }
+
+    /// 单条路径的判定(报告与失败关闭共用同一口径)。
+    fn classify(
+        &self,
+        requested: PathBuf,
+        resolved: PathBuf,
+        explicit: bool,
+        roots: &[PathBuf],
+    ) -> PathProtection {
+        let inside_writable_root = roots.iter().any(|root| resolved.starts_with(root));
+        let status = self.status();
+        let verdict = if !matches!(
+            status,
+            OsSandboxStatus::Seatbelt | OsSandboxStatus::Landlock
+        ) {
+            PathProtectionVerdict::Unsupported {
+                reason: format!("当前平台无可用沙箱后端(status={status:?}),无法强制敏感路径只读"),
+            }
+        } else if !inside_writable_root {
+            // 可写根之外:写被默认拒绝,等价只读。
+            PathProtectionVerdict::EnforcedByDefault
+        } else {
+            match self.status() {
+                // Seatbelt 支持 deny 规则且后匹配优先 → 可写根内的嵌套
+                // 路径可以真正只读。
+                OsSandboxStatus::Seatbelt => PathProtectionVerdict::Enforced,
+                // Landlock 的规则按位合并,没有按路径撤销的能力。
+                OsSandboxStatus::Landlock => PathProtectionVerdict::Unsupported {
+                    reason: LANDLOCK_NESTED_UNSUPPORTED.to_string(),
+                },
+                _ => PathProtectionVerdict::Unsupported {
+                    reason: format!(
+                        "当前平台无可用沙箱后端(status={:?}),无法强制敏感路径只读",
+                        self.status()
+                    ),
+                },
+            }
+        };
+        PathProtection {
+            requested,
+            resolved,
+            explicit,
+            verdict,
+        }
+    }
+
+    /// 报告里「平台无法强制」的受保护路径(仅显式要求的)。
+    pub fn unprotected_paths(&self, workspace: &Path) -> Vec<PathProtection> {
+        self.path_protection_report(workspace)
+            .into_iter()
+            .filter(|item| {
+                item.explicit && matches!(item.verdict, PathProtectionVerdict::Unsupported { .. })
+            })
+            .collect()
+    }
+
+    /// 敏感路径保护的失败关闭检查。
+    ///
+    /// `strict_paths = false`(默认):只报告不阻断 —— 平台做不到的事不
+    /// 静默宣称成功,但也不让整个会话不可用。
+    ///
+    /// `strict_paths = true`:宿主明确要求「这些路径必须只读」,而当前
+    /// 平台无法强制 → 返回 `Err`,由 BashTool 抛
+    /// `ToolError::SandboxUnavailable`,**绝不**在无保护的情况下执行。
+    pub fn enforce_protected_paths(&self, workspace: &Path) -> Result<(), String> {
+        if !self.strict_paths {
+            return Ok(());
+        }
+        let unprotected = self.unprotected_paths(workspace);
+        if unprotected.is_empty() {
+            return Ok(());
+        }
+        let detail = unprotected
+            .iter()
+            .map(|item| {
+                let reason = match &item.verdict {
+                    PathProtectionVerdict::Unsupported { reason } => reason.as_str(),
+                    _ => "未知原因",
+                };
+                format!("{}: {reason}", item.resolved.display())
+            })
+            .collect::<Vec<_>>()
+            .join("；");
+        Err(format!(
+            "宿主要求的敏感路径只读策略在当前平台无法强制({detail});\
+             拒绝在无保护的情况下执行。如需继续,请关闭该要求或改用支持该策略的平台。"
+        ))
+    }
+
     /// v1.3:fail-closed 检查。`strict && enabled` 时,后端不可用 / 平台
     /// 不是 macOS+Linux → 返回 `Err(reason)`;BashTool 据此抛
     /// `ToolError::SandboxUnavailable` 而不是裸 `sh -c`。
-    /// 非严格模式返回 `Ok(())`,由 BashTool 走旧降级路径。
+    /// Linux 无论 strict 如何均要求所请求的沙箱可用；其他平台非严格模式保留降级。
     ///
-    /// **0.1 诚实化**:`detect_backend()` 在 Linux 上无条件乐观返回
-    /// `Landlock`(真实可用性只能在 `pre_exec` 里发现),所以 strict 模式
-    /// 的这道前置检查在无 Landlock 的内核 / 被 seccomp 拦 prctl 的环境上
-    /// 会**放过**,再由 `apply_landlock` 静默降级成"没沙箱"。
-    /// 这里对 Linux 追加一次轻量内核能力探测:探测失败即视为后端不可用,
-    /// 让 strict 真正 fail-closed(代价是一次 `landlock_create_ruleset`
-    /// 系统调用,仅在启动 / 每次 BashTool 入口调用,非热路径)。
+    /// Linux 先查询 Landlock ABI；缺少 ABI v3 的截断控制时拒绝
+    /// 启动。实际安装仍在子进程中完成，安装失败会返回启动错误。
     pub fn enforce_or_fail(&self) -> Result<(), String> {
         if !self.enabled {
             return Ok(()); // 显式关闭 → 不检查
         }
-        if !self.strict {
+        if !self.strict && !cfg!(target_os = "linux") {
             return Ok(()); // 非严格模式 → 允许降级
         }
         match self.status() {
@@ -325,9 +548,9 @@ impl OsSandbox {
                 #[cfg(target_os = "linux")]
                 if !landlock_kernel_supported() {
                     return Err(
-                        "OS sandbox 后端不可用:Linux 内核不支持 Landlock(需 >= 5.13 且启用 \
-                         Landlock LSM);严格模式下拒绝裸执行。如需临时降级,设置 \
-                         ZHUYE_SANDBOX_STRICT=0。"
+                        "OS sandbox 后端不可用:Linux 内核不支持 Landlock ABI v3(需 >= 6.2 且启用 \
+                         Landlock LSM);拒绝无沙箱执行。如需关闭沙箱，显式设置 \
+                         ZHUYE_SANDBOX_OS_LEVEL=0。"
                             .into(),
                     );
                 }
@@ -337,9 +560,8 @@ impl OsSandbox {
             // AppContainer profile 失败时 spawn 路径已降级并 warn。
             OsSandboxStatus::WindowsJobObject => Ok(()),
             OsSandboxStatus::NoBackend => Err(format!(
-                "OS sandbox 后端不可用(平台:{});严格模式下拒绝裸执行。\
-                 在 macOS 需 /usr/bin/sandbox-exec;在 Linux 需 Landlock 内核支持(>= 5.13)。\
-                 如需临时降级,设置 ZHUYE_SANDBOX_STRICT=0。",
+                "OS sandbox 后端不可用(平台:{});拒绝裸执行。\
+                 在 macOS 需 /usr/bin/sandbox-exec;在 Linux 需 Landlock ABI v3(>= 6.2)。",
                 std::env::consts::OS
             )),
             OsSandboxStatus::Disabled => Err("OsSandbox 状态矛盾:enabled=true 但 Disabled".into()),
@@ -456,16 +678,39 @@ impl OsSandbox {
             .collect::<Vec<_>>()
             .join("\n            ");
 
-        // 元数据只读:workspace 与额外目录的顶层 `.git` / `.zhuye`。
+        // 元数据只读:workspace 与额外目录顶层的 `.git` / `.agents` / `.aws`
+        // / `.zhuye`(与 `zhuye-tools::sandbox` 的 `PROTECTED_WRITE_COMPONENTS`
+        // 同口径:改 hook / 改凭据即提权),外加宿主显式要求的受保护路径。
         // deny 置于 allow 之后(Seatbelt 后匹配优先),嵌套 `.git`
         // (submodule)由文件工具层的分量检查兜底。
-        let meta_readonly = meta_roots
+        //
+        // `.zhuye` 的这一条是下面「三明治」的第一步(整树 deny);随后
+        // `zhuye_allow` 整树放行(spill / plan / worktrees 等工作数据),
+        // 最后 `zhuye_child_denies` 再 deny 提权子项 —— 顺序依赖后匹配优先。
+        let mut meta_readonly_paths: Vec<String> = meta_roots
             .iter()
-            .flat_map(|root| [format!("{root}/.git"), format!("{root}/.zhuye")])
+            .flat_map(|root| {
+                DEFAULT_PROTECTED_ENTRIES
+                    .iter()
+                    .map(move |name| format!("{root}/{name}"))
+                    .chain(std::iter::once(format!("{root}/.zhuye")))
+            })
+            .collect();
+        // 宿主显式要求的路径(相对路径按 workspace 解析)。
+        for requested in &self.protected_paths {
+            let absolute = if requested.is_absolute() {
+                requested.clone()
+            } else {
+                workspace.join(requested)
+            };
+            meta_readonly_paths.push(absolute.to_string_lossy().into_owned());
+        }
+        let meta_readonly = meta_readonly_paths
+            .iter()
             .map(|path| {
                 format!(
                     "(deny file-write* (subpath {}))",
-                    serde_json::to_string(&path).expect("路径字符串可序列化")
+                    serde_json::to_string(path).expect("路径字符串可序列化")
                 )
             })
             .collect::<Vec<_>>()
@@ -620,23 +865,34 @@ impl OsSandbox {
     // ── Linux Landlock ──────────────────────────────────────────────
 
     /// Linux:返回一个 `unsafe` 的 `pre_exec` 闭包,在 fork 后、exec 前应用
-    /// Landlock 规则。闭包限制 workspace 外的写(workspace 内写/读/执行
-    /// 全放行;workspace 外读放行、写拒)。
+    /// Landlock 规则。workspace 与额外可写目录可写，其他路径默认拒绝写；
+    /// 断网时还安装 seccomp,失败即拒绝启动。
     ///
-    /// 内核不支持时,严格模式返回错误;非严格模式允许降级。
+    /// Linux 内核不支持或规则安装失败时返回错误，不受 strict 开关影响。
     ///
     /// # Safety
     /// 仅在 `pre_exec`(子进程 fork 后)上下文调用;闭包内只做 async-signal-
-    /// safe 的 libc 调用(landlock syscalls + readlink 等)。`unsafe` 因
+    /// safe 的 libc 调用(landlock、seccomp 系统调用等)。`unsafe` 因
     /// `pre_exec` 要求 `Send + Sync` 的 `FnMut` 且内部用 raw syscall。
     #[cfg(target_os = "linux")]
     pub fn landlock_pre_exec(
         &self,
         workspace: PathBuf,
     ) -> impl FnMut() -> std::io::Result<()> + Send + Sync + 'static {
-        let writable = self.writable_dirs.clone();
-        let strict = self.strict;
-        move || apply_landlock(&workspace, &writable, strict)
+        let paths = landlock::prepare_paths(&workspace, &self.writable_dirs);
+        let restrict_network = !self.allow_network;
+        // 只要请求了 Linux 沙箱，任何文件规则失败都不能降级。
+        let filter = network_filter::build();
+        move || {
+            let paths = paths
+                .as_ref()
+                .map_err(|errno| std::io::Error::from_raw_os_error(*errno))?;
+            landlock::apply_prepared(paths, true)?;
+            if restrict_network {
+                network_filter::install(&filter)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -656,7 +912,7 @@ fn extra_writable_from_env() -> Vec<PathBuf> {
 
 #[cfg(target_os = "linux")]
 mod landlock {
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::io;
     use std::os::raw::{c_char, c_int};
     use std::path::{Path, PathBuf};
@@ -687,6 +943,8 @@ mod landlock {
     pub(super) const ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
     pub(super) const ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
     pub(super) const ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
+    /// ABI v3 起提供，限制 truncate/ftruncate 及打开时截断。
+    pub(super) const ACCESS_FS_TRUNCATE: u64 = 1 << 14;
 
     // handled access 位:只限制**写类**操作(写文件/删/建),执行与读
     // 完全不受限 —— 设计注释「限制写是核心安全边界;读 / exec 不受限」
@@ -709,9 +967,9 @@ mod landlock {
         | ACCESS_FS_MAKE_FIFO
         | ACCESS_FS_MAKE_BLOCK
         | ACCESS_FS_MAKE_SYM;
+    pub(super) const ACCESS_FS_ENFORCED: u64 = ACCESS_FS_WRITE_ONLY | ACCESS_FS_TRUNCATE;
 
-    // 编译期守卫:handled 位集合必须恰好是 ABI v1 的纯写类右,且不得
-    // 含 EXECUTE / READ_* / REFER(v2)/ TRUNCATE(v3)。
+    // ABI v1 基础位不含读、执行或截断；正式规则另加 ABI v3 的截断位。
     const _: () = assert!(
         ACCESS_FS_WRITE_ONLY == 0x1ff2,
         "ACCESS_FS_WRITE_ONLY 必须是纯写类位集合 0x1ff2"
@@ -727,6 +985,10 @@ mod landlock {
     const _: () = assert!(
         ACCESS_FS_WRITE_ONLY & ACCESS_FS_READ_DIR == 0,
         "handled 不得含 READ_DIR"
+    );
+    const _: () = assert!(
+        ACCESS_FS_ENFORCED == ACCESS_FS_WRITE_ONLY | ACCESS_FS_TRUNCATE,
+        "必须覆盖读、写与直接截断"
     );
 
     #[repr(C)]
@@ -769,24 +1031,30 @@ mod landlock {
     /// 给 ruleset 加一条 `PATH_BENEATH` 规则(允许访问 `path` 本身及其
     /// 下属文件的 `allowed_access` 右)。
     ///
-    /// 路径可以是目录(workspace / 额外可写目录)也可以是普通文件或
-    /// 字符设备(/dev/null)。打开失败或规则添加失败都**静默跳过** ——
-    /// 少一条放行规则只意味着"更严",不应让沙箱整体失败。
-    fn add_path_beneath_rule(ruleset_fd: i32, path: &Path, allowed_access: u64) {
-        let cpath = match CString::new(path.to_string_lossy().as_bytes()) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        // O_PATH = 0o200000 (0x200000):只取路径引用,不打开目标。
-        let parent_fd = unsafe { open(cpath.as_ptr(), 0o200000) };
+    /// 路径可以是目录或字符设备；打开或规则安装失败都返回错误。
+    pub(super) fn prepare_paths(
+        workspace: &Path,
+        writable: &[PathBuf],
+    ) -> Result<Vec<CString>, i32> {
+        use std::os::unix::ffi::OsStrExt;
+        std::iter::once(workspace)
+            .chain(writable.iter().map(PathBuf::as_path))
+            .chain(std::iter::once(Path::new("/dev/null")))
+            .map(|path| CString::new(path.as_os_str().as_bytes()).map_err(|_| libc::EINVAL))
+            .collect()
+    }
+
+    fn add_path_beneath_rule(ruleset_fd: i32, path: &CStr, allowed_access: u64) -> io::Result<()> {
+        // Landlock 要求 O_PATH 文件描述符；O_DIRECTORY 不是 O_PATH。
+        let parent_fd = unsafe { open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
         if parent_fd < 0 {
-            return;
+            return Err(io::Error::from_raw_os_error(errno()));
         }
         let pb = LandlockPathBeneathAttr {
             allowed_access,
             parent_fd,
         };
-        let _ = unsafe {
+        let result = unsafe {
             syscall(
                 SYS_LANDLOCK_ADD_RULE,
                 ruleset_fd as i64,
@@ -795,60 +1063,65 @@ mod landlock {
                 0,
             )
         };
+        let error = (result < 0).then(|| io::Error::from_raw_os_error(errno()));
         unsafe { close(parent_fd) };
+        match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
-    /// 非破坏性地探测内核是否支持 Landlock:只发一次
-    /// `landlock_create_ruleset(NULL, 0, 0)`。该系统调用不创建任何
-    /// ruleset、不改变当前进程状态,可以安全地在常驻 agent 进程里调用。
-    ///
-    /// 返回 `false` 仅当内核缺该系统调用(ENOSYS)或 Landlock LSM 未启用
-    /// (EOPNOTSUPP)。注意它**不能**探测 `prctl(PR_SET_NO_NEW_PRIVS)` 是否
-    /// 被 seccomp 拦(那要在 pre_exec 里才会暴露),所以探测通过仍不代表
-    /// `apply_landlock` 必然成功 —— 但足以拦住"内核完全没有 Landlock"
-    /// 这一大类假阳性,让 `strict` 的 fail-closed 名副其实。
-    pub(super) fn kernel_supports_landlock() -> bool {
-        // ABI v1 attr(handled_access_fs 取纯写类位,与正式路径一致)。
-        let attr = LandlockRulesetAttr {
-            handled_access_fs: ACCESS_FS_WRITE_ONLY,
-            handled_access_net: 0,
-        };
-        let fd = unsafe {
+    /// 无副作用地查询内核 Landlock ABI。ABI v3 才能限制直接截断。
+    fn kernel_abi() -> io::Result<i64> {
+        const LANDLOCK_CREATE_RULESET_VERSION: i64 = 1;
+        let abi = unsafe {
             syscall(
                 SYS_LANDLOCK_CREATE_RULESET,
-                &attr as *const _,
-                std::mem::size_of::<LandlockRulesetAttr>(),
+                std::ptr::null::<u8>(),
                 0,
+                LANDLOCK_CREATE_RULESET_VERSION,
             )
         };
-        if fd < 0 {
-            let e = errno();
-            // ENOSYS(38)/ EOPNOTSUPP(95)→ 内核 / LSM 不支持。
-            return !(e == 38 || e == 95);
+        if abi < 0 {
+            Err(io::Error::from_raw_os_error(errno()))
+        } else {
+            Ok(abi)
         }
-        // 探测用 ruleset 立即关闭,不留 fd 泄漏。
-        // `syscall` 返回 i64 而 `close` 取 i32 —— 显式收窄(与
-        // `apply_landlock` 中 ruleset_fd 的处理一致)。
-        let ruleset_fd = fd as i32;
-        unsafe { close(ruleset_fd) };
-        true
+    }
+
+    /// 探测不修改调用者进程；实际安装仍可能失败。
+    pub(super) fn kernel_supports_landlock() -> bool {
+        matches!(kernel_abi(), Ok(3..))
     }
 
     fn may_ignore_unsupported(errno: i32, strict: bool) -> bool {
         !strict && matches!(errno, 38 | 95)
     }
 
-    /// 在 pre_exec 上下文应用 Landlock。仅 workspace(及其额外可写目录)
-    /// 放行全 access;workspace 外的写由内核拒(读 / exec 不受限 —— 与
-    /// macOS 策略一致:限制写是核心安全边界)。
+    /// 在 pre_exec 上下文应用 Landlock。仅 workspace 与额外可写目录
+    /// 放行写类访问，其余路径默认拒绝写。
     pub(super) fn apply_landlock(
         workspace: &Path,
         writable: &[PathBuf],
         strict: bool,
     ) -> io::Result<()> {
+        let paths = prepare_paths(workspace, writable).map_err(io::Error::from_raw_os_error)?;
+        apply_prepared(&paths, strict)
+    }
+
+    pub(super) fn apply_prepared(paths: &[CString], strict: bool) -> io::Result<()> {
+        match kernel_abi() {
+            Ok(3..) => {}
+            Ok(_) if !strict => return Ok(()),
+            Ok(_) => return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
+            Err(error) if may_ignore_unsupported(error.raw_os_error().unwrap_or(0), strict) => {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
         // 1. create ruleset(仅 handled_access_fs;net 留 0)。
         let attr = LandlockRulesetAttr {
-            handled_access_fs: ACCESS_FS_WRITE_ONLY,
+            handled_access_fs: ACCESS_FS_ENFORCED,
             handled_access_net: 0,
         };
         let fd = unsafe {
@@ -865,37 +1138,19 @@ mod landlock {
             if may_ignore_unsupported(e, strict) {
                 return Ok(());
             }
-            // 带 stage 的错误信息:spawn 失败消息会透传给调用方,便于
-            // 在无法本地复现的环境(CI runner)定位具体失败阶段。
-            return Err(io::Error::new(
-                io::Error::from_raw_os_error(e).kind(),
-                format!("landlock[create_ruleset errno={e}]"),
-            ));
+            // fork 后不得格式化分配错误信息，直接返回内核错误码。
+            return Err(io::Error::from_raw_os_error(e));
         }
         let ruleset_fd = fd as i32;
 
-        // 2. add rules:workspace + 额外可写目录。
-        // `chain` 两臂类型必须一致:once 产出 `&Path`,故 iter 侧映射为
-        // as_path(此前直接 iter() 产出 &PathBuf,类型不匹配编译失败)。
-        for dir in std::iter::once(workspace).chain(writable.iter().map(|p| p.as_path())) {
-            add_path_beneath_rule(ruleset_fd, dir, ACCESS_FS_WRITE_ONLY);
+        for dir in &paths[..paths.len() - 1] {
+            if let Err(error) = add_path_beneath_rule(ruleset_fd, dir, ACCESS_FS_ENFORCED) {
+                unsafe { close(ruleset_fd) };
+                return Err(error);
+            }
         }
 
-        // 2a. 元数据豁免:`.zhuye` 本身不在 allow 名单(会话 / 配置是
-        // 提权面,保持默认拒绝),但其下的 `worktrees`(side-channel
-        // 工作树)与 `plan`(PlanWrite 草稿)是引擎托管的工作数据 ——
-        // Landlock 规则彼此独立、按路径放行,直接补这两条 allow。
-        // 与 Seatbelt profile 的 meta_exceptions 同口径。
-        for dir in std::iter::once(workspace).chain(writable.iter().map(|p| p.as_path())) {
-            add_path_beneath_rule(
-                ruleset_fd,
-                &dir.join(".zhuye/worktrees"),
-                ACCESS_FS_WRITE_ONLY,
-            );
-            add_path_beneath_rule(ruleset_fd, &dir.join(".zhuye/plan"), ACCESS_FS_WRITE_ONLY);
-        }
-
-        // 2b. /dev/null:shell 里 `cmd 2>/dev/null` / `cmd >/dev/null` 是高频
+        // 2a. /dev/null:shell 里 `cmd 2>/dev/null` / `cmd >/dev/null` 是高频
         // 写法,重定向失败时 sh 会**中止整条命令**(静默跳过执行),必须显式
         // 允许。与 macOS Seatbelt profile 的
         // `(allow file-write* (path "/dev/null"))` 对齐 —— 此前只有 Seatbelt
@@ -905,34 +1160,33 @@ mod landlock {
         //
         // /dev/null 是字符设备(非目录),规则只给文件级写权限(WRITE_FILE);
         // MAKE_* / REMOVE_* 是目录语义,对文件规则无意义。
-        add_path_beneath_rule(ruleset_fd, Path::new("/dev/null"), ACCESS_FS_WRITE_FILE);
+        if let Err(error) = add_path_beneath_rule(
+            ruleset_fd,
+            &paths[paths.len() - 1],
+            ACCESS_FS_WRITE_FILE | ACCESS_FS_TRUNCATE,
+        ) {
+            unsafe { close(ruleset_fd) };
+            return Err(error);
+        }
 
         // 3. 对自身应用限制(restrict self)。
         //
         // 前置:必须先设 no_new_privs(landlock 官方要求),否则
-        // restrict_self 返回 EPERM(CI ubuntu 实测)。prctl 被环境拦截
-        // (seccomp 环境同样报 EPERM)时降级放行 —— 与「内核不支持」
-        // 同语义:沙箱尽力而为,不阻塞 exec。
+        // restrict_self 返回 EPERM。prctl 被环境拦截时返回错误，不能静默放行。
         let nnp = unsafe { prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         if nnp != 0 {
             let e = errno();
             let _ = unsafe { close(ruleset_fd) };
-            return Err(io::Error::new(
-                io::Error::from_raw_os_error(if e == 0 { 1 } else { e }).kind(),
-                format!("landlock[prctl_no_new_privs errno={e}]"),
-            ));
+            return Err(io::Error::from_raw_os_error(if e == 0 { 1 } else { e }));
         }
         let r = unsafe { syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd as i64, 0) };
+        let e = if r < 0 { errno() } else { 0 };
         unsafe { close(ruleset_fd) };
         if r < 0 {
-            let e = errno();
             if may_ignore_unsupported(e, strict) {
                 return Ok(()); // 非严格模式允许降级
             }
-            return Err(io::Error::new(
-                io::Error::from_raw_os_error(e).kind(),
-                format!("landlock[restrict_self errno={e}]"),
-            ));
+            return Err(io::Error::from_raw_os_error(e));
         }
         Ok(())
     }
@@ -1086,6 +1340,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disabled_sandbox_never_reports_explicit_paths_as_protected() {
+        let workspace = std::env::temp_dir().join("zhuye-disabled-workspace");
+        let outside = std::env::temp_dir().join("zhuye-disabled-target");
+        let sandbox = OsSandbox::passthrough().with_protected_paths([outside], true);
+        assert!(matches!(
+            sandbox.unprotected_paths(&workspace)[0].verdict,
+            PathProtectionVerdict::Unsupported { .. }
+        ));
+        assert!(sandbox.enforce_protected_paths(&workspace).is_err());
+    }
+
+    /// 敏感路径报告:落在可写根之外的路径本就被默认拒绝(等价只读)。
+    #[test]
+    fn protected_path_outside_writable_root_is_enforced_by_default() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-outside-ws");
+        let outside = std::env::temp_dir().join("zhuye-pp-outside-target");
+        let sandbox = OsSandbox::enabled(Vec::new()).with_protected_paths([outside], false);
+        let report = sandbox.path_protection_report(&workspace);
+        let target = report
+            .iter()
+            .find(|item| item.explicit)
+            .expect("显式受保护路径必须在报告里");
+        assert_eq!(
+            target.verdict,
+            PathProtectionVerdict::EnforcedByDefault,
+            "{target:?}"
+        );
+        assert!(sandbox.unprotected_paths(&workspace).is_empty());
+    }
+
+    /// 可写根**内**的嵌套路径:macOS Seatbelt 能强制只读,Linux Landlock
+    /// 不能(规则按位合并,父级写权会传播)—— 结论必须如实分平台。
+    #[test]
+    fn nested_protected_path_verdict_is_platform_specific() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-nested-ws");
+        let nested = workspace.join(".git");
+        let sandbox = OsSandbox::enabled(Vec::new()).with_protected_paths([nested.clone()], false);
+        let report = sandbox.path_protection_report(&workspace);
+        let target = report
+            .iter()
+            .find(|item| item.explicit)
+            .expect("显式受保护路径必须在报告里");
+        match sandbox.status() {
+            OsSandboxStatus::Seatbelt => {
+                assert_eq!(
+                    target.verdict,
+                    PathProtectionVerdict::Enforced,
+                    "{target:?}"
+                );
+            }
+            OsSandboxStatus::Landlock => {
+                assert!(
+                    matches!(target.verdict, PathProtectionVerdict::Unsupported { .. }),
+                    "{target:?}"
+                );
+                // 默认(lenient)只报告不阻断;宿主强制要求时必须失败关闭。
+                assert!(sandbox.enforce_protected_paths(&workspace).is_ok());
+                let strict = sandbox.with_protected_paths([nested], true);
+                let failure = strict
+                    .enforce_protected_paths(&workspace)
+                    .expect_err("平台无法强制时必须失败关闭");
+                assert!(failure.contains("无法强制"), "{failure}");
+            }
+            _ => {}
+        }
+    }
+
+    /// `strict_paths` 关闭时:平台做不到只报告不阻断(不让会话不可用)。
+    #[test]
+    fn strict_paths_off_reports_without_blocking() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-lenient-ws");
+        let nested = workspace.join(".git");
+        let sandbox = OsSandbox::enabled(Vec::new()).with_protected_paths([nested], false);
+        assert!(sandbox.enforce_protected_paths(&workspace).is_ok());
+    }
+
+    /// 默认元数据条目(`.git` / `.agents` / `.aws`)总是出现在报告里,
+    /// 让宿主看到真实状态(而不是只看到「沙箱已启用」)。
+    #[test]
+    fn default_entries_appear_in_report() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-default-ws");
+        let sandbox = OsSandbox::enabled(Vec::new());
+        let report = sandbox.path_protection_report(&workspace);
+        for name in DEFAULT_PROTECTED_ENTRIES {
+            assert!(
+                report
+                    .iter()
+                    .any(|item| { item.resolved.file_name().is_some_and(|value| value == name) }),
+                "报告缺少默认条目 {name}: {report:?}"
+            );
+        }
+    }
+
+    #[test]
     fn default_is_enabled_and_strict() {
         // v1.3:OsSandbox::default() 必须 enabled + strict,以满足
         // "默认要求 OS sandbox" 的严格安全基线。
@@ -1139,6 +1487,8 @@ mod tests {
             writable_dirs: Vec::new(),
             allow_network: false,
             strict: true,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: OsSandboxStatus::NoBackend,
         };
         assert!(s.enforce_or_fail().is_err());
@@ -1177,27 +1527,47 @@ mod tests {
         );
     }
 
-    /// 回归(0.1):`status_line()` 对网络边界必须按 backend 如实报告。
-    /// Landlock 的 `handled_access_net` 恒为 0,网络根本不受沙箱约束,
-    /// 不能因为 `allow_network = false` 就打印"网络:拒绝"。
+    /// 网络状态应区分 seccomp 断网、显式联网与未启用沙箱。
     #[test]
     fn status_line_reports_network_honestly_per_backend() {
-        // Landlock:即使 allow_network = false,也不得声称"拒绝"。
+        // Landlock 配合 seccomp 阻止创建和使用套接字。
         let ll = OsSandbox {
             enabled: true,
             writable_dirs: Vec::new(),
             allow_network: false,
             strict: true,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: OsSandboxStatus::Landlock,
         };
         let line = ll.status_line();
+        assert!(line.contains("已请求 Linux Landlock"), "{line}");
+        assert!(line.contains("启动成功后生效"), "{line}");
+        assert!(line.contains("网络:请求禁止创建和连接套接字"), "{line}");
+        assert!(line.contains("敏感读:不受沙箱约束"), "{line}");
+
+        let connected = OsSandbox {
+            allow_network: true,
+            ..ll.clone()
+        };
+        assert!(connected.status_line().contains("网络:不受沙箱约束"));
+
+        let disabled = OsSandbox {
+            enabled: false,
+            ..ll.clone()
+        };
+        assert!(disabled.status_line().contains("网络:不受沙箱约束"));
+        assert!(disabled.status_line().contains("敏感读:不受沙箱约束"));
+
+        let unavailable = OsSandbox {
+            backend: OsSandboxStatus::NoBackend,
+            ..ll
+        };
+        assert!(unavailable.status_line().contains("网络:不适用(无法执行)"));
         assert!(
-            !line.contains("网络:拒绝"),
-            "Landlock 不限制网络,不得声称拒绝: {line}"
-        );
-        assert!(
-            line.contains("不受沙箱约束"),
-            "应如实标注网络不受约束: {line}"
+            unavailable
+                .status_line()
+                .contains("敏感读:不适用(无法执行)")
         );
 
         // Seatbelt 真拦出站,allow_network = false 时称「仅本机」。
@@ -1206,6 +1576,8 @@ mod tests {
             writable_dirs: Vec::new(),
             allow_network: false,
             strict: true,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: OsSandboxStatus::Seatbelt,
         };
         assert!(sb.status_line().contains("网络:仅本机"));
@@ -1232,6 +1604,8 @@ mod tests {
             writable_dirs: Vec::new(),
             allow_network: false,
             strict: true,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: OsSandboxStatus::Landlock,
         };
         let supported = landlock_kernel_supported();
@@ -1266,16 +1640,17 @@ mod tests {
     }
 
     #[test]
-    fn enforce_or_fail_non_strict_never_errors() {
-        // 非严格模式 → 允许降级透传(用于本地调试 / 过渡期)。
+    fn enforce_or_fail_non_strict_respects_platform_policy() {
         let s = OsSandbox {
             enabled: true,
             writable_dirs: Vec::new(),
             allow_network: false,
             strict: false,
+            protected_paths: Vec::new(),
+            strict_paths: false,
             backend: OsSandboxStatus::NoBackend,
         };
-        assert!(s.enforce_or_fail().is_ok());
+        assert_eq!(s.enforce_or_fail().is_err(), cfg!(target_os = "linux"));
         let s = OsSandbox::passthrough();
         assert!(s.enforce_or_fail().is_ok());
     }
@@ -1451,6 +1826,91 @@ mod tests {
         );
     }
 
+    /// 敏感路径保护真机验证(macOS Seatbelt):可写根内的 `.git` 不可写,
+    /// 同一可写根的普通文件照常可写。Linux 上 Landlock 无法表达
+    /// 「可写根内撤销嵌套路径写权」(规则按位合并),由
+    /// `nested_protected_path_verdict_is_platform_specific` 断言该差异。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_protects_metadata_paths_inside_writable_root() {
+        let workspace =
+            std::env::temp_dir().join(format!("zhuye-sandbox-meta-{}", std::process::id()));
+        std::fs::create_dir_all(workspace.join(".git")).expect("建工作区");
+        let s = OsSandbox::enabled(Vec::new());
+        let script = format!(
+            "cd {ws} && (echo x > .git/hook.sh) 2>/dev/null; (echo x > plain.txt) 2>/dev/null; \
+             test -f .git/hook.sh && echo GIT_WROTE || echo GIT_BLOCKED; \
+             test -f plain.txt && echo PLAIN_OK || echo PLAIN_FAILED",
+            ws = workspace.display()
+        );
+        let (prog, args) = s.seatbelt_argv(&workspace, &script).unwrap();
+        let out = std::process::Command::new(&prog)
+            .args(&args)
+            .output()
+            .expect("sandbox-exec 必须可运行");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("GIT_BLOCKED"),
+            ".git 必须不可写;stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("PLAIN_OK"),
+            "普通文件必须可写;stdout: {stdout}"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// Linux:可写根**外**的写入被内核拒绝(敏感路径落在可写根外时的
+    /// 真实强制);可写根**内**的嵌套路径无法强制 —— 报告必须如实标注
+    /// `Unsupported`,不得假装保护已生效。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_denies_writes_outside_root_and_reports_nested_gap() {
+        use std::io;
+        use std::os::unix::process::CommandExt;
+
+        const CHILD: &str = "ZHUYE_LANDLOCK_OUTSIDE_TEST_CHILD";
+        if let Some(target) = std::env::var_os(CHILD) {
+            let target = std::ffi::CString::new(target.to_str().unwrap()).unwrap();
+            let result = unsafe {
+                libc::open(
+                    target.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                    0o644,
+                )
+            };
+            assert!(result < 0, "可写根外的写入必须被拒绝");
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EACCES)
+            );
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("protected.txt");
+        let mut sandbox = OsSandbox::enabled(Vec::new());
+        sandbox.allow_network = true;
+        let mut setup = sandbox.landlock_pre_exec(workspace.path().to_owned());
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .arg("--exact")
+            .arg("os_sandbox::tests::landlock_denies_writes_outside_root_and_reports_nested_gap")
+            .arg("--nocapture")
+            .env(CHILD, &target);
+        unsafe {
+            child.pre_exec(move || setup());
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "子进程断言失败: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!target.exists(), "可写根外的文件不应被创建");
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_apply_does_not_panic() {
@@ -1475,7 +1935,7 @@ mod tests {
             return;
         }
         let ws = std::env::temp_dir();
-        if apply_landlock(&ws, &[], false).is_err() {
+        if apply_landlock(&ws, &[], true).is_err() {
             std::process::exit(2); // 环境不支持 Landlock → 父进程按 skip 处理
         }
         match std::fs::OpenOptions::new().write(true).open("/dev/null") {
@@ -1503,7 +1963,7 @@ mod tests {
         let status = std::process::Command::new(exe)
             .args([
                 "--exact",
-                "tests::landlock_devnull_write_child",
+                "os_sandbox::tests::landlock_devnull_write_child",
                 "--nocapture",
                 "--test-threads=1",
             ])

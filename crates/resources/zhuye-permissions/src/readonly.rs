@@ -73,11 +73,43 @@ pub fn classify_access(argv: &[String]) -> AccessKind {
     // 2) 已知只读程序(整条命令无写语义)。
     if is_always_readonly_program(program) {
         // 但 `find -delete` / `find -exec` 会写/执行 —— 例外。
-        if program == "find" && has_any_flag(args, &["-delete", "-exec", "-execdir", "-ok"]) {
+        if program == "find"
+            && has_any_flag(
+                args,
+                &[
+                    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0",
+                    "-fprintf", "-fls",
+                ],
+            )
+        {
             return AccessKind::Writes;
         }
         // `sort -o file` 会写。
-        if program == "sort" && has_any_flag(args, &["-o", "--output"]) {
+        if program == "sort"
+            && args.iter().any(|arg| {
+                arg == "-o"
+                    || arg.starts_with("-o")
+                    || arg == "--output"
+                    || arg.starts_with("--output=")
+            })
+        {
+            return AccessKind::Writes;
+        }
+        if program == "sort" && args.iter().any(|arg| arg.starts_with("--compress-program")) {
+            return AccessKind::Opaque;
+        }
+        if program == "rg"
+            && args
+                .iter()
+                .any(|arg| arg == "--pre" || arg.starts_with("--pre="))
+        {
+            return AccessKind::Opaque;
+        }
+        if program == "diff"
+            && args
+                .iter()
+                .any(|arg| arg == "--output" || arg.starts_with("--output="))
+        {
             return AccessKind::Writes;
         }
         return AccessKind::ReadOnly;
@@ -121,7 +153,7 @@ fn is_always_readonly_program(program: &str) -> bool {
     matches!(
         program,
         // 查看类
-        "ls" | "cat" | "head" | "tail" | "less" | "more" | "wc" | "file" | "stat"
+        "ls" | "cat" | "head" | "tail" | "wc" | "stat"
         | "du" | "df" | "pwd" | "whoami" | "id" | "uname" | "hostname" | "date"
         | "uptime" | "ps" | "env" | "printenv" | "which" | "whereis" | "type"
         | "dirname" | "basename" | "realpath" | "readlink"
@@ -129,15 +161,15 @@ fn is_always_readonly_program(program: &str) -> bool {
         | "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "fd" | "locate"
         | "find" | "tree"
         // 文本处理(纯 stdout)
-        | "sort" | "uniq" | "cut" | "tr" | "sed" | "awk" | "gawk" | "diff" | "cmp"
+        | "sort" | "uniq" | "cut" | "tr" | "diff" | "cmp"
         | "comm" | "join" | "paste" | "column" | "nl" | "rev" | "fold" | "expand"
         // 编码 / 摘要
         | "base64" | "md5" | "md5sum" | "shasum" | "sha256sum" | "sha1sum"
-        | "xxd" | "od" | "hexdump" | "jq" | "yq" | "tomlq"
+        | "od" | "hexdump" | "jq" | "tomlq"
         // 环境探测
         | "true" | "false" | "test" | "[" | "echo" | "printf"
-        // 网络读取(GET 语义;curl 带 -X POST 等在 classify 里判)
-        | "curl" | "wget" | "ping" | "dig" | "nslookup" | "host"
+        // 解析查询
+        | "dig" | "nslookup" | "host"
     )
 }
 
@@ -159,12 +191,22 @@ fn is_always_write_program(program: &str) -> bool {
             | "shred"
             | "install"
             | "rsync"
-            | "sed" // 注意:`sed -i` 会写;但 `sed` 本身常配合 -i,保守归写
     )
 }
 
 /// `git` 子命令粒度。
 fn classify_git(args: &[String]) -> AccessKind {
+    // Git 的配置覆盖、外部程序和输出路径可产生副作用，不能视为只读。
+    if args.iter().any(|arg| {
+        arg == "-c"
+            || (arg.starts_with("-c") && arg.len() > 2)
+            || arg.starts_with("--config-env")
+            || arg.starts_with("--exec-path")
+            || arg == "--output"
+            || arg.starts_with("--output=")
+    }) {
+        return AccessKind::Opaque;
+    }
     // 跳过全局选项(`-C <dir>` / `--no-pager` / `-c k=v`),找到子命令。
     let mut idx = 0;
     while idx < args.len() {
@@ -451,6 +493,27 @@ mod tests {
         assert_eq!(kind("find . -name x"), AccessKind::ReadOnly);
         assert_eq!(kind("find . -delete"), AccessKind::Writes);
         assert_eq!(kind("find . -exec rm {} ;"), AccessKind::Writes);
+    }
+
+    #[test]
+    fn dynamic_or_writing_flags_are_never_auto_allowed() {
+        for cmd in [
+            "sed -i s/a/b/ file",
+            "awk script file",
+            "curl -o file http://127.0.0.1",
+            "wget -O file http://127.0.0.1",
+            "sort -ofile input",
+            "sort --output=file input",
+            "sort --compress-program=sh input",
+            "find . -fprint output",
+            "rg --pre=sh needle",
+            "git -c core.pager=sh status",
+            "git log --output=file",
+            "yq -i script file",
+            "xxd -r input output",
+        ] {
+            assert!(!kind(cmd).is_auto_allow(), "{cmd}");
+        }
     }
 
     #[test]

@@ -1568,6 +1568,14 @@ pub async fn submission_loop(
                     );
                 }
             }
+            zhuye_protocol::Op::McpElicitationResponse(response) => {
+                let id = response.id.clone();
+                if let Some(tx) = cfg.approval_context.mcp_elicitations.lock().remove(&id) {
+                    let _ = tx.send(response);
+                } else {
+                    tracing::debug!(request_id = %id, "mcp elicitation reply arrived but no waiter; dropping");
+                }
+            }
             zhuye_protocol::Op::SetPermissionMode { mode } => {
                 // v1.3 safety baseline(plan §四):旧版 `Bypass` 模式
                 // 仍可经历史 config 快照与残留的 client RPC 触达,

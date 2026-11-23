@@ -15,14 +15,263 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 
+#[allow(deprecated)]
+use rmcp::ClientHandler;
+#[allow(deprecated)]
+use rmcp::model::{
+    CreateMessageRequestParams, CreateMessageResult, ElicitRequestParams, ElicitResult,
+    ElicitationAction, ElicitationSchema, ErrorData as RmcpError, Implementation,
+};
+#[allow(deprecated)]
 use rmcp::transport::{
     TokioChildProcess,
     streamable_http_client::{StreamableHttpClientTransport, StreamableHttpClientTransportConfig},
 };
+
+use rmcp::service::{RequestContext, RoleClient};
 use tokio::process::Command;
+use tokio::sync::{mpsc, oneshot};
+use zhuye_protocol::{
+    McpElicitationEvent, McpElicitationField, McpElicitationFieldKind, McpElicitationKind,
+    McpElicitationResponse,
+};
 
 use crate::McpError;
 use crate::config::McpTransport;
+use crate::manager::McpLifecycleEvent;
+use crate::tool::{McpToolDescriptor, tool_descriptor_from_rmcp};
+
+/// 把 rmcp 的 server→client 请求桥到宿主事件通道。
+///
+/// 只有 elicitation 落地:sampling(`create_message`)需要宿主模型调用与人工授权,
+/// 尚未实现,因此 `get_info` **不声明** sampling 能力,合规服务端不会发该请求。
+struct HostClientHandler {
+    server_name: String,
+    lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
+    /// 各 server 当前生效的工具快照(与 manager 共享):`(版本号, 描述符)`。
+    /// 运行期刷新时据此算出「哪些工具消失了」。
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+}
+
+#[allow(deprecated)]
+impl ClientHandler for HostClientHandler {
+    fn get_info(&self) -> rmcp::model::ClientConfig {
+        #[allow(deprecated)]
+        let capabilities = rmcp::model::ClientCapabilities::builder()
+            .enable_elicitation()
+            .build();
+        rmcp::model::ClientConfig::new(
+            capabilities,
+            Implementation::new("zhuye", env!("CARGO_PKG_VERSION")),
+        )
+    }
+
+    async fn create_elicitation(
+        &self,
+        request: ElicitRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<ElicitResult, RmcpError> {
+        let (message, kind, require_content) = match request {
+            ElicitRequestParams::FormElicitationParams {
+                message,
+                requested_schema,
+                ..
+            } => (message, elicitation_form(&requested_schema), true),
+            ElicitRequestParams::UrlElicitationParams { message, url, .. } => {
+                (message, McpElicitationKind::Link { url }, false)
+            }
+            // 未识别的服务端形态(协议后续新增):不猜语义,按 decline 让
+            // 调用它的 tools/call 继续收尾。
+            _ => return Ok(ElicitResult::new(ElicitationAction::Decline)),
+        };
+        self.ask(message, kind, require_content).await
+    }
+
+    /// 服务端通知工具清单变化 → 重新拉取并把新清单交给宿主。
+    ///
+    /// rmcp 在收到通知时会失效自己的工具缓存,这里再 `list_all_tools()`
+    /// 即拿到服务端最新清单。变化以 `McpLifecycleEvent::ToolsChanged`
+    /// 上报(新清单 + 消失的工具全名),由调用方更新工具注册表。
+    async fn on_tool_list_changed(&self, context: rmcp::service::NotificationContext<RoleClient>) {
+        let peer = context.peer.clone();
+        let listed = peer.list_all_tools().await;
+        let tools = match listed {
+            Ok(tools) => tools,
+            Err(error) => {
+                tracing::warn!(
+                    server = %self.server_name,
+                    %error,
+                    "工具列表刷新失败,保留当前注册"
+                );
+                return;
+            }
+        };
+        let descriptors: Vec<McpToolDescriptor> = tools
+            .iter()
+            .map(|tool| tool_descriptor_from_rmcp(&self.server_name, tool))
+            .collect();
+        // 写快照:版本号单调递增,让 manager 能识别「刷新早于启动收尾」的
+        // 竞态(收尾时按版本取最新清单)。
+        {
+            let mut snapshots = self.tool_snapshots.write().await;
+            let entry = snapshots
+                .entry(self.server_name.clone())
+                .or_insert((0, Vec::new()));
+            entry.0 += 1;
+            entry.1 = descriptors.clone();
+        }
+        let _ = self
+            .lifecycle_tx
+            .send(McpLifecycleEvent::ToolsChanged {
+                server: self.server_name.clone(),
+                tools: descriptors,
+            })
+            .await;
+    }
+
+    async fn create_message(
+        &self,
+        _params: CreateMessageRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<CreateMessageResult, RmcpError> {
+        // 兜底拒绝:能力协商已省略 sampling,这里防止不合规服务端把请求挂死。
+        Err(RmcpError::method_not_found::<
+            rmcp::model::CreateMessageRequestMethod,
+        >())
+    }
+}
+
+impl HostClientHandler {
+    /// 发一条 `EventMsg::McpElicitation` 并等宿主回执。
+    ///
+    /// waiter 登记与 TTL 兜底在 `zhuye-exec` 的桥接任务里做(它同时握着协议
+    /// 事件通道与会话级等待表);这里只管「发出去 / 拿到裁决」。
+    async fn ask(
+        &self,
+        message: String,
+        kind: McpElicitationKind,
+        require_content: bool,
+    ) -> Result<ElicitResult, RmcpError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel::<McpElicitationResponse>();
+        let event = McpElicitationEvent {
+            request_id: request_id.clone(),
+            server: self.server_name.clone(),
+            message,
+            kind,
+        };
+        if self
+            .lifecycle_tx
+            .send(McpLifecycleEvent::Elicitation { event, respond: tx })
+            .await
+            .is_err()
+        {
+            // 桥接任务已退出(会话收尾):按 fail-closed 拒绝,不等回执。
+            return Ok(ElicitResult::new(ElicitationAction::Decline));
+        }
+        let response = rx.await.unwrap_or_else(|_| McpElicitationResponse {
+            id: request_id.clone(),
+            action: "cancel".into(),
+            content: None,
+        });
+        match response.action.as_str() {
+            "accept" => Ok(match response.content {
+                Some(content) => ElicitResult::new(ElicitationAction::Accept).with_content(content),
+                // form 形态必须有承载输入的对象的;宿主漏给时补空对象,
+                // 让服务端按 schema 报错而不是收到结构异常的响应。
+                None if require_content => {
+                    ElicitResult::new(ElicitationAction::Accept).with_content(serde_json::json!({}))
+                }
+                None => ElicitResult::new(ElicitationAction::Accept),
+            }),
+            "decline" => Ok(ElicitResult::new(ElicitationAction::Decline)),
+            // 其它值(含 TTL / 通道断开的内部 cancel)统一按协议 cancel 上送。
+            _ => Ok(ElicitResult::new(ElicitationAction::Cancel)),
+        }
+    }
+}
+
+/// 服务端 elicitation schema(扁平对象 + 原始类型属性)→ 宿主表单字段。
+fn elicitation_form(schema: &ElicitationSchema) -> McpElicitationKind {
+    let required = schema.required.clone().unwrap_or_default();
+    // `property_order` 保留服务端声明顺序;由 BTreeMap 构造时为空,退回键序。
+    let names: Vec<String> = match &schema.property_order {
+        Some(order) if !order.is_empty() => order.clone(),
+        _ => schema.properties.keys().cloned().collect(),
+    };
+    let fields = names
+        .iter()
+        .filter_map(|name| {
+            let property = schema.properties.get(name)?;
+            let shape = serde_json::to_value(property).unwrap_or(serde_json::Value::Null);
+            let lowered = name.to_ascii_lowercase();
+            let secret = ["password", "secret", "token"]
+                .iter()
+                .any(|needle| lowered.contains(needle));
+            Some(McpElicitationField {
+                name: name.clone(),
+                title: string_field(&shape, "title"),
+                description: string_field(&shape, "description"),
+                required: required.iter().any(|r| r == name),
+                kind: field_kind(&shape, secret),
+            })
+        })
+        .collect();
+    McpElicitationKind::Form { fields }
+}
+
+/// 单个属性的 schema → 字段类型。先认候选项形态(`enum` / `anyOf` const),
+/// 再按 `type` 落到文本 / 数值 / 布尔。
+fn field_kind(shape: &serde_json::Value, secret: bool) -> McpElicitationFieldKind {
+    if let Some(options) = enum_options(shape.get("enum")) {
+        return McpElicitationFieldKind::Enum {
+            options,
+            multi: false,
+        };
+    }
+    if let Some(options) = const_options(shape.get("anyOf")) {
+        return McpElicitationFieldKind::Enum {
+            options,
+            multi: true,
+        };
+    }
+    match shape.get("type").and_then(serde_json::Value::as_str) {
+        Some("number") => McpElicitationFieldKind::Number { integer: false },
+        Some("integer") => McpElicitationFieldKind::Number { integer: true },
+        Some("boolean") => McpElicitationFieldKind::Boolean,
+        _ => McpElicitationFieldKind::Text { secret },
+    }
+}
+
+fn string_field(shape: &serde_json::Value, key: &str) -> Option<String> {
+    shape
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn enum_options(values: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    let items = values?.as_array()?;
+    let options: Vec<String> = items
+        .iter()
+        .filter_map(|item| item.as_str().map(str::to_string))
+        .collect();
+    (!options.is_empty()).then_some(options)
+}
+
+/// 多选形态:`{"anyOf": [{"const": "a", "title": "..."}, ...]}`。
+fn const_options(items: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    let items = items?.as_array()?;
+    let options: Vec<String> = items
+        .iter()
+        .filter_map(|item| {
+            item.get("const")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    (!options.is_empty()).then_some(options)
+}
 
 /// 已构造好的 transport 与一个 `RunningService<RoleClient, ()>`
 /// —— 本 crate 不暴露 rmcp 类型穿透到 caller;`manager.rs` 直接消费。
@@ -35,18 +284,53 @@ pub struct McpTransportHandle {
 }
 
 /// 根据 transport 类型分发构造。
+#[allow(clippy::too_many_arguments)]
 pub async fn build(
+    server_name: &str,
     transport: McpTransport,
     command: Option<&str>,
     args: &[String],
     env: &HashMap<String, String>,
     url: Option<&str>,
     headers: &HashMap<String, String>,
+    lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    oauth: Option<crate::config::McpOAuthConfig>,
 ) -> Result<McpTransportHandle, McpError> {
     match transport {
-        McpTransport::Stdio => build_stdio(command, args, env).await,
-        McpTransport::Http => build_http(url, headers).await,
-        McpTransport::Sse => build_sse(url, headers).await,
+        McpTransport::Stdio => {
+            build_stdio(
+                server_name,
+                command,
+                args,
+                env,
+                lifecycle_tx,
+                tool_snapshots,
+            )
+            .await
+        }
+        McpTransport::Http => {
+            build_http(
+                server_name,
+                url,
+                headers,
+                lifecycle_tx,
+                tool_snapshots,
+                oauth,
+            )
+            .await
+        }
+        McpTransport::Sse => {
+            build_sse(
+                server_name,
+                url,
+                headers,
+                lifecycle_tx,
+                tool_snapshots,
+                oauth,
+            )
+            .await
+        }
     }
 }
 
@@ -59,10 +343,14 @@ pub async fn build(
 /// 3. spawn 出 `tokio::process::Child`;
 /// 4. 用 `TokioChildProcess` 包装 `(read, write)`;
 /// 5. `().serve(transport)` 跑 initialize 握手。
+#[allow(clippy::too_many_arguments)]
 pub async fn build_stdio(
+    server_name: &str,
     command: Option<&str>,
     args: &[String],
     env: &HashMap<String, String>,
+    lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
 ) -> Result<McpTransportHandle, McpError> {
     let cmd_str =
         command.ok_or_else(|| McpError::ConfigInvalid("stdio requires `command`".to_string()))?;
@@ -83,20 +371,23 @@ pub async fn build_stdio(
     inject_safe_env(&mut cmd, env);
     let transport = TokioChildProcess::new(cmd).map_err(McpError::Spawn)?;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let running = rmcp::service::ServiceExt::serve((), transport)
+    let handler = HostClientHandler {
+        server_name: server_name.to_string(),
+        lifecycle_tx,
+        tool_snapshots,
+    };
+    let running = rmcp::service::ServiceExt::serve(handler, transport)
         .await
         .map_err(|e| McpError::Initialize(format!("stdio serve: {e}")))?;
     // Peer<R> derives Clone (rmcp 1.7);抽出 owned Peer 用 Arc 包好共享。
     let peer = Arc::new(running.peer().clone());
-    // 把 `running` 移进后台 task 持有 —— DropGuard(在 RunningService 内部)会一直
-    // 跟着 task 存活,从而 transport / 子进程保持打开。
-    // `cancel.cancelled()` 触发后 task 才让 `running` drop,此时 DropGuard 取消
-    // 内部 cancel token → TokioChildProcess 关闭 pipes → kill_on_drop 杀子进程。
+    // 同时等待主动关闭和对端断开；对端断开时通知所有使用该连接的调用。
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
-        let _hold = running; // 关键:running 必须活过 `list_all_tools` 等调用。
-        cancel_clone.cancelled().await;
-        // `_hold` 在这里 drop,触发 RunningService DropGuard。
+        tokio::select! {
+            _ = cancel_clone.cancelled() => {},
+            _ = running.waiting() => cancel_clone.cancel(),
+        }
     });
     Ok(McpTransportHandle { peer, cancel })
 }
@@ -105,9 +396,14 @@ pub async fn build_stdio(
 ///
 /// `headers["Authorization"]` 自动剥离到 `auth_header`,其余 header
 /// 透传到 `custom_headers`。
+#[allow(clippy::too_many_arguments)]
 pub async fn build_http(
+    server_name: &str,
     url: Option<&str>,
     headers: &HashMap<String, String>,
+    lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    oauth: Option<crate::config::McpOAuthConfig>,
 ) -> Result<McpTransportHandle, McpError> {
     let url_str = url.ok_or_else(|| McpError::ConfigInvalid("http requires `url`".to_string()))?;
     let mut cfg = StreamableHttpClientTransportConfig::with_uri(url_str);
@@ -130,17 +426,61 @@ pub async fn build_http(
     }
     cfg = cfg.custom_headers(custom_headers);
     let reqwest_client = reqwest::Client::new();
+    // OAuth:静态 token / 环境变量 / 客户端凭据换 token。
+    // 拿不到 token 不直接失败 —— 先按匿名握手,服务端 401 时再按
+    // 「需要授权」上报(见下方握手错误分支),避免无谓的预取请求。
+    let mut token_error: Option<String> = None;
+    if let Some(oauth) = oauth.as_ref() {
+        match crate::oauth::resolve_token(&reqwest_client, oauth, url_str).await {
+            Ok(Some(token)) => cfg = cfg.auth_header(token),
+            Ok(None) => {}
+            Err(error) => {
+                // 解析失败不直接终止:先匿名握手,服务端要求授权时再把这条
+                // 原因一并上报(宿主据此看到「为什么没带上 token」)。
+                token_error = Some(error.to_string());
+            }
+        }
+    }
     let transport = StreamableHttpClientTransport::with_client(reqwest_client, cfg);
     let cancel = tokio_util::sync::CancellationToken::new();
-    let running = rmcp::service::ServiceExt::serve((), transport)
+    let handler = HostClientHandler {
+        server_name: server_name.to_string(),
+        lifecycle_tx,
+        tool_snapshots,
+    };
+    let running = rmcp::service::ServiceExt::serve(handler, transport)
         .await
-        .map_err(|e| McpError::Initialize(format!("http serve: {e}")))?;
+        .map_err(|e| {
+            // 401:服务端要求授权。按受保护资源元数据发现端点,把可执行的
+            // 信息交给宿主(引擎不代跑浏览器)。
+            let message = format!("http serve: {e}");
+            // rmcp 把 401 归一成 "Auth required";同时兼容裸 401 / Unauthorized。
+            let auth_hint = ["401", "Unauthorized", "Auth required", "authenticate"]
+                .iter()
+                .any(|needle| message.contains(needle));
+            if auth_hint {
+                // 端点发现是网络 I/O,不能在错误构造里 await;这里给出可执行的
+                // 静态提示,精确端点由 resolve_token(有凭据时)或宿主侧发现。
+                let reason = match &token_error {
+                    Some(reason) => format!("(取 token 失败:{reason})"),
+                    None => String::new(),
+                };
+                return McpError::AuthRequired(format!(
+                    "{message}{reason};该 MCP server 需要 OAuth 授权 —— 请在 [mcp_servers.<name>.oauth] \
+                 配置 token / token_env / client_id(+client_secret),或用授权码流程取得 token 后 \
+                 通过 headers.Authorization 提供"
+                ));
+            }
+            McpError::Initialize(message)
+        })?;
     let peer = Arc::new(running.peer().clone());
-    // 同 stdio:running 移进后台 task 持有,等 cancel 触发再 drop(关 HTTP 连接)。
+    // 与 stdio 一致，在主动关闭或服务端断开时结束连接。
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
-        let _hold = running;
-        cancel_clone.cancelled().await;
+        tokio::select! {
+            _ = cancel_clone.cancelled() => {},
+            _ = running.waiting() => cancel_clone.cancel(),
+        }
     });
     Ok(McpTransportHandle { peer, cancel })
 }
@@ -150,12 +490,25 @@ pub async fn build_http(
 /// v1+ 阶段:legacy 纯 SSE endpoint 协议与 streamable-http 在 wire 层相近,
 /// 此处复用 `StreamableHttpClientTransport`(内部走 SSE 长连接)。若服务端
 /// 仅支持旧式 `endpoint` 事件握手,请改用 `type = "stdio"` 或升级 server。
+#[allow(clippy::too_many_arguments)]
 pub async fn build_sse(
+    server_name: &str,
     url: Option<&str>,
     headers: &HashMap<String, String>,
+    lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    oauth: Option<crate::config::McpOAuthConfig>,
 ) -> Result<McpTransportHandle, McpError> {
     tracing::debug!("mcp transport=sse: delegating to streamable-http SSE client");
-    build_http(url, headers).await
+    build_http(
+        server_name,
+        url,
+        headers,
+        lifecycle_tx,
+        tool_snapshots,
+        oauth,
+    )
+    .await
 }
 
 /// 安全注入 env:`env_clear()` 后只加 `HOME`/`PATH` + 用户 env。

@@ -31,6 +31,8 @@ const MAX_LINE_INDEX: usize = usize::MAX / 2;
 /// "显示多少行"、不限制"读入多少字节" —— 一个 10GB 文本文件会直接把
 /// 进程 OOM。超过上限时给出可操作错误(引导用 grep + offset 分段)。
 const MAX_READ_BYTES: u64 = 32 * 1024 * 1024;
+/// 字节分页上限小于模型输出预算，单行大文件也可逐段读回。
+const MAX_BYTE_PAGE: u64 = 4096;
 
 fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, ToolError> {
     let mut bytes = Vec::new();
@@ -66,7 +68,9 @@ impl Tool for ReadTool {
                 // `limit: 18446744073709551615` 时 `offset + limit` 在
                 // release 下回绕 → `start > end` → slice 索引 panic。
                 "offset": {"type": "integer", "minimum": 0, "maximum": MAX_LINE_INDEX, "description": "Start line (0-indexed)"},
-                "limit": {"type": "integer", "minimum": 0, "maximum": MAX_LINE_INDEX, "description": "Max lines to read"}
+                "limit": {"type": "integer", "minimum": 0, "maximum": MAX_LINE_INDEX, "description": "Max lines to read"},
+                "byte_offset": {"type": "integer", "minimum": 0, "description": "UTF-8 byte offset for byte pagination"},
+                "byte_limit": {"type": "integer", "minimum": 4, "maximum": MAX_BYTE_PAGE, "description": "Maximum bytes per byte page"}
             },
             "required": ["path"],
             "additionalProperties": false
@@ -105,13 +109,68 @@ impl Tool for ReadTool {
         let mut pinned = open_readonly(&abs)?;
         let f = &mut pinned.file;
         let n = f.read(&mut sniff)?;
-        if sniff[..n].contains(&0u8) {
+        if sniff[..n].contains(&0u8)
+            && args.get("byte_offset").is_none()
+            && args.get("byte_limit").is_none()
+        {
             return Ok(ToolOutput {
                 content: vec![zhuye_protocol::ContentBlock::text(
                     "binary file detected; use grep for binary content",
                 )],
                 is_error: true,
                 metadata: serde_json::json!({"path": path_str, "binary": true}),
+                elapsed_ms: 0,
+            });
+        }
+        if args.get("byte_offset").is_some() || args.get("byte_limit").is_some() {
+            if args.get("offset").is_some() || args.get("limit").is_some() {
+                return Err(ToolError::InvalidArgs {
+                    message: "byte_offset/byte_limit 与行分页不能同时使用".into(),
+                });
+            }
+            let start = args.get("byte_offset").and_then(Value::as_u64).unwrap_or(0);
+            let page_size = args
+                .get("byte_limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(MAX_BYTE_PAGE);
+            if !(4..=MAX_BYTE_PAGE).contains(&page_size) {
+                return Err(ToolError::InvalidArgs {
+                    message: format!("byte_limit 必须在 4 到 {MAX_BYTE_PAGE} 之间"),
+                });
+            }
+            let total = f.metadata()?.len();
+            if start > total {
+                return Err(ToolError::InvalidArgs {
+                    message: "byte_offset 超过文件长度".into(),
+                });
+            }
+            f.seek(SeekFrom::Start(start))?;
+            let mut bytes = Vec::new();
+            f.take(page_size).read_to_end(&mut bytes)?;
+            let valid = match std::str::from_utf8(&bytes) {
+                Ok(_) => bytes.len(),
+                Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                Err(e) => {
+                    return Err(ToolError::InvalidArgs {
+                        message: format!("字节偏移不在 UTF-8 字符边界或文件不是 UTF-8: {e}"),
+                    });
+                }
+            };
+            if !bytes.is_empty() && valid == 0 {
+                return Err(ToolError::InvalidArgs {
+                    message: "字节偏移不在 UTF-8 字符边界或文件末尾是不完整字符".into(),
+                });
+            }
+            let text =
+                std::str::from_utf8(&bytes[..valid]).map_err(|e| ToolError::Io(e.to_string()))?;
+            let next = start.saturating_add(valid as u64).min(total);
+            return Ok(ToolOutput {
+                content: vec![zhuye_protocol::ContentBlock::text(format!(
+                    "{text}\n[字节分页: next_byte_offset={next}, total_bytes={total}, has_more={}]",
+                    next < total
+                ))],
+                is_error: false,
+                metadata: serde_json::json!({"path": abs.to_string_lossy(), "byte_offset": start, "next_byte_offset": next, "total_bytes": total, "has_more": next < total}),
                 elapsed_ms: 0,
             });
         }
@@ -218,6 +277,38 @@ mod tests {
         }
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn byte_pagination_reads_beyond_standard_size_limit() {
+        use std::io::Write;
+        let ws = tempfile::tempdir().unwrap();
+        let mut file = std::fs::File::create(ws.path().join("large.txt")).unwrap();
+        file.set_len(MAX_READ_BYTES + 4).unwrap();
+        file.seek(SeekFrom::Start(MAX_READ_BYTES + 1)).unwrap();
+        file.write_all("尾".as_bytes()).unwrap();
+        let out = ReadTool.execute(make_ctx(ws.path()), serde_json::json!({"path":"large.txt", "byte_offset":MAX_READ_BYTES + 1, "byte_limit":4})).await.unwrap();
+        assert!(!out.is_error);
+        assert_eq!(out.metadata["next_byte_offset"], MAX_READ_BYTES + 4);
+        assert_eq!(out.metadata["has_more"], false);
+        assert!(
+            matches!(&out.content[0], zhuye_protocol::ContentBlock::Text { text } if text.starts_with("尾\n"))
+        );
+    }
+
+    #[tokio::test]
+    async fn byte_pagination_rejects_non_boundary_and_mixed_modes() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a.txt"), "中").unwrap();
+        for args in [
+            serde_json::json!({"path":"a.txt", "byte_offset":1}),
+            serde_json::json!({"path":"a.txt", "byte_offset":0, "offset":0}),
+        ] {
+            assert!(matches!(
+                ReadTool.execute(make_ctx(ws.path()), args).await,
+                Err(ToolError::InvalidArgs { .. })
+            ));
+        }
     }
 
     #[tokio::test]

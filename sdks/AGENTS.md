@@ -30,6 +30,8 @@
 - 改 wire 语义**先改 `sdks/PROTOCOL.md`**,再改双 SDK 类型层与实现。
 - 三个协议面只有一套定义:Submission(Op)、Event(EventMsg)、RolloutRecord,判别符统一为 snake_case 字符串。
 - 英文版 `sdks/PROTOCOL.en.md` 不参与自动门禁,但协议变更后仍须同步翻译。
+- 前台 `bash` 成功启动后的 `tool_call_end.output.metadata.network_restriction` 报告实际网络限制；它是开放 metadata 内的附加字段，其他工具和失败启动不保证存在。
+- `ReadMcpResource` 的内容块与 `metadata.content_descriptors` 按服务端顺序对应，二进制资源以含 base64 `blob` 的 JSON 文本块传递。
 
 ### 未知变体降级(两侧类型层)
 

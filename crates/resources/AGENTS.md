@@ -49,6 +49,8 @@
 3. **配置 schema 只有一个定义处** —— 配置字段结构集中在 `zhuye-config` 的 `schema/` 子模块;新增或改动配置段时,schema 与 `docs/configuration.md` 同步更新,不要在消费 crate 里另写一份解析逻辑。(zhuye-config 无独立篇,故留在本篇)
 4. **插件状态三文件各司其职** —— `installed_plugins.json` 描述「装了什么」(插件 cache 目录内),`~/.zhuye/config.toml` 的 `enabled_plugins` 描述「启用什么」,`~/.zhuye/managed-settings.json` 由企业策略 pin 住不可改的 managed 插件;三者不一致时报配置漂移。插件自身契约见 [zhuye-plugin/](zhuye-plugin/AGENTS.md)。
 5. **skill 扫描目录清单只有一个定义处** —— `zhuye-config/src/paths.rs::default_skill_dirs` 是 skill 目录链(`.zhuye/skills` ×2 + 业界通用 `.agents/skills` ×2,顺序即同名优先级)的唯一出口:两处 bootstrap(exec / m4)与 GUI 列表命令都消费它,不要在消费方自拼 skill 目录名。`.agents/skills` 是外部生态通用目录(非烛夜私有),故不走 `ZHUYE_HOME` 重定向。
+6. **shell 放行规则不能解释动态语法** —— `zhuye-permissions` 的 shell glob 命中含展开、重定向或其他未解析语法的命令时,将 Allow 降为 Ask;默认策略仍使 Deny 优先。不得将 glob 命中当作 shell 语义解析。
+7. **只读命令分类必须保守** —— 支持脚本执行、网络写入或文件输出的程序与参数不得自动放行；`find`、`sort`、`rg`、`diff` 和 Git 的副作用选项必须按具体参数检查。
 
 ## 核心文件导航
 
@@ -65,7 +67,8 @@
 | `zhuye-plugin/src/manager/mod.rs` | 插件安装 / 卸载与状态记账 |
 | `zhuye-rollout/src/lib.rs` | JSONL rollout 落盘与轮转 |
 | `zhuye-rollout/src/index/mod.rs` | 会话索引:`list_sessions` 只读每文件首行(按 session 去重);首行非 SessionMeta 时在前缀窗口与轮转副本中恢复。`message_count` 把同回合同角色的增量落盘分片计为一条消息 |
-| `zhuye-sandbox/src/os_sandbox.rs` | OS 沙箱(Seatbelt / Landlock):读全盘 + 凭证拒读;写限 workspace + writable_dirs + tmp;关网时放行 localhost 与 Unix socket;`(allow process-exec)` 不限目录;顶层 `.git`/`.zhuye` 只读 |
+| `zhuye-sandbox/src/os_sandbox.rs` | OS 沙箱(Seatbelt / Landlock):Seatbelt 限写并拒绝敏感读,关网时仍放行 localhost 与 Unix socket;Linux Landlock ABI v3 限写和截断但不限制敏感读,默认经 seccomp 禁止套接字连接,只要沙箱启用安装失败即拒绝执行(不受 strict 和网络开关影响)。状态报告须区分后端及不可用情况 |
+| `zhuye-sandbox/src/os_sandbox.rs`(敏感路径) | `path_protection_report()` 逐条给出受保护路径是否**真的**只读:可写根外 = 默认拒绝(`EnforcedByDefault`);可写根内 = macOS Seatbelt deny 规则(`Enforced`)/ Linux Landlock 无法撤销(`Unsupported` —— 规则按位合并,内核拒绝空掩码)。`strict_paths`(= `ZHUYE_SANDBOX_STRICT_PATHS=1`)时不可强制的显式要求会让 bash 失败关闭 |
 | `zhuye-ast/src/lib.rs` | tree-sitter 代码搜索工具入口 |
 | `zhuye-wasm/src/lib.rs` | WASM 组件宿主入口 |
 

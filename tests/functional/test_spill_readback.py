@@ -15,17 +15,80 @@ from __future__ import annotations
 
 import os
 import re
+import json
+import time
 from typing import Any
 
 import pytest
 
-from wire import DRAIN_TIMEOUT, first_event, msg_types, require_binary
+from wire import DRAIN_TIMEOUT, first_event, msg_types, require_binary, rollout_thread_id
 
 pytestmark = pytest.mark.usefixtures("sandbox")
 
 SPILL_MARKER = "[完整输出已落盘: "
 # bash.rs 的截断上限(字节);超出即触发溢出落盘。
 OUTPUT_LIMIT = 100 * 1024
+
+
+def test_read字节分页保持字符边界并可续读(serve_session, mock_script, sandbox) -> None:
+    """分页偏移指向下一完整字符，避免截断 UTF-8 并可逐段重建。"""
+    (sandbox.cwd / "page.txt").write_text("中😀文", encoding="utf-8")
+    script = mock_script([
+        json.dumps({"type": "tool_call", "name": "read", "args": {"path": "page.txt", "byte_offset": offset, "byte_limit": 4}})
+        for offset in (0, 3, 7)
+    ] + ['{"type":"text","text":"done"}'])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        events = session.submit({"type": "user_input", "items": [{"type": "text", "text": "分页读文件"}]}, timeout=DRAIN_TIMEOUT)
+    ends = [event["msg"] for event in events if event["msg"].get("type") == "tool_call_end"]
+    assert len(ends) == 3
+    for end, part, offset, more in zip(ends, ("中", "😀", "文"), (3, 7, 10), (True, True, False)):
+        assert end["is_error"] is False
+        assert _tool_text(end).startswith(part + "\n[字节分页:")
+        assert end["output"]["metadata"]["next_byte_offset"] == offset
+        assert end["output"]["metadata"]["has_more"] is more
+
+
+def test_远程工具大输出进入模型前溢出并可读回(serve_session, mock_script, sandbox) -> None:
+    """宿主收到原始输出，模型收到有读回路径的有界文本。"""
+    require_binary()
+    original = "中文内容" * 5000 + "TAIL-MARKER"
+    script = mock_script([
+        '{"type":"tool_call","name":"remote_large","args":{}}',
+        '{"type":"request_echo"}',
+        '{"type":"request_echo"}',
+    ])
+    with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
+        session.send({"type": "register_tools", "tools": [{"name": "remote_large", "description": "大输出", "parameters": {"type": "object"}}]})
+        time.sleep(0.5)
+        sid = session.send({"type": "user_input", "items": [{"type": "text", "text": "请求大输出"}]})
+        req = session.wait_global(lambda event: event.get("msg", {}).get("type") == "tool_execution_request")
+        session.send({"type": "tool_execution_response", "call_id": req["msg"]["call_id"], "output": {"content": [{"type": "text", "text": original}], "is_error": False, "metadata": {}, "elapsed_ms": 1}})
+        events = session.collect(sid, timeout=DRAIN_TIMEOUT)
+        end = _tool_end(events)
+        assert _tool_text(end) == original
+        chunks = [e["msg"].get("delta", "") for e in events if e["msg"].get("type") == "agent_message_delta"]
+        model = json.loads("".join(chunks))
+        tool = next(m for m in model["messages"] if m.get("role") == "tool")
+        text = tool["text"]
+        assert "完整文本可用 read 字节分页读取:" in text and "TAIL-MARKER" not in text
+        path = re.search(r"完整文本可用 read 字节分页读取: (.+?)；", text).group(1)
+        assert os.path.commonpath([str(sandbox.cwd.resolve()), path]) == str(sandbox.cwd.resolve())
+        assert open(path, encoding="utf-8").read() == original
+    tid = rollout_thread_id(sandbox.home)
+    tail_offset = len(original.encode("utf-8")) - len("TAIL-MARKER")
+    resume_script = mock_script([
+        json.dumps({"type": "tool_call", "name": "read", "args": {"path": path, "byte_offset": tail_offset}}),
+        '{"type":"request_echo"}',
+    ])
+    with serve_session(args=["--resume", tid], env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(resume_script)}) as resumed:
+        events = resumed.submit({"type": "user_input", "items": [{"type": "text", "text": "继续"}]}, timeout=DRAIN_TIMEOUT)
+    chunks = [e["msg"].get("delta", "") for e in events if e["msg"].get("type") == "agent_message_delta"]
+    model = json.loads("".join(chunks))
+    restored = next(m for m in model["messages"] if m.get("role") == "tool")
+    assert restored["text"] == text
+    end = _tool_end(events)
+    assert end["is_error"] is False and _tool_text(end).startswith("TAIL-MARKER\n")
+    assert end["output"]["metadata"]["has_more"] is False
 
 
 def _tool_end(events: list[dict[str, Any]]) -> dict[str, Any]:

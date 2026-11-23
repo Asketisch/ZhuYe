@@ -82,6 +82,7 @@ fn build_mock_server(workspace_root: &std::path::Path, release: bool) {
 
 fn stdio_cfg_entry(_name: &str) -> McpServerEntry {
     McpServerEntry {
+        oauth: None,
         transport: McpTransport::Stdio,
         command: Some(mock_binary_path().to_string_lossy().into_owned()),
         args: Some(vec![]),
@@ -95,6 +96,7 @@ fn stdio_cfg_entry(_name: &str) -> McpServerEntry {
 
 fn broken_cfg_entry(_name: &str) -> McpServerEntry {
     McpServerEntry {
+        oauth: None,
         transport: McpTransport::Stdio,
         command: Some("/this/binary/definitely/does/not/exist".into()),
         args: Some(vec![]),

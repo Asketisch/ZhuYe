@@ -32,6 +32,42 @@ pub struct McpServerEntry {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub always_load: Option<bool>,
+    /// http 传输的 OAuth 配置(客户端侧)。
+    #[serde(default)]
+    pub oauth: Option<McpOAuthEntry>,
+}
+
+/// `[mcp_servers.<name>.oauth]` 表镜像 —— MCP 客户端侧的 OAuth 配置。
+///
+/// 凭据优先用 `token_env`(环境变量),避免把密钥写进 config.toml。
+/// `grant_type`:
+/// - `client_credentials`(默认):用 `client_id` / `client_secret` 换 token;
+/// - `refresh_token`:用 `refresh_token` 换新 token。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpOAuthEntry {
+    /// 静态 bearer token(优先级最高)。
+    #[serde(default)]
+    pub token: Option<String>,
+    /// 从该环境变量读取 bearer token。
+    #[serde(default)]
+    pub token_env: Option<String>,
+    /// 授权端点(授权码流程由宿主完成;客户端只上报,不代跑浏览器)。
+    #[serde(default)]
+    pub authorization_url: Option<String>,
+    /// token 端点;缺省时按受保护资源元数据发现。
+    #[serde(default)]
+    pub token_url: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// `client_credentials`(默认)/ `refresh_token`。
+    #[serde(default)]
+    pub grant_type: Option<String>,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 /// MCP transport 枚举。

@@ -93,6 +93,7 @@ pub fn add(
 
     let entry = match transport {
         McpTransport::Stdio => McpServerEntry {
+            oauth: None,
             transport,
             command,
             args: if args.is_empty() { None } else { Some(args) },
@@ -103,6 +104,7 @@ pub fn add(
             always_load: None,
         },
         McpTransport::Http | McpTransport::Sse => McpServerEntry {
+            oauth: None,
             transport,
             command: None,
             args: None,
@@ -269,6 +271,7 @@ pub(crate) fn add_test_server(cfg: &mut ReflectConfig, name: &str, command: &str
     cfg.mcp_servers.servers.insert(
         name.into(),
         McpServerEntry {
+            oauth: None,
             transport: McpTransport::Stdio,
             command: Some(command.into()),
             args: Some(vec!["-y".into(), "@x/y".into()]),
@@ -320,6 +323,7 @@ mod tests {
         cfg.mcp_servers.servers.insert(
             "github".into(),
             McpServerEntry {
+                oauth: None,
                 transport: McpTransport::Http,
                 command: None,
                 args: None,

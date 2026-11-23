@@ -186,6 +186,9 @@ pub async fn register(
                 .clone()
                 .map_or_else(|| Default::default(), |m| m.into_iter().collect()),
             timeout: std::time::Duration::from_secs(mcp_loaded.config.timeout_secs.unwrap_or(30)),
+            // 插件提供的 MCP server 不支持 OAuth 表(插件清单没有该段),
+            // 需要授权的服务端请在 config.toml 的 [mcp_servers.*.oauth] 配。
+            oauth: None,
         };
         let timeout = cfg.timeout;
         match registries

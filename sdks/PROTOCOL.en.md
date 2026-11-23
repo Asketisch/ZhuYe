@@ -110,6 +110,7 @@ Common Ops (full definitions in
 | `shutdown` | — | Graceful exit (see §6) |
 | `rescan_extensions` | `skills: bool`, `commands: bool` | **new in v1.x (additive)**: rescan the extension directories at runtime (skills are replaced by file-type skills in startup directory order; plugin injection and built-in packages are unaffected); does not open a turn — after answering with `extensions_rescanned`, finishes with `submission_closed`. The `commands` bit currently always returns `false` (command bodies are read from disk in real time) |
 | `query_guard_stats` | — | **new in F01 (additive)**: query the prompt_guard verdict statistics (four counters: definition-side block/annotate + output-side block/annotate). Does not open a turn — after answering with `guard_stats`, finishes with `submission_closed`; when the guard is disabled, `enabled=false` and the counters are always 0 |
+| `mcp_elicitation_response` | `id`, `action`, optional `content` | **new (additive)**: answer an MCP server's user-interaction request (the `mcp_elicitation` event). `id` pairs with the event's `request_id`; `action ∈ accept/decline/cancel`; `content` holds the form values, keyed by the event's `kind.fields[].name` (server schema property names, not renameable); omit it for the `link` form. Without a reply the engine settles the request as `cancel` after the TTL (default 300s, tunable via `ZHUYE_MCP_ELICITATION_TTL_SECS`) — fail-closed |
 
 `thread_settings` supports `model`, `approval_policy`
 (`auto` / `prompt` / `deny` / `auto_approve` /
@@ -167,6 +168,33 @@ Core variants the SDK cares about (full list in
 | `submission_closed` | — | This submission's per-turn channel has been drained (terminal, see below) |
 | `extensions_rescanned` | `skills: usize`, `commands: bool` | **new in v1.x (additive)**: the response to `rescan_extensions` — total entry count after rescanning the skills directory; `commands` is currently always `false`. The event is delivered via both the per-turn channel and session fan-out (the client deduplicates by submission id) |
 | `guard_stats` | `enabled`, `definitions_blocked`, `definitions_reviewed`, `outputs_blocked`, `outputs_reviewed` | **new in F01 (additive)**: the response to `query_guard_stats` — a snapshot of prompt_guard verdict statistics (session cumulative). Dual-path delivery as above |
+| `mcp_elicitation` | `request_id`, `server`, `message`, `kind` | **new (additive)**: an MCP server asks the user for input. `kind.type` is `form` (with `fields[]`: name / title / description / required / input kind) or `link` (with `url`). Global event (`id=""`), answered with `mcp_elicitation_response` |
+
+For a successfully launched foreground `bash`, `tool_call_end.output.metadata.network_restriction`
+reports `blocked_sockets` (Linux seccomp), `local_only` (macOS Seatbelt allows
+local and Unix sockets), or `unrestricted`. Failed launches return a tool error
+instead of claiming installation; other tools need not supply this field.
+
+`ReadMcpResource` preserves text and binary resource contents in server order.
+Binary items are JSON text blocks containing `uri`, `blob` (base64), and an
+optional `mimeType`. `metadata.content_descriptors` follows the same order and contains
+`uri`, `mime_type`, and `kind`; binary items also have `encoding: "base64"`.
+Embedded resources and resource links returned by MCP tools are JSON text;
+hosts should tolerate unknown fields.
+
+An MCP server's `timeout_ms` also applies to connection initialization and the
+initial tool listing. Timeouts are reported in `mcp_server_failed` with
+`server`, `error`, and `will_retry` fields. Startup currently does not retry
+automatically, so `will_retry` is `false`.
+
+MCP interaction requests (`mcp_elicitation`): an MCP server asks the host for
+input while a tool call is in flight. The engine turns it into the global
+`mcp_elicitation` event; the host answers with `mcp_elicitation_response`
+(`action` and `content` are passed through to the server verbatim). For the
+`form` shape, `content` must satisfy the server schema — the keys are exactly
+`kind.fields[].name`; the engine never renames fields. Without a reply the
+engine settles the request as `cancel` after the TTL (default 300s) and sends
+that to the server, so an MCP call never hangs forever.
 
 Parallel tool arguments from OpenAI-compatible streams, Responses and
 Anthropic may arrive interleaved. Argument deltas of the first tool

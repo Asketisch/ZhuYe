@@ -133,7 +133,24 @@ fn match_rule_full(
             return None;
         }
     }
+    // glob 不理解 shell 展开与重定向,命中不代表实际执行的操作已获授权。
+    if rule.action == PermissionAction::Allow
+        && rule.shell_pattern.is_some()
+        && bash_command.is_some_and(shell_requires_review)
+    {
+        return Some(RuleMatch::Ask);
+    }
     Some(action_to_match(rule.action))
+}
+
+/// 未解析的 shell 语法不能仅凭字符串 glob 自动放行。
+fn shell_requires_review(command: &str) -> bool {
+    command.chars().any(|c| {
+        matches!(
+            c,
+            '$' | '`' | '<' | '>' | '\\' | '(' | ')' | '{' | '}' | '\n' | '\r'
+        )
+    })
 }
 
 /// `shell_pattern` 是否命中整条命令。
@@ -195,6 +212,30 @@ fn action_to_match(action: PermissionAction) -> RuleMatch {
 mod tests {
     use super::*;
     use crate::rules::PermissionRule;
+
+    #[test]
+    fn shell_allow_requires_review_for_unparsed_expansion_and_redirection() {
+        let mut allow = rule("bash", PermissionAction::Allow);
+        allow.shell_pattern = Some("git *".into());
+        for command in [
+            "git status $(touch marker)",
+            "git status `touch marker`",
+            "git status > marker",
+            "git status <(touch marker)",
+            "git status $VARIABLE",
+            "git status \\$(touch marker)",
+        ] {
+            assert_eq!(
+                evaluate_with_context(&[allow.clone()], "bash", Some(command)),
+                RuleMatch::Ask,
+                "{command}"
+            );
+        }
+        assert_eq!(
+            evaluate_with_context(&[allow], "bash", Some("git status --short")),
+            RuleMatch::Allow
+        );
+    }
 
     fn rule(tool: &str, action: PermissionAction) -> PermissionRule {
         PermissionRule {

@@ -370,7 +370,7 @@ function spawnMockServe(): ChildProcessWithoutNullStreams {
         }) + '\\n');
         process.stdout.write(JSON.stringify({
           id: sub.id, msg: { type: 'tool_call_end', call_id: 'image-call', is_error: false,
-            output: { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: {}, elapsed_ms: 0 } },
+            output: { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: { future: { nested: [1, 2] } }, elapsed_ms: 0 } },
         }) + '\\n');
         process.stdout.write(JSON.stringify({
           id: sub.id, msg: {
@@ -422,6 +422,7 @@ describe('ZhuyeAgent 协议回路(mock serve 驱动)', () => {
     expect(end?.msg.type).toBe('tool_call_end');
     if (end?.msg.type !== 'tool_call_end') throw new Error('缺少工具结果');
     expect(end.msg.output.content).toEqual([{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }]);
+    expect(end.msg.output.metadata).toEqual({ future: { nested: [1, 2] } });
     expect(events.at(-1)?.msg.type).toBe('turn_complete');
   }, 10_000);
 
