@@ -404,6 +404,11 @@ pub enum RiskLevel {
 /// 按 serde 未知变体降级)。不同模型族支持的最高档不同(qwen 系到 High、
 /// deepseek 到 Max、OpenAI 到 Ultra),由 `zhuye_llm` 的能力表在**发 wire
 /// 前**钳制 —— 本枚举表达「用户想要的强度」,不代表目标模型一定支持。
+///
+/// xhigh 批次:新增 `XHigh` 档(wire 词 `xhigh`,declared 序 High < XHigh
+/// < Max)。qwen3.8 系等新厂商词表的顶档就是 `xhigh`;置于 High 与 Max
+/// 之间使 qwen3.8 的可选阶梯为 [low, medium, high, xhigh],不向厂商只认
+/// max/deepseek 词表的端点误发档位词。
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
@@ -416,6 +421,10 @@ pub enum ReasoningEffortMirror {
     Medium,
     /// 高强度思考;qwen 系及未知模型族可用的最高档。
     High,
+    /// 超高强度思考(qwen3.8 批次新增);厂商词表原词 `xhigh`,高于
+    /// `high`、低于 `max`。`XHigh` 经 serde 会得 `x_high`,显式改名。
+    #[serde(rename = "xhigh")]
+    XHigh,
     /// 极高强度思考(v1.10 新增);deepseek 系的最高档,超出目标模型上限时向下钳制。
     Max,
     /// 最高强度思考(v1.10 新增);仅 OpenAI 推理系(`gpt-5*` / `gpt-6*` / o 系)
@@ -424,13 +433,14 @@ pub enum ReasoningEffortMirror {
 }
 
 impl ReasoningEffortMirror {
-    /// 档位 wire 字符串(`low` / `medium` / `high` / `max` / `ultra`),
-    /// 与 serde snake_case 序列化保持同一口径,供配置解析 / CLI 校验复用。
+    /// 档位 wire 字符串(`low` / `medium` / `high` / `xhigh` / `max` / `ultra`),
+    /// 与 serde 序列化保持同一口径,供配置解析 / CLI 校验复用。
     pub fn as_str(self) -> &'static str {
         match self {
             ReasoningEffortMirror::Low => "low",
             ReasoningEffortMirror::Medium => "medium",
             ReasoningEffortMirror::High => "high",
+            ReasoningEffortMirror::XHigh => "xhigh",
             ReasoningEffortMirror::Max => "max",
             ReasoningEffortMirror::Ultra => "ultra",
         }
@@ -448,10 +458,11 @@ impl std::str::FromStr for ReasoningEffortMirror {
             "low" => Ok(ReasoningEffortMirror::Low),
             "medium" => Ok(ReasoningEffortMirror::Medium),
             "high" => Ok(ReasoningEffortMirror::High),
+            "xhigh" => Ok(ReasoningEffortMirror::XHigh),
             "max" => Ok(ReasoningEffortMirror::Max),
             "ultra" => Ok(ReasoningEffortMirror::Ultra),
             _ => Err(format!(
-                "unknown reasoning effort '{s}' (expected one of low|medium|high|max|ultra)"
+                "unknown reasoning effort '{s}' (expected one of low|medium|high|xhigh|max|ultra)"
             )),
         }
     }

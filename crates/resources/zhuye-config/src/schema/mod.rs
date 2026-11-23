@@ -287,6 +287,10 @@ impl ReflectConfig {
             zhuye_protocol::ReasoningEffortMirror::High,
         );
         insert(
+            routes.xhigh.as_deref(),
+            zhuye_protocol::ReasoningEffortMirror::XHigh,
+        );
+        insert(
             routes.max.as_deref(),
             zhuye_protocol::ReasoningEffortMirror::Max,
         );
