@@ -7,7 +7,10 @@
 //! 4. 执行 smart_prune。若当前低于 `target` → 返回 `SmartPrune`。
 //! 5. 若 `summarize_after` 为 true,调用 LLM 摘要器。若摘要结果低于
 //!    `target` → 返回 `LlMSummarize`。
-//! 6. 回退到 smart_prune 的尽力而为结果。
+//! 6. 回退到 smart_prune 的尽力而为结果;若 smart_prune 也什么都没裁
+//!    (removed=0 且 truncated=0,三级全部空转),整次判定降级为
+//!    `Noop` —— 空压谎报非空策略会让调用方误判「压缩已发生」,给
+//!    rapid-refill 熔断器上膛后把正常 turn 连击误杀。
 //!
 //! 无环依赖:仅依赖 `zhuye-llm` 的类型。具体 `Summarizer` 由调用方注入
 //! (通常是在 `zhuye-exec` 中构造的 `LlmSummarizer`)。
@@ -228,6 +231,22 @@ impl Compactor {
         let (after_sp, sp_report) = smart_prune(after_mc, &sp_cfg);
         let after_sp_tokens = estimate_messages(&after_sp);
         if after_sp_tokens < self.cfg.target_tokens() {
+            // 幽灵压缩防御:removed=0 且 truncated=0 → 消息列表原样,
+            // 「低于目标」只是因为 before 取了 max(本地估算, LLM 上报)
+            // 而 after 只算本地估算 —— 口径差制造的假收敛。与尾部兜底
+            // 同规则:什么都没裁就降级 Noop(不回写、不上膛)。
+            if sp_report.removed_count == 0 && sp_report.truncated_count == 0 {
+                return (
+                    None,
+                    ContextCompactedEvent {
+                        strategy: ContextCompactedStrategy::Noop,
+                        removed_messages: 0,
+                        before_tokens,
+                        after_tokens: before_tokens,
+                    },
+                    None,
+                );
+            }
             return (
                 Some(after_sp),
                 ContextCompactedEvent {
@@ -299,7 +318,27 @@ impl Compactor {
             }
         }
 
-        // 回退:返回 smart_prune 的结果。
+        // 回退:摘要不可用(无 provider / 摘要失败 / summarize_after 关)
+        // 时返回 smart_prune 的尽力而为结果。但**必须核实确实裁剪过
+        // 东西**:removed=0 且 truncated=0 意味着三级全部空转、消息列表
+        // 原样 —— 此时谎报 `SmartPrune` 就是「幽灵压缩」:调用方
+        // (pre_loop)会登记 rapid-refill 熔断锚点并广播压缩事件,而
+        // 上下文一个字节没少,下一迭代立即再次越阈 → Skip/Abort 连击,
+        // 把正常推进的 turn 误杀(桌面 sess_77cd626f 实证:12K token
+        // 会话被幽灵压缩引爆熔断)。空压一律降级为 Noop(不回写列表、
+        // 不上膛守卫)。
+        if sp_report.removed_count == 0 && sp_report.truncated_count == 0 {
+            return (
+                None,
+                ContextCompactedEvent {
+                    strategy: ContextCompactedStrategy::Noop,
+                    removed_messages: 0,
+                    before_tokens,
+                    after_tokens: before_tokens,
+                },
+                None,
+            );
+        }
         (
             Some(after_sp),
             ContextCompactedEvent {
@@ -461,6 +500,80 @@ mod tests {
         })];
         let (_, evt) = c.compact(&msgs).await;
         assert!(matches!(evt.strategy, ContextCompactedStrategy::Noop));
+    }
+
+    /// 幽灵压缩回归(桌面 sess_77cd626f 死循环熔断):before 落在
+    /// [micro 阈值, trigger) 区间且消息数 ≤ keep_recent 时,microcompact
+    /// 提前退出、smart_prune 内部 Noop,摘要器又失败 —— 三级全部空转。
+    /// 兜底必须降级为 Noop:谎报 SmartPrune 会让 pre_loop 给
+    /// rapid-refill 熔断器登记锚点,而上下文没变小,后续每步越阈都被判
+    /// refill,3 连击直接误杀正常 turn。
+    #[tokio::test]
+    async fn phantom_compaction_degrades_to_noop() {
+        let c = Compactor::new(
+            CompactorConfig::default(), // trigger 10_000 / micro 7_000 / target 7_500
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: true,
+            }),
+        );
+        // 30_000 字符 ≈ 8_572 token,落在 [7_000, 10_000) 区间;2 条消息
+        // ≤ keep_recent(30) → micro 提前退出;8_572 < 10_000 →
+        // smart_prune 内部 Noop;8_572 ≥ 7_500 → 落到摘要器(失败)→ 兜底。
+        let msgs = vec![
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("hi")],
+            }),
+            ChatMessage::Tool(ToolResult {
+                call_id: "c0".into(),
+                content: vec![ContentBlock::Text {
+                    text: "x".repeat(30_000),
+                }],
+                is_error: false,
+            }),
+        ];
+        let (out, evt) = c.compact(&msgs).await;
+        assert!(
+            matches!(evt.strategy, ContextCompactedStrategy::Noop),
+            "三级空转时必须降级 Noop,实际 {:?}",
+            evt.strategy
+        );
+        assert!(out.is_none(), "空压不得回写消息列表");
+    }
+
+    /// 对照组:smart_prune 确实裁剪过(removed>0 或 truncated>0)时,
+    /// 兜底仍返回 SmartPrune 尽力而为结果 —— 降级只针对「什么都没做」
+    /// 的空压,不吞掉真实的部分压缩。
+    #[tokio::test]
+    async fn best_effort_smart_prune_kept_when_pruned() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 100,
+                keep_recent_microcompact: 1_000,
+                keep_recent_smart_prune: 1_000,
+                summarize_after: true,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: true,
+            }),
+        );
+        // 200 条 1_000 字符工具结果:n=200 ≤ keep_recent → micro 提前
+        // 退出;before 远超 trigger(100)→ smart_prune 真跑,阶段一截断
+        // 旧工具输出(truncated>0)。摘要失败 → 兜底:有截断在,不得降级。
+        let msgs = huge_message_list();
+        let (out, evt) = c.compact(&msgs).await;
+        assert!(
+            matches!(evt.strategy, ContextCompactedStrategy::SmartPrune),
+            "有真实裁剪时兜底保持 SmartPrune,实际 {:?}",
+            evt.strategy
+        );
+        assert!(out.is_some());
+        assert!(
+            evt.removed_messages > 0 || evt.after_tokens < evt.before_tokens,
+            "必须发生真实变化(移除或截断)"
+        );
     }
 
     #[tokio::test]
@@ -811,11 +924,16 @@ mod tests {
         assert!(!matches!(evt.strategy, ContextCompactedStrategy::Noop));
     }
 
-    /// 本地估算 = 1000(仅 `huge_message_list` 的 1 条 system 消息 ≈ 1
-    /// token),LLM 上报 = 50_000,trigger = 10_000 → 必须触发,
-    /// 因为 LLM 上报值是权威信号。
+    /// 本地估算 = 1000(仅 1 条 "hi"),LLM 上报 = 50_000,trigger =
+    /// 10_000 → 管线**进入**(上报值是权威触发信号,micro / smart_prune
+    /// 照跑),但消息列表没有可裁的东西 —— 超限的大头在 system prompt /
+    /// 工具目录里,消息级压缩器鞭长莫及。此时必须诚实降级 `Noop`:
+    /// 旧版在此谎报 SmartPrune(幽灵压缩);若改走「摘要可用就硬摘要」,
+    /// 一条 "hi" 摘不出内容、上下文不变量,摘要存在又会给 rapid-refill
+    /// 守卫上膛 —— 死循环换皮复发。Noop 不上膛、不烧 LLM,上下文真被
+    /// 消息撑大时自然由后续迭代真实压缩。
     #[tokio::test]
-    async fn llm_reported_triggers_when_local_estimate_is_small() {
+    async fn llm_reported_triggers_pipeline_but_noop_when_nothing_prunable() {
         let c = Compactor::new(
             CompactorConfig {
                 trigger_tokens: 10_000,
@@ -830,14 +948,15 @@ mod tests {
         let msgs = vec![ChatMessage::User(UserContent {
             blocks: vec![ContentBlock::text("hi")],
         })];
-        let (_out, evt, _mem) = c
+        let (out, evt, _mem) = c
             .compact_with_prior_and_tokens(&msgs, None, Some(50_000))
             .await;
         assert!(
-            !matches!(evt.strategy, ContextCompactedStrategy::Noop),
-            "LLM-reported 50k over trigger 10k should fire, got strategy {:?}",
+            matches!(evt.strategy, ContextCompactedStrategy::Noop),
+            "无可裁内容时必须降级 Noop,实际 {:?}",
             evt.strategy
         );
+        assert!(out.is_none(), "空压不得回写消息列表");
     }
 
     /// 本地估算 = 50_000(大列表),LLM 上报 = 8_000,
