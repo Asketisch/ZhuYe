@@ -68,8 +68,8 @@ pub use providers::{
 };
 pub use quota::{CredentialKey, QuotaConfig, QuotaSource, QuotaTracker, SharedQuotaTracker};
 pub use reasoning_effort::{
-    DEFAULT_MAX_EFFORT, clamp_effort_for_model, effort_wire_str, max_effort_for_model,
-    supported_efforts_for_model,
+    DEFAULT_MAX_EFFORT, clamp_effort_for_model, effort_menu_for_model, effort_wire_str,
+    max_effort_for_model, supported_efforts_for_model,
 };
 pub use registry::{CredentialPool, ModelRegistry, NextClient, PoolEntry, SharedModelRegistry};
 pub use request::{

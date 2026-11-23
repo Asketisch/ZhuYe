@@ -161,6 +161,47 @@ pub fn supported_efforts_for_model(model_spec: &str) -> Vec<ReasoningEffort> {
     .collect()
 }
 
+/// 厂商档位词表 → 本阶梯(逐词映射,未知词丢弃)。
+fn map_vendor_levels(levels: &[String]) -> Vec<ReasoningEffort> {
+    let mut out: Vec<ReasoningEffort> = levels
+        .iter()
+        .filter_map(|s| match s.to_ascii_lowercase().as_str() {
+            "low" => Some(ReasoningEffort::Low),
+            "medium" => Some(ReasoningEffort::Medium),
+            "high" => Some(ReasoningEffort::High),
+            "xhigh" => Some(ReasoningEffort::XHigh),
+            "max" => Some(ReasoningEffort::Max),
+            "ultra" => Some(ReasoningEffort::Ultra),
+            _ => None,
+        })
+        .collect();
+    // 去重保序后按阶梯升序排列 —— 菜单是下拉选项,升序最稳。
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 目标模型的思考强度**菜单**(UI 下拉选项口径)。
+///
+/// 与 [`supported_efforts_for_model`] 的区别:目录(models.dev)收录了
+/// 该模型的厂商档位词表时,**逐词精确映射**后原样返回 —— 厂商词表未必
+/// 是连续阶梯(qwen3.8 系是 `low/medium/xhigh`,没有 `high`;`none` 这类
+/// 非阶梯词被丢弃),线性合成会凭空多出厂商没声明的档,发 wire 可能被
+/// 端点拒绝。目录未收录(或词表映射后为空)回落
+/// [`supported_efforts_for_model`] 的阶梯合成(保守,历史行为)。
+///
+/// 钳制语义不受影响:发 wire 前仍按 [`clamp_effort_for_model`] 取线性
+/// `min` —— 菜单忠实于厂商声明,钳制保守于线性阶梯,两者职责不同。
+pub fn effort_menu_for_model(model_spec: &str) -> Vec<ReasoningEffort> {
+    if let Some(levels) = crate::models_dev::abilities_for(model_spec).effort_levels {
+        let menu = map_vendor_levels(&levels);
+        if !menu.is_empty() {
+            return menu;
+        }
+    }
+    supported_efforts_for_model(model_spec)
+}
+
 /// 归一化:去 provider 前缀(`rsplit_once('/')` 取末段)、去 ollama tag
 /// (`:7b`)、小写化 trim。与 `context_window_for` 的归一化三步一致。
 fn normalize(model_spec: &str) -> String {
@@ -318,6 +359,37 @@ mod tests {
             max_effort_for_model("zzeff-xhigh-model"),
             ReasoningEffort::XHigh,
             "目录 xhigh 词必须映射进阶梯,不再被静默丢弃"
+        );
+        // 菜单口径:目录词表逐词精确映射 —— 厂商没声明的档不出现在菜单里
+        // (qwen3.8 系 low/medium/xhigh,没有 high),非阶梯词(none)被丢弃,
+        // 阶梯升序去重。
+        install_catalog(DevCatalog::from_entries([(
+            "zzeff-menu-model".to_string(),
+            ModelAbilities {
+                effort_levels: Some(vec![
+                    "none".into(),
+                    "medium".into(),
+                    "xhigh".into(),
+                    "low".into(),
+                    "xhigh".into(),
+                ]),
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(
+            effort_menu_for_model("zzeff-menu-model"),
+            vec![ReasoningEffort::Low, ReasoningEffort::Medium, ReasoningEffort::XHigh],
+            "菜单 = 厂商声明档位(升序去重,none 丢弃),不补线性阶梯缺档"
+        );
+        // 目录未收录 → 回落阶梯合成(保守,历史行为)。
+        install_catalog(DevCatalog::from_entries([(
+            "zzeff-menu-fallback".to_string(),
+            ModelAbilities::default(),
+        )]));
+        assert_eq!(
+            effort_menu_for_model("zzeff-menu-fallback"),
+            supported_efforts_for_model("zzeff-menu-fallback"),
+            "目录未收录回落阶梯合成"
         );
         // 词表外的词不参与取最大 → 仍走保守默认。
         install_catalog(DevCatalog::from_entries([(
