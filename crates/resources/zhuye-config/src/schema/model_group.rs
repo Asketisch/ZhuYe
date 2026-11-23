@@ -89,6 +89,14 @@ pub struct ModelGroupSection {
     /// Ollama 端点的 GPU 层数(**仅 `endpoint = "ollama"` 使用**)。
     #[serde(default)]
     pub num_gpu: Option<u32>,
+    /// 自动压缩触发阈值(占上下文窗口的比例,0.0-1.0)。**引擎本体不消费**
+    /// —— runtime 的自动压缩只认全局 `[compact].trigger_tokens`;桌面 GUI
+    /// 的 autoCompact 控制器按「已上报输入 token ≥ 窗口 × 本字段」触发
+    /// `Op::Compact`,字段在此仅作为该设置的持久化位置(桌面 config 落盘
+    /// 走 serde 重序列化,GUI 私有键会被静默丢弃,故必须进 schema)。
+    /// 缺省 None = GUI 侧默认 0.85。
+    #[serde(default)]
+    pub auto_compact: Option<f64>,
     /// 组内多凭据池(高级)。缺省 = 单凭据组(builder 把组级
     /// `api_key`/`base_url` wrap 成 label `"default"` 的单条目)。
     #[serde(default)]
