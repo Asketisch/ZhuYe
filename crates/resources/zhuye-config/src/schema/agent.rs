@@ -39,7 +39,7 @@ pub struct SpecSlotConfig {
     #[serde(default)]
     pub weights: Vec<u32>,
     /// v1.11 桌面#3:复杂度分级路由(`[routing.<role>.complexity]`)——
-    /// 把思考强度档位(low/medium/high/max/ultra,即用户对「任务复杂度」
+    /// 把思考强度档位(low/medium/high/xhigh/max/ultra,即用户对「任务复杂度」
     /// 的表达)映射到不同模型 spec。配置后 `Op::SetEffort` / `/effort`
     /// 切档时**同时切模型**(未配置的档位回退 `primary`),实现「简单任务
     /// 用便宜快模型、复杂任务用旗舰模型」的分级路由。
@@ -62,6 +62,8 @@ pub struct ComplexityRoutes {
     #[serde(default)]
     pub high: Option<String>,
     #[serde(default)]
+    pub xhigh: Option<String>,
+    #[serde(default)]
     pub max: Option<String>,
     #[serde(default)]
     pub ultra: Option<String>,
@@ -74,6 +76,7 @@ impl ComplexityRoutes {
             zhuye_protocol::ReasoningEffortMirror::Low => &self.low,
             zhuye_protocol::ReasoningEffortMirror::Medium => &self.medium,
             zhuye_protocol::ReasoningEffortMirror::High => &self.high,
+            zhuye_protocol::ReasoningEffortMirror::XHigh => &self.xhigh,
             zhuye_protocol::ReasoningEffortMirror::Max => &self.max,
             zhuye_protocol::ReasoningEffortMirror::Ultra => &self.ultra,
         };

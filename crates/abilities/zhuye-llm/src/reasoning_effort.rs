@@ -4,6 +4,7 @@
 //!
 //! | 模型族 | 最高档 | wire 说明 |
 //! |--------|--------|-----------|
+//! | qwen3.8 系列(`qwen3.8-*`) | `xhigh` | 厂商词表 `low/medium/xhigh`,顶档 `xhigh` |
 //! | qwen 系列(`qwen3-*` / `qwen2.5-*`,走 OpenAI 兼容端点) | `high` | dashscope 兼容端点 `reasoning_effort` 最高 `high` |
 //! | deepseek 系列(`deepseek-reasoner` 等) | `max` | 强度阶梯到 `max` |
 //! | OpenAI(`gpt-5*` / `o1` / `o3` / `o4` / `o5`) | `ultra` | 官方 `reasoning_effort` 含 `ultra` 档 |
@@ -20,9 +21,14 @@
 use crate::request::ReasoningEffort;
 
 /// 模型族前缀 → 最高支持档。**条目顺序即匹配顺序**(先命中先用),
-/// 与 `CONTEXT_WINDOW_TABLE` 相同的 `starts_with` 策略。
+/// 与 `CONTEXT_WINDOW_TABLE` 相同的 `starts_with` 策略;更长前缀必须排在
+/// 更短前缀之前(`qwen3.8` 在 `qwen` 前)。
 const EFFORT_CAP_TABLE: &[(&str, ReasoningEffort)] = &[
-    // ── qwen 系列:最高 high ─────────────────────────────────────────
+    // ── qwen3.8 系列:最高 xhigh ─────────────────────────────────────
+    // (厂商词表 low/medium/xhigh,必须排在泛 `qwen` 条目之前 ——
+    // starts_with 先命中先用,否则被 qwen→high 短路。)
+    ("qwen3.8", ReasoningEffort::XHigh),
+    // ── qwen 系列(旧代):最高 high ─────────────────────────────────
     // (显式列出,虽然与默认档一致 —— 让「qwen 到 high」这条规则可被
     // 单测直接断言,后续若 qwen 开放更高档只改这一行。)
     ("qwen", ReasoningEffort::High),
@@ -58,6 +64,7 @@ pub const DEFAULT_MAX_EFFORT: ReasoningEffort = ReasoningEffort::High;
 /// use zhuye_llm::ReasoningEffort;
 ///
 /// assert_eq!(max_effort_for_model("qwen3-max"), ReasoningEffort::High);
+/// assert_eq!(max_effort_for_model("qwen3.8-flash"), ReasoningEffort::XHigh);
 /// assert_eq!(max_effort_for_model("deepseek-reasoner"), ReasoningEffort::Max);
 /// assert_eq!(max_effort_for_model("openai/gpt-5.1"), ReasoningEffort::Ultra);
 /// assert_eq!(max_effort_for_model("unknown-model"), ReasoningEffort::High);
@@ -81,8 +88,8 @@ pub fn max_effort_for_model(model_spec: &str) -> ReasoningEffort {
     DEFAULT_MAX_EFFORT
 }
 
-/// 厂商档位词表 → 本阶梯的最大档。只认 low/medium/high/max/ultra 五个
-/// 词;`none` / `minimal` / 未知词不参与取最大(它们不是「更高的档」)。
+/// 厂商档位词表 → 本阶梯的最大档。只认 low/medium/high/xhigh/max/ultra
+/// 六个词;`none` / `minimal` / 未知词不参与取最大(它们不是「更高的档」)。
 fn ladder_cap(levels: &[String]) -> Option<ReasoningEffort> {
     levels
         .iter()
@@ -90,6 +97,7 @@ fn ladder_cap(levels: &[String]) -> Option<ReasoningEffort> {
             "low" => Some(ReasoningEffort::Low),
             "medium" => Some(ReasoningEffort::Medium),
             "high" => Some(ReasoningEffort::High),
+            "xhigh" => Some(ReasoningEffort::XHigh),
             "max" => Some(ReasoningEffort::Max),
             "ultra" => Some(ReasoningEffort::Ultra),
             _ => None,
@@ -130,6 +138,7 @@ pub fn effort_wire_str(effort: ReasoningEffort) -> &'static str {
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "xhigh",
         ReasoningEffort::Max => "max",
         ReasoningEffort::Ultra => "ultra",
     }
@@ -143,6 +152,7 @@ pub fn supported_efforts_for_model(model_spec: &str) -> Vec<ReasoningEffort> {
         ReasoningEffort::Low,
         ReasoningEffort::Medium,
         ReasoningEffort::High,
+        ReasoningEffort::XHigh,
         ReasoningEffort::Max,
         ReasoningEffort::Ultra,
     ]
@@ -173,6 +183,13 @@ mod tests {
             ReasoningEffort::High
         );
         assert_eq!(max_effort_for_model("Qwen2.5:72b"), ReasoningEffort::High);
+        // qwen3.8 系列:xhigh(静态表长前缀必须压过泛 qwen 条目)。
+        assert_eq!(max_effort_for_model("qwen3.8-flash"), ReasoningEffort::XHigh);
+        assert_eq!(
+            max_effort_for_model("anthropic/qwen3.8-flash-next"),
+            ReasoningEffort::XHigh
+        );
+        assert_eq!(max_effort_for_model("QWEN3.8-27B-NVFP4"), ReasoningEffort::XHigh);
         // deepseek → max。
         assert_eq!(
             max_effort_for_model("deepseek-reasoner"),
@@ -200,6 +217,16 @@ mod tests {
             clamp_effort_for_model(ReasoningEffort::Ultra, "qwen3-max"),
             ReasoningEffort::High
         );
+        // qwen3.8 上限 xhigh:ultra / max 都降到 xhigh(选 max 的用户
+        // 实际收到厂商词表顶档,而不是不认识的高档词)。
+        assert_eq!(
+            clamp_effort_for_model(ReasoningEffort::Max, "qwen3.8-flash"),
+            ReasoningEffort::XHigh
+        );
+        assert_eq!(
+            clamp_effort_for_model(ReasoningEffort::XHigh, "qwen3-max"),
+            ReasoningEffort::High
+        );
         assert_eq!(
             clamp_effort_for_model(ReasoningEffort::Ultra, "deepseek-chat"),
             ReasoningEffort::Max
@@ -220,6 +247,7 @@ mod tests {
         assert_eq!(effort_wire_str(ReasoningEffort::Low), "low");
         assert_eq!(effort_wire_str(ReasoningEffort::Medium), "medium");
         assert_eq!(effort_wire_str(ReasoningEffort::High), "high");
+        assert_eq!(effort_wire_str(ReasoningEffort::XHigh), "xhigh");
         assert_eq!(effort_wire_str(ReasoningEffort::Max), "max");
         assert_eq!(effort_wire_str(ReasoningEffort::Ultra), "ultra");
     }
@@ -227,18 +255,23 @@ mod tests {
     #[test]
     fn supported_ladder_lengths() {
         use crate::request::ReasoningEffort as E;
-        // qwen:low..high = 3 档;deepseek:4 档;openai:5 档。
+        // qwen:low..high = 3 档;qwen3.8:+xhigh = 4 档;deepseek:5 档;
+        // openai:6 档。
         assert_eq!(
             supported_efforts_for_model("qwen3-max"),
             vec![E::Low, E::Medium, E::High]
         );
         assert_eq!(
+            supported_efforts_for_model("qwen3.8-flash-next"),
+            vec![E::Low, E::Medium, E::High, E::XHigh]
+        );
+        assert_eq!(
             supported_efforts_for_model("deepseek-chat"),
-            vec![E::Low, E::Medium, E::High, E::Max]
+            vec![E::Low, E::Medium, E::High, E::XHigh, E::Max]
         );
         assert_eq!(
             supported_efforts_for_model("gpt-5.1"),
-            vec![E::Low, E::Medium, E::High, E::Max, E::Ultra]
+            vec![E::Low, E::Medium, E::High, E::XHigh, E::Max, E::Ultra]
         );
         // 未知模型与 qwen 同阶梯(保守 3 档)。
         assert_eq!(
@@ -272,7 +305,20 @@ mod tests {
             ReasoningEffort::Max,
             "目录说支持到 max → 上限从保守 high 升到 max"
         );
-        assert_eq!(supported_efforts_for_model("zzeff-new-model").len(), 4);
+        assert_eq!(supported_efforts_for_model("zzeff-new-model").len(), 5);
+        // 目录词表含 xhigh → 上限 xhigh(qwen3.8 之外新厂商的通用通道)。
+        install_catalog(DevCatalog::from_entries([(
+            "zzeff-xhigh-model".to_string(),
+            ModelAbilities {
+                effort_levels: Some(vec!["low".into(), "medium".into(), "xhigh".into()]),
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(
+            max_effort_for_model("zzeff-xhigh-model"),
+            ReasoningEffort::XHigh,
+            "目录 xhigh 词必须映射进阶梯,不再被静默丢弃"
+        );
         // 词表外的词不参与取最大 → 仍走保守默认。
         install_catalog(DevCatalog::from_entries([(
             "zzeff-odd-vocab".to_string(),
