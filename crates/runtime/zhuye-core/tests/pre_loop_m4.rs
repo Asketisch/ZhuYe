@@ -2386,3 +2386,138 @@ async fn resumed_summary_is_folded_into_system_before_send() {
         );
     }
 }
+
+// ── v1.x:输入守恒与 stop_turn 级联(批次 6.1 / 3.2 测试补齐)────────
+
+/// 返回 `metadata.stop_turn = true` 的 stub 工具(stop_turn 级联考卷)。
+/// 工具名取 `TodoWrite` —— 复用 ScriptedClient 的固定脚本(第一轮调用
+/// `TodoWrite`),让考卷聚焦在「工具结果携带 stop_turn → 引擎收口」。
+struct StopTurnStubTool;
+
+#[async_trait]
+impl Tool for StopTurnStubTool {
+    fn name(&self) -> &str {
+        "TodoWrite"
+    }
+    fn description(&self) -> &str {
+        "probe tool that requests turn completion"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+    async fn execute(
+        &self,
+        _ctx: ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            content: vec![zhuye_protocol::ContentBlock::text("settled")],
+            is_error: false,
+            metadata: serde_json::json!({"stop_turn": true}),
+            elapsed_ms: 1,
+        })
+    }
+}
+
+/// 批次 3.2:工具以 `metadata["stop_turn"]=true` 请求收口 → 引擎在本次
+/// 工具结算后直接进入最终答复,**不再发起第二次模型调用**(级联)。
+#[tokio::test]
+async fn stop_turn_metadata_ends_turn_without_second_model_call() {
+    let registry = Arc::new(ModelRegistry::new());
+    let stub = Arc::new(ScriptedClient {
+        calls: Mutex::new(0),
+        requests: Mutex::new(Vec::new()),
+    });
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let m4 = make_m4_deps("tester", "You are a reviewer.");
+    let cfg = AgentConfig::new("stub/m1", Path::new(".")).with_m4(m4);
+    let tools = Arc::new(ToolRegistry::default());
+    tools.register(Arc::new(StopTurnStubTool));
+    let thread = AgentThread::new(cfg, registry, tools, None, None);
+
+    let mut handle = thread.submit(make_sub("probe")).await;
+    let mut saw_tool_end = false;
+    while let Some(ev) = handle.next().await {
+        match ev.msg {
+            EventMsg::ToolCallEnd(e) if e.call_id == "call-1" => {
+                saw_tool_end = true;
+                eprintln!("DEBUG tool_call_end metadata = {}", e.output.metadata);
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+    assert!(saw_tool_end, "工具结算事件应先于收尾");
+    assert_eq!(
+        stub.calls.lock().to_string(),
+        "1",
+        "stop_turn 后不得有第二次模型调用"
+    );
+}
+
+/// 批次 6.1:输入守恒对账纯函数 —— 有 user 消息而无终态处置的 turn
+/// 视为崩溃窗口;`unsettled_input_turns` 精确识别,`last_prompt_snapshot`
+/// 取最后一条快照。
+#[test]
+fn resume_ledger_reconciliation_finds_unsettled_turns() {
+    let t1 = zhuye_protocol::TurnId::new();
+    let t2 = zhuye_protocol::TurnId::new();
+    let records = vec![
+        zhuye_protocol::RolloutRecord::Message {
+            turn_id: t1,
+            role: zhuye_protocol::MessageRole::User,
+            content: serde_json::json!("第一问"),
+        },
+        // t1 已正常处置(promoted)。
+        zhuye_protocol::RolloutRecord::InputDisposition {
+            turn_id: t1,
+            disposition: "promoted".into(),
+            reason: "turn_complete".into(),
+            at: chrono::Utc::now(),
+        },
+        // t2 只落了 user 消息,无处置 —— 崩溃窗口。
+        zhuye_protocol::RolloutRecord::Message {
+            turn_id: t2,
+            role: zhuye_protocol::MessageRole::User,
+            content: serde_json::json!("第二问"),
+        },
+    ];
+    let unsettled = zhuye_core::resume::unsettled_input_turns(&records);
+    assert_eq!(unsettled.len(), 1, "仅 t2 应被判为未结算:{unsettled:?}");
+    // assistant 消息不参与 submitted 判定(只有 user 输入守恒)。
+    let empty = vec![zhuye_protocol::RolloutRecord::Message {
+        turn_id: zhuye_protocol::TurnId::new(),
+        role: zhuye_protocol::MessageRole::Assistant,
+        content: serde_json::json!("回复"),
+    }];
+    assert!(zhuye_core::resume::unsettled_input_turns(&empty).is_empty());
+    // Prompt Snapshot 提取:多条取最后一条。
+    let snap = vec![
+        zhuye_protocol::RolloutRecord::PromptSnapshot {
+            model: "stub/m1".into(),
+            system_json: serde_json::json!([]),
+            at: chrono::Utc::now(),
+        },
+        zhuye_protocol::RolloutRecord::PromptSnapshot {
+            model: "stub/m2".into(),
+            system_json: serde_json::json!([{"text": "v2"}]),
+            at: chrono::Utc::now(),
+        },
+    ];
+    let (model, system) = zhuye_core::resume::last_prompt_snapshot(&snap).expect("应有快照");
+    assert_eq!(model, "stub/m2");
+    assert_eq!(system, serde_json::json!([{"text": "v2"}]));
+    assert!(zhuye_core::resume::last_prompt_snapshot(&[]).is_none());
+}

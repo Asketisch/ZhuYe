@@ -164,16 +164,16 @@ fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), Stri
             model_mut(cfg).context_window = Some(parse_u32(value, key)?);
         }
         // v1.10 功能4:思考强度默认档。写前先校验(大小写不敏感的
-        // low/medium/high/max/ultra),坏值直接报错 —— config set 是
+        // low/medium/high/xhigh/max/ultra),坏值直接报错 —— config set 是
         // 交互命令,即时反馈比落盘后再被静默忽略好。
         "model.reasoning_effort" => {
             let lowered = value.trim().to_ascii_lowercase();
             if !matches!(
                 lowered.as_str(),
-                "low" | "medium" | "high" | "max" | "ultra"
+                "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
             ) {
                 return Err(format!(
-                    "invalid value '{value}' for {key} (expected low|medium|high|max|ultra)"
+                    "invalid value '{value}' for {key} (expected low|medium|high|xhigh|max|ultra)"
                 ));
             }
             model_mut(cfg).reasoning_effort = Some(lowered);

@@ -67,6 +67,7 @@
 | `zhuye-plugin/src/manager/mod.rs` | 插件安装 / 卸载与状态记账 |
 | `zhuye-rollout/src/lib.rs` | JSONL rollout 落盘与轮转 |
 | `zhuye-rollout/src/index/mod.rs` | 会话索引:`list_sessions` 只读每文件首行(按 session 去重);首行非 SessionMeta 时在前缀窗口与轮转副本中恢复。`message_count` 把同回合同角色的增量落盘分片计为一条消息 |
+| `zhuye-rollout/src/index/stats.rs` | 会话统计聚合(总量 + 按模型拆分 + 缓存分段)。聚合 `TokenCount` 时用 `TokenUsage::repair_unfolded_cache_segments` 兼容旧口径记录(未折入缓存分段 → 补齐并重算 total;幂等),保证缓存命中率不 > 100% |
 | `zhuye-sandbox/src/os_sandbox.rs` | OS 沙箱(Seatbelt / Landlock):Seatbelt 限写并拒绝敏感读,关网时仍放行 localhost 与 Unix socket;Linux Landlock ABI v3 限写和截断但不限制敏感读,默认经 seccomp 禁止套接字连接,只要沙箱启用安装失败即拒绝执行(不受 strict 和网络开关影响)。状态报告须区分后端及不可用情况 |
 | `zhuye-sandbox/src/os_sandbox.rs`(敏感路径) | `path_protection_report()` 逐条给出受保护路径是否**真的**只读:可写根外 = 默认拒绝(`EnforcedByDefault`);可写根内 = macOS Seatbelt deny 规则(`Enforced`)/ Linux Landlock 无法撤销(`Unsupported` —— 规则按位合并,内核拒绝空掩码)。`strict_paths`(= `ZHUYE_SANDBOX_STRICT_PATHS=1`)时不可强制的显式要求会让 bash 失败关闭 |
 | `zhuye-ast/src/lib.rs` | tree-sitter 代码搜索工具入口 |

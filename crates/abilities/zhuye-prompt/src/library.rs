@@ -47,41 +47,12 @@ const EMBEDDED_PROVIDER_PROMPTS: &[(&str, &str)] = &[
     ("minimax", include_str!("../prompts/minimax.md")),
 ];
 
-/// 只从已审核评测的清单中查找模型匹配，精确型号优先于家族前缀。
+/// 「智能匹配模型」:在两级目录(sources.json `tools` 段)中按模型 spec
+/// 选最优变体 —— 精确型号优先于家族前缀,已过评测优先于未验证。
+/// v1.7 起取代旧的「仅 passed 方案」清单匹配:目录内所有变体都可被
+/// auto 选中,评测状态只作同级优选,不再硬性拦截。
 fn evaluated_profile(spec: &str) -> Option<String> {
-    let (_, model) = split_spec(spec);
-    let model = model.to_ascii_lowercase();
-    let manifest: serde_json::Value =
-        serde_json::from_str(include_str!("../prompts/sources.json")).ok()?;
-    let profiles = manifest.get("profiles")?.as_array()?;
-    find_evaluated_profile(&model, profiles)
-}
-
-fn find_evaluated_profile(model: &str, profiles: &[serde_json::Value]) -> Option<String> {
-    let approved = profiles
-        .iter()
-        .filter(|entry| entry.get("evaluation").and_then(|v| v.as_str()) == Some("passed"));
-    for key in ["models", "model_prefixes"] {
-        for entry in approved.clone() {
-            let matches = entry
-                .get(key)
-                .and_then(|v| v.as_array())
-                .is_some_and(|names| {
-                    names.iter().filter_map(|name| name.as_str()).any(|name| {
-                        let name = name.to_ascii_lowercase();
-                        if key == "models" {
-                            model == name
-                        } else {
-                            model.starts_with(&name)
-                        }
-                    })
-                });
-            if matches {
-                return entry.get("id")?.as_str().map(str::to_string);
-            }
-        }
-    }
-    None
+    crate::catalog::auto_profile(spec)
 }
 
 /// 目录下的层文件名序列(不含扩展名):default → 厂商(可多个,
@@ -251,16 +222,19 @@ impl PromptLibrary {
         self
     }
 
-    /// `/prompt` 可选层清单:内置厂商层 + 用户目录层,字典序去重。
+    /// `/prompt` 可选层清单:内置厂商层 + 工具变体(两级目录)+ 用户
+    /// 目录层,字典序去重。
     ///
     /// 内置层即使某层全空(如 deepseek)也列出 —— 用户可以按同名文件
-    /// 覆盖它;`default` 是兜底层,总是存在。
+    /// 覆盖它;`default` 是兜底层,总是存在。变体 id 一并列入,既是
+    /// 平铺展示口径,也是 `Select`/`SaveDefault` 的 profile 存在性校验面。
     pub fn available_layers(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         names.push("default".to_string());
         for (name, _) in EMBEDDED_PROVIDER_PROMPTS {
             names.push((*name).to_string());
         }
+        names.extend(crate::catalog::catalog_variant_ids());
         for name in self.user_layers.keys() {
             names.push(name.clone());
         }
@@ -269,7 +243,13 @@ impl PromptLibrary {
         names
     }
 
-    /// 按选择策略解析提示词。自动模式仅启用已有评测依据的方案。
+    /// 按选择策略解析提示词。
+    ///
+    /// v1.7 语义:`auto` 在两级目录(`catalog`)中按模型 spec 匹配最优
+    /// 变体(精确型号 > 家族前缀,评测状态仅作同级优选),命中后按
+    /// default → 家族层 → 变体三级叠加;未命中回落 default 并带
+    /// `fallback_reason`。`manual` 支持实体变体 id(如
+    /// `claude-code-opus-4.6`)、回引叶项(如 `gemini`)与既有平铺层名。
     pub fn resolve_selection(
         &self,
         spec: &str,
@@ -299,10 +279,39 @@ impl PromptLibrary {
             PromptSelection::Default => ("default".to_string(), None),
             PromptSelection::Auto => (
                 "default".to_string(),
-                Some(format!("模型 {spec} 暂无通过评测的提示词方案")),
+                Some(format!("模型 {spec} 暂无匹配的提示词方案")),
             ),
             PromptSelection::Manual { profile } if profile == "default" => {
                 ("default".to_string(), None)
+            }
+            PromptSelection::Manual { profile }
+                if crate::catalog::tool_variant(&profile).is_some() =>
+            {
+                // v1.7:实体工具变体(两级目录)—— default → 家族层 → 变体
+                // 三级叠加,用户同名层逐级覆盖内嵌文案(家族层先于变体)。
+                let family = crate::catalog::variant_family_layer(&profile);
+                if let Some(family) = family
+                    && family != profile
+                {
+                    if let Some((_, text)) = EMBEDDED_PROVIDER_PROMPTS
+                        .iter()
+                        .find(|(name, _)| *name == family)
+                    {
+                        set.extend_from(parse_sections(text));
+                    }
+                    if let Some(sections) = self.user_layers.get(family) {
+                        set.layers.push(family.to_string());
+                        set.extend_from(sections.clone());
+                    }
+                }
+                if let Some(text) = crate::catalog::tool_variant_text(&profile) {
+                    set.extend_from(parse_sections(text));
+                }
+                if let Some(sections) = self.user_layers.get(profile.as_str()) {
+                    set.layers.push(profile.clone());
+                    set.extend_from(sections.clone());
+                }
+                (profile.clone(), None)
             }
             PromptSelection::Manual { profile } => {
                 let embedded = EMBEDDED_PROVIDER_PROMPTS
@@ -462,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_respects_default_manual_and_unverified_auto() {
+    fn selection_respects_default_manual_and_auto_fallback() {
         use zhuye_protocol::PromptSelection;
         let lib = lib_with(&[
             ("default", "## system.main\n用户默认\n"),
@@ -470,9 +479,20 @@ mod tests {
         ]);
         let default = lib.resolve_selection("openai/claude-5", &PromptSelection::Default);
         assert_eq!(default.set.get("system.main"), Some("用户默认"));
+        // auto 命中目录变体:claude 家族 catch-all → sonnet-5.5(用户层
+        // 的同名家族键不影响 auto 的 profile 回报)。
         let auto = lib.resolve_selection("openai/claude-5", &PromptSelection::Auto);
-        assert_eq!(auto.profile, "default");
-        assert!(auto.fallback_reason.is_some());
+        assert_eq!(auto.profile, "claude-code-sonnet-5.5");
+        assert_eq!(auto.fallback_reason, None);
+        // 全无命中的模型:回落 default 并给出原因。
+        let unmatched = lib.resolve_selection("mystery/unknown", &PromptSelection::Auto);
+        assert_eq!(unmatched.profile, "default");
+        assert!(
+            unmatched
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("暂无匹配")),
+        );
         let manual = lib.resolve_selection(
             "openai/gpt-5",
             &PromptSelection::Manual {
@@ -491,23 +511,63 @@ mod tests {
         assert!(missing.fallback_reason.is_some());
     }
 
+    /// 实体工具变体的三级叠加:default 兜底 → 家族层(厂商)→ 变体,
+    /// 变体的 system.main 压过家族层同 key 文案,家族层独有 section 保留。
     #[test]
-    fn automatic_matching_uses_only_evaluated_models_and_prefers_exact() {
-        let profiles = serde_json::json!([
-            {"id":"family", "evaluation":"passed", "model_prefixes":["deepseek-"]},
-            {"id":"exact", "evaluation":"passed", "models":["deepseek-v4"]},
-            {"id":"pending", "evaluation":"unverified", "models":["gpt-5"]}
+    fn manual_variant_stacks_family_then_variant() {
+        use zhuye_protocol::PromptSelection;
+        let lib = PromptLibrary::embedded();
+        let resolved = lib.resolve_selection(
+            "claude/claude-sonnet-5-5",
+            &PromptSelection::Manual {
+                profile: "claude-code-sonnet-5.5".into(),
+            },
+        );
+        assert_eq!(resolved.profile, "claude-code-sonnet-5.5");
+        assert_eq!(resolved.fallback_reason, None);
+        // 变体的英文 system.main 压过家族层中文版。
+        let main = resolved
+            .set
+            .get("system.main")
+            .expect("变体应有 system.main");
+        assert!(
+            main.contains("You are an interactive coding agent"),
+            "变体 system.main 应为英文策展正文,实际: {main}"
+        );
+        // default 层的工具文案未被变体覆盖,仍然生效。
+        assert!(resolved.set.get("tool.edit").is_some());
+        // 回引叶项(无 file)走平铺厂商层路径:命中厂商 system.main。
+        let leaf = lib.resolve_selection(
+            "gemini/gemini-3-pro",
+            &PromptSelection::Manual {
+                profile: "gemini".into(),
+            },
+        );
+        assert_eq!(leaf.profile, "gemini");
+        assert!(leaf.fallback_reason.is_none());
+    }
+
+    /// 用户目录同名层覆盖内嵌变体:家族层文件名(如 `claude.md`)覆盖
+    /// 家族层,变体 id 文件名覆盖变体。
+    #[test]
+    fn user_layers_override_embedded_variant_stack() {
+        use zhuye_protocol::PromptSelection;
+        let lib = lib_with(&[
+            ("claude", "## family-only\n家族覆盖\n"),
+            ("claude-code-sonnet-5.5", "## system.main\n用户变体\n"),
         ]);
-        let profiles = profiles.as_array().unwrap();
-        assert_eq!(
-            find_evaluated_profile("deepseek-v4", profiles).as_deref(),
-            Some("exact")
+        let resolved = lib.resolve_selection(
+            "claude/claude-sonnet-5-5",
+            &PromptSelection::Manual {
+                profile: "claude-code-sonnet-5.5".into(),
+            },
         );
+        assert_eq!(resolved.set.get("system.main"), Some("用户变体"));
+        assert_eq!(resolved.set.get("family-only"), Some("家族覆盖"));
         assert_eq!(
-            find_evaluated_profile("deepseek-v3", profiles).as_deref(),
-            Some("family")
+            resolved.set.layers,
+            vec!["claude", "claude-code-sonnet-5.5"]
         );
-        assert_eq!(find_evaluated_profile("gpt-5", profiles), None);
     }
 
     #[test]
@@ -719,7 +779,8 @@ mod tests {
         assert_eq!(set.layers, Vec::<String>::new());
     }
 
-    /// `/prompt` 可选层清单:内置厂商层 + 用户层,去重排序,default 恒在。
+    /// `/prompt` 可选层清单:内置厂商层 + 工具变体 + 用户层,去重排序,
+    /// default 恒在。
     #[test]
     fn available_layers_lists_embedded_and_user() {
         let lib = lib_with(&[("my-custom", "## k\nv\n")]);
@@ -740,6 +801,19 @@ mod tests {
             assert!(
                 layers.iter().any(|l| l == vendor),
                 "available_layers 应含 `{vendor}`,实际: {layers:?}"
+            );
+        }
+        // 两级目录的实体变体与回引叶项都列入(Select 校验面)。
+        for variant in [
+            "claude-code-opus-4.6",
+            "claude-code-sonnet-5.5",
+            "codex-gpt-6.1-sol",
+            "kimi-2.6",
+            "qwen4.0-max",
+        ] {
+            assert!(
+                layers.iter().any(|l| l == variant),
+                "available_layers 应含变体 `{variant}`,实际: {layers:?}"
             );
         }
         assert_eq!(layers.len(), layers.iter().len(), "不应有重复项");

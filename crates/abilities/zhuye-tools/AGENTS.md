@@ -54,6 +54,12 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 | `src/builtins/` | 各内置工具实现(按工具分文件) |
 | `src/loop_guard.rs` | 重复调用 / 无进展的循环守卫 |
 
+## v1.x 新增能力
+
+- **工具结果预算**(`src/result_budget.rs`):提供独立预算工具及队列可选接口。运行时配置在宿主事件发出后应用于模型上下文；持久化输出写入工作区的安全溢出目录，保持可读回与恢复一致。
+- **deferred_call**(tool-defer 门控插件,默认关):只有入口已注册且目标来自 MCP 时,queue 才在**派发前**展开调用,审批/hook/floor 按真实工具走;直接执行、嵌套转发和非 MCP 目标均拒绝。`registry.deferred_tool_names()` 供 core 目录公告。
+- **stop_turn 级联**:工具以 `metadata["stop_turn"]=true` 请求结算后收口 turn(置 `force_final_answer`,结果仍完整回灌)。
+
 ## 禁止事项
 
 - 不得在本 crate 与 `zhuye-hooks` 之间另造错误类型 —— 一律复用 `zhuye-protocol` 的 `ToolError`。

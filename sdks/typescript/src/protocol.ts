@@ -196,6 +196,8 @@ export type EventMsg =
   | PromptSwitched
   | ExtensionsRescanned
   | GuardStats
+  | CacheWarming
+  | StreamRecovery
   | CollabStarted
   | CollabMessage
   | CollabFinished
@@ -307,6 +309,11 @@ export interface TokenCount {
   total_tokens?: number;
   provider?: string;
   credential_label?: string;
+  /**
+   * True = 本回合累计(引擎回合收尾补发);缺省 = 单次调用。
+   * 两者不可一并累计,否则会话总量与费用翻倍。
+   */
+  turn_total?: boolean;
 }
 
 export interface TokenUsage {
@@ -449,6 +456,43 @@ export interface GuardStats {
   definitions_reviewed: number;
   outputs_blocked: number;
   outputs_reviewed: number;
+}
+
+/** v1.x:prompt cache 保温(cache warming)状态事件 —— 引擎主动推,无对应
+ * Op(镜像 context_composition 形态)。默认关闭([cache_warming] enabled),
+ * 开启后可用 warm_cached_tokens 与后续 token_count.cached_tokens 对照验证
+ * 保温收益。reason ∈ no_economics / no_cache_hits / below_threshold /
+ * window_exhausted / stale / replay_failed 等。 */
+export interface CacheWarming {
+  type: 'cache_warming';
+  action: 'scheduled' | 'executed' | 'skipped' | 'cancelled';
+  phase: 'turn' | 'idle';
+  reason?: string;
+  prompt_tokens?: number;
+  warm_cached_tokens?: number;
+  warm_cost_usd?: number;
+  expected_savings_usd?: number;
+  model?: string;
+  /** UNIX 秒。 */
+  at: number;
+}
+
+/** v1.x:流锚点恢复事件族(四个变体共享载荷,type 区分)——
+ * started / anchor_selected / tail_discarded / retry_started。
+ * 可观察诊断事件,不改变 stream_error / agent_message_reset 语义。 */
+export interface StreamRecovery {
+  type:
+    | 'stream_recovery_started'
+    | 'stream_recovery_anchor_selected'
+    | 'stream_recovery_tail_discarded'
+    | 'stream_recovery_retry_started';
+  attempt: number;
+  reason_code: string;
+  transient?: string;
+  anchor?: string;
+  discarded_text_chars?: number;
+  discarded_thinking_chars?: number;
+  retry_in_ms?: number;
 }
 
 export interface CollabStarted {

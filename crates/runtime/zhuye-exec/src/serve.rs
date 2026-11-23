@@ -266,6 +266,9 @@ where
                     register_remote_tool(&tools, spec.clone(), &bridge, remote_timeout, &sink)
                         .await;
                 }
+                // v1.x 保温:工具清单变化 → bump 缓存代际(下一请求 wire
+                // 的 tools 段变化,保温候选 fire 时失效重验)。
+                thread.config().bump_cache_generation();
             }
             Op::ToolExecutionResponse { call_id, output } => {
                 bridge.complete(call_id, output.clone());

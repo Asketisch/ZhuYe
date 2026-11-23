@@ -6,6 +6,7 @@ pub mod background_status;
 pub mod bash;
 pub mod brief;
 pub mod context_remaining;
+pub mod deferred_call;
 pub mod delete;
 pub mod echo;
 pub mod edit;

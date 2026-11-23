@@ -222,6 +222,8 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
                 if let Some(m) = &model {
                     out.push_str(&format!("- model: {m}\n"));
                 }
+                // 旧口径修复:与 `session_stats` 同源,保证导出的数字与统计一致。
+                let usage = usage.repair_unfolded_cache_segments();
                 out.push_str(&format!("- input: {}\n", usage.input_tokens));
                 out.push_str(&format!("- output: {}\n", usage.output_tokens));
                 out.push_str(&format!("- cached: {}\n", usage.cached_tokens));
@@ -312,6 +314,12 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
             // 显式忽略以保证 match 穷尽 —— 未来新增变体编译期报错。
             RolloutRecord::InteractionRequest { .. }
             | RolloutRecord::InteractionResolution { .. } => {}
+            // v1.x:流锚点恢复丢弃留痕 —— 纯审计,转写稿不渲染。
+            RolloutRecord::StreamRecoveryDiscarded { .. } => {}
+            // v1.x:Prompt Snapshot —— 内部恢复源,转写稿不渲染。
+            RolloutRecord::PromptSnapshot { .. } => {}
+            // v1.x:输入守恒 ledger —— 审计面,转写稿不渲染。
+            RolloutRecord::InputDisposition { .. } => {}
         }
     }
 
@@ -510,6 +518,12 @@ pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
             RolloutRecord::InteractionRequest { .. }
             | RolloutRecord::InteractionResolution { .. } => {}
             RolloutRecord::PromptSelectionChanged { .. } => {}
+            // v1.x:流锚点恢复丢弃留痕 —— 纯审计,markdown 导出不渲染。
+            RolloutRecord::StreamRecoveryDiscarded { .. } => {}
+            // v1.x:Prompt Snapshot —— 内部恢复源,markdown 导出不渲染。
+            RolloutRecord::PromptSnapshot { .. } => {}
+            // v1.x:输入守恒 ledger —— 审计面,markdown 导出不渲染。
+            RolloutRecord::InputDisposition { .. } => {}
         }
     }
     out

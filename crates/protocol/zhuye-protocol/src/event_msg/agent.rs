@@ -71,7 +71,7 @@ impl Default for ThinkingDelta {
 
 /// Token 用量快照:每次模型调用成功后发出该次调用的用量(附 provider /
 /// credential / model);turn 收尾时再发一次本 turn 累计用量(此时这三者
-/// 为 `None`)。各计数口径同 `TokenUsage`。
+/// 为 `None`,且 `turn_total = true`)。各计数口径同 `TokenUsage`。
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TokenCountEvent {
     /// 输入 token 数(含 `cached_tokens` / `cache_write_tokens` 子片段)。
@@ -107,6 +107,23 @@ pub struct TokenCountEvent {
     /// 据此实时按模型展示用量。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// v1.x:本条计量是否为**回合累计**。
+    ///
+    /// 引擎在回合收尾时会补发一条累计 `TokenCount`(数字 = 本回合逐次
+    /// 调用的累计,`provider` / `credential_label` / `model` 均为 `None`)。
+    /// 它与逐次调用的快照语义不同 —— 消费方若把两者**一并累计**,会话
+    /// 总量与费用会翻倍(per-call 之和 + 回合累计)。本字段给出显式判据。
+    ///
+    /// `false`(缺省)= 单次调用;旧引擎不发该字段 → 按单次调用处理,
+    /// 线缆双向兼容。单次调用时序列化省略本字段(逐次调用事件的 wire
+    /// 与本字段引入前完全一致)。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub turn_total: bool,
+}
+
+/// serde 的 `skip_serializing_if` 谓词:布尔为 `false` 时省略该字段。
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// v1.12:上下文组成类别的稳定 id。六类覆盖「这个 turn 的 input 上下文

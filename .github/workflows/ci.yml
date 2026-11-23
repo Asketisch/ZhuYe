@@ -146,6 +146,18 @@ jobs:
           python-version: "3.12"
       - run: ./scripts/release_sdk.sh check_docs
 
+  # 作废说法文档门禁:规则演进后旧表述残留在现状文档里即失败
+  # (历史/归档目录豁免;登记表见脚本头注释与 STALE_PHRASES)。
+  docs-stale-phrases:
+    name: docs stale phrases
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python3 scripts/check_stale_doc_phrases.py
+
   # 功能覆盖门禁:能力覆盖层(Python 打真二进制,原始 wire)+ Rust CLI 参数面
   # + 双 SDK 和原生 Python 绑定。cargo test / clippy / fmt / doc 由上面的 job 覆盖,
   # 这里用 `functional` 模式跳过(ZHUYE_SKIP_WORKSPACE=1)。

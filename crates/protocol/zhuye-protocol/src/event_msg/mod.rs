@@ -15,6 +15,7 @@ pub use crate::question::AskUserQuestionEvent;
 
 mod agent;
 mod approval;
+mod cache;
 mod collab;
 mod compaction;
 mod config;
@@ -26,6 +27,7 @@ mod plan;
 mod plugin;
 mod routing;
 mod side_channel;
+mod stream_recovery;
 mod subagent;
 mod tool;
 mod turn;
@@ -36,13 +38,14 @@ pub use agent::{
     TokenCountEvent,
 };
 pub use approval::{ApprovalKind, ApprovalRequestEvent, PermissionBubbleEvent};
+pub use cache::{CacheWarmingAction, CacheWarmingEvent, CacheWarmingPhase};
 pub use collab::{CollabFinishedEvent, CollabMessageEvent, CollabStartedEvent};
 pub use compaction::{
     ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, StreamErrorEvent, TriedCredential,
 };
 pub use config::{
-    ConfigReloadedEvent, ExtensionsRescannedEvent, GuardStatsEvent, PromptListEvent,
-    PromptSwitchedEvent,
+    ConfigReloadedEvent, ExtensionsRescannedEvent, GuardStatsEvent, PromptGroup, PromptListEvent,
+    PromptSwitchedEvent, PromptVariantRef,
 };
 pub use interaction::{
     InteractionKind, InteractionOutcome, InteractionResolvedEvent, PendingInteraction,
@@ -64,6 +67,7 @@ pub use routing::{RoutingEvent, RoutingEventKind};
 pub use side_channel::{
     SideChannelEvent, SideChannelInfo, SideChannelStatusMirror, SideChannelStatusSnapshot,
 };
+pub use stream_recovery::StreamRecoveryEvent;
 pub use subagent::{
     SubagentProgressEvent, SubagentProgressKind, SubagentRunStateMirror, SubagentStatusEvent,
     SubagentStatusSnapshot,
@@ -289,6 +293,26 @@ pub enum EventMsg {
     /// F01:`Op::QueryGuardStats` 的应答:prompt_guard 裁决统计快照。
     /// UI 的 `/status` 安全段 / Desktop 设置安全段据此展示。
     GuardStats(GuardStatsEvent),
+
+    // Prompt cache 保温(1;v1.x)—— 引擎主动推的诊断事件,无对应 Op
+    /// prompt cache 保温(cache warming)状态:空闲期 / 回合内以廉价重放
+    /// 刷新 provider prompt cache TTL 时推送。`scheduled` 仅空闲排程建立
+    /// 时发一次;`executed` / `skipped` 为 fire 时决策与执行结果;
+    /// `cancelled` 仅在途重放被取消时发。默认关闭(`[cache_warming]`
+    /// enabled),开启后客户端可将其 `warm_cached_tokens` 与后续
+    /// `TokenCount.cached_tokens` 对照验证保温收益。
+    CacheWarming(CacheWarmingEvent),
+
+    // 流锚点恢复(4;v1.x)—— 恢复过程事件化,不改变 stream_error /
+    // agent_message_reset 的既有语义与顺序
+    /// 流恢复启动(可重试错误 + 已有可见增量,从安全锚点重开流)。
+    StreamRecoveryStarted(StreamRecoveryEvent),
+    /// 已选定恢复锚点(`anchor` 字段给出锚点类型)。
+    StreamRecoveryAnchorSelected(StreamRecoveryEvent),
+    /// 丢弃的尾部输出已留痕(rollout 落盘,resume 不回放)。
+    StreamRecoveryTailDiscarded(StreamRecoveryEvent),
+    /// 已从锚点重开请求(随后到来的增量属于重试轮)。
+    StreamRecoveryRetryStarted(StreamRecoveryEvent),
 }
 
 impl EventMsg {
@@ -350,6 +374,11 @@ impl EventMsg {
             EventMsg::PromptSwitched(_) => "prompt_switched",
             EventMsg::ExtensionsRescanned(_) => "extensions_rescanned",
             EventMsg::GuardStats(_) => "guard_stats",
+            EventMsg::CacheWarming(_) => "cache_warming",
+            EventMsg::StreamRecoveryStarted(_) => "stream_recovery_started",
+            EventMsg::StreamRecoveryAnchorSelected(_) => "stream_recovery_anchor_selected",
+            EventMsg::StreamRecoveryTailDiscarded(_) => "stream_recovery_tail_discarded",
+            EventMsg::StreamRecoveryRetryStarted(_) => "stream_recovery_retry_started",
         }
     }
 }
@@ -628,6 +657,55 @@ mod tests {
                 skill_count: 2,
                 command_count: 1,
             }),
+            // v1.x:流锚点恢复事件族(additive 变体的判别锁定)。
+            EventMsg::StreamRecoveryStarted(StreamRecoveryEvent {
+                attempt: 1,
+                reason_code: "sse_parse_error".into(),
+                transient: Some("provider_stream_error".into()),
+                anchor: None,
+                discarded_text_chars: None,
+                discarded_thinking_chars: None,
+                retry_in_ms: None,
+            }),
+            EventMsg::StreamRecoveryAnchorSelected(StreamRecoveryEvent {
+                attempt: 1,
+                reason_code: "sse_parse_error".into(),
+                transient: None,
+                anchor: Some("previous_message".into()),
+                discarded_text_chars: None,
+                discarded_thinking_chars: None,
+                retry_in_ms: None,
+            }),
+            EventMsg::StreamRecoveryTailDiscarded(StreamRecoveryEvent {
+                attempt: 1,
+                reason_code: "sse_parse_error".into(),
+                transient: None,
+                anchor: None,
+                discarded_text_chars: Some(1200),
+                discarded_thinking_chars: Some(300),
+                retry_in_ms: None,
+            }),
+            EventMsg::StreamRecoveryRetryStarted(StreamRecoveryEvent {
+                attempt: 1,
+                reason_code: "sse_parse_error".into(),
+                transient: None,
+                anchor: Some("previous_message".into()),
+                discarded_text_chars: None,
+                discarded_thinking_chars: None,
+                retry_in_ms: Some(500),
+            }),
+            // v1.x:prompt cache 保温状态事件(additive 变体的判别锁定)。
+            EventMsg::CacheWarming(CacheWarmingEvent {
+                action: CacheWarmingAction::Executed,
+                phase: CacheWarmingPhase::Idle,
+                reason: None,
+                prompt_tokens: Some(12_000),
+                warm_cached_tokens: Some(11_500),
+                warm_cost_usd: Some(0.0173),
+                expected_savings_usd: Some(0.12),
+                model: Some("anthropic/claude-sonnet-5-5".into()),
+                at: SystemTime::UNIX_EPOCH,
+            }),
         ];
         for v in &all {
             assert!(!v.discriminant().is_empty());
@@ -745,6 +823,43 @@ mod tests {
         });
         let j = serde_json::to_string(&ev_none).unwrap();
         assert!(!j.contains("cost_usd"), "None must be skipped, got: {j}");
+    }
+
+    #[test]
+    fn token_count_with_turn_total_roundtrip() {
+        // v1.x:回合累计标记 —— 引擎回合收尾补发的那条 TokenCount 带
+        // `turn_total = true`;逐次调用的快照不带(缺省 false)。
+        // 消费方据此避免把两者一并累计(会话总量 / 费用会翻倍)。
+        let per_call = EventMsg::TokenCount(TokenCountEvent {
+            input_tokens: 100,
+            output_tokens: 20,
+            cached_tokens: 50,
+            cache_write_tokens: 0,
+            total_tokens: 120,
+            ..Default::default()
+        });
+        let j = serde_json::to_string(&per_call).unwrap();
+        assert!(!j.contains("turn_total"), "单次调用不应带该字段,got: {j}");
+        match serde_json::from_str::<EventMsg>(&j).unwrap() {
+            EventMsg::TokenCount(e) => assert!(!e.turn_total, "缺省必须是单次调用"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let turn_total = EventMsg::TokenCount(TokenCountEvent {
+            input_tokens: 100,
+            output_tokens: 20,
+            cached_tokens: 50,
+            cache_write_tokens: 0,
+            total_tokens: 120,
+            turn_total: true,
+            ..Default::default()
+        });
+        let j = serde_json::to_string(&turn_total).unwrap();
+        assert!(j.contains(r#""turn_total":true"#), "got: {j}");
+        match serde_json::from_str::<EventMsg>(&j).unwrap() {
+            EventMsg::TokenCount(e) => assert!(e.turn_total, "回合累计标记必须往返保真"),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]
@@ -1313,6 +1428,85 @@ mod tests {
                 assert_eq!(e.questions.len(), 2);
                 assert!(!e.questions[0].multi_select);
                 assert!(e.questions[1].multi_select);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    // ── v1.x:CacheWarming(prompt cache 保温)────────────────────────
+
+    #[test]
+    fn cache_warming_executed_roundtrip() {
+        let ev = EventMsg::CacheWarming(CacheWarmingEvent {
+            action: CacheWarmingAction::Executed,
+            phase: CacheWarmingPhase::Turn,
+            reason: None,
+            prompt_tokens: Some(12_000),
+            warm_cached_tokens: Some(11_500),
+            warm_cost_usd: Some(0.0173),
+            expected_savings_usd: Some(0.12),
+            model: Some("anthropic/claude-sonnet-5-5".into()),
+            at: SystemTime::UNIX_EPOCH,
+        });
+        let j = serde_json::to_string(&ev).unwrap();
+        assert!(j.contains(r#""type":"cache_warming""#), "got: {j}");
+        assert!(j.contains(r#""action":"executed""#), "got: {j}");
+        assert!(j.contains(r#""phase":"turn""#), "got: {j}");
+        assert!(j.contains(r#""warm_cached_tokens":11500"#), "got: {j}");
+        let back: EventMsg = serde_json::from_str(&j).unwrap();
+        match back {
+            EventMsg::CacheWarming(e) => {
+                assert_eq!(e.action, CacheWarmingAction::Executed);
+                assert_eq!(e.phase, CacheWarmingPhase::Turn);
+                assert_eq!(e.prompt_tokens, Some(12_000));
+                assert_eq!(e.warm_cached_tokens, Some(11_500));
+                assert_eq!(e.warm_cost_usd, Some(0.0173));
+                assert_eq!(e.model.as_deref(), Some("anthropic/claude-sonnet-5-5"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_warming_skipped_omits_none_fields() {
+        // skipped 事件:reason 之外的可选字段全部省略,None 不占 wire 位。
+        let ev = EventMsg::CacheWarming(CacheWarmingEvent {
+            action: CacheWarmingAction::Skipped,
+            phase: CacheWarmingPhase::Idle,
+            reason: Some("no_cache_hits".into()),
+            prompt_tokens: None,
+            warm_cached_tokens: None,
+            warm_cost_usd: None,
+            expected_savings_usd: None,
+            model: None,
+            at: SystemTime::UNIX_EPOCH,
+        });
+        let j = serde_json::to_string(&ev).unwrap();
+        assert!(j.contains(r#""reason":"no_cache_hits""#), "got: {j}");
+        assert!(!j.contains("prompt_tokens"), "None 应跳过, got: {j}");
+        assert!(!j.contains("warm_cached_tokens"), "None 应跳过, got: {j}");
+        assert!(!j.contains("warm_cost_usd"), "None 应跳过, got: {j}");
+        assert!(!j.contains("model"), "None 应跳过, got: {j}");
+        let back: EventMsg = serde_json::from_str(&j).unwrap();
+        match back {
+            EventMsg::CacheWarming(e) => {
+                assert_eq!(e.reason.as_deref(), Some("no_cache_hits"));
+                assert_eq!(e.prompt_tokens, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_warming_backward_compat_with_missing_fields() {
+        // wire 兼容:省略全部可选字段的 producer 仍可解析。
+        let j = r#"{"type":"cache_warming","action":"skipped","phase":"idle","at":0}"#;
+        let back: EventMsg = serde_json::from_str(j).unwrap();
+        match back {
+            EventMsg::CacheWarming(e) => {
+                assert_eq!(e.action, CacheWarmingAction::Skipped);
+                assert_eq!(e.phase, CacheWarmingPhase::Idle);
+                assert_eq!(e.reason, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }

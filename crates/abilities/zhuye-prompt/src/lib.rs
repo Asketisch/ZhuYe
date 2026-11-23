@@ -14,6 +14,9 @@
 
 pub mod builder;
 pub mod caching;
+/// v1.7:工具×模型两级提示词目录(sources.json `tools` 段)—— 一级菜单
+/// 工具名、二级菜单模型变体,以及「智能匹配模型」的引擎端匹配。
+pub mod catalog;
 pub mod library;
 /// F69:Composer mention 解析(@file / #issue / !PR)+ picker 候选 + 上下文装配。
 pub mod mentions;
@@ -31,6 +34,10 @@ pub use builder::{
 pub use caching::{
     CacheBreakDetector, CacheBreakError, CacheMonitorStats, DEFAULT_PREFIX_ANCHOR_OFFSET,
     find_prefix_anchor, inject_cache_control,
+};
+pub use catalog::{
+    EMBEDDED_TOOL_PROMPTS, PromptTool, PromptVariant, auto_profile, catalog_variant_ids,
+    tool_catalog, tool_variant, tool_variant_text, variant_family_layer,
 };
 pub use library::{
     DescriptionSource, PromptLibrary, PromptResolution, PromptSet, apply_model_overrides,

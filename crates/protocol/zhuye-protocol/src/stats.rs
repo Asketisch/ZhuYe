@@ -96,11 +96,16 @@ impl SessionStats {
     /// 缓存命中率:`cached_tokens / input_tokens`。无 input 时返回 `None`。
     /// 仅 Anthropic 等支持 prompt caching 的 provider 有非零 cached;
     /// 其余 provider 恒 0,命中率即 0。
+    ///
+    /// 结果钳到 `[0, 1]`:命中率是一个**比例**,> 1 说明上游某处口径漂移
+    /// (缓存分段未折入 `input_tokens`),展示层宁可给 100%,也不该把
+    /// 1052% 这种荒谬值抛给 GUI / CLI。真实口径由 provider 适配层保证
+    /// (见 `TokenUsage::fold_cache_segments`),本钳制只是最后一道防线。
     pub fn cache_hit_rate(&self) -> Option<f64> {
         if self.input_tokens == 0 {
             return None;
         }
-        Some(self.cached_tokens as f64 / self.input_tokens as f64)
+        Some((self.cached_tokens as f64 / self.input_tokens as f64).clamp(0.0, 1.0))
     }
 
     /// v1.x:压缩累计节省的 token(before 之和 - after 之和)。
@@ -163,6 +168,32 @@ mod tests {
         assert_eq!(stats.cache_hit_rate(), Some(0.25));
         stats.cached_tokens = 0;
         assert_eq!(stats.cache_hit_rate(), Some(0.0));
+    }
+
+    #[test]
+    fn cache_hit_rate_clamps_to_one() {
+        // 口径漂移时的兜底:命中率是比例,> 1 必须被钳到 1,
+        // 不得把 1052% 这类荒谬值抛给展示层。
+        let stats = SessionStats {
+            session_id: ThreadId::new(),
+            model: "anthropic/claude".into(),
+            started_at: Utc::now(),
+            message_count: 0,
+            tool_calls: 0,
+            compactions: 0,
+            compaction_before_tokens: 0,
+            compaction_after_tokens: 0,
+            memory_reads: 0,
+            memory_writes: 0,
+            input_tokens: 3942,
+            output_tokens: 0,
+            cached_tokens: 41486,
+            cache_write_tokens: 0,
+            total_tokens: 3942,
+            cost_usd: None,
+            per_model: Vec::new(),
+        };
+        assert_eq!(stats.cache_hit_rate(), Some(1.0));
     }
 
     #[test]

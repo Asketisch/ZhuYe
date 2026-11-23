@@ -31,6 +31,12 @@ pub enum CacheBreakError {
 }
 
 /// 累计观测统计 —— v1+ cache 监控增强,供 TUI / metrics 读取。
+///
+/// **已知局限(消费方必读)**:指纹的 tools 输入只含 name + JSON
+/// parameters,**不含 description**(有意对齐上游)。MCP 等动态工具的
+/// description 变化会导致服务端缓存 miss,但本地指纹不变 —— 本结构的
+/// `hit_rate()` 是「prompt 形状稳定性」指标,**不是**服务端命中率;
+/// 服务端真实命中以 usage 回执的 `cached_tokens` 为准。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CacheMonitorStats {
     /// `observe` 调用次数。
@@ -189,11 +195,15 @@ pub fn find_prefix_anchor(messages: &[ChatMessage], offset: i32) -> Option<usize
 ///   附加 `Ephemeral` + 可配 TTL(注:v0 的 `ChatMessage` 不携带逐消息
 ///   `cache_control`;这里把 `CacheBreak { after_message_index, ttl }`
 ///   推入 `req.cache_control`,由 provider 实现发出正确的 wire 形状)。
-/// - 可选地通过 `req.metadata["cache_break_tool"] = "true"` 在**最后**
-///   一个 tool spec 上附加 `Ephemeral` + 可配 TTL(provider 实现检查
-///   该标志)。
+/// - 可选地通过 `req.metadata["cache_break_tool"] = "true"` 在**尾部
+///   最多 3 个** tool spec 上附加 `Ephemeral`(anthropic.rs
+///   `CACHE_TAIL_TOOLS`;Anthropic 单请求最多 4 个断点,留 1 个给 system)。
 ///
 /// TTL 由 `system_cache_ttl()` 决定(读 `ZHUYE_CACHE_TTL`,默认 `1h`)。
+/// **端到端契约**:TTL 随请求层逐断点携带,provider(anthropic.rs 的
+/// `configured_ttl`)必须透传到全部三类断点(消息锚点 / 尾部工具 /
+/// system 兜底)—— 曾在 wire 层被硬编码 5m 使配置意图失效(已修,
+/// wire 层测试 `anthropic_configured_ttl_reaches_all_breakpoints` 锁定)。
 pub fn inject_cache_control(
     req: &mut ChatRequest,
     caps: &Capabilities,

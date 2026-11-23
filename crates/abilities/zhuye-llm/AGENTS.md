@@ -41,8 +41,23 @@
 - 环境变量 `ZHUYE_MOCK_SCRIPT` 指向一个 JSONL 文件,**每行对应一次模型调用**,按顺序消耗;支持文本回复、整段消息回复、工具调用、工具调用参数分片几种形态 —— 分片形态是为锻炼下游的流式聚合路径而存在的。
 - 脚本耗尽或未配置时回退到**带可辨识标记**的固定回复,让「脚本写错 / 覆盖不足」不会被断言「文本非空」的测试假绿。
 - 脚本路径不存在 / 读取失败 / 全部行解析失败时,**首次模型调用显式报错**,不静默降级。
+- **v1.x 唯一例外**:带 `metadata["warm_replay"]="true"` 标记的合成请求(prompt cache 保温重放,见 `src/cache_warming.rs`)**不消耗脚本行**,也不触发 config_error —— 保温是引擎自发的额外调用,照常 pop 脚本会破坏「脚本行 ↔ 真实模型调用」的一一对应。仍进 `recorded_requests()` 供断言。真实 provider 忽略未知 metadata 键,wire 不受影响。
 
-改动这个文件时,以上四条必须原样保住;确需调整要同步 `docs/cli.md` 与相关冒烟脚本。
+改动这个文件时,以上契约必须原样保住;确需调整要同步 `docs/cli.md` 与相关冒烟脚本。
+
+### 5. prompt cache 保温决策是纯函数(数字在此,调度在 core)
+
+- `src/cache_warming.rs` 是保温的**决策模块**(零 I/O):`evaluate` 按期望收益(`延续概率 × miss成本 − warmCost ≥ 阈值`)决定是否保温,`effective_ttl_secs` / `refresh_delay_secs` 给出刷新节奏。默认值与 pi(cache-warming.ts)对齐(阈值 $0.05、空闲延续概率 0.15、窗口 60/30 分钟)。
+- 与 pi 的差异(设计约定):决策消费**真实观测**回执(`CacheObservation` = 上次请求的 cached + cache_write 两段)—— 全零回执直接 skip(`no_cache_hits`,provider 实际没在缓存),warmCost 按「存活段 read 价 + 失效段重写价」精化;OpenAI 无写入档时失效重读回退 input 价。
+- **调度器不在这里**:zhuye-core 的 `CacheWarmingScheduler` 管候选槽 / 单飞 / 代际失效 / 零污染不变式;本模块不知道引擎状态的存在,表驱动单测完全离线。
+- `ModelClient::warming_replayable` 是保温重放可行性的 provider 判定点:默认 `true`;**Anthropic override 为「显式 thinking(`Enabled{budget_tokens}`)不可重放」**(API 要求 `max_tokens > budget_tokens`,1-token 重放会被拒绝)。新增 provider 若 wire 形态里有与 `max_tokens` 派生 / 约束相关的缓存键字段,必须同样 override。
+
+### 6. usage 口径归一:provider 必须把缓存分段折入 `input_tokens`
+
+- **协议不变式**:`ChatEvent::Usage.input_tokens` 是「本次 prompt 的全部输入」,`cached_tokens`(cache_read)与 `cache_write_tokens`(cache_creation)都是它的**子集**,不是并列项。引擎内所有消费者(计价、缓存命中率、上下文占用、压缩触发)都按这个不变式写。
+- **Anthropic 线缆相反**:它的 `usage.input_tokens` 只报「既未从缓存读出、也未为缓存写入」的部分,**不含**两个缓存分段。原样透传会让 `cached > input`,后果是缓存命中率算出 > 100%(真实案例 1052%)、`pricing::price` 的 `non_cached` 饱和到 0(新鲜输入按缓存价计费)、`total_tokens` 与上下文占用系统性低报、压缩几乎永不触发。
+- **适配层义务**:Anthropic 适配器在发射 `ChatEvent::Usage` 前调用 `zhuye_protocol::TokenUsage::fold_cache_segments(raw_input, cached, cache_write)` 折入(见 `src/providers/anthropic.rs`);OpenAI 兼容 / Responses 的 `prompt_tokens` 本就含 cached,无需折入;Ollama / mock 无缓存段。
+- **新增 provider 的同步点**:线缆的 `input_tokens` 若**不含**缓存分段,必须在发射前折入,并补一条断言「`cached ≤ input`」的回归测试。
 
 ## 核心文件导航
 
@@ -50,6 +65,8 @@
 |---|---|
 | `src/client.rs` | `ModelClient` trait 定义 |
 | `src/request.rs` | `ChatRequest` 及嵌套类型;`fold_system_messages` 内联 System 折叠 |
+| `src/cache_warming.rs` | v1.x prompt cache 保温决策(纯函数;`METADATA_WARM_REPLAY` 标记) |
+| `src/schema_fold.rs` | v1.x strict schema 折叠(不支持约束写进 description;折不掉整体降级) |
 | `src/capabilities.rs` | provider / 模型能力标志与 `ProviderKind` |
 | `src/model_catalog.rs` | 清单条目 `ModelInfo`(窗口/视觉/输出上限/思考档位,缺省即 `None`)与免费判定规则 |
 | `src/models_dev.rs` | models.dev 社区目录:跨厂商投票 + 兜底链查询 + 内嵌快照/磁盘缓存/刷新,补静态表未收录模型的四维能力 |
@@ -79,6 +96,7 @@
 - 不得把 provider 身份退化成裸字符串比较。
 - 不得在 mock provider 里「顺手」加真实网络调用,也不得把固定回复改成不带标记的文案。
 - 不得把 provider 专属的凭据解析逻辑复制到 CLI 层 —— CLI 只做读写。
+- **不得原样透传线缆的 `input_tokens`** —— 若该 provider 的线缆口径不含缓存分段,必须先折入再上报(见本地契约 6)。
 
 ## 深入阅读
 

@@ -29,6 +29,8 @@
 - **门禁命令**：`./scripts/release_sdk.sh check_docs`。协议文档落后于源码，会在 `check` / `tag` 发布前直接失败。
 - **覆盖矩阵**：新增或移除协议能力时同步 `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表。
 - `McpServerFailedEvent.will_retry` 只能报告实际的自动重试；当前各传输启动失败均不自动重试。
+- **`TokenUsage` 的不变式**（`src/event_msg/turn.rs`）：`input_tokens` 是「本次 prompt 的全部输入」，`cached_tokens` / `cache_write_tokens` 都是它的**子集**，`total_tokens = input_tokens + output_tokens`。Anthropic 线缆的 `input_tokens` 不含缓存分段，由 provider 适配层在上报前折入（`TokenUsage::fold_cache_segments`）。读取历史 rollout 时用 `TokenUsage::repair_unfolded_cache_segments` 兼容未折入的旧记录（特征：缓存分段之和 > `input_tokens`；幂等）。改动任何 usage 字段语义前，先确认 `zhuye-llm` 的适配器、`zhuye-rollout` 的聚合器与 `pricing::price` 三处口径一致。
+- **同一事件变体不得承载两种语义**：`TokenCount` 既发「单次调用快照」又发「回合累计」，靠 `turn_total: bool`（`src/event_msg/agent.rs`）区分 —— 缺省 `false` = 单次调用，单次调用时序列化省略该字段（wire 与引入前逐字节一致）。新增这类「同型不同义」的事件时必须给出显式判据字段，否则消费方只能靠「哪些字段为空」猜，猜错即静默双计。
 
 ## 禁止事项
 
