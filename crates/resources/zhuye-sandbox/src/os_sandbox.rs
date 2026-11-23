@@ -67,6 +67,14 @@ pub enum OsSandboxStatus {
 /// [`PathProtectionVerdict::Unsupported`])。
 pub const DEFAULT_PROTECTED_ENTRIES: [&str; 3] = [".git", ".agents", ".aws"];
 
+/// 元数据条目是否存在(跟随符号链接本身:链接存在即视为存在,保护
+/// 语义跟着路径走)。`.git` 的 deny 规则按此条件生成 —— 不存在则没有
+/// 可篡改面,保护它只会堵死 `git init`(见 [`DEFAULT_PROTECTED_ENTRIES`]
+/// 两处消费点:seatbelt_profile 与 path_protection_report)。
+fn meta_entry_exists(root: &std::path::Path, name: &str) -> bool {
+    root.join(name).symlink_metadata().is_ok()
+}
+
 /// 单条敏感路径的保护结论。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathProtectionVerdict {
@@ -420,8 +428,13 @@ impl OsSandbox {
         let mut report: Vec<PathProtection> = Vec::new();
 
         // 默认元数据条目:每个可写根顶层的 `.git` / `.agents` / `.aws`。
+        // `.git` 仅在已存在时列入 —— 不存在则没有可篡改面,报告它只会
+        // 撒谎(实际允许创建,见 seatbelt_profile 同口径过滤)。
         for root in &roots {
             for name in DEFAULT_PROTECTED_ENTRIES {
+                if name == ".git" && !meta_entry_exists(root, name) {
+                    continue;
+                }
                 let candidate = root.join(name);
                 report.push(self.classify(candidate.clone(), candidate, false, &roots));
             }
@@ -692,6 +705,18 @@ impl OsSandbox {
             .flat_map(|root| {
                 DEFAULT_PROTECTED_ENTRIES
                     .iter()
+                    // `.git` 仅在已存在时 deny:保护目的是防「改已有仓库
+                    // 的 hook 提权」,不存在的 `.git` 没有可篡改面,无条件
+                    // deny 反而堵死非仓库 workspace 的 `git init`(桌面
+                    // sess_99d9bf0a 实证:mkdir/touch .git 全部 EPERM)。
+                    // 会话内 agent 自己 `git init` 出的仓库不做追溯保护
+                    // —— agent 对自建仓库的 hook 与对自己写的脚本同级
+                    // 信任;用户已有仓库在会话启动时 .git 已存在,deny
+                    // 照常生效。`.agents` / `.aws` / `.zhuye` 保持无条件
+                    // (凭据与引擎托管配置不应由 agent 创建)。
+                    .filter(|name| {
+                        **name != ".git" || meta_entry_exists(std::path::Path::new(root), name)
+                    })
                     .map(move |name| format!("{root}/{name}"))
                     .chain(std::iter::once(format!("{root}/.zhuye")))
             })
@@ -1421,6 +1446,7 @@ mod tests {
     #[test]
     fn default_entries_appear_in_report() {
         let workspace = std::env::temp_dir().join("zhuye-pp-default-ws");
+        let _ = std::fs::create_dir_all(workspace.join(".git"));
         let sandbox = OsSandbox::enabled(Vec::new());
         let report = sandbox.path_protection_report(&workspace);
         for name in DEFAULT_PROTECTED_ENTRIES {
@@ -1431,6 +1457,61 @@ mod tests {
                 "报告缺少默认条目 {name}: {report:?}"
             );
         }
+    }
+
+    /// `.git` 保护的存在性条件:不存在的 `.git` 不得进 deny 列表
+    /// (堵死非仓库 workspace 的 `git init`,桌面 sess_99d9bf0a 实证);
+    /// 一旦 `git init` 建出 `.git`,后续会话启动即恢复保护。`.agents` /
+    /// `.aws` / `.zhuye` 保持无条件 deny(凭据与引擎托管配置不应由
+    /// agent 创建)。
+    #[test]
+    fn git_entry_protected_only_when_it_exists() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-git-exists-ws");
+        let _ = std::fs::remove_dir_all(&workspace);
+        let _ = std::fs::create_dir_all(&workspace);
+        // profile / 报告都会 canonicalize(macOS tempdir /var → /private/var),
+        // 断言标记串必须用同一口径。
+        let ws = workspace.canonicalize().unwrap();
+        let sandbox = OsSandbox::enabled(Vec::new());
+
+        // 全新 workspace(无 .git):报告与 profile 都不得出现 .git deny。
+        let report = sandbox.path_protection_report(&workspace);
+        assert!(
+            !report
+                .iter()
+                .any(|item| item.resolved.file_name().is_some_and(|v| v == ".git")),
+            "不存在的 .git 不得出现在保护报告里: {report:?}"
+        );
+        let profile = sandbox.seatbelt_profile(&workspace);
+        // deny 规则的路径经 serde_json 序列化(带引号,引号同时防前缀误配)。
+        let deny_marker = format!("(subpath \"{}/.git\")", ws.display());
+        assert!(
+            !profile.contains(&deny_marker),
+            "全新 workspace 的 profile 不得 deny .git: {}",
+            deny_marker
+        );
+        // 其余条目保持无条件。
+        assert!(
+            profile.contains(&format!("(subpath \"{}/.agents\")", ws.display())),
+            "profile 必须无条件 deny .agents"
+        );
+
+        // `git init` 之后(.git 出现):下一次 profile 构建恢复保护。
+        let _ = std::fs::create_dir_all(workspace.join(".git"));
+        let report2 = sandbox.path_protection_report(&workspace);
+        assert!(
+            report2
+                .iter()
+                .any(|item| item.resolved.file_name().is_some_and(|v| v == ".git")),
+            "已存在的 .git 必须出现在保护报告里: {report2:?}"
+        );
+        let profile2 = sandbox.seatbelt_profile(&workspace);
+        assert!(
+            profile2.contains(&deny_marker),
+            "已存在 .git 的 profile 必须 deny: {}",
+            deny_marker
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     #[test]
@@ -1697,8 +1778,11 @@ mod tests {
         assert!(prof.contains("(allow network-outbound (remote unix-socket))"));
         assert!(!prof.contains("(allow network*)"));
         assert!(!prof.contains("(deny network*)"));
-        // 元数据只读:workspace 顶层 .git / .zhuye 拒写。
-        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/project/.git\"))"));
+        // 元数据只读:workspace 顶层 .zhuye 拒写。`.git` 例外 —— 虚构
+        // 路径(/Users/x/project 在测试机不存在)不再产生 deny:保护
+        // 只针对**已存在**的 .git(防改 hook 提权),不存在则允许
+        // `git init`(正反用例见 git_entry_protected_only_when_it_exists)。
+        assert!(!prof.contains("(subpath \"/Users/x/project/.git\")"));
         assert!(prof.contains("(deny file-write* (subpath \"/Users/x/project/.zhuye\"))"));
         // 进程执行不限目录(子进程继承沙箱)。
         assert!(prof.contains("(allow process-exec)\n"));
@@ -1711,8 +1795,8 @@ mod tests {
         s.allow_network = true;
         let prof = s.seatbelt_profile(Path::new("/Users/x/p"));
         assert!(prof.contains("(allow network*)"));
-        // 额外可写目录的顶层 .git 同样拒写。
-        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/extra/.git\"))"));
+        // 额外可写目录:不存在的 .git 不产生 deny(同上口径)。
+        assert!(!prof.contains("(subpath \"/Users/x/extra/.git\")"));
     }
 
     /// v1.3 回归:`.zhuye` 三明治 —— 整树放行(spill / plan / worktrees /
