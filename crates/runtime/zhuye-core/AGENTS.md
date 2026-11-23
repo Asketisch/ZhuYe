@@ -36,6 +36,7 @@
   4. **决策在 zhuye-llm**:本模块只管调度;`evaluate` / TTL / 延时全部来自 `zhuye_llm::cache_warming` 纯函数,不得在本模块复刻算式。
 - **缓存前缀稳定性纪律(5.3 审计结论)**:一切 turn 边界注入必须走**尾部 user `<system-reminder>` 追加**(append-only),禁止内联 `ChatMessage::System`(fold_system_messages 会折叠进 system 块,改写已发送前缀 → 缓存全量失效;实例修复:PreCompact InjectMessage)。已知仍影响前缀的动态点(诚实登记,后续演进方向 = 移入公告):①todos checklist 注入 `compose_prompt_core`(todo 变更即改写 system 首块);②memory 检索结果注入 system 首块(演化/整合时变化);③子代理登记 / 恢复注入(已走 `<system-reminder>` 追加 ✓)。开启 Prompt Snapshot 的会话冻结这些内容(见 model_call 快照文档),快照失效后可见。
 - 改了节点行为或事件发射顺序，要同步 `tests/functional/` 下对应的能力用例（断言到字段级），并按根 `AGENTS.md` 的验证矩阵跑 `./tests/run_all.sh functional`。
+- **`TokenCount` 有两种语义，必须用 `turn_total` 区分**：`model_call` 每次成功调用发一条**单次调用快照**（`turn_total = false`）；回合收尾时 `submission_loop.rs` 另发一条**回合累计**（`turn_total = true`，数字 = 本回合逐次调用的累计，`provider` / `credential_label` / `model` 均为 `None`）。消费方把两者**一并累计**会让会话总量与费用翻倍 —— GUI 的 `sessionTotal` / `sessionCost` 因此只累计 `turn_total = false` 的事件。
 
 ## 禁止事项
 

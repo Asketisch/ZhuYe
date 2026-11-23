@@ -950,6 +950,9 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
                 // v1.x 模型级统计:完整 model spec,供 TUI / GUI 实时按模型
                 // 展示用量。
                 model: Some(model.clone()),
+                // v1.x:本条是**单次调用**的快照(回合累计由回合收尾处
+                // 另发一条 `turn_total = true` 的事件)。
+                turn_total: false,
             }),
         ))
         .await;

@@ -1163,6 +1163,70 @@ async fn mid_stream_retry_same_is_capped_then_fails_over() {
     );
 }
 
+/// 回合收尾时引擎补发一条**回合累计** `TokenCount`,它与逐次调用的快照
+/// 语义不同 —— 消费方若把两者一并累计,会话总量与费用会翻倍。
+/// `turn_total` 字段给出显式判据:逐次调用 = false,回合累计 = true。
+#[tokio::test]
+async fn turn_end_token_count_is_marked_as_turn_total() {
+    let registry = Arc::new(ModelRegistry::new());
+    let stub = Arc::new(StubClient::new(vec![
+        ChatEvent::MessageStart {
+            id: "m1".into(),
+            model: "stub-1".into(),
+        },
+        ChatEvent::ContentDelta("hi".into()),
+        ChatEvent::MessageStop,
+        ChatEvent::Usage {
+            input_tokens: 42,
+            output_tokens: 7,
+            cached_tokens: 3,
+            cache_write_tokens: 0,
+        },
+    ]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let thread = build_thread(registry);
+
+    let mut handle = thread.submit(make_sub("echo hi")).await;
+    let mut got: Vec<EventMsg> = Vec::new();
+    while let Some(ev) = handle.next().await {
+        got.push(ev.msg);
+    }
+
+    let tokens: Vec<_> = got
+        .iter()
+        .filter_map(|m| match m {
+            EventMsg::TokenCount(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        tokens.len() >= 2,
+        "应有逐次调用的快照 + 回合收尾的累计两条,got {}",
+        tokens.len()
+    );
+    // 逐次调用:不带回合累计标记。
+    assert!(
+        !tokens[0].turn_total,
+        "逐次调用的 token_count 不得标记为回合累计"
+    );
+    // 回合收尾:显式标记为回合累计。
+    let turn_total = tokens
+        .iter()
+        .find(|t| t.turn_total)
+        .expect("回合收尾必须补发一条 turn_total 的累计");
+    assert_eq!(turn_total.input_tokens, tokens[0].input_tokens);
+    assert_eq!(turn_total.output_tokens, tokens[0].output_tokens);
+}
+
 /// provider 把 usage 放在**结束原因之后**的额外 chunk 里
 /// (OpenAI `stream_options.include_usage` / Kilo 免费池实测均如此)时,
 /// `token_count` 必须仍能拿到真实用量 —— 否则配额与成本统计全部失真。

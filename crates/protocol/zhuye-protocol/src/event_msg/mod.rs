@@ -815,6 +815,43 @@ mod tests {
     }
 
     #[test]
+    fn token_count_with_turn_total_roundtrip() {
+        // v1.x:回合累计标记 —— 引擎回合收尾补发的那条 TokenCount 带
+        // `turn_total = true`;逐次调用的快照不带(缺省 false)。
+        // 消费方据此避免把两者一并累计(会话总量 / 费用会翻倍)。
+        let per_call = EventMsg::TokenCount(TokenCountEvent {
+            input_tokens: 100,
+            output_tokens: 20,
+            cached_tokens: 50,
+            cache_write_tokens: 0,
+            total_tokens: 120,
+            ..Default::default()
+        });
+        let j = serde_json::to_string(&per_call).unwrap();
+        assert!(!j.contains("turn_total"), "单次调用不应带该字段,got: {j}");
+        match serde_json::from_str::<EventMsg>(&j).unwrap() {
+            EventMsg::TokenCount(e) => assert!(!e.turn_total, "缺省必须是单次调用"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let turn_total = EventMsg::TokenCount(TokenCountEvent {
+            input_tokens: 100,
+            output_tokens: 20,
+            cached_tokens: 50,
+            cache_write_tokens: 0,
+            total_tokens: 120,
+            turn_total: true,
+            ..Default::default()
+        });
+        let j = serde_json::to_string(&turn_total).unwrap();
+        assert!(j.contains(r#""turn_total":true"#), "got: {j}");
+        match serde_json::from_str::<EventMsg>(&j).unwrap() {
+            EventMsg::TokenCount(e) => assert!(e.turn_total, "回合累计标记必须往返保真"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn token_count_with_model_roundtrip() {
         // v1.x 模型级统计:`model` 字段 Some/None 两个分支 roundtrip,
         // None 时序列化省略(与 provider / credential_label 同策略)。

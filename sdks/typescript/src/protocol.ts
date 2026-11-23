@@ -301,6 +301,11 @@ export interface TokenCount {
   total_tokens?: number;
   provider?: string;
   credential_label?: string;
+  /**
+   * True = 本回合累计(引擎回合收尾补发);缺省 = 单次调用。
+   * 两者不可一并累计,否则会话总量与费用翻倍。
+   */
+  turn_total?: boolean;
 }
 
 export interface TokenUsage {
