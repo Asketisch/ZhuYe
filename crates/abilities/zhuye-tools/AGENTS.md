@@ -32,6 +32,11 @@
 ### 3. 工具输出上限与文档同源
 
 各工具有**各自的**截断上限,没有统一截断值;16 KiB 是 rollout JSONL 单字段的落盘上限,与工具输出无关。
+引擎另对发给模型的所有来源工具文本统一控制上下文预算,不改变工具对宿主的原始结果;溢出文本由本 crate 的 `sandbox::write_spill_text` 安全落盘供 read 读回。
+`read` 支持 `byte_offset` / `byte_limit` 字节分页，最大 4096 字节并返回下个 UTF-8 字符边界；不得与行分页混用。
+`bash` 只读自动放行遇到展开、引号、转义、重定向或其他未解析语法时必须退回审批，包括不带空格的重定向。
+Linux 前台 bash 的网络策略必须与后台 bash 同源；只要启用沙箱，安装失败不得裸执行。
+Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执行任务被丢弃时先终止独立进程组，再回收直接子进程；主动脱组的后代及 Windows 进程树不在此机制保证范围。
 按字节截断必须走 `zhuye_protocol::truncate_str` / `truncate_string_in_place` 做 char 边界对齐 —— CJK 一个汉字 3 字节,直接 `String::truncate` / byte-slice 会在非边界处 panic。
 **改动任一工具的输出上限时,`docs/tools-and-hooks.md` §2 的上限表必须同步**;两者是同一份口径的两个落点。
 
@@ -45,6 +50,7 @@
 | `src/queue.rs` | 工具执行队列(串行 / 并行分组) |
 | `src/sandbox.rs` | 路径沙箱(workspace-write 口径:读全盘 + 凭证拒绝;写限 `resolve_writable_path` 允许根 + `.git`/`.agents`/`.aws` 元数据只读;`.zhuye` 走提权子项 denylist(`PROTECTED_ZHUYE_CHILDREN`:config/sessions/cron 等),其余子树(spill/plan/worktrees/uploads)放行;`resolve_sandbox_path` 旧工作区墙保留给 LSP) |
 | `src/approval/gate.rs` | 审批门与决策路由 |
+| `src/approval/mod.rs` | `ApprovalContext`：waiter 表族（审批 / 问答 / 询问 / MCP elicitation）+ 会话放行集 + 挂起交互注册表 |
 | `src/builtins/` | 各内置工具实现(按工具分文件) |
 | `src/loop_guard.rs` | 重复调用 / 无进展的循环守卫 |
 

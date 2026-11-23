@@ -148,7 +148,7 @@ rl.on('line', (line) => {
     }));
     console.log(JSON.stringify({
       id: sub.id, msg: { type: 'tool_call_end', call_id: 'image-call', is_error: false,
-        output: { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: {}, elapsed_ms: 0 } },
+        output: { content: [{ type: 'image', data: [137, 80, 78, 71], mime_type: 'image/png' }], is_error: false, metadata: { future: { nested: [1, 2] } }, elapsed_ms: 0 } },
     }));
     // 未知变体:SDK 不得因不认识而抛错(按未知 type 降级)。
     console.log(JSON.stringify({
@@ -359,6 +359,7 @@ def test_工具图片事件透传(agent: ZhuyeAgent) -> None:
     events = list(agent.submit("hi"))
     end = next(event["msg"] for event in events if event["msg"]["type"] == "tool_call_end")
     assert end["output"]["content"] == [{"type": "image", "data": [137, 80, 78, 71], "mime_type": "image/png"}]
+    assert end["output"]["metadata"] == {"future": {"nested": [1, 2]}}
     assert events[-1]["msg"]["type"] == "turn_complete"
 
 

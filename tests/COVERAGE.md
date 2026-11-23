@@ -67,7 +67,19 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 文件句柄与 LSP 路径 | T24 | — | — | ✅(目录替换、读取大小上限、越界链接及 LSP 文档内容) | — |
 | 技能面(内置包开关 / 文件 skill 激活) | SK1–SK4、O12(exec 路径) | —(integrations 已迁能力层) | — | ✅ | — |
 | 远程工具(注册/往返/失败/超时/MCP 图片) | T3–T4、T21、T23、X4 | —(serve_ops 已迁能力层) | K3、K8、K13(双 SDK 图片) | ✅ | — |
-| 审批交互(approve / deny / bubble / shell 规则) | T5–T7、O14(bubble) | —(integrations 已迁能力层) | — | ✅ | — |
+| MCP 对端断开 | 工具调用时子进程退出：错误结果及回合完成 | — | — | `test_runtime_hardening.py`:真实 stdio 子进程断开后共享取消信号触发 | — |
+| MCP 初始化超时 | 无响应服务在握手或首次列工具时超时，失败事件含服务名、错误和重试标志，会话可继续；HTTP 失败不虚报重试 | — | — | `test_runtime_hardening.py`:本地子进程分别阻塞 initialize 和 tools/list；HTTP 超时不虚报重试 | — |
+| 评测流水线离线自检 | 固定 12 条真实任务在 mock provider 下跑通沙箱 / 验收 / 评分 / 门禁全链路,产出成功率、耗时、工具调用与前后差值 | — | — | `tests/eval/run_offline.sh`(并入 functional 套件);真模型基线见 docs/eval-baseline.md | — |
+| MCP 客户端 OAuth(http) | 本地 HTTP 服务要求 Bearer:凭据齐备时自动发现端点并换 token、握手成功;无凭据时明确上报「需要授权」 | — | — | 本地 HTTP 服务(裸 TCP)验证元数据发现 → token 端点 → 带 token 握手 | — |
+| MCP 工具清单动态刷新 | 服务端 `notifications/tools/list_changed` 后：新工具可调用、下线工具不可见 | — | — | `test_runtime_hardening.py` + mock `MOCK_LIST_CHANGED` | — |
+| MCP 用户交互请求(elicitation) | 宿主收到 `mcp_elicitation`（form 字段逐项 / link 链接）并回 `mcp_elicitation_response`，工具结果带回用户输入；宿主不回执时按 TTL 以 `cancel` 了结，回合不再挂起 | — | — | `test_runtime_hardening.py`:本地 stdio 服务在工具调用中发起 `elicitation/create`，回执与超时两条路径 | — |
+| MCP 资源与取消 | 本地服务资源列表、混合文本和二进制、嵌入资源逐字段传递；中断时服务端收到对应请求 ID 的取消通知 | — | — | `test_runtime_hardening.py`:stdio 资源往返 + 无响应读取取消及服务端通知 | — |
+| 审批交互(approve / deny / bubble / shell 规则) | T5–T7、shell 动态语法与只读副作用命令审批、O14(bubble)；`test_runtime_hardening.py` 覆盖动态语法宽放行仍需审批 | —(integrations 已迁能力层) | — | ✅ | — |
+| 敏感路径保护(元数据只读) | 可写根内 `.git` 不可写、普通文件可写;平台无法强制时如实上报并在宿主强制要求下失败关闭；bash `metadata.path_protection` 上报 enforced/unsupported | — | — | macOS Seatbelt deny 规则真机验证;Linux 报告 `unsupported`(规则按位合并)并在 `strict_paths` 下拒绝执行；`test_runtime_hardening.py` 校验 metadata | — |
+| Linux 子进程网络沙箱 | 前台 bash 本地 TCP 禁止与显式允许 | — | — | seccomp 对 TCP/UDP/Unix socket、继承描述符、io_uring 及失败关闭；前后台策略一致；`test_runtime_hardening.py` 前台策略端到端 | aarch64 真机容器；x86_64 待实际执行 |
+| Linux 工作区外写入 | 缺失授权目录时，即使非严格且允许联网也拒绝运行 | — | — | Landlock ABI v3 真实子进程直接 truncate：外部拒绝、内部允许；符号链接越界拒绝、不同严格与网络配置下缺失授权目录禁止启动、`/dev/null` 可写；`test_runtime_hardening.py` 非严格联网失败关闭 | aarch64 真机容器；x86_64 模拟器不支持 Landlock 时验证失败关闭 |
+| Unix 命令后代清理 | 前台超时、中断及宿主断开后，同组后台后代不得继续写入 | — | — | `test_runtime_hardening.py`:异步执行任务丢弃与后台会话取消均清理同组后代 | 主动脱组的后代与 Windows 进程树待覆盖 |
+| 模型工具输出预算与溢出读回 | 远程工具大输出、宿主原文与模型预览、溢出文件、跨进程恢复及 UTF-8 字节分页 | — | — | 文本预算、图片保留、写入失败和符号链接拒绝 | — |
 | 审批与中断交错 | 固定种子重排批准、拒绝和中断;验证单一终态、迟到审批及文件副作用 | — | — | 等待器释放 | — |
 | 子代理审批转发 | 子代理 `write` 的请求进入父提交;批准后落盘、拒绝后无副作用 | — | — | ✅(会话共享 waiter / session allow) | — |
 | 子代理人工输入转发 | 子代理自由文本与结构化提问进入父提交,标准 response Op 能唤醒工具并继续 | — | — | ✅(共享 question/input waiter) | — |

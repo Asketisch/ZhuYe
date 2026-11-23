@@ -87,6 +87,7 @@ zhuye serve [--resume <uuid> | -c | -r <N>] [--agent <name>] [--plan-mode] ...
 | `shutdown` | — | 优雅退出(见 §6) |
 | `rescan_extensions` | `skills: bool`, `commands: bool` | **v1.x 新增(additive)**:运行时重扫扩展目录(skills 按启动目录序替换文件型技能,插件注入与内置包不受影响);不开 turn,应答 `extensions_rescanned` 后 `submission_closed` 收尾。`commands` 位当前恒回 `false`(命令正文实时读盘) |
 | `query_guard_stats` | — | **F01 新增(additive)**:查询 prompt_guard 裁决统计(定义侧拦截/标注 + 输出侧拦截/标注四计数)。不开 turn,应答 `guard_stats` 后 `submission_closed` 收尾;guard 未启用时 `enabled=false` 且计数恒 0 |
+| `mcp_elicitation_response` | `id`, `action`, 可选 `content` | **新增(additive)**:响应 MCP server 发起的用户交互请求(`mcp_elicitation` 事件)。`id` 配对事件的 `request_id`;`action ∈ accept/decline/cancel`;`content` 是表单值对象,键名取事件 `kind.fields[].name`(服务端 schema 属性名,不得改写),`link` 形态可省略。不回执时引擎按 TTL(默认 300s,`ZHUYE_MCP_ELICITATION_TTL_SECS` 可调)以 `cancel` 了结该请求(fail-closed) |
 
 `thread_settings` 支持 `model`、`approval_policy`(`auto` / `prompt` / `deny` / `auto_approve` / `full_access`)、
 `sandbox_policy`(`workspace_only` / `os_sandbox` / `full_access`)和
@@ -144,6 +145,28 @@ SDK 关心的核心变体(完整列表见 `event_msg/mod.rs`):
 | `submission_closed` | — | 该 submission 的 per-turn 通道已排空(终态,见下) |
 | `extensions_rescanned` | `skills: usize`, `commands: bool` | **v1.x 新增(additive)**:`rescan_extensions` 的应答 —— skills 目录重扫后的条目总数;`commands` 当前恒 `false`。事件经 per-turn 通道 + 会话扇出双路送达(客户端按 submission id 去重) |
 | `guard_stats` | `enabled`, `definitions_blocked`, `definitions_reviewed`, `outputs_blocked`, `outputs_reviewed` | **F01 新增(additive)**:`query_guard_stats` 的应答 —— prompt_guard 裁决统计快照(会话累计)。双路送达同上 |
+| `mcp_elicitation` | `request_id`, `server`, `message`, `kind` | **新增(additive)**:MCP server 请求用户输入。`kind.type` 为 `form`(带 `fields[]`:字段名 / 标题 / 说明 / 是否必填 / 输入类型)或 `link`(带 `url`)。全局事件(`id=""`),用 `mcp_elicitation_response` 回执 |
+
+成功启动的前台 `bash` 在 `tool_call_end.output.metadata.network_restriction`
+报告本次子进程实际网络限制:`blocked_sockets`(Linux seccomp)、
+`local_only`(macOS Seatbelt 允许本机及 Unix socket)或 `unrestricted`。
+启动失败走工具错误，不产生成功安装限制的声明；其他工具不保证该字段。
+
+`ReadMcpResource` 的 `output.content` 按服务端顺序保留文本与二进制资源。
+二进制项以包含 `uri`、`blob`(base64)及可选 `mimeType` 的 JSON 文本块传递；
+`metadata.content_descriptors` 按相同顺序给出 `uri`、`mime_type`、`kind`，
+二进制项另带 `encoding: "base64"`。MCP 工具返回的嵌入资源和资源链接
+也以 JSON 文本传递，宿主应处理未知字段。
+
+MCP 服务的 `timeout_ms` 也适用于连接握手及首次列工具；超时通过
+`mcp_server_failed` 的 `server`、`error` 和 `will_retry` 字段报告；当前启动路径不自动重试，`will_retry` 为 `false`。
+
+MCP 交互请求(`mcp_elicitation`):MCP server 在工具执行途中向宿主要输入。
+引擎把它转成全局事件 `mcp_elicitation`,宿主回 `mcp_elicitation_response`
+(`action` 与 `content` 原样透传给服务端)。表单形态的 `content` 必须满足
+服务端 schema —— 键名就是 `kind.fields[].name`,引擎不改写字段名。宿主不回执
+时,引擎在 TTL(默认 300s)到期后按 `cancel` 了结该请求并把 `cancel` 上送服务端,
+不会让 MCP 调用永久挂起。
 
 OpenAI 兼容流、Responses 与 Anthropic 的并行工具参数可能交错到达。
 首个工具的参数增量实时转发,其余工具的参数在该次模型输出结束时按调用顺序转发,

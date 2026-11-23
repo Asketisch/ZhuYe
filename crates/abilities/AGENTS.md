@@ -6,6 +6,7 @@
 
 能力原语层:提供**可被上层组合的原子能力** —— 模型调用、工具执行、hook 拦截、提示词装配、检索、记忆、压缩、评测。
 本层不含会话编排、不含 CLI 入口、不含持久化落盘策略;这些分别由 `crates/orchestration/` 与 `crates/runtime/` 承担。
+Unix 前后台 shell 共用 `zhuye-tools::child_process` 管理独立进程组的取消与丢弃清理。
 
 ## crate 速览
 
@@ -48,6 +49,7 @@
 3. **检索只此一份** —— BM25 相关性排序由 `zhuye-bm25` 提供,`zhuye-tools`(grep 的 `rank=bm25`)、`zhuye-memory`、`zhuye-notes` 共用。新增消费方直接依赖它,不要在消费方另写一套打分逻辑。
 4. **记忆存储契约**(zhuye-memory 无独立篇,故留在本篇)—— 持久记忆分 project / user / session 三 scope:project 落 `{workspace}/.zhuye/agent-memory/{agent_type}/MEMORY.md`(可入 VCS 共享),user 落 `~/.zhuye/agent-memory/{agent_type}/MEMORY.md`,session 仅在内存中。注入记忆的字符上限由 `MAX_MEMORY_INJECT_CHARS` 定义;改存储位置或 scope 语义要同步调用方。
 5. **新能力先过形态判断** —— 向本层新增工具 / hook / 能力原语前,先走根 `AGENTS.md` 开发流程检查表第 1 步「形态判断(内置 vs 插件)」:能用插件槽承载的(MCP server / WASM 工具 / skill / command / hook)不加进本层,本层只收引擎必需的原子能力。
+6. **溢出文本的读写** —— 工具层提供安全的工作区溢出文件写入与 `read` 的 UTF-8 字节分页；模型上下文预算由运行时执行，不覆盖各工具对宿主的输出上限。
 
 ## 核心文件导航
 

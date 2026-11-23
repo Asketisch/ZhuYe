@@ -132,9 +132,9 @@ side-channel 让用户发起的并发 agent 与主轮次并行互不干扰(由 `
   哪些直接禁止;`bash` 默认 Prompt 权限,`web_search` 默认 Auto;
 - **hooks**(`zhuye-hooks`)—— 12 类事件、7 种决策,能在工具执行前后改参数、
   拦调用、插话、否决 turn 完成;
-- **OS 沙箱**(`zhuye-sandbox`)—— macOS 用 Seatbelt、Linux 用 Landlock;沙箱
-  起不来就直接失败,**不会偷偷退回裸 shell**。macOS 沙箱默认断网,Linux 只
-  限制写、不切网络。
+- **OS 沙箱**(`zhuye-sandbox`)—— macOS 用 Seatbelt、Linux 用 Landlock
+  限写和 seccomp 限网;Linux 沙箱启用时,限制无法安装即失败关闭。
+  macOS 断网仍放行本机与 Unix socket;Linux 默认阻止创建和连接套接字。
 
 另有 **prompt injection guard**(F01 起默认开启)与**输出脱敏**
 (`zhuye-sanitize`,见 [docs/sanitize.md](sanitize.md)),对工具输出做密钥脱
@@ -146,6 +146,10 @@ side-channel 让用户发起的并发 agent 与主轮次并行互不干扰(由 `
 ## 集成(需配置)
 
 - **MCP 客户端**(`zhuye-mcp`)—— stdio / streamable-http 两种传输;
+  http 传输支持客户端侧 OAuth(`[mcp_servers.<name>.oauth]`:静态 token /
+  `token_env` / 客户端凭据 / refresh token,token 端点缺省时按受保护资源
+  元数据自动发现),服务端要求授权而无可用凭据时明确上报「需要授权」;
+  服务端增删工具( `notifications/tools/list_changed`)时工具注册表同步刷新;
 - **LSP**(`zhuye-lsp`)—— 语言服务器集成;激活由 `[lsp_servers]` 配置驱动
   (语义不变),另有 `lsp` 门控插件承载**粗粒度开关**(显式禁用即整体
   关闭,见 [plugins/lsp/](../plugins/lsp/));
@@ -187,7 +191,23 @@ side-channel 让用户发起的并发 agent 与主轮次并行互不干扰(由 `
 
 - 这个仓库的二进制没有 TUI 子命令。交互界面在
   [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI) 仓库。
-- 沙箱在 macOS 上默认断网,Linux 上只限制写、不切网络。
+- Linux 的 Landlock 当前不限制敏感读取；**可写根内的嵌套敏感路径也无法
+  强制只读** —— Landlock 的规则按位合并,父级可写根授予的写权会传播到
+  其下的嵌套路径,内核没有按路径撤销(deny)规则的能力(已在 Linux
+  容器实测:`allowed_access = 0` 的规则被内核以 `ENOMSG` 拒绝,嵌套规则
+  与父规则按位或)。因此这类路径在 Linux 上以「报告 + 按需失败关闭」
+  处理:bash 输出的 `metadata.path_protection` 逐条列出已强制与无法
+  强制的路径;宿主要求某路径必须只读时(`OsSandbox::with_protected_paths`
+  + `strict_paths`,或 `ZHUYE_SANDBOX_STRICT_PATHS=1`),Linux 会因无法
+  强制而拒绝执行,而不是假装保护已生效。macOS Seatbelt 支持 deny 规则,
+  可写根内的 `.git` / `.agents` / `.aws` 真正只读。
+- 默认 seccomp 禁止创建和连接套接字,但允许供子进程内部通信的
+  `socketpair`。断网过滤当前支持 x86_64 / aarch64,并要求 Landlock ABI v3；
+  不支持或无法安装时拒绝执行。
+- **Windows 属未验证平台**:Job Object(进程树 kill-on-close)+ AppContainer
+  后端已实现,但尚未接入 bash 的 spawn 路径 —— Windows 上命令当前**不受**
+  文件 / 网络约束,且这些行为**未在真机验证**。`status_line()` 与工具
+  metadata 如实报告这一点;需要强隔离的平台请用 macOS / Linux。
 - 同一个会话里同时在途的子代理最多 16 个,子任务结束就释放名额。
 - 协议 v0 已冻结:新增 `Op` / `EventMsg` 变体属 non-breaking,但**不可改动
   既有变体**;客户端必须容忍未知 `"type"`(详见

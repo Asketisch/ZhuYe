@@ -10,6 +10,7 @@
 #   ./tests/run_all.sh sdk-python # 只跑 Python SDK 绑定层
 #   ./tests/run_all.sh sdk-ts     # 只跑 TS SDK 绑定层
 #   ./tests/run_all.sh native-python # 构建 wheel 并验证原生 Python 绑定
+#   ./tests/run_all.sh eval-offline  # 评测流水线离线自检(mock provider,无费用)
 #
 # `functional` 是 CI 的门禁入口:跳过 cargo test / clippy / fmt / doc
 # (那部分由既有 CI job 覆盖),跑真正的功能覆盖。
@@ -33,8 +34,8 @@ cd "$ROOT"
 # 先校验套件名,避免拼错参数时仍触发构建。
 for s in "${SUITES[@]}"; do
     case "$s" in
-        functional|functional-layer|live|rust|sdk-python|sdk-ts|native-python) ;;
-        *) echo "未知套件:$s(可选:functional / functional-layer / live / rust / sdk-python / sdk-ts / native-python)" >&2; exit 2 ;;
+        functional|functional-layer|live|rust|sdk-python|sdk-ts|native-python|eval-offline) ;;
+        *) echo "未知套件:$s(可选:functional / functional-layer / live / rust / sdk-python / sdk-ts / native-python / eval-offline)" >&2; exit 2 ;;
     esac
 done
 
@@ -52,7 +53,7 @@ if [ -z "$CUSTOM_ZHUYE_BIN" ] && [ "$NEED_ZHUYE_BIN" -eq 1 ]; then
     cargo build --release -p zhuye-cli --quiet || exit 2
     for s in "${SUITES[@]}"; do
         if [ "$s" = "functional" ] || [ "$s" = "functional-layer" ]; then
-            cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-shell -p zhuye-git-tools --bins --quiet || exit 2
+            cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-browser -p zhuye-shell -p zhuye-git-tools --bins --quiet || exit 2
             cargo build -p zhuye-mcp --quiet || exit 2
             break
         fi
@@ -63,13 +64,14 @@ export ZHUYE_BIN
 OVERALL=0
 for s in "${SUITES[@]}"; do
     case "$s" in
-        functional)  RUNNERS=("$HERE/functional/run.sh" "$HERE/rust/run.sh" "$HERE/sdk-python/run.sh" "$HERE/sdk-ts/run.sh" "$HERE/native-python/run.sh") ;;
+        functional)  RUNNERS=("$HERE/functional/run.sh" "$HERE/rust/run.sh" "$HERE/sdk-python/run.sh" "$HERE/sdk-ts/run.sh" "$HERE/native-python/run.sh" "$HERE/eval/run_offline.sh") ;;
         functional-layer) RUNNERS=("$HERE/functional/run.sh") ;;
         live)        RUNNERS=("$HERE/live/run.sh") ;;
         rust)        RUNNERS=("$HERE/rust/run.sh") ;;
         sdk-python)  RUNNERS=("$HERE/sdk-python/run.sh") ;;
         sdk-ts)      RUNNERS=("$HERE/sdk-ts/run.sh") ;;
         native-python) RUNNERS=("$HERE/native-python/run.sh") ;;
+        eval-offline) RUNNERS=("$HERE/eval/run_offline.sh") ;;
     esac
     echo
     echo "╔══════════════════════════════════════════════════╗"

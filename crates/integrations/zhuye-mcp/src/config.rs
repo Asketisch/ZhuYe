@@ -50,12 +50,37 @@ pub struct McpServerConfig {
     pub url: Option<String>,
     /// http 模式:自定义 HTTP header(`Authorization` 自动剥离到 `auth_header`)。
     pub headers: HashMap<String, String>,
-    /// 单次 tool call 超时,默认 30s。
+    /// 握手、首次工具列表及单次 tool call 的超时,默认 30s。
     pub timeout: Duration,
+    /// http 传输的 OAuth 配置(客户端侧);stdio 不适用。
+    pub oauth: Option<McpOAuthConfig>,
+}
+
+/// MCP 客户端侧的 OAuth 配置。
+///
+/// 凭据优先级:`token` > `token_env` > 用 `client_id` / `client_secret`
+/// 走 `client_credentials`(或 `refresh_token`)换 token。
+/// 授权码流程需要浏览器,由宿主完成 —— 引擎只负责发现端点并上报。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct McpOAuthConfig {
+    /// 静态 bearer token。
+    pub token: Option<String>,
+    /// 从该环境变量读取 bearer token(避免密钥落 config.toml)。
+    pub token_env: Option<String>,
+    /// 授权端点(仅用于上报;引擎不代跑浏览器)。
+    pub authorization_url: Option<String>,
+    /// token 端点;缺省时按受保护资源元数据发现。
+    pub token_url: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub scope: Option<String>,
+    /// `client_credentials`(默认)/ `refresh_token`。
+    pub grant_type: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 impl McpServerConfig {
-    /// 单次 tool call 超时。
+    /// 握手、首次工具列表及单次 tool call 的超时。
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
@@ -72,6 +97,17 @@ impl From<McpServerConfigShape> for McpServerConfig {
             url: s.url,
             headers: s.headers,
             timeout: s.timeout,
+            oauth: s.oauth.map(|oauth| McpOAuthConfig {
+                token: oauth.token,
+                token_env: oauth.token_env,
+                authorization_url: oauth.authorization_url,
+                token_url: oauth.token_url,
+                client_id: oauth.client_id,
+                client_secret: oauth.client_secret,
+                scope: oauth.scope,
+                grant_type: oauth.grant_type,
+                refresh_token: oauth.refresh_token,
+            }),
         }
     }
 }

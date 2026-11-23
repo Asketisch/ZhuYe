@@ -140,6 +140,19 @@ class AskUserInputResponseOp(TypedDict):
     text: str
 
 
+class McpElicitationResponseOp(TypedDict, total=False):
+    """MCP server 交互请求(`mcp_elicitation`)的回执。
+
+    `action` 取 `"accept"` / `"decline"` / `"cancel"`;`content` 是表单值对象
+    (键名取服务端 schema 的字段名),`link` 形态可省略。
+    """
+
+    type: Literal["mcp_elicitation_response"]
+    id: str
+    action: Literal["accept", "decline", "cancel"]
+    content: dict[str, Any] | None
+
+
 class SetPermissionModeOp(TypedDict):
     type: Literal["set_permission_mode"]
     mode: Literal["auto", "prompt", "plan", "deny", "bubble"]
@@ -291,6 +304,7 @@ Op = Union[
     SetEffortOp,
     AskUserQuestionResponseOp,
     AskUserInputResponseOp,
+    McpElicitationResponseOp,
     SetPermissionModeOp,
     CyclePermissionModeOp,
     EnterGoalModeOp,
@@ -668,6 +682,67 @@ class McpToolInvoked(TypedDict):
     is_error: bool
 
 
+class McpElicitationFieldKindText(TypedDict):
+    type: Literal["text"]
+    secret: bool
+
+
+class McpElicitationFieldKindNumber(TypedDict):
+    type: Literal["number"]
+    integer: bool
+
+
+class McpElicitationFieldKindBoolean(TypedDict):
+    type: Literal["boolean"]
+
+
+class McpElicitationFieldKindEnum(TypedDict):
+    type: Literal["enum"]
+    options: list[str]
+    multi: bool
+
+
+McpElicitationFieldKind = Union[
+    McpElicitationFieldKindText,
+    McpElicitationFieldKindNumber,
+    McpElicitationFieldKindBoolean,
+    McpElicitationFieldKindEnum,
+]
+
+
+class McpElicitationField(TypedDict, total=False):
+    """MCP 表单字段:键名 / 标题 / 说明 / 是否必填 / 输入类型。"""
+
+    name: str
+    title: str | None
+    description: str | None
+    required: bool
+    kind: McpElicitationFieldKind
+
+
+class McpElicitationForm(TypedDict):
+    type: Literal["form"]
+    fields: list[McpElicitationField]
+
+
+class McpElicitationLink(TypedDict):
+    type: Literal["link"]
+    url: str
+
+
+McpElicitationKind = Union[McpElicitationForm, McpElicitationLink]
+
+
+class McpElicitation(TypedDict):
+    """MCP server 向宿主请求用户输入;用 `mcp_elicitation_response` 回执。"""
+
+    type: Literal["mcp_elicitation"]
+    request_id: str
+    server: str
+    message: str
+    kind: McpElicitationKind
+
+
 class LspServerStarted(TypedDict):
     type: Literal["lsp_server_started"]
     server: str
@@ -815,6 +890,7 @@ EventMsg = Union[
     McpServerStarted,
     McpServerFailed,
     McpToolInvoked,
+    McpElicitation,
     LspServerStarted,
     LspServerFailed,
     PlanRequest,

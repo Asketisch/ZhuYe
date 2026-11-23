@@ -32,9 +32,15 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 - 协议版本由常量 `PROTOCOL_VERSION` 固定(`crates/integrations/zhuye-mcp/src/protocol_version.rs`),判断 wire 兼容性先看它。
 - 工具全名强制 `mcp__<server>__<tool>` 前缀(`crates/integrations/zhuye-mcp/src/tool.rs`),不得与内置工具重名。
 - 配置走 `[mcp_servers.<name>]` TOML 表。
+- `timeout_ms` 同时约束连接握手、首次 `tools/list` 和单次工具调用；初始化超时上报 `McpServerFailed` 并清理连接。
 - stdio 子进程 env 用 `env_clear()` 隔离,只注入 `HOME` / `PATH` + 用户显式 env(`crates/integrations/zhuye-mcp/src/transport.rs` 的 `inject_safe_env`)。
+- MCP 连接主动关闭或对端断开时必须取消共享 token 并结束后台任务；握手后工具列表获取失败也必须关闭连接，不能遗留子进程。
+- MCP 资源读取按服务端顺序保留文本、二进制及来源信息；二进制以 base64 JSON 文本传递，嵌入资源和链接也不得丢失；资源列表与读取响应宿主取消并向服务端发送取消通知。
 - 自暴露 MCP server(`crates/integrations/zhuye-mcp/src/server_mode.rs`)默认只读、随机 token 鉴权、仅回环监听、工具白名单。
-- 未实现能力(Sampling / Elicitation / OAuth)登记在 `crates/integrations/zhuye-mcp/src/lib.rs` 头部清单,新增实现要同步改那处清单。
+- **客户端侧 OAuth(http 传输)**:`[mcp_servers.<name>.oauth]` 支持 `token` / `token_env` / `client_credentials` / `refresh_token`;token 端点缺省时按受保护资源元数据(RFC 9728)与授权服务器元数据(RFC 8414)发现。服务端要求授权而无可用凭据时,启动失败并上报 `McpError::AuthRequired`(含可执行提示),**不**含糊报「握手失败」。授权码流程(浏览器)由宿主完成。
+- **工具列表动态刷新**:服务端发 `notifications/tools/list_changed` → 重新 `tools/list` → 新工具注册、下线工具反注册(注册表是 LLM 可见面的唯一真相)。刷新与启动注册的先后不可预知,故以**版本化快照 + 注册表现状求差集**收口。
+- **Elicitation(server→client `elicitation/create`)**:`HostClientHandler` 把请求转成 `McpLifecycleEvent::Elicitation`,由宿主经 `Op::McpElicitationResponse` 裁决;`form` 形态按服务端 schema 逐字段还原,字段名不得改写;`link` 形态只带 URL。客户端**不声明 sampling 能力**(未实现),服务端不得依赖它。
+- 未实现能力(Sampling / OAuth)登记在 `crates/integrations/zhuye-mcp/src/lib.rs` 头部清单,新增实现要同步改那处清单。
 
 ### LSP 客户端(`zhuye-lsp`)
 

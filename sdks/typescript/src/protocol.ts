@@ -41,6 +41,13 @@ export type Op =
       answers: AskUserAnswer;
     }
   | { type: 'ask_user_input_response'; id: string; text: string }
+  /** MCP server 交互请求的回执;`content` 的键名取服务端 schema 字段名。 */
+  | {
+      type: 'mcp_elicitation_response';
+      id: string;
+      action: 'accept' | 'decline' | 'cancel';
+      content?: Record<string, unknown> | null;
+    }
   | { type: 'set_permission_mode'; mode: PermissionMode }
   | { type: 'cycle_permission_mode' }
   | { type: 'enter_goal_mode'; goal: string; verify_command?: string | null; token_budget?: number | null }
@@ -195,6 +202,7 @@ export type EventMsg =
   | McpServerStarted
   | McpServerFailed
   | McpToolInvoked
+  | McpElicitation
   | LspServerStarted
   | LspServerFailed
   | PlanRequest
@@ -484,6 +492,34 @@ export interface McpToolInvoked {
   tool: string;
   elapsed_ms: number;
   is_error: boolean;
+}
+
+export type McpElicitationFieldKind =
+  | { type: 'text'; secret: boolean }
+  | { type: 'number'; integer: boolean }
+  | { type: 'boolean' }
+  | { type: 'enum'; options: string[]; multi: boolean };
+
+export interface McpElicitationField {
+  /** 回执 `content` 里使用的键名(服务端 schema 属性名)。 */
+  name: string;
+  title?: string;
+  description?: string;
+  required: boolean;
+  kind: McpElicitationFieldKind;
+}
+
+export type McpElicitationKind =
+  | { type: 'form'; fields: McpElicitationField[] }
+  | { type: 'link'; url: string };
+
+/** MCP server 向宿主请求用户输入;用 `mcp_elicitation_response` 回执。 */
+export interface McpElicitation {
+  type: 'mcp_elicitation';
+  request_id: string;
+  server: string;
+  message: string;
+  kind: McpElicitationKind;
 }
 
 export interface LspServerStarted {

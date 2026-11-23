@@ -107,6 +107,16 @@ Common conventions:
 | `web_fetch` | body 5 MiB / markdown 50000 characters | reports `body_truncated` / a markdown truncation marker |
 | `web_search` | body 2 MiB / output 8 KB | accumulates entry by entry until the cap, then stops |
 
+At the model context boundary, tool text from every source exceeding 12 KiB is
+replaced by an 8 KiB preview and a path under `.zhuye/spill/` for `read`.
+The host receives the original `tool_call_end` output; model history and resumed
+history receive the same preview. A failed spill is reported explicitly, and
+image blocks are not subject to this text budget.
+Spill files are owner-only on Unix; other platforms currently report a spill failure.
+Use `read` with `byte_offset` and `byte_limit` (up to 4096 bytes), following
+`next_byte_offset`, to page through long lines or files larger than 32 MiB.
+Byte and line pagination cannot be combined.
+
 Byte-based truncations all go through
 `zhuye_protocol::truncate_str` to align to char boundaries (0.8): CJK
 content is 3 bytes per character, and a direct `String::truncate` /
@@ -283,8 +293,8 @@ applies to events carrying a tool name, supporting `*` / `?` wildcards.
 (silent full approval). The rule engine is in `zhuye-permissions`
 (exact tool name + tool_glob + bash shell_pattern, with
 match-context awareness); bash commands go through `classify_command`
-three-level classification (Safe / Risky / Dangerous) for
-approval-grading.
+for three-level approval grading (Safe / Risky / Dangerous). Automatic
+read-only approval requires conservative argument and shell-syntax checks.
 
 Rules can also use `resource_glob` to constrain `path`, `file_path` or
 `url` in common tool arguments. The path is checked both in its raw
@@ -301,6 +311,11 @@ unset); if any permission rule file cannot be read or parsed, tool calls
 are refused, and rule evaluation resumes once the file is fixed.
 
 ### shell_pattern semantics (0.4)
+
+When an `Allow` pattern matches a command containing expansion, redirection,
+escaping, parentheses, braces, or a newline, the decision becomes `Ask`:
+glob matching cannot determine the shell's actual behavior. This conservative
+check can also require approval for harmless literal text.
 
 `shell_pattern` splits on `&&` / `||` / `|` / `;` and then matches, and
 **the matching mode depends on the action**:
@@ -339,6 +354,15 @@ This function lives in `zhuye-protocol` because `zhuye-tools` and
 `zhuye-hooks` have a one-way dependency, and a normalization shared by
 both sides cannot sit in either layer (same reason as `ToolError`).
 
+### Bash child process lifecycle
+
+On Unix, each foreground or background command runs in its own process group.
+On timeout, interruption, session shutdown, or execution task drop, the runtime
+terminates remaining group members before reaping the direct child. Normal exits
+retain their original result. Descendants that create a new session or process
+group are outside this cleanup; on Windows only the direct child is currently
+guaranteed to be terminated.
+
 ## §7 Approval gate (ApprovalGate)
 
 `zhuye-tools/src/approval/gate.rs`: `ask` emits
@@ -353,16 +377,24 @@ supported. A hook's `Ask` decision routes here too
 
 `zhuye-sandbox/src/os_sandbox.rs`: macOS Seatbelt (profile-level
 policies, workspace-write default) / Linux Landlock (path whitelist).
-Enabled by the `sandbox` argument of the bash tool; the policy is
-orthogonal to the permission mode (see §6). Network isolation is
-currently implemented only at the `web_fetch` layer (SSRF protection:
-private network segments / per-hop redirect validation).
+The OS sandbox is orthogonal to the permission mode (see §6). Linux
+subprocesses use seccomp to block network and Unix socket connections by
+default; `web_fetch` separately checks private networks and redirect hops.
 
 `read` and the LSP tools use fixed file handles when syncing documents,
 and reject symlink escapes caused by path substitution; `read` also
 enforces the byte ceiling on read. An LSP server subprocess accessing
 files on its own is not subject to this limit; its runtime environment
 and permissions should be configured per source.
+
+Sensitive paths (`.git` / `.agents` / `.aws` at the top of a writable root,
+plus any path the host requires) are genuinely read-only under macOS Seatbelt
+(deny rules, last match wins). Linux Landlock cannot revoke write rights for
+nested paths inside a writable root (rules merge bitwise; the kernel rejects
+an empty access mask), so those paths are handled as "report + fail closed on
+demand": `metadata.path_protection` marks every path enforced or unsupported,
+and a host that requires read-only paths (`strict_paths`) makes the command
+fail instead of running unprotected.
 
 ### §8.2 The handled access-right set for Linux Landlock (0.1)
 
@@ -374,15 +406,17 @@ unrestricted** — compiling / analyzing often needs to read system
 headers and dependencies, and restricting reads would break usability
 at large.
 
-The set is `0x1ff2` (`WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR |
-MAKE_DIR | MAKE_REG | MAKE_SOCK | MAKE_FIFO | MAKE_BLOCK | MAKE_SYM`),
+The set is `0x5ff2` (`WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR |
+MAKE_DIR | MAKE_REG | MAKE_SOCK | MAKE_FIFO | MAKE_BLOCK | MAKE_SYM | TRUNCATE`),
 built by OR-combining named constants one by one, guarded by a
 compile-time `assert!`. **Do not** hand-write the literal: before 0.1
 it read `0xffe`, which included extra `READ_FILE` / `READ_DIR` (→ reads
 outside the workspace were kernel-rejected; at `execve` the dynamic
 linker couldn't read `/usr/lib`, surfacing as
 `spawn failed: EACCES`) and missed `MAKE_SYM` (→ creating symlinks
-outside the workspace was completely unrestricted).
+outside the workspace was completely unrestricted). `TRUNCATE` requires
+Landlock ABI v3; when Linux sandboxing is enabled, missing support fails closed,
+preventing a direct `truncate(2)` bypass.
 
 ### §8.3 strict mode and degradation (0.1)
 
@@ -394,18 +428,16 @@ bare.
 - `strict = true` (default): permission-class spawn failures
   (EACCES / EPERM) fail closed directly and are **never** degraded to
   unsandboxed execution. On Linux, `enforce_or_fail` also does a
-  non-destructive kernel probe (an empty `landlock_create_ruleset`
-  call) to catch false positives like "the kernel has no Landlock at
-  all".
-- `strict = false`: keeps the degradation semantics (rebuild the
-  command without `pre_exec` and retry once) and logs `warn!`. Enable
-  explicitly with `ZHUYE_SANDBOX_STRICT=0` or
-  `ZHUYE_SANDBOX_OS_LEVEL=0`.
+  non-destructive Landlock ABI query and rejects versions below v3.
+- `strict = false`: Linux still fails closed when sandboxing is enabled and
+  does not retry commands without the sandbox.
 
-`status_line()` reports the network boundary **truthfully per
-backend**: Seatbelt really emits `(deny network*)`; Landlock's
-`handled_access_net` is always 0, so it is labeled "network: not
-sandbox-constrained" rather than "network: denied".
+When networking is disabled on Linux, seccomp complements Landlock by blocking socket creation and
+connections, closing extra inherited descriptors on exec, and blocking
+`io_uring` and related bypasses. Unix socket connections are blocked; local
+`socketpair` remains available. The filter supports x86_64 and aarch64 and
+fails closed when `close_range` or seccomp is unavailable. `status_line()`
+reports the requested policy; a successful command launch confirms installation.
 
 ## §9 Plan mode
 

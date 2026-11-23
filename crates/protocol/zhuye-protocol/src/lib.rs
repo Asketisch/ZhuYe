@@ -15,6 +15,13 @@ pub mod bash_command;
 pub mod error;
 pub mod event;
 pub mod event_msg;
+pub mod mcp_elicitation {
+    //! MCP elicitation 的公共载荷重导出。
+    pub use crate::event_msg::{
+        McpElicitationEvent, McpElicitationField, McpElicitationFieldKind, McpElicitationKind,
+        McpElicitationResponse,
+    };
+}
 pub mod item;
 pub mod op;
 pub mod op_prompt;
@@ -34,12 +41,13 @@ pub use event_msg::{
     CollabStartedEvent, CompositionCategory, CompositionCategoryId, ConfigReloadedEvent,
     ContextCompactedEvent, ContextCompactedStrategy, ContextCompositionEvent, ErrorEvent, EventMsg,
     ExtensionsRescannedEvent, GuardStatsEvent, InteractionKind, InteractionOutcome,
-    InteractionResolvedEvent, LspServerFailedEvent, LspServerStartedEvent, McpServerFailedEvent,
-    McpServerStartedEvent, McpToolInvokedEvent, McpTransportMirror, PendingInteraction,
-    PermissionBubbleEvent, PermissionModeChangedEvent, PlanApprovedEvent, PlanDraftUpdatedEvent,
-    PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent, PlanStepEvent, PlanStepStatus,
-    PluginLoadedEvent, PromptListEvent, PromptSwitchedEvent, QuotaExhaustedEvent, RoutingEvent,
-    RoutingEventKind, SideChannelEvent, SideChannelInfo, SideChannelStatusMirror,
+    InteractionResolvedEvent, LspServerFailedEvent, LspServerStartedEvent, McpElicitationEvent,
+    McpElicitationField, McpElicitationFieldKind, McpElicitationKind, McpElicitationResponse,
+    McpServerFailedEvent, McpServerStartedEvent, McpToolInvokedEvent, McpTransportMirror,
+    PendingInteraction, PermissionBubbleEvent, PermissionModeChangedEvent, PlanApprovedEvent,
+    PlanDraftUpdatedEvent, PlanReadyEvent, PlanRejectedEvent, PlanRequestEvent, PlanStepEvent,
+    PlanStepStatus, PluginLoadedEvent, PromptListEvent, PromptSwitchedEvent, QuotaExhaustedEvent,
+    RoutingEvent, RoutingEventKind, SideChannelEvent, SideChannelInfo, SideChannelStatusMirror,
     SideChannelStatusSnapshot, StreamErrorEvent, SubagentProgressEvent, SubagentProgressKind,
     SubagentRunStateMirror, SubagentStatusEvent, SubagentStatusSnapshot, ThinkingDelta,
     ThinkingDeltaKind, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent,

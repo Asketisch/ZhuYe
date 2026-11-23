@@ -28,6 +28,22 @@ pub struct McpServerConfigShape {
     pub url: Option<String>,
     pub headers: HashMap<String, String>,
     pub timeout: Duration,
+    /// http 传输的 OAuth 配置(客户端侧)。
+    pub oauth: Option<McpOAuthConfigShape>,
+}
+
+/// `[mcp_servers.<name>.oauth]` 的编译期就绪形态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpOAuthConfigShape {
+    pub token: Option<String>,
+    pub token_env: Option<String>,
+    pub authorization_url: Option<String>,
+    pub token_url: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub scope: Option<String>,
+    pub grant_type: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 impl McpServerConfigShape {
@@ -50,6 +66,8 @@ impl McpServerConfigShape {
                     timeout: Duration::from_millis(
                         entry.timeout_ms.unwrap_or(DEFAULT_MCP_TIMEOUT_MS),
                     ),
+                    // stdio 传输不走 HTTP,OAuth 不适用。
+                    oauth: None,
                 })
             }
             McpTransport::Http | McpTransport::Sse => {
@@ -71,6 +89,17 @@ impl McpServerConfigShape {
                     timeout: Duration::from_millis(
                         entry.timeout_ms.unwrap_or(DEFAULT_MCP_TIMEOUT_MS),
                     ),
+                    oauth: entry.oauth.as_ref().map(|oauth| McpOAuthConfigShape {
+                        token: oauth.token.clone(),
+                        token_env: oauth.token_env.clone(),
+                        authorization_url: oauth.authorization_url.clone(),
+                        token_url: oauth.token_url.clone(),
+                        client_id: oauth.client_id.clone(),
+                        client_secret: oauth.client_secret.clone(),
+                        scope: oauth.scope.clone(),
+                        grant_type: oauth.grant_type.clone(),
+                        refresh_token: oauth.refresh_token.clone(),
+                    }),
                 })
             }
         }

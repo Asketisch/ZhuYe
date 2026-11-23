@@ -17,15 +17,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rmcp::RoleClient;
-use rmcp::model::Tool;
 use rmcp::service::Peer;
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use zhuye_protocol::{McpElicitationEvent, McpElicitationResponse};
 
 use crate::McpError;
 use crate::config::{McpServerConfig, McpTransport};
-use crate::tool::McpToolDescriptor;
+use crate::tool::{McpToolDescriptor, tool_descriptor_from_rmcp};
 use crate::transport;
 
 /// 单个 MCP server 已建立连接后的运行时内部状态。
@@ -56,6 +56,9 @@ pub struct McpServerHandle {
     pub startup_config: McpServerConfig,
 }
 
+/// 单个 server 的工具快照:版本号 + 描述符列表。
+pub type ToolSnapshot = (u64, Vec<McpToolDescriptor>);
+
 /// MCP server 状态广播。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpServerStatus {
@@ -65,7 +68,7 @@ pub enum McpServerStatus {
 }
 
 /// 生命周期事件,推到 `zhuye-exec` 后转 `EventMsg::McpServerStarted/Failed`。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum McpLifecycleEvent {
     Started {
         server: String,
@@ -83,12 +86,35 @@ pub enum McpLifecycleEvent {
     Stopped {
         server: String,
     },
+    /// MCP server 请求宿主用户交互；由 zhuye-exec 转成协议事件。
+    Elicitation {
+        event: McpElicitationEvent,
+        respond: tokio::sync::oneshot::Sender<McpElicitationResponse>,
+    },
+    /// 服务端主动通知 `notifications/tools/list_changed` 后重新拉到的
+    /// 工具清单。`tools` 是新的**完整**清单 —— 调用方按「注册表里该
+    /// server 的现状」与它求差集,自行反注册消失的工具(事件里不带
+    /// `removed`:刷新与启动注册的先后不可预知,注册表才是权威面)。
+    ToolsChanged {
+        server: String,
+        tools: Vec<McpToolDescriptor>,
+    },
 }
 
 /// 集中管理器。
 pub struct McpConnectionManager {
     handles: RwLock<HashMap<String, McpServerHandle>>,
     event_tx: mpsc::Sender<McpLifecycleEvent>,
+    /// 各 server **当前生效**的工具快照:`(版本号, 描述符列表)`。
+    ///
+    /// 服务端可用 `notifications/tools/list_changed` 在运行期增删工具;
+    /// 快照随刷新更新(版本号单调递增),`stop_server` 按它反注册 —— 否则会用
+    /// 启动时的旧清单反注册,漏掉运行期新增的工具(注册表里残留死工具)。
+    ///
+    /// 版本号还用来解决「刷新早于 `start_server` 收尾」的竞态:通知可能在
+    /// 首次 `tools/list` 应答之后立刻到达,此时若只看自己那次列表结果,
+    /// 拿到的就是**旧清单**。收尾时按版本号取最新快照即可。
+    tool_snapshots: Arc<RwLock<HashMap<String, ToolSnapshot>>>,
 }
 
 /// v1.0.0-rc2: 把 plugin 提供的 server name 加 plugin 命名空间。
@@ -117,6 +143,7 @@ impl McpConnectionManager {
         Self {
             handles: RwLock::new(HashMap::new()),
             event_tx,
+            tool_snapshots: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -138,6 +165,32 @@ impl McpConnectionManager {
             .collect()
     }
 
+    /// 取某 server 的运行时内部句柄 + 单次调用超时。
+    ///
+    /// 供工具列表刷新(`notifications/tools/list_changed`)重建 adapter:
+    /// 新工具必须绑到**同一个活连接**上,否则调用会落到已失效的 peer。
+    pub async fn server_client(
+        &self,
+        name: &str,
+    ) -> Option<(Arc<McpClientInner>, std::time::Duration)> {
+        self.handles
+            .read()
+            .await
+            .get(name)
+            .map(|handle| (Arc::clone(&handle.inner), handle.startup_config.timeout))
+    }
+
+    /// 取某 server **当前生效**的工具描述符快照。
+    ///
+    /// 启动注册的时序可能与工具列表刷新交错:注册前读快照才能拿到最新
+    /// 清单(而不是启动时那次列表的旧结果)。
+    pub async fn server_tool_snapshot(&self, name: &str) -> Option<Vec<McpToolDescriptor>> {
+        let snapshots = self.tool_snapshots.read().await;
+        snapshots
+            .get(name)
+            .map(|(_, descriptors)| descriptors.clone())
+    }
+
     /// 启动一个 MCP server,完整跑完 initialize + list_all_tools。
     ///
     /// 错误路径返回 `McpError::Initialize` 或 `Spawn`,由 caller 决定
@@ -145,21 +198,29 @@ impl McpConnectionManager {
     pub async fn start_server(&self, cfg: McpServerConfig) -> Result<McpServerHandle, McpError> {
         let name = cfg.name.clone();
         let transport_kind = cfg.transport;
-        // 失败路径需要 emit Failed event,但 transport 类型决定 will_retry:
-        // stdio 不重试,http 由 reconnect task 重试。
-        let will_retry = matches!(
-            cfg.transport,
-            crate::config::McpTransport::Http | crate::config::McpTransport::Sse
-        );
-        let build_result = transport::build(
-            cfg.transport,
-            cfg.command.as_deref(),
-            &cfg.args,
-            &cfg.env,
-            cfg.url.as_deref(),
-            &cfg.headers,
+        // 当前启动路径没有自动重连任务，不能向宿主声称稍后会重试。
+        let will_retry = false;
+        let build_result = tokio::time::timeout(
+            cfg.timeout,
+            transport::build(
+                &name,
+                cfg.transport,
+                cfg.command.as_deref(),
+                &cfg.args,
+                &cfg.env,
+                cfg.url.as_deref(),
+                &cfg.headers,
+                self.event_tx.clone(),
+                self.tool_snapshots.clone(),
+                cfg.oauth.clone(),
+            ),
         )
-        .await;
+        .await
+        .unwrap_or_else(|_| {
+            Err(McpError::Timeout {
+                elapsed_ms: cfg.timeout.as_millis().min(u64::MAX as u128) as u64,
+            })
+        });
         let handle = match build_result {
             Ok(h) => h,
             Err(e) => {
@@ -175,9 +236,32 @@ impl McpConnectionManager {
             }
         };
         // list_all_tools 一次拉全(rmcp 内部自动分页)。
-        let tools = match handle.peer.list_all_tools().await {
-            Ok(t) => t,
-            Err(e) => {
+        // 记下当前快照版本:收尾时若发现版本已被刷新(通知早到),改用快照里的
+        // 最新清单,避免把旧清单注册进工具表。
+        let base_version = {
+            let snapshots = self.tool_snapshots.read().await;
+            snapshots.get(&name).map_or(0, |(version, _)| *version)
+        };
+        let tools = match tokio::time::timeout(cfg.timeout, handle.peer.list_all_tools()).await {
+            Err(_) => {
+                handle.cancel.cancel();
+                let error = McpError::Timeout {
+                    elapsed_ms: cfg.timeout.as_millis().min(u64::MAX as u128) as u64,
+                };
+                let _ = self
+                    .event_tx
+                    .send(McpLifecycleEvent::Failed {
+                        server: name.clone(),
+                        error: format!("list_all_tools: {error}"),
+                        will_retry,
+                    })
+                    .await;
+                return Err(error);
+            }
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                // 握手后列工具失败时仍要结束后台连接及其子进程。
+                handle.cancel.cancel();
                 let msg = format!("list_all_tools: {e}");
                 let _ = self
                     .event_tx
@@ -190,10 +274,19 @@ impl McpConnectionManager {
                 return Err(McpError::Initialize(msg));
             }
         };
-        let tool_descriptors = tools
+        let mut tool_descriptors = tools
             .iter()
             .map(|t| tool_descriptor_from_rmcp(&name, t))
             .collect::<Vec<_>>();
+        // 刷新可能发生在本次列表应答之后(通知先到):快照版本更新时以快照为准。
+        {
+            let snapshots = self.tool_snapshots.read().await;
+            if let Some((version, descriptors)) = snapshots.get(&name)
+                && *version > base_version
+            {
+                tool_descriptors = descriptors.clone();
+            }
+        }
         let (status_tx, _status_rx) = watch::channel(McpServerStatus::Started);
         let inner = Arc::new(McpClientInner {
             peer: Arc::clone(&handle.peer),
@@ -209,6 +302,12 @@ impl McpConnectionManager {
             transport_kind,
             startup_config: cfg,
         };
+        // 记录当前生效的工具快照(运行期刷新会覆盖它)。
+        {
+            let mut snapshots = self.tool_snapshots.write().await;
+            let version = snapshots.get(&name).map_or(0, |(version, _)| *version);
+            snapshots.insert(name.clone(), (version, tool_descriptors.clone()));
+        }
         // 插 map。
         {
             let mut handles = self.handles.write().await;
@@ -289,10 +388,26 @@ impl McpConnectionManager {
         let _ = self
             .event_tx
             .send(McpLifecycleEvent::Stopped {
-                server: stopped_name,
+                server: stopped_name.clone(),
             })
             .await;
-        Some(entry.tools.iter().map(|t| t.full_name.clone()).collect())
+        // 按**当前生效**的工具名快照反注册(运行期刷新可能增删过工具,
+        // 启动时的旧清单会漏掉新增项,注册表里残留死工具)。
+        let current = {
+            let mut snapshots = self.tool_snapshots.write().await;
+            match snapshots.remove(&stopped_name) {
+                Some((_, descriptors)) => descriptors
+                    .iter()
+                    .map(|descriptor| descriptor.full_name.clone())
+                    .collect(),
+                None => entry
+                    .tools
+                    .iter()
+                    .map(|tool| tool.full_name.clone())
+                    .collect(),
+            }
+        };
+        Some(current)
     }
 
     /// reload diff 算法。`new_configs` 已经按 name 排序。
@@ -413,31 +528,6 @@ fn entry_unchanged(old: &McpServerConfig, new: &McpServerConfig) -> bool {
         && old.headers == new.headers
 }
 
-/// 从 rmcp `Tool` 构造 `McpToolDescriptor`。
-fn tool_descriptor_from_rmcp(server_name: &str, tool: &Tool) -> McpToolDescriptor {
-    let full_name = format!("mcp__{server_name}__{}", tool.name);
-    let is_concurrency_safe = tool
-        .annotations
-        .as_ref()
-        .and_then(|a| a.read_only_hint)
-        .unwrap_or(false);
-    // MCP inputSchema 是 JSON Schema 2020-12,Zhuye 直接吃。
-    // `tool.input_schema: Arc<JsonObject>`,JsonObject = serde_json::Map<String, Value>。
-    // `*tool.input_schema` deref Arc → Map,`.clone()` 走 `Map` 的 Clone impl。
-    let input_schema = serde_json::Value::Object((*tool.input_schema).clone());
-    McpToolDescriptor {
-        full_name,
-        original_name: tool.name.to_string(),
-        description: tool
-            .description
-            .as_deref()
-            .unwrap_or("(no description)")
-            .to_string(),
-        input_schema,
-        is_concurrency_safe,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +544,7 @@ mod tests {
             url: None,
             headers: HashMap::new(),
             timeout: Duration::from_secs(30),
+            oauth: None,
         }
     }
 

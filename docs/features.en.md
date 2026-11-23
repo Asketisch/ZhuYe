@@ -145,9 +145,18 @@ to ask about, which to let through, and which to forbid outright; `bash` default
 `web_search` defaults to Auto;
 - **Hooks** (`zhuye-hooks`) — 12 event types, 7 decision kinds; can
 modify arguments before/after tool execution, block calls, interject, and veto turn completion;
-- **OS sandbox** (`zhuye-sandbox`) — Seatbelt on macOS, Landlock on
-Linux; if the sandbox fails to start, it fails outright, it will **not** silently fall back to a bare
-shell. The macOS sandbox cuts network by default; Linux only restricts writes, not network.
+- **MCP client** (`zhuye-mcp`) — stdio and streamable-http transports;
+  the http transport supports client-side OAuth
+  (`[mcp_servers.<name>.oauth]`: static token / `token_env` / client
+  credentials / refresh token, with the token endpoint discovered from the
+  protected-resource metadata when unset), reports "authorization required"
+  explicitly when a server demands auth without usable credentials, and
+  keeps the tool registry in sync when a server changes its tool list
+  (`notifications/tools/list_changed`).
+- **OS sandbox** (`zhuye-sandbox`) — Seatbelt on macOS; Landlock for
+filesystem writes and seccomp for networking on Linux. When Linux sandboxing is
+enabled, installation failures fail closed. macOS
+still allows local and Unix sockets; Linux blocks socket creation and connection by default.
 
 In addition, there is a **prompt injection guard** (enabled by default since F01) and **output
 sanitization** (`zhuye-sanitize`, see [docs/sanitize.md](sanitize.md)), which redact keys in tool output.
@@ -203,8 +212,27 @@ Design in [docs/PLAN_MODE.md](PLAN_MODE.md).
 
 - This repository's binary has no TUI subcommand. The interactive
 interface lives in the [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI) repository.
-- The sandbox cuts network by default on macOS; on Linux it only
-restricts writes, not network.
+- Linux Landlock does not protect sensitive reads, and it cannot force nested
+  sensitive paths inside a writable root to be read-only — Landlock merges
+  rules bitwise, so write rights granted on a parent propagate to the nested
+  paths, and the kernel rejects an empty access mask (`ENOMSG`); both were
+  verified in a Linux container. Such paths are therefore handled as
+  "report + fail closed on demand" on Linux: the bash tool's
+  `metadata.path_protection` lists every path as enforced or unsupported, and
+  when a host requires a path to be read-only
+  (`OsSandbox::with_protected_paths` + `strict_paths`, or
+  `ZHUYE_SANDBOX_STRICT_PATHS=1`) Linux refuses to execute instead of
+  pretending the protection is active. macOS Seatbelt supports deny rules, so
+  `.git` / `.agents` / `.aws` inside a writable root really are read-only.
+- The default seccomp network filter supports x86_64 and
+  aarch64, allows local `socketpair`, requires Landlock ABI v3, and fails closed
+  if unavailable.
+- **Windows is an unverified platform**: the Job Object (process-tree
+  kill-on-close) + AppContainer backend is implemented but is not wired into
+  the bash spawn path, so commands on Windows are currently **not** confined
+  for files or networking, and the behaviour has **not** been verified on a
+  real Windows machine. `status_line()` and the tool metadata report this
+  honestly; use macOS / Linux when you need hard isolation.
 - At most 16 sub-agents can be in flight in the same session at once;
 slots are released as sub-tasks finish.
 - Protocol v0 is frozen: adding `Op` / `EventMsg` variants is

@@ -28,6 +28,7 @@
 - **带 action 载荷的 `Op` 变体拆独立模块**：`PromptCommand` 的 `PromptAction` / `PromptSelection` 定义在 `src/op_prompt.rs`，应答事件体（`PromptList` / `PromptSwitched`）在 `event_msg` 域 —— 既守住「枚举体外定义」的禁止事项，也让 `check_docs` 不误判变体。新增同类变体照此办理。
 - **门禁命令**：`./scripts/release_sdk.sh check_docs`。协议文档落后于源码，会在 `check` / `tag` 发布前直接失败。
 - **覆盖矩阵**：新增或移除协议能力时同步 `tests/COVERAGE.md` 的「能力 × 覆盖层」映射表。
+- `McpServerFailedEvent.will_retry` 只能报告实际的自动重试；当前各传输启动失败均不自动重试。
 
 ## 禁止事项
 

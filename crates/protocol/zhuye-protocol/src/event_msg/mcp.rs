@@ -25,14 +25,14 @@ pub struct McpServerStartedEvent {
 /// v0.3 M6: 一个 MCP server 启动失败(spawn / initialize / list_tools 任一阶段)。
 ///
 /// `will_retry` 为 `true` 表示 HTTP 重连循环还会继续尝试;
-/// stdio 路径永远为 `false`(不重连,配置错就让用户修)。
+/// 当前启动失败不会自动重连，所有 transport 的 `will_retry` 均为 `false`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerFailedEvent {
     /// MCP server 名(同 `McpServerStarted.server`)。
     pub server: String,
     /// 失败原因描述。
     pub error: String,
-    /// 是否还会自动重试(HTTP 重连循环;stdio 恒为 `false`)。
+    /// 是否还会自动重试；当前启动路径没有自动重试。
     pub will_retry: bool,
 }
 

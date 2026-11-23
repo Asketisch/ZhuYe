@@ -139,8 +139,57 @@ def events_text(events: list[dict]) -> str:
     return "".join([*texts, current])
 
 
+def offline_script(case: dict, expected: dict, workspace: Path, phase: str = "initial") -> list[str]:
+    """生成 mock provider 脚本:把任务「正确地做完」。
+
+    仅用于**离线自检**(--offline):验证评测流水线本身(沙箱、验收器、
+    评分器、质量门禁)可跑通,不衡量模型能力 —— 成功率在这里恒为 100%,
+    不能当质量基线用。真实基线必须用 --model/--base-url 跑真模型。
+    """
+    kind = case["kind"]
+    if kind == "repair":
+        expression = {
+            "add": "a + b",
+            "subtract": "a - b",
+            "multiply": "a * b",
+            "maximum": "max(a, b)",
+        }[case["operation"]]
+        return [
+            json.dumps({"type": "tool_call", "name": "read", "args": {"path": "calc.py"}}),
+            json.dumps({"type": "tool_call", "name": "write", "args": {
+                "path": "calc.py",
+                "content": f"def calculate(a, b):\n    return {expression}\n"}}),
+            json.dumps({"type": "text", "text": "已修复 calc.py"}),
+        ]
+    if kind == "merge":
+        replies = [json.dumps({"type": "tool_call", "name": "read", "args": {"path": "missing.json"}})]
+        for index in range(len(case["values"])):
+            replies.append(json.dumps({"type": "tool_call", "name": "read",
+                                       "args": {"path": f"part{index + 1}.json"}}))
+        replies.append(json.dumps({"type": "tool_call", "name": "write", "args": {
+            "path": "result.json",
+            "content": json.dumps({"label": case["label"], "sum": sum(case["values"])})}}))
+        replies.append(json.dumps({"type": "text", "text": "已写入 result.json"}))
+        return replies
+    if kind == "resume":
+        wanted = {key_: case[key_] for key_ in ("code", "color", "priority")}
+        if phase == "resumed":
+            # 恢复会话(新进程,脚本从头开始):这时才允许写产物。
+            return [
+                json.dumps({"type": "tool_call", "name": "write", "args": {
+                    "path": "status.json", "content": json.dumps(wanted)}}),
+                json.dumps({"type": "text", "text": "已写入 status.json"}),
+            ]
+        # 首会话:只确认记住,**不得**提前创建产物(验收会查)。
+        return [
+            json.dumps({"type": "text", "text": "已记住:" + json.dumps(wanted, ensure_ascii=False)}),
+            json.dumps({"type": "text", "text": "继续"}),
+        ]
+    raise ValueError(f"未知任务类型:{kind}")
+
+
 def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, destination: Path,
-            profile: str = "default") -> dict:
+            profile: str = "default", offline: bool = False) -> dict:
     """在独立 HOME 和工作区执行一条用例,保存脱敏事件轨迹。"""
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="zhuye-eval-") as tmp:
@@ -159,6 +208,15 @@ def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, desti
         prompt, expected = prepare(case, workspace)
         sandbox = wire.Sandbox(home, workspace)
         env = {"ZHUYE_MODEL": f"openai/{model}", "ZHUYE_AUTO_COMPACT_INPUT_TOKENS": "1000"}
+        if offline:
+            # 离线自检:用脚本化的 mock provider 把任务做完,验证流水线。
+            script_path = root / "mock-script-initial.jsonl"
+            script_path.write_text(
+                "\n".join(offline_script(case, expected, workspace, "initial")) + "\n")
+            # 压缩阈值调高:压缩摘要会**消耗脚本行**(摘要器也要调模型),
+            # 会把脚本顺序打乱;离线自检里压缩断言本就跳过,故不触发压缩。
+            env = {"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script_path),
+                   "ZHUYE_AUTO_COMPACT_INPUT_TOKENS": "1000000"}
         wire.ZHUYE_BIN = binary
         events: list[dict] = []
         status, reason, passed = "fail", "任务未完成", False
@@ -178,7 +236,14 @@ def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, desti
                     premature_output = (workspace / "status.json").exists()
             if case["kind"] == "resume":
                 thread_id = wire.rollout_thread_id(home)
-                with wire.ServeSession(sandbox, args=["--resume", thread_id], env=env, timeout=300) as resumed:
+                resumed_env = env
+                if offline:
+                    resumed_script = root / "mock-script-resumed.jsonl"
+                    resumed_script.write_text(
+                        "\n".join(offline_script(case, expected, workspace, "resumed")) + "\n")
+                    resumed_env = dict(env)
+                    resumed_env["ZHUYE_MOCK_SCRIPT"] = str(resumed_script)
+                with wire.ServeSession(sandbox, args=["--resume", thread_id], env=resumed_env, timeout=300) as resumed:
                     events.extend(resumed.submit({"type": "user_input", "items": [{"type": "text", "text": "按之前约定写入 status.json。"}]}, timeout=300))
             errors = [item["msg"] for item in events if item.get("msg", {}).get("type") in ("error", "stream_error")]
             turns = [item["msg"] for item in events if item.get("msg", {}).get("type") == "turn_complete"]
@@ -210,7 +275,12 @@ def run_one(case: dict, binary: Path, model: str, base_url: str, key: str, desti
                     item.get("msg", {}).get("type") == "context_compacted"
                     and item["msg"].get("strategy") == "ll_m_summarize" for item in events
                 ):
-                    passed, reason = False, "未观察到上下文压缩事件"
+                    if offline:
+                        # 离线自检:mock provider 没有摘要模型,压缩策略不会走
+                        # ll_m_summarize —— 这条断言只在真模型下有意义。
+                        reason = "离线自检:跳过压缩断言(mock provider 无摘要模型)"
+                    else:
+                        passed, reason = False, "未观察到上下文压缩事件"
                 if premature_output:
                     passed, reason = False, "重启前提前创建了结果文件"
                 status = "pass" if passed else "fail"
@@ -295,6 +365,8 @@ def main() -> int:
                         help="质量门禁策略文件(默认 tests/eval/policy.json)")
     parser.add_argument("--mode", choices=("observe", "enforce"), default="observe",
                         help="observe 记录 would_block 不阻断;enforce 下退化/样本不足返回 1")
+    parser.add_argument("--offline", action="store_true",
+                        help="离线自检:用 mock provider 跑通流水线(不需要凭据;不衡量模型能力)")
     args = parser.parse_args()
     if args.repetitions < 1:
         parser.error("重复次数必须大于零")
@@ -305,8 +377,8 @@ def main() -> int:
         print(f"质量门禁策略配置错误:{exc}", file=sys.stderr)
         return 3
     key = os.environ.get("ZHUYE_EVAL_API_KEY", "")
-    if not key:
-        parser.error("必须设置 ZHUYE_EVAL_API_KEY")
+    if not key and not args.offline:
+        parser.error("必须设置 ZHUYE_EVAL_API_KEY(或用 --offline 做离线自检)")
     binaries = {"baseline": args.baseline.resolve(), "candidate": args.candidate.resolve()}
     profiles = {"baseline": args.baseline_profile, "candidate": args.candidate_profile}
     scorer = args.scorer.resolve()
@@ -322,6 +394,7 @@ def main() -> int:
     cases = json.loads(CASES.read_text())
     args.output.mkdir(parents=True, exist_ok=True)
     report = {"model": args.model, "base_url": args.base_url, "repetitions": args.repetitions,
+              "offline_self_check": args.offline,
               "case_sha256": hashlib.sha256(CASES.read_bytes()).hexdigest(), "versions": {}}
     for role, binary in binaries.items():
         version = subprocess.check_output([str(binary), "--version"], text=True, timeout=30).strip()
@@ -331,7 +404,7 @@ def main() -> int:
                 print(f"{role}: {case['name']} 第 {iteration + 1} 次", flush=True)
                 results.append(run_one(case, binary, args.model, args.base_url, key,
                                        args.output / role / case["name"] / str(iteration + 1),
-                                       profiles[role]))
+                                       profiles[role], offline=args.offline))
         score(scorer, results)
         report["versions"][role] = {"path": str(binary), "version": version, "prompt_profile": profiles[role],
                                     "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),

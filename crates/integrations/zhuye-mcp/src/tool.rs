@@ -43,6 +43,38 @@ pub struct McpToolDescriptor {
     pub is_concurrency_safe: bool,
 }
 
+/// 从 rmcp `Tool` 构造 `McpToolDescriptor`。
+///
+/// 放在 tool 模块供 manager 与 transport 共用:工具列表刷新
+/// (`notifications/tools/list_changed`)需要用**同一套**命名规则重建描述符,
+/// 否则刷新后的工具名与注册表里的对不上。
+pub(crate) fn tool_descriptor_from_rmcp(
+    server_name: &str,
+    tool: &rmcp::model::Tool,
+) -> McpToolDescriptor {
+    let full_name = format!("mcp__{server_name}__{}", tool.name);
+    let is_concurrency_safe = tool
+        .annotations
+        .as_ref()
+        .and_then(|a| a.read_only_hint)
+        .unwrap_or(false);
+    // MCP inputSchema 是 JSON Schema 2020-12,Zhuye 直接吃。
+    // `tool.input_schema: Arc<JsonObject>`,JsonObject = serde_json::Map<String, Value>。
+    // `*tool.input_schema` deref Arc → Map,`.clone()` 走 `Map` 的 Clone impl。
+    let input_schema = serde_json::Value::Object((*tool.input_schema).clone());
+    McpToolDescriptor {
+        full_name,
+        original_name: tool.name.to_string(),
+        description: tool
+            .description
+            .as_deref()
+            .unwrap_or("(no description)")
+            .to_string(),
+        input_schema,
+        is_concurrency_safe,
+    }
+}
+
 /// `Tool` trait 适配器。
 pub struct McpToolAdapter {
     pub full_name: String,

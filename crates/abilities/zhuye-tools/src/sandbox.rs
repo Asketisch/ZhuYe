@@ -24,6 +24,29 @@ mod safe_write;
 pub use safe_file::{PinnedFile, open_readonly};
 pub(crate) use safe_write::PinnedWrite;
 
+/// 将已脱敏的工具文本保存在工作区内，供模型使用 read 工具按需读回。
+///
+/// 路径逐级固定并拒绝符号链接，避免工作区目录被替换时写到其他位置。
+#[cfg(unix)]
+pub fn write_spill_text(workspace: &Path, text: &str) -> std::io::Result<std::path::PathBuf> {
+    let root = std::fs::canonicalize(workspace)?;
+    let path = root
+        .join(".zhuye")
+        .join("spill")
+        .join(format!("tool-{}.txt", uuid::Uuid::new_v4()));
+    PinnedWrite::prepare(&path)?.create_private(text.as_bytes())?;
+    Ok(path)
+}
+
+/// 尚无可验证的私有文件创建方式时，拒绝写出并让调用方报告失败。
+#[cfg(not(unix))]
+pub fn write_spill_text(_: &Path, _: &str) -> std::io::Result<std::path::PathBuf> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "private spill is unavailable on this platform",
+    ))
+}
+
 /// 凭证路径后缀(相对各用户主目录)—— 读拒绝。
 ///
 /// 与 `zhuye-sandbox` 的 `os_sandbox.rs::seatbelt_profile` 里 sensitive_reads
@@ -567,4 +590,25 @@ mod tests {
         let _ = fs::remove_dir_all(&probe);
         teardown(&inner);
     }
+}
+#[cfg(unix)]
+#[test]
+fn spill_rejects_linked_directory() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), workspace.path().join(".zhuye")).unwrap();
+    assert!(write_spill_text(workspace.path(), "秘密").is_err());
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn spill_file_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = tempfile::tempdir().unwrap();
+    let path = write_spill_text(workspace.path(), "私有文本").unwrap();
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }

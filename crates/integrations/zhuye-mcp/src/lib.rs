@@ -15,8 +15,15 @@
 //!
 //! - 已实现:Tools、Resources(`ListMcpResources` / `ReadMcpResource`,
 //!   v1.2 起真接线 —— 此前注释误标为未实现)、Prompts
-//!   (`ListMcpPrompts` / `GetMcpPrompt`,v1.6 接线)。
-//! - 未实现(留后续):Sampling / Elicitation / OAuth。
+//!   (`ListMcpPrompts` / `GetMcpPrompt`,v1.6 接线)、Elicitation
+//!   (server→client `elicitation/create` 转成 `McpLifecycleEvent::Elicitation`,
+//!   由宿主经 `Op::McpElicitationResponse` 裁决;**sampling 能力不声明**,
+//!   避免宣称不存在的模型调用通道)。
+//! - 客户端侧 OAuth(http 传输)已接线:静态 token / `token_env` /
+//!   `client_credentials` / `refresh_token`;token 端点缺省时按受保护资源
+//!   元数据(RFC 9728)与授权服务器元数据(RFC 8414)发现。授权码流程需要
+//!   浏览器,由宿主完成 —— 引擎只发现端点并在上报里给出可执行提示。
+//! - 未实现(留后续):Sampling;授权码流程的浏览器交互(宿主侧)。
 //!
 //! ## 关键约束
 //!
@@ -43,7 +50,7 @@ pub mod tool;
 pub mod transport;
 
 // 公开 API re-export
-pub use config::{McpServerConfig, McpTransport};
+pub use config::{McpOAuthConfig, McpServerConfig, McpTransport};
 pub use content::convert_mcp_content;
 pub use manager::{
     McpConnectionManager, McpLifecycleEvent, McpServerHandle, McpServerStatus, list_plugin_servers,
@@ -89,6 +96,13 @@ pub enum McpError {
     /// 优雅 shutdown 超时(>10s),需要 SIGKILL。
     #[error("mcp shutdown timeout")]
     ShutdownTimeout,
+
+    /// 服务端要求 OAuth 授权,而当前没有可用凭据。
+    ///
+    /// 消息里带可执行的端点(授权 / token / 受保护资源元数据),宿主据此
+    /// 完成授权码流程或换 token 后重试 —— 引擎不代跑浏览器。
+    #[error("mcp auth required: {0}")]
+    AuthRequired(String),
 }
 
 #[cfg(test)]

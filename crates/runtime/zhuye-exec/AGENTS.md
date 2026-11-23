@@ -29,6 +29,7 @@ headless 与 serve 的共享装配层：读参数、bootstrap 会话、把协议
 - **hooks 启用口径**由 `HeadlessArgs::hooks_explicit_only`（`src/headless.rs`）决定：serve 侧收紧为 `true`（内置 hook 需在配置段显式列出才启用），exec / 库侧保持 `false`（未配置即全部启用）。
 - **门控型 bundled 插件的装配接线**（`src/headless.rs` `bootstrap_common`）与 hooks 收紧共用同一插件判定源：builtin 注册经 `zhuye_plugin::bundled_tool_gates(enabled, disabled)` 构造 `BundledToolGates` 传入 `register_builtin_tools_with_gates`（web-search / notebook 默认开，关闭 = 不注册）；verify-hooks 插件启用时在 explicit-only 收紧之后 `enable_hook_names` 注入；`bootstrap_lsp` 的 `lsp_plugin_disabled` 参数承载 lsp 插件粗粒度开关。goal-queue 的 gate（`wire_goal_queue_plugin`）判定同样委托 `zhuye_plugin::bundled_plugin_enabled`。
 - **telemetry 与 activity 开关**：sink 由 `src/runtime_config.rs` 的 `build_telemetry_sink` 构造；activity 审计是否落 `~/.zhuye/activity/activity.jsonl` 由配置段的 `activity` 开关决定（父开关 `enabled` 关闭时一并关闭）。
+- **MCP elicitation 桥接**（`src/bootstrap.rs` `bootstrap_m6`）：服务端请求转成全局 `EventMsg::McpElicitation`，回执 waiter 登记在 `AgentConfig.approval_context.mcp_elicitations`（与父子代理共享同一张表）。登记必须**先于**发事件，否则宿主极快回执会丢；宿主不回执时按 TTL（默认 300s，`ZHUYE_MCP_ELICITATION_TTL_SECS` 可调）以 `cancel` 了结（fail-closed）。
 - 改了参数面或事件形状，同步 `docs/cli.md` 的子命令总览表与 `tests/functional/` 下的能力用例。
 
 ## 禁止事项

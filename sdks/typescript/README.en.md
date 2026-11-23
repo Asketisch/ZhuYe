@@ -262,7 +262,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // throws a ti
 `submit(op)` sends any protocol Op and returns an event
 `AsyncIterable` (non-turn Ops finish with `submission_closed`;
 you can specify the id explicitly with `{ submissionId }`). Full Op
-set (26 kinds, one-to-one with the Rust protocol; types in the
+set (27 kinds, one-to-one with the Rust protocol; types in the
 `Op` of the `zhuye` package):
 
 | Category | Op | Key fields |
@@ -273,6 +273,7 @@ set (26 kinds, one-to-one with the Rust protocol; types in the
 | approval | `tool_approval` / `hook_approval` | `id` + `decision` |
 | plan | `enter_plan_mode` / `exit_plan_mode` / `plan_approval` | `plan_approval.choice ∈ auto_mode/manual_approve/revise` |
 | interaction | `ask_user_question_response` / `ask_user_input_response` | respond to the global events ask_user_question / ask_user_input |
+| MCP interaction | `mcp_elicitation_response` | respond to the global event `mcp_elicitation` (an MCP server asking the user for input); `action ∈ accept/decline/cancel`, `content` holds the form values (keys taken from `kind.fields[].name`) |
 | state | `set_effort` / `set_permission_mode` / `cycle_permission_mode` | mode ∈ auto/prompt/plan/deny/bubble |
 | prompt | `prompt_command` | `action{type: 'list'\|'switch'}`; query / rescan the prompt layer, answered with `prompt_list` / `prompt_switched` |
 | steering | `steer` | `items` (optional `priority ∈ 'now'\|'attachment'`, default attachment); feed mid-turn without interrupting the in-flight turn |
@@ -348,8 +349,15 @@ does not read them; use the `set_effort` and
 
 ### Data types (all exported from the package root)
 
-- `ToolOutput`: tool receipt
-  `{content: ContentBlock[], is_error, metadata, elapsed_ms}`.
+- `ToolOutput`: tool receipt `{content: ContentBlock[], is_error, metadata, elapsed_ms}`.
+  For a successfully started foreground `bash`, `metadata.network_restriction`
+  is `blocked_sockets`, `local_only`, or `unrestricted`; a failed launch does
+  not claim installation.
+- `ReadMcpResource` preserves resource order. Binary resources are JSON text
+  blocks with `uri`, base64 `blob`, and optional `mimeType`; `metadata.content_descriptors`
+  describes each item.
+- MCP initialization and initial tool listing use `timeout_ms`; startup failure
+  events currently report `will_retry: false`.
 - `ContentBlock`: `{type: 'text', text: string}`.
 - `RemoteToolSpec`: `{name, description, parameters (JSON Schema)}`.
 - `Event`: `{id: string, msg: EventMsg}`; `id === ''` denotes a
@@ -375,6 +383,7 @@ The full set of `ev.msg.type` variants (type definitions in
 | `tool_execution_request` | (intercepted inside the SDK) | Remote tool request → local handler |
 | `approval_request` / `permission_bubble` | global | Approval needed → respond with `approve()` |
 | `ask_user_question` / `ask_user_input` | global | User answer needed → respond with the matching response Op via `submit()` |
+| `mcp_elicitation` | global | an MCP server asks the user for input → reply with `mcp_elicitation_response` via `submit()` (no reply: cancelled after the TTL) |
 | `permission_mode_changed` | global | Result of a permission mode switch |
 | `context_compacted` | submission | Compaction finished |
 | `plan_request` / `plan_ready` / `plan_approved` / `plan_rejected` / `plan_draft_updated` / `plan_step` | submission / global | Plan mode events |

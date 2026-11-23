@@ -217,6 +217,7 @@ const event = await agent.nextGlobalEvent({ timeoutMs: 5_000 });  // 无事件�
 | 审批 | `tool_approval` / `hook_approval` | `id` + `decision` |
 | 计划 | `enter_plan_mode` / `exit_plan_mode` / `plan_approval` | `plan_approval.choice ∈ auto_mode/manual_approve/revise` |
 | 交互 | `ask_user_question_response` / `ask_user_input_response` | 回应全局事件 ask_user_question / ask_user_input |
+| MCP 交互 | `mcp_elicitation_response` | 回应全局事件 `mcp_elicitation`(MCP server 请用户补信息);`action ∈ accept/decline/cancel`,`content` 为表单值对象(键名取 `kind.fields[].name`) |
 | 状态 | `set_effort` / `set_permission_mode` / `cycle_permission_mode` | mode ∈ auto/prompt/plan/deny/bubble |
 | 提示词 | `prompt_command` | `action{type: 'list'\|'switch'\|'select'\|'save_default'}`;查询、重扫、选择会话方案或保存默认,应答 `prompt_list` / `prompt_switched` |
 | 转向 | `steer` | `items`(可选 `priority ∈ 'now'\|'attachment'`,缺省 attachment);回合中途投喂,不打断在飞 turn |
@@ -284,6 +285,9 @@ for await (const e of await agent.submit({
 ### 数据类型(均从包根导出)
 
 - `ToolOutput`:工具回执 `{content: ContentBlock[], is_error, metadata, elapsed_ms}`。
+- 前台 `bash` 成功启动后,`metadata.network_restriction` 为 `blocked_sockets`、`local_only` 或 `unrestricted`;启动失败不会声称限制已安装。
+- `ReadMcpResource` 按顺序返回资源正文；二进制资源以含 `uri`、`blob`(base64)及可选 `mimeType` 的 JSON 文本块返回，`metadata.content_descriptors` 描述每项。
+- MCP 连接握手和首次工具列表受 `timeout_ms` 约束；当前启动失败事件的 `will_retry` 为 `false`。
 - `ContentBlock`:`{type: 'text', text: string}`。
 - `RemoteToolSpec`:`{name, description, parameters(JSON Schema)}`。
 - `Event`:`{id: string, msg: EventMsg}`;`id === ''` 为全局事件。
@@ -308,6 +312,7 @@ for await (const e of await agent.submit({
 | `tool_execution_request` | (SDK 内部拦截) | 远程工具请求 → 本地 handler |
 | `approval_request` / `permission_bubble` | 全局 | 需要审批 → `approve()` 回应 |
 | `ask_user_question` / `ask_user_input` | 全局 | 需要用户作答 → `submit()` 回应对应 response Op |
+| `mcp_elicitation` | 全局 | MCP server 请求用户输入 → `submit_op` 回 `mcp_elicitation_response`(不回则 TTL 后按 cancel 了结) |
 | `permission_mode_changed` | 全局 | 权限模式切换结果 |
 | `context_compacted` | submission | 压缩完成 |
 | `plan_request` / `plan_ready` / `plan_approved` / `plan_rejected` / `plan_draft_updated` / `plan_step` | submission / 全局 | 计划模式事件 |

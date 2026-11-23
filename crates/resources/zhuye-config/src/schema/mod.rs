@@ -33,8 +33,8 @@ pub use agent::{
 pub use discovery::ModelDiscoverySection;
 pub use integrations::{
     AcpSection, BridgeSection, DapSection, LspFilePattern, LspServerEntry, LspServersSection,
-    McpServerEntry, McpServersSection, McpTransport, PostgresSessionSection, SseRedisSection,
-    VoiceSection, WebSearchSection,
+    McpOAuthEntry, McpServerEntry, McpServersSection, McpTransport, PostgresSessionSection,
+    SseRedisSection, VoiceSection, WebSearchSection,
 };
 pub use model_group::ModelGroupSection;
 pub use notifications::{

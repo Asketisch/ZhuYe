@@ -21,6 +21,7 @@ mod config;
 mod interaction;
 mod lsp;
 mod mcp;
+mod mcp_elicitation;
 mod plan;
 mod plugin;
 mod routing;
@@ -49,6 +50,10 @@ pub use interaction::{
 pub use lsp::{LspServerFailedEvent, LspServerStartedEvent};
 pub use mcp::{
     McpServerFailedEvent, McpServerStartedEvent, McpToolInvokedEvent, McpTransportMirror,
+};
+pub use mcp_elicitation::{
+    McpElicitationEvent, McpElicitationField, McpElicitationFieldKind, McpElicitationKind,
+    McpElicitationResponse,
 };
 pub use plan::{
     PermissionModeChangedEvent, PlanApprovedEvent, PlanDraftUpdatedEvent, PlanReadyEvent,
@@ -217,6 +222,11 @@ pub enum EventMsg {
     /// 便于 TUI 在 status_bar 高亮"mcp: server.tool"调用链。
     McpToolInvoked(McpToolInvokedEvent),
 
+    // MCP 交互请求(additive)—— server 请求宿主询问用户。
+    /// MCP server 发起的用户交互请求。客户端回执
+    /// `Op::McpElicitationResponse { id, action, content }`。
+    McpElicitation(McpElicitationEvent),
+
     // LSP (2; v0.5) — LSP server 启停可见,TUI / JSONL 推送
     /// 一个 LSP server 握手 + initialize 成功。`methods` 字段是从
     /// `ServerCapabilities` 推出来的 method 列表,`language_ids` 是该
@@ -323,6 +333,7 @@ impl EventMsg {
             EventMsg::McpServerStarted(_) => "mcp_server_started",
             EventMsg::McpServerFailed(_) => "mcp_server_failed",
             EventMsg::McpToolInvoked(_) => "mcp_tool_invoked",
+            EventMsg::McpElicitation(_) => "mcp_elicitation",
             EventMsg::LspServerStarted(_) => "lsp_server_started",
             EventMsg::LspServerFailed(_) => "lsp_server_failed",
             EventMsg::PlanRequest(_) => "plan_request",
