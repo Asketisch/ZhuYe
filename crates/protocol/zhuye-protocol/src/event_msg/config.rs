@@ -19,11 +19,39 @@ pub struct ConfigReloadedEvent {
     pub at: SystemTime,
 }
 
+/// 两级菜单的一个模型变体(id + 显示名),GUI 据此渲染二级菜单项。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptVariantRef {
+    /// 变体 id(`PromptSelection::Manual.profile` 的合法取值)。
+    pub id: String,
+    /// 显示名(如 `Opus 4.6`;专有名词不翻译)。
+    pub label: String,
+}
+
+/// 两级提示词目录的一个工具分组(一级菜单项)。
+///
+/// 多模型工具(如 Claude Code / Codex)带多个模型变体;单文件工具
+/// (如 gemini-cli / deepseek)恰一个回引变体,GUI 渲染为一级叶项。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptGroup {
+    /// 工具 id(如 `claude-code`)。
+    pub id: String,
+    /// 显示名(如 `Claude Code`)。
+    pub label: String,
+    /// 该组变体解析时叠加的家族层(厂商层)id —— 客户端用它把平铺
+    /// `available` 清单里已被组覆盖的家族层滤掉,避免菜单重复。
+    #[serde(default)]
+    pub family_layer: String,
+    /// 模型变体,清单顺序即展示顺序。
+    pub variants: Vec<PromptVariantRef>,
+}
+
 /// v1.6.1:`Op::PromptCommand { action: List }` 的应答 —— 可用提示词层与
 /// 当前生效层。TUI/GUI 的 `/prompt` overlay 据此渲染选择列表。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptListEvent {
-    /// 可绑定的层文件名(不含 `.md`;内置厂商层 + 用户目录层,去重)。
+    /// 可绑定的层文件名(不含 `.md`;内置厂商层 + 工具变体 + 用户目录
+    /// 层,去重)。
     pub available: Vec<String>,
     /// 当前 model spec(如 `"anthropic/claude-sonnet-5-5"`)。
     pub current_spec: String,
@@ -38,6 +66,10 @@ pub struct PromptListEvent {
     /// 未命中时回落的原因。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
+    /// v1.7:两级菜单的工具分组(工具 → 模型变体)。空清单(旧引擎/
+    /// 目录损坏)时省略,客户端退化为按 `available` 平铺渲染。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<PromptGroup>,
 }
 
 /// v1.6.1:`Op::PromptCommand { action: Switch }` 的应答 —— 提示词库重扫

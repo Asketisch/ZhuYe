@@ -13,5 +13,57 @@
   "additional_sources": [
     {"profile":"deepseek","repository":"deepseek-ai/deepseek-harness","branch":"master","revision":"ca33fd6843b205e279c7ccb6cb73a472c78f5760","path":"snapshots/session/advanced-toolchain/system-prompt.expected.md","sha256":"8ca326cc76458e56f2b43f344f86032128c5a6f81a821c627d2eed02be044b36"},
     {"profile":"glm","repository":"x1xhlol/system-prompts-and-models-of-ai-tools","branch":"main","revision":"162db92f54d717d8ebd12292e155aeef32bb4b3c","path":"Z.ai Code/prompt.txt","sha256":"1e62c474838e6ecc6378899747f80e1f481a7dbff2ea0b6ea4ce827a0fef22d8"}
+  ],
+  "tools_collection": {"repository": "asgeirtj/system_prompts_leaks", "revision": "0aa4be305d75f23db32977ee255dbd430c27e2e6", "branch": "main"},
+  "tools": [
+    {"id":"claude-code","label":"Claude Code","family_layer":"claude","variants":[
+      {"id":"claude-code-opus-4.6","label":"Opus 4.6","file":"tools/claude-code/claude-code-opus-4.6.md","source":{"path":"Anthropic/claude-code/claude-code-opus-4.6.md","sha256":"94f9a9df9db5ff5c8e00d538e10717f2e2b8ada58ad760ae2e297e9393b7b668"},"models":["claude-opus-4.6","claude-opus-4-6"],"model_prefixes":["claude-opus-4.6","claude-opus-4-6","claude-opus-4"],"evaluation":"unverified"},
+      {"id":"claude-code-opus-4.7","label":"Opus 4.7","file":"tools/claude-code/claude-code-opus-4.7.md","source":{"path":"Anthropic/claude-code/claude-code-opus-4.7.md","sha256":"b9d043c49af1b1133de82e64d46e756c20fc12ba0bb960baad0a7c23242b0ebc"},"models":["claude-opus-4.7","claude-opus-4-7"],"model_prefixes":["claude-opus-4.7","claude-opus-4-7"],"evaluation":"unverified"},
+      {"id":"claude-code-opus-4.8","label":"Opus 4.8","file":"tools/claude-code/claude-code-opus-4.8.md","source":{"path":"Anthropic/claude-code/claude-code-opus-4.8.md","sha256":"ca471f72a33a032973d994d2e18dc70c876447962b92376eaf981d7d8e3a8343"},"models":["claude-opus-4.8","claude-opus-4-8"],"model_prefixes":["claude-opus-4.8","claude-opus-4-8"],"evaluation":"unverified"},
+      {"id":"claude-code-opus-5","label":"Opus 5","file":"tools/claude-code/claude-code-opus-5.md","source":{"path":"Anthropic/claude-code/claude-code-opus-5.md","sha256":"69a9bc9781dc82ffa6c9b4786a5ea059c84df25a0abab36d5bded7e86298a387"},"models":["claude-opus-5"],"model_prefixes":["claude-opus-5"],"evaluation":"unverified"},
+      {"id":"claude-code-opus-5.5","label":"Opus 5.5","file":"tools/claude-code/claude-code-opus-5.5.md","source":{"path":"Anthropic/claude-code/claude-code-opus-5.5.md","sha256":"8a31b6525e4424fd997f9b64d848d2d0c683335a9058644f755503d00adf06fc"},"models":["claude-opus-5.5","claude-opus-5-5"],"model_prefixes":["claude-opus-5.5","claude-opus-5-5"],"evaluation":"unverified"},
+      {"id":"claude-code-sonnet-4.6","label":"Sonnet 4.6","file":"tools/claude-code/claude-code-sonnet-4.6.md","source":{"path":"Anthropic/claude-code/claude-code-sonnet-4.6.md","sha256":"917cdf7c5aafdb5b9294c55b72e303fe7c3018408d6ea5c9d85557a55e350ad1"},"models":["claude-sonnet-4.6","claude-sonnet-4-6"],"model_prefixes":["claude-sonnet-4.6","claude-sonnet-4-6","claude-sonnet-4"],"evaluation":"unverified"},
+      {"id":"claude-code-sonnet-5","label":"Sonnet 5","file":"tools/claude-code/claude-code-sonnet-5.md","source":{"path":"Anthropic/claude-code/claude-code-sonnet-5.md","sha256":"364064563c1e8860ed4d2cee3bba7f2108b345921a0c463c75f0a8b2b59aa678"},"models":["claude-sonnet-5"],"model_prefixes":["claude-sonnet-5"],"evaluation":"unverified"},
+      {"id":"claude-code-sonnet-5.5","label":"Sonnet 5.5","file":"tools/claude-code/claude-code-sonnet-5.5.md","source":{"path":"Anthropic/claude-code/claude-code-sonnet-5.5.md","sha256":"b08f4dfd8783972406049c1da0b65b5cb2245637644f3bc6d1fe64e7216ae613"},"models":["claude-sonnet-5.5","claude-sonnet-5-5"],"model_prefixes":["claude-sonnet-5.5","claude-sonnet-5-5","claude"],"evaluation":"unverified"},
+      {"id":"claude-code-haiku-4.5","label":"Haiku 4.5","file":"tools/claude-code/claude-code-haiku-4.5.md","source":{"path":"Anthropic/claude-code/claude-code-haiku-4.5.md","sha256":"42f1b8d3f1d57b0ce9c0c3db550c1b97355ff21fbce0b794681b278f1e0607f5"},"models":["claude-haiku-4.5","claude-haiku-4-5"],"model_prefixes":["claude-haiku-4.5","claude-haiku-4-5","claude-haiku-4"],"evaluation":"unverified"},
+      {"id":"claude-code-haiku-5.5","label":"Haiku 5.5","file":"tools/claude-code/claude-code-haiku-5.5.md","source":{"path":"Anthropic/claude-code/claude-code-haiku-5.5.md","sha256":"048a640f019ec4ec5b02d1f17666782f2c36f2db983e31e43f89796ec0871857"},"models":["claude-haiku-5.5","claude-haiku-5-5"],"model_prefixes":["claude-haiku-5.5","claude-haiku-5-5"],"evaluation":"unverified"},
+      {"id":"claude-code-fable-5","label":"Fable 5","file":"tools/claude-code/claude-code-fable-5.md","source":{"path":"Anthropic/claude-code/claude-code-fable-5.md","sha256":"da56b4de8a7781c62dd4fe0919c515f32b16855a78fbb6154b5bede8a403fed0"},"models":["claude-fable-5"],"model_prefixes":["claude-fable-5"],"evaluation":"unverified"},
+      {"id":"claude-code-fable-5.1","label":"Fable 5.1","file":"tools/claude-code/claude-code-fable-5.1.md","source":{"path":"Anthropic/claude-code/claude-code-fable-5.1.md","sha256":"0bb3c7acc8eef1e9483c7cbc444b300f670f2e24e924c710f5cec18bfcf192f2"},"models":["claude-fable-5.1","claude-fable-5-1"],"model_prefixes":["claude-fable-5.1","claude-fable-5-1"],"evaluation":"unverified"},
+      {"id":"claude-code-fable-5.2","label":"Fable 5.2","file":"tools/claude-code/claude-code-fable-5.2.md","source":{"path":"Anthropic/claude-code/claude-code-fable-5.2.md","sha256":"014cdb10dc451f5c847f7e504f962ba45fbf340aea70453579984dcc2d3839b8"},"models":["claude-fable-5.2","claude-fable-5-2"],"model_prefixes":["claude-fable-5.2","claude-fable-5-2"],"evaluation":"unverified"}
+    ]},
+    {"id":"codex","label":"Codex","family_layer":"gpt","variants":[
+      {"id":"codex-gpt-5.6","label":"GPT-5.6","file":"tools/codex/codex-gpt-5.6.md","source":{"path":"OpenAI/Codex/gpt-5.6.md","sha256":"40f053be80a6ee153b007dc4805d9f480d3847204e80c7f643ee5725054ef42d"},"models":["gpt-5.6","gpt-5.6-codex"],"model_prefixes":["gpt-5.6","gpt","o1","o3","o4","chatgpt"],"evaluation":"unverified"},
+      {"id":"codex-gpt-6-astra","label":"GPT-6 Astra","file":"tools/codex/codex-gpt-6-astra.md","source":{"path":"OpenAI/Codex/gpt-6-astra.md","sha256":"c4a728f48b0bba0190d5d2c5700d65d20a7621aa7814537e218c336563dd20fe"},"models":["gpt-6-astra"],"model_prefixes":["gpt-6-astra"],"evaluation":"unverified"},
+      {"id":"codex-gpt-6-luna","label":"GPT-6 Luna","file":"tools/codex/codex-gpt-6-luna.md","source":{"path":"OpenAI/Codex/gpt-6-luna.md","sha256":"49edccd1de552dfd56805fb5af1fdcae6e998c3464504da7ccd1aaec23402ff4"},"models":["gpt-6-luna"],"model_prefixes":["gpt-6-luna"],"evaluation":"unverified"},
+      {"id":"codex-gpt-6-sol","label":"GPT-6 Sol","file":"tools/codex/codex-gpt-6-sol.md","source":{"path":"OpenAI/Codex/gpt-6-sol.md","sha256":"7dde3d90c3ca113812ef85e36a04e0a4886fef91ce47bb80efa26787e76b762c"},"models":["gpt-6-sol","gpt-6"],"model_prefixes":["gpt-6-sol","gpt-6"],"evaluation":"unverified"},
+      {"id":"codex-gpt-6.1-sol","label":"GPT-6.1 Sol","file":"tools/codex/codex-gpt-6.1-sol.md","source":{"path":"OpenAI/Codex/gpt-6.1-sol.md","sha256":"3fdf52cc90276fdc43836443d1fc2a9b9b682911c7f6c4bd49aaaf01769536c5"},"models":["gpt-6.1-sol","gpt-6.1"],"model_prefixes":["gpt-6.1-sol","gpt-6.1"],"evaluation":"unverified"},
+      {"id":"codex-gpt-6.1-terra","label":"GPT-6.1 Terra","file":"tools/codex/codex-gpt-6.1-terra.md","source":{"path":"OpenAI/Codex/gpt-6.1-terra.md","sha256":"c4a728f48b0bba0190d5d2c5700d65d20a7621aa7814537e218c336563dd20fe"},"models":["gpt-6.1-terra"],"model_prefixes":["gpt-6.1-terra"],"evaluation":"unverified"},
+      {"id":"codex-gpt-6.2-astra","label":"GPT-6.2 Astra","file":"tools/codex/codex-gpt-6.2-astra.md","source":{"path":"OpenAI/Codex/gpt-6.2-astra.md","sha256":"a2db4586952930882b3b0ecb9dff4c6d53958ecba1e10ec87dcd0b2aedb01d05"},"models":["gpt-6.2-astra"],"model_prefixes":["gpt-6.2-astra"],"evaluation":"unverified"},
+      {"id":"codex-gpt-6.2-sol","label":"GPT-6.2 Sol","file":"tools/codex/codex-gpt-6.2-sol.md","source":{"path":"OpenAI/Codex/gpt-6.2-sol.md","sha256":"229e735557dac55cec20bb1dbb4ea2b8f74aa7eaa9bad2d33e8606840ac33393"},"models":["gpt-6.2-sol","gpt-6.2"],"model_prefixes":["gpt-6.2-sol","gpt-6.2"],"evaluation":"unverified"}
+    ]},
+    {"id":"kimi","label":"Kimi","family_layer":"kimi","variants":[
+      {"id":"kimi-2.6","label":"Kimi 2.6","file":"tools/kimi/kimi-2.6.md","source":{"path":"Kimi/kimi-2.6.md","sha256":"d2b554b2a0da82f44aeef3eb2829deeffb02dd40fb9d7076fa7e9fa68391d286"},"models":["kimi-2.6"],"model_prefixes":["kimi-2.6","kimi-2"],"evaluation":"unverified"},
+      {"id":"kimi-3","label":"Kimi 3","file":"tools/kimi/kimi-3.md","source":{"path":"Kimi/kimi-3.md","sha256":"ad1cc66f2577e1767aeca45da439e55cc0c9119ccbbe4747fa4e9efdf401f961"},"models":["kimi-3","kimi"],"model_prefixes":["kimi-3","kimi","moonshot"],"evaluation":"unverified"}
+    ]},
+    {"id":"qwen","label":"Qwen","family_layer":"qwen","variants":[
+      {"id":"qwen3.6-plus","label":"Qwen3.6-Plus","file":"tools/qwen/qwen3.6-plus.md","source":{"path":"Qwen/qwen3.6-plus.md","sha256":"360fa4a3000dd0e5f8dca157835f0ed9ea86619c1eb621e255c12f5784618251"},"models":["qwen3.6-plus"],"model_prefixes":["qwen3.6-plus","qwen3.6"],"evaluation":"unverified"},
+      {"id":"qwen3.8-max","label":"Qwen3.8-Max","file":"tools/qwen/qwen3.8-max.md","source":{"path":"Qwen/qwen3.8-max.md","sha256":"cc4544648ab13abd1f390fb2666c866f05c95f5f4a8c193e7f13d40fe8d12ef9"},"models":["qwen3.8-max"],"model_prefixes":["qwen3.8-max","qwen3.8"],"evaluation":"unverified"},
+      {"id":"qwen4.0-max","label":"Qwen4.0-Max","file":"tools/qwen/qwen4.0-max.md","source":{"path":"Qwen/qwen4.0-max.md","sha256":"289f93b381c5b1e5d1b91e9a9c05e3a685b774898caef32ca9946afb952d134e"},"models":["qwen4.0-max","qwen"],"model_prefixes":["qwen4.0-max","qwen4","qwen"],"evaluation":"unverified"}
+    ]},
+    {"id":"gemini-cli","label":"Gemini CLI","family_layer":"gemini","variants":[
+      {"id":"gemini","label":"Gemini CLI","profile_ref":"gemini","models":["gemini-cli","gemini"],"model_prefixes":["gemini"],"evaluation":"unverified"}
+    ]},
+    {"id":"deepseek","label":"DeepSeek","family_layer":"deepseek","variants":[
+      {"id":"deepseek","label":"DeepSeek","profile_ref":"deepseek","models":["deepseek-chat","deepseek"],"model_prefixes":["deepseek"],"evaluation":"unverified"}
+    ]},
+    {"id":"glm","label":"GLM","family_layer":"glm","variants":[
+      {"id":"glm","label":"GLM","profile_ref":"glm","models":["glm"],"model_prefixes":["glm"],"evaluation":"unverified"}
+    ]},
+    {"id":"grok","label":"Grok","family_layer":"grok","variants":[
+      {"id":"grok","label":"Grok","profile_ref":"grok","models":["grok-4.7-cli","grok-4.7"],"model_prefixes":["grok"],"evaluation":"unverified"}
+    ]},
+    {"id":"minimax","label":"MiniMax","family_layer":"minimax","variants":[
+      {"id":"minimax","label":"MiniMax","profile_ref":"minimax","models":["minimax-m2.5"],"model_prefixes":["minimax"],"evaluation":"unverified"}
+    ]}
   ]
 }

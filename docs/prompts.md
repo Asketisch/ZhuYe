@@ -48,6 +48,46 @@ prompt(来源与许可见各 `prompts/<vendor>.md` 文件头注释):
 都命中 `claude.md`;`moonshot/kimi-*`、`kimi-*` 都命中 `kimi.md`;以此类推。
 用户目录同名文件可整体覆盖任一厂商层。
 
+### 工具×模型两级目录(v1.7)
+
+v1.7 起在厂商层之上引入**两级目录**(`sources.json` 的 `tools` 段 +
+`src/catalog.rs`):一级是**工具**(Claude Code / Codex / Kimi / Qwen /
+Gemini CLI / DeepSeek / GLM / Grok / MiniMax),二级是该工具针对各**模型**
+的策展变体。来源与厂商层同仓(`asgeirtj/system_prompts_leaks`),但用
+**独立的 `tools_collection` 基准 revision** 固定,漂移检测互不干扰。
+
+```text
+crates/abilities/zhuye-prompt/prompts/tools/
+├── claude-code/   # 13 个模型档:opus-4.6 … fable-5.2
+├── codex/         # 8 个模型/人格档:gpt-5.6, gpt-6-[astra|luna|sol], …
+├── kimi/          # kimi-2.6, kimi-3
+└── qwen/          # qwen3.6-plus, qwen3.8-max, qwen4.0-max
+```
+
+要点:
+
+- **变体 id 即文件名 stem**(如 `claude-code-opus-4.6`),同时是
+  `PromptSelection::Manual.profile` 的合法取值;与 `catalog.rs` 的
+  `EMBEDDED_TOOL_PROMPTS` 注册表双向同步(有测试锁定)。
+- **英文策展**:保留源提示词的通用行为约束英文原文,剥离工具 schema、
+  会话残留(Session context / CLAUDE.md / memory)与产品专属段
+  (Chrome 自动化 / artifacts / MCP 清单);不含 `tool.*` / `subagent.*`
+  section —— 工具描述与子代理文案仍由厂商层与 default 层提供。
+- **单文件工具**(gemini-cli / deepseek / glm / grok / minimax)以
+  `profile_ref` 回引既有厂商层,不新增文件;GUI 渲染为一级叶项。
+- **解析叠加**:Manual 选中变体后按 `default → family_layer(厂商层)
+  → 变体` 三级叠加,用户目录同名层逐级覆盖内嵌文案
+  (`~/.zhuye/prompts/claude-code-opus-4.6.md` 即覆盖该变体)。
+- **auto 按模型匹配**:「智能匹配模型」在目录中选最优变体 —— 精确
+  `models` 命中 > 最长 `model_prefixes` 命中,同级 `evaluation:passed`
+  优先,再按清单顺序;归一化后 `claude-opus-4-8` ≡ `claude-opus-4.8`。
+  各家族带 catch-all 前缀(如 `claude-*` → sonnet-5.5、`gpt-/o1/o3/o4/
+  chatgpt-*` → codex gpt-5.6),与厂商层匹配语义对齐;全无命中回落
+  default 并带 `fallback_reason`。
+- **GUI 消费**:`PromptListEvent` 新增 `groups`(additive)承载
+  工具 → 变体分组,桌面端两级菜单渲染;TUI `/prompt list` 仍用平铺
+  `available`(含变体 id,`/prompt use <id>` 可直接选)。
+
 ## 匹配链
 
 `model_call` 每次发起请求前,用当前 model spec(`provider/model`)做三级回退:
