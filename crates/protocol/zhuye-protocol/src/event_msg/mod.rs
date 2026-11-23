@@ -43,8 +43,8 @@ pub use compaction::{
     ContextCompactedEvent, ContextCompactedStrategy, ErrorEvent, StreamErrorEvent, TriedCredential,
 };
 pub use config::{
-    ConfigReloadedEvent, ExtensionsRescannedEvent, GuardStatsEvent, PromptListEvent,
-    PromptSwitchedEvent,
+    ConfigReloadedEvent, ExtensionsRescannedEvent, GuardStatsEvent, PromptGroup, PromptListEvent,
+    PromptSwitchedEvent, PromptVariantRef,
 };
 pub use interaction::{
     InteractionKind, InteractionOutcome, InteractionResolvedEvent, PendingInteraction,

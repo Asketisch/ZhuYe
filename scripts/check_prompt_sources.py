@@ -60,7 +60,46 @@ def main() -> int:
         before, after = tree(repository, revision), tree(repository, source_branch)
         status = "已变化或移动" if before.get(path) != after.get(path) else "无变化"
         print(f"- {repository} `{path}` {status}")
+    check_tools(manifest)
     return 0
+
+
+def check_tools(manifest: dict) -> None:
+    """工具×模型两级目录(tools 段)的来源校验。
+
+    实体变体(file + source)按独立的 `tools_collection` 基准核对 sha256,
+    并报告基准 → 分支的漂移;回引叶项(profile_ref)不在此核对 —— 其
+    来源已由 profiles / additional_sources 覆盖。
+    """
+    collection = manifest.get("tools_collection")
+    tools = manifest.get("tools")
+    if not collection or not tools:
+        return
+    repo, pinned, branch = (collection[k] for k in ("repository", "revision", "branch"))
+    old, new = tree(repo, pinned), tree(repo, branch)
+    print(f"\n## 工具变体目录\n\n基准 {pinned}，分支 {branch}。\n")
+    sources = [
+        (tool["id"], variant)
+        for tool in tools
+        for variant in tool.get("variants", [])
+        if "source" in variant
+    ]
+    for tool_id, variant in sources:
+        path = variant["source"]["path"]
+        content = gh_api(f"repos/{repo}/contents/{quote(path)}?ref={pinned}", raw=True)
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != variant["source"]["sha256"]:
+            raise RuntimeError(f"固定来源摘要不符: {tool_id}/{variant['id']} → {path}")
+    prefixes = {variant["source"]["path"].rsplit("/", 1)[0] + "/"
+                for _, variant in sources}
+    changed = sorted(path for path in old.keys() | new.keys()
+                     if path.startswith(tuple(prefixes)) and old.get(path) != new.get(path))
+    if changed:
+        for path in changed:
+            status = "新增" if path not in old else "删除或移动" if path not in new else "变更"
+            print(f"- {status} `{path}`")
+    else:
+        print("工具变体来源目录没有变化。")
 
 
 if __name__ == "__main__":

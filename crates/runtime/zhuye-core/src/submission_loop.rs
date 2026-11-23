@@ -1818,6 +1818,7 @@ pub async fn submission_loop(
                                 selection: cfg.current_prompt_selection(),
                                 profile: resolved.profile,
                                 fallback_reason: resolved.fallback_reason,
+                                groups: zhuye_prompt::tool_catalog(),
                             }),
                         );
                         let _ = turn_tx.send(ev.clone()).await;
