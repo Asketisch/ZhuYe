@@ -244,7 +244,24 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             )
             .await
     };
-    state.compact_triggered = !matches!(evt.strategy, ContextCompactedStrategy::Noop);
+    // 从压缩后的消息列表里抽取 LLM 生成的摘要
+    // (它是带 `<summary>...</summary>` 的 System 消息)。
+    // iter().flatten() 对 None(未回写)短路,对无摘要的
+    // Microcompact / SmartPrune 同样安全。
+    let summary_text = compacted.iter().flatten().find_map(|m| match m {
+        ChatMessage::System(s) if s.contains("<summary>") => Some(s.clone()),
+        _ => None,
+    });
+    // v1.x:幽灵压缩防御(与 zhuye-compact 兜底降级互为纵深)——「压缩
+    // 实际发生」不只看策略名,还要核实结果确实收敛:有移除或有摘要
+    // (与落盘空压守卫同口径)。removed=0 且无摘要的非 Noop 事件不登记
+    // rapid-refill 锚点、不发 wire 事件、不注入 ActiveFiles 恢复 ——
+    // 消息列表原样的「压缩」会让熔断器把正常 turn 连击误杀(桌面
+    // sess_77cd626f 实证:12K token 会话被幽灵压缩引爆熔断)。注意不能
+    // 用 after<before 代替:before 取 max(本地估算, LLM 上报) 而 after
+    // 只算本地估算,口径不一致时「列表原样」也会被误判成变小。
+    state.compact_triggered = !matches!(evt.strategy, ContextCompactedStrategy::Noop)
+        && (evt.removed_messages > 0 || summary_text.is_some());
     if state.compact_triggered {
         // v1.x:压缩实际发生 → 登记守卫窗口锚点(rapid-refill 计时起点)。
         ctx.cfg.compact_refill.lock().on_compacted(step_no);
@@ -254,14 +271,6 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         let before_tokens = evt.before_tokens;
         let after_tokens = evt.after_tokens;
 
-        // 从压缩后的消息列表里抽取 LLM 生成的摘要
-        // (它是带 `<summary>...</summary>` 的 System 消息)。
-        // compact_triggered 为真时 compacted 必为 Some(Noop 不会触发),
-        // iter().flatten() 对 None 也安全。
-        let summary_text = compacted.iter().flatten().find_map(|m| match m {
-            ChatMessage::System(s) if s.contains("<summary>") => Some(s.clone()),
-            _ => None,
-        });
         if summary_text.is_some() {
             state.compaction_summary = summary_text.clone();
         }

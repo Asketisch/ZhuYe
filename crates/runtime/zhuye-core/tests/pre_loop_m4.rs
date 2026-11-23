@@ -2521,3 +2521,102 @@ fn resume_ledger_reconciliation_finds_unsettled_turns() {
     assert_eq!(system, serde_json::json!([{"text": "v2"}]));
     assert!(zhuye_core::resume::last_prompt_snapshot(&[]).is_none());
 }
+
+/// 幽灵压缩死循环回归(桌面 sess_77cd626f 实测序列):默认压缩器
+/// (trigger 10K / micro 7K / target 7.5K)+ 摘要不可用,LLM 上报
+/// input_tokens 依次 7524 → 8711 → 11451 → 11794 → 12375。修复前:
+/// pre_loop#2/#3 在压缩器三级全部空转时产生「幽灵压缩」(消息列表原样
+/// 却返回非 Noop 策略),给 rapid-refill 守卫上膛;#4~#6 三次越阈全部
+/// 落窗 → Skip / Skip / Abort,turn 在第 5 次模型调用后被
+/// `compact_rapid_refill` 误杀。修复后:空压降级 Noop、守卫不上膛,
+/// turn 必须走满 6 轮模型调用并以 TurnComplete 收口,全程无
+/// compact_rapid_refill 错误。
+#[tokio::test]
+async fn m4_phantom_compaction_does_not_abort_healthy_turn() {
+    let registry = Arc::new(ModelRegistry::new());
+    // 每轮工具调用输入各不相同,避开 loop guard 的重复调用熔断。
+    let tool_round = |n: usize, input_tokens: u32| -> Vec<ChatEvent> {
+        vec![
+            ChatEvent::MessageStart {
+                id: format!("m{n}"),
+                model: "stub-1".into(),
+            },
+            ChatEvent::ToolUseStart {
+                id: format!("tc{n}"),
+                name: "echo".into(),
+                input_json: String::new(),
+            },
+            ChatEvent::ToolUseDelta(format!(r#"{{"text":"r{n}"}}"#)),
+            ChatEvent::Usage {
+                input_tokens,
+                output_tokens: 50,
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+            },
+            ChatEvent::MessageStop,
+        ]
+    };
+    // SeqStubClient 从尾部 pop:数组序 = [第6轮, 第5轮, …, 第1轮]。
+    let stub = Arc::new(SeqStubClient::new(vec![
+        // 第 6 轮(最后 pop):纯文本收尾
+        vec![
+            ChatEvent::MessageStart {
+                id: "m6".into(),
+                model: "stub-1".into(),
+            },
+            ChatEvent::ContentDelta("done".into()),
+            ChatEvent::Usage {
+                input_tokens: 13_000,
+                output_tokens: 20,
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+            },
+            ChatEvent::MessageStop,
+        ],
+        tool_round(5, 12_375),
+        tool_round(4, 11_794),
+        tool_round(3, 11_451),
+        tool_round(2, 8_711),
+        tool_round(1, 7_524),
+    ]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+
+    let m4 = make_m4_deps("tester", "You are a tester.");
+    let thread = build_thread(registry, m4);
+    let mut handle = thread.submit(make_sub("explore the projects")).await;
+    let mut rapid_refill_abort = false;
+    let mut completed = false;
+    while let Some(ev) = handle.next().await {
+        match ev.msg {
+            EventMsg::Error(e) => {
+                if e.code == "compact_rapid_refill" {
+                    rapid_refill_abort = true;
+                }
+            }
+            EventMsg::TurnComplete(_) => {
+                completed = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        !rapid_refill_abort,
+        "健康的 12K token 会话不得被 rapid-refill 熔断误杀"
+    );
+    assert!(completed, "turn 必须走完并以 TurnComplete 收口");
+    let calls = stub.requests.lock().len();
+    assert_eq!(
+        calls, 6,
+        "5 轮工具调用 + 1 轮收尾都要发生(修复前会在第 6 次 pre_loop 被熔断,只调 5 次)"
+    );
+}
