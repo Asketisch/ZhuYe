@@ -110,6 +110,7 @@ fn allowed_keys() -> Vec<&'static str> {
         "ollama.num_gpu",
         "ollama.timeout_secs",
         "compact.trigger_tokens",
+        "compact.trigger_ratio",
         "hooks.enabled",
         // F01:prompt_guard 开关(默认开启;false 显式关闭)。
         "prompt_guard.enabled",
@@ -155,7 +156,16 @@ fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), Stri
         "compact.trigger_tokens" => {
             cfg.compact = CompactSection {
                 trigger_tokens: Some(parse_u32(value, key)?),
+                trigger_ratio: None,
             }
+        }
+        // v1.x:压缩触发比例(阈值 = 模型窗口 × 比例,默认 0.85)。
+        "compact.trigger_ratio" => {
+            let ratio = value
+                .trim()
+                .parse::<f32>()
+                .map_err(|_| format!("invalid value '{value}' for {key} (expected f32)"))?;
+            cfg.compact.trigger_ratio = Some(ratio);
         }
         // v1.10 功能3:活跃模型上下文窗口(token)。写入 `[model]` 段,
         // bootstrap 时合并进引擎覆盖表(等价于 `[context_windows]` 里

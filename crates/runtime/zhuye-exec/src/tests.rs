@@ -399,6 +399,7 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
         }],
         compact: CompactSection {
             trigger_tokens: Some(10_000),
+            trigger_ratio: None,
         },
         ..Default::default()
     };

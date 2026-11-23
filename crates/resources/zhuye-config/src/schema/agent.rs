@@ -173,9 +173,20 @@ pub struct CoordinatorSection {
 
 // ── 压缩与预算 ──────────────────────────────────────────────────
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// `[compact]` 压缩触发配置。
+///
+/// v1.x:触发阈值默认按模型推导 —— **上下文窗口 × `trigger_ratio`**
+/// (窗口解析顺序:显式配置、zhuye-llm 运行时覆盖表、静态表、models.dev、
+/// 128K 兜底;比例默认 0.85)。`trigger_tokens` 仅作显式绝对值逃生舱,
+/// 优先级高于窗口推导(env `ZHUYE_AUTO_COMPACT_INPUT_TOKENS` 又高于它)。
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
 pub struct CompactSection {
+    /// 显式绝对触发阈值(token)。一般无需配置;设置后覆盖窗口推导。
     pub trigger_tokens: Option<u32>,
+    /// 压缩触发比例:阈值 = 模型上下文窗口 × 比例,默认 0.85(留 15%
+    /// 给输出与框架 token)。>1 钳到 1;≤0 / 非有限回落默认。
+    #[serde(default)]
+    pub trigger_ratio: Option<f32>,
 }
 
 /// v1.2 P1-12:Token 预算上限(`[token_budget]` 段)。
