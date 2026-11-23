@@ -276,14 +276,16 @@ pub(crate) fn bootstrap_m4(
         }
     };
     // M8 P0b:触发阈值取自环境变量 `ZHUYE_AUTO_COMPACT_INPUT_TOKENS`
-    // > TOML `[compact].trigger_tokens` > 默认值 (10_000)。M7 仅记录了
-    // 环境变量;M8 把两者都接入 `CompactorConfig`。
-    // v1.10 功能3:两级显式值都缺席时,若用户在 config.toml 显式配置了
-    // 该模型的上下文窗口(`[context_windows]` / `[model].context_window`),
-    // 触发阈值联动为窗口 × 80%(静态表命中而未配置的模型保持 10k)。
+    // > TOML `[compact].trigger_tokens` > 模型上下文窗口 × 压缩比。
+    // v1.x:窗口联动升级为「每个模型按自己的窗口(显式配置 > 静态表 >
+    // models.dev > 128K 兜底)× `[compact].trigger_ratio`(默认 0.85)」
+    // 推导,不再有一刀切 10k(1M 窗口模型在 12K token 就触发压缩是
+    // 桌面 sess_77cd626f 幽灵压缩死循环的温床)。
     let compactor_cfg = zhuye_core::config::compactor_config_with_window(
         toml_trigger_tokens,
+        cfg.compact.trigger_ratio,
         cfg.configured_context_window_for(model),
+        model,
     );
     // v1.4 D2:记忆固化门控 —— `ZHUYE_MEMORY_CONSOLIDATION`:
     //   未设 / `0` / `false` = 关闭(默认,行为不变);

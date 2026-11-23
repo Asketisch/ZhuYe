@@ -19,7 +19,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use zhuye_agent_def::AgentDefinition;
 use zhuye_compact::{Compactor, LlmSummarizer, Summarizer};
-use zhuye_core::config::{M4Deps, compactor_config_from_env_and_toml, default_m4_deps};
+use zhuye_core::config::{M4Deps, compactor_config_with_window, default_m4_deps};
 use zhuye_llm::RoutingPolicy;
 use zhuye_memory::MemoryStore;
 use zhuye_notes::NoteStore;
@@ -66,7 +66,8 @@ pub fn build_default_m4_with_prompts(
     extra_prompt_dirs: &[std::path::PathBuf],
     rollout_base: Option<&std::path::Path>,
 ) -> M4Deps {
-    let _ = model; // model spec 由 model_call 每请求解析,此处不再消费
+    // `model` spec 在此消费两处:routing policy 解析(v1.6)与压缩触发
+    // 阈值的窗口推导(v1.x);model_call 每请求仍按当前 spec 解析。
     let user_data_dir = zhuye_config::data_path_or_relative(&[]);
 
     // ── 提示词库(按模型匹配,v1.6)──────────────────────────
@@ -155,7 +156,17 @@ pub fn build_default_m4_with_prompts(
     // `None`(exec bootstrap_m4 有传,facade 漏了)—— 桌面 / SDK 等
     // build_default_m4 用户的压缩阈值配置静默失效,恒回落默认 10k,
     // 表现为「配置了阈值仍逐轮自动压缩」。
-    let compactor_cfg = compactor_config_from_env_and_toml(cfg.compact.trigger_tokens);
+    // v1.x:与 exec bootstrap 同走窗口感知推导 —— 每个模型按自己的
+    // 窗口(显式配置 > 静态表 > models.dev > 128K 兜底)×
+    // `[compact].trigger_ratio`(默认 0.85)推导触发点。此前 facade
+    // 只认 env / TOML 显式值、不认窗口,1M 窗口模型在 12K token 就开始
+    // 逐轮压缩(桌面 sess_77cd626f 幽灵压缩死循环的温床之一)。
+    let compactor_cfg = compactor_config_with_window(
+        cfg.compact.trigger_tokens,
+        cfg.compact.trigger_ratio,
+        cfg.configured_context_window_for(model),
+        model,
+    );
     let compactor = Arc::new(Compactor::new(compactor_cfg, summarizer));
 
     // ── Prompt builder(coordinator mode 注入对应 section) ────
