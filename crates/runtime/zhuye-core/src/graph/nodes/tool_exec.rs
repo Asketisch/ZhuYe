@@ -966,7 +966,10 @@ fn render_todo_checklist(metadata: &serde_json::Value) -> Option<String> {
 mod tests {
     use super::*;
 
+    // 溢出落盘依赖 `write_spill_text` 的私有文件创建,unix 专属实现;
+    // 非 unix 平台由下方回退用例覆盖(拒绝写出并退化为「保存失败」提示)。
     #[tokio::test]
+    #[cfg(unix)]
     async fn model_output_spills_text_and_preserves_images() {
         let workspace = tempfile::tempdir().unwrap();
         let original = "中文".repeat(4000);
@@ -993,6 +996,29 @@ mod tests {
             std::fs::read_to_string(files[0].as_ref().unwrap().path()).unwrap(),
             format!("{original}\n末尾")
         );
+    }
+
+    /// 非 unix 平台无私有文件创建能力,溢出写出被拒绝:回执退化为
+    /// 「保存失败」提示(不虚称可读回),截断与图片块保留不受影响。
+    #[tokio::test]
+    #[cfg(not(unix))]
+    async fn model_output_without_spill_falls_back_to_failure_notice() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut content = vec![
+            ContentBlock::text("中文".repeat(4000)),
+            ContentBlock::Image {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            },
+        ];
+        limit_model_tool_output(&mut content, workspace.path(), None).await;
+        let ContentBlock::Text { text: preview } = &content[0] else {
+            panic!("缺少文本回执")
+        };
+        assert!(preview.len() < MODEL_TOOL_TEXT_LIMIT_BYTES);
+        assert!(preview.contains("完整文本保存失败"));
+        assert!(matches!(&content[1], ContentBlock::Image { data, .. } if data == &[1, 2, 3]));
+        assert!(!workspace.path().join(".zhuye/spill").exists());
     }
 
     #[tokio::test]
