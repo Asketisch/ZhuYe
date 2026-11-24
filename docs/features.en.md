@@ -125,7 +125,7 @@ cannot be squeezed does it call the summarization model to rewrite; after compac
 are read back in. Related primitives:
 
 - **Compaction escalation** (`zhuye-compact`) — upgrades the strategy
-step by step per input token threshold;
+by the level calibrated from the same model report; trimming that stays at or above the trigger is not a successful compaction;
 - **Cross-session memory** (`zhuye-memory`) — the `memory` tool lets
 the model write experience into cross-session memory, isolated by scope;
 - **Skills directory** (`zhuye-skills`) — reusable skill packs;

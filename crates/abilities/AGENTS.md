@@ -42,6 +42,7 @@ Unix 前后台 shell 共用 `zhuye-tools::child_process` 管理独立进程组�
 - 反向(resources → abilities)只出现在少数特例:`zhuye-ast`、`zhuye-wasm`、`zhuye-plugin` 分别依赖 `zhuye-tools` / `zhuye-hooks`。**因此本层不得反向依赖这三个 crate**,否则成环 —— 已知反依赖约束见 [zhuye-tools/](zhuye-tools/AGENTS.md)。
 - 本层不感知 runtime / orchestration:编排顺序、headless 生命周期、CLI 参数面都在上层。
 - 压缩管线汇总 microcompact 与 smart-prune 的实际修改；已清除的工具占位符不得重复计作修改，所有阶段均未改动时返回 Noop。
+- 有同一次模型上报时，阶段升级和快速回填登记使用「上报值 / 本地估算」校准水位，比例限制在 1–3；没有上报时比例为 1。校准后仍不低于触发阈值的裁剪可以回写，但不登记快速回填锚点。
 - 工具图片与用户图片共用同一个可替换估算器。默认固定图片成本只用于压缩触发，不是 provider 的精确计费值。
 - 近期大结果由压缩的最近消息窗口保留，并扩展窗口以保持工具调用与结果配对；更早的大结果落盘或替换占位。
 

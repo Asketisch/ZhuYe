@@ -124,7 +124,7 @@ PreLoop ──▶ ModelCall ──▶ ToolExec ─┐
 
 | 节点 | 职责 |
 |------|------|
-| PreLoop | 压缩 escalation 判定(按输入 token 阈值逐级升级)、hooks 前置处理、history 组装、转向队列收割 |
+| PreLoop | 压缩 escalation 判定(按同一次模型上报校准后的水位逐级升级)、hooks 前置处理、history 组装、转向队列收割 |
 | ModelCall | 经 `RoutingPolicy` 解析主模型后调用 `ModelClient`(SSE 流式),产出文本/思考增量与工具调用 |
 | ToolExec | 审批 gate 检查 → 经 `ToolExecutionQueue` 执行工具(内置 / MCP / 远程)→ 结果回填 history;Plan mode 在此切换 |
 | CheckStop | 模型无新工具调用时判定回合结束;分发 Stop hook,可否决强制续跑 |

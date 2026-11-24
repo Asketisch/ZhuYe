@@ -67,6 +67,8 @@ pub struct MicrocompactConfig {
     pub keep_recent: usize,
     /// 当总 token < trigger * ratio 时跳过压缩。
     pub trigger_ratio: f32,
+    /// 同一次模型上报对本地估算的缩放；1 表示不缩放。
+    pub calibration_scale: f64,
 }
 
 impl Default for MicrocompactConfig {
@@ -75,6 +77,7 @@ impl Default for MicrocompactConfig {
             trigger_tokens: crate::strategy::DEFAULT_TRIGGER_TOKENS,
             keep_recent: KEEP_RECENT_DEFAULT,
             trigger_ratio: MICROCOMPACT_TRIGGER_RATIO,
+            calibration_scale: 1.0,
         }
     }
 }
@@ -89,7 +92,7 @@ pub fn microcompact(
 ) -> (Vec<ChatMessage>, CompactReport) {
     let before = crate::tokens::estimate_messages(&messages);
     let threshold = ((cfg.trigger_tokens as f32) * cfg.trigger_ratio) as u32;
-    if before < threshold {
+    if crate::tokens::scaled_tokens(before, cfg.calibration_scale) < threshold {
         return (
             messages,
             CompactReport {

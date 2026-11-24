@@ -23,7 +23,7 @@ use zhuye_protocol::{ContextCompactedEvent, ContextCompactedStrategy};
 use crate::microcompact::{MicrocompactConfig, microcompact};
 use crate::smart_prune::{SmartPruneConfig, smart_prune};
 use crate::summarizer::Summarizer;
-use crate::tokens::estimate_messages;
+use crate::tokens::{calibration_scale, estimate_messages, scaled_tokens};
 
 /// 默认触发阈值。M5 v0 默认 `max_estimated_tokens = 10000`,以便在长对话
 /// 中频繁触发 microcompact;此前的 M4 默认值为 160_000。运维人员可通过
@@ -98,7 +98,32 @@ pub enum CompactionOutcome {
         micro_changed: usize,
         pruned: usize,
         truncated: usize,
+        /// 校准后的水位是否低于触发阈值。只有这时才允许给快速回填守卫上膛。
+        below_trigger: bool,
     },
+}
+
+fn log_compaction_decision(
+    stage: &'static str,
+    local: u32,
+    scale: f64,
+    reported: Option<u32>,
+    threshold: u32,
+    reason: &'static str,
+) {
+    tracing::info!(
+        stage,
+        local_tokens = local,
+        scaled_tokens = scaled_tokens(local, scale),
+        reported_tokens = reported,
+        threshold,
+        reason,
+        "上下文压缩决策"
+    );
+}
+
+fn below_trigger(local_after: u32, scale: f64, trigger: u32) -> bool {
+    scaled_tokens(local_after, scale) < trigger
 }
 
 impl CompactionOutcome {
@@ -281,6 +306,8 @@ impl Compactor {
         llm_reported_input_tokens: Option<u32>,
     ) -> CompactionOutcome {
         let local_estimate = estimate_messages(messages);
+        let reported = llm_reported_input_tokens.filter(|n| *n > 0 && *n < u32::MAX);
+        let scale = calibration_scale(local_estimate, reported);
         let before_tokens = match llm_reported_input_tokens {
             Some(n) => n.max(local_estimate),
             None => local_estimate,
@@ -290,6 +317,14 @@ impl Compactor {
 
         // 第 1 步:低于 micro 阈值 → noop(不回写,调用方保持原列表)。
         if before_tokens < micro_threshold {
+            log_compaction_decision(
+                "noop",
+                local_estimate,
+                scale,
+                reported,
+                micro_threshold,
+                "below_threshold",
+            );
             return CompactionOutcome::Noop {
                 event: ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::Noop,
@@ -306,13 +341,22 @@ impl Compactor {
             trigger_tokens: self.cfg.trigger_tokens,
             keep_recent: self.cfg.keep_recent_microcompact,
             trigger_ratio: self.cfg.microcompact_ratio,
+            calibration_scale: scale,
         };
         let (after_mc, mc_report) = microcompact(messages.to_vec(), &mc_cfg);
         if !mc_report.was_compacted {
             // Microcompact 提前退出(例如 n <= keep_recent)。
             // 直接尝试 smart_prune。
-        } else if estimate_messages(&after_mc) < self.cfg.trigger_tokens {
+        } else if scaled_tokens(estimate_messages(&after_mc), scale) < self.cfg.trigger_tokens {
             let after_tokens = estimate_messages(&after_mc);
+            log_compaction_decision(
+                "microcompact",
+                after_tokens,
+                scale,
+                reported,
+                self.cfg.trigger_tokens,
+                "below_trigger",
+            );
             return CompactionOutcome::Applied {
                 messages: after_mc,
                 event: ContextCompactedEvent {
@@ -325,6 +369,7 @@ impl Compactor {
                 micro_changed: mc_report.removed_count,
                 pruned: 0,
                 truncated: 0,
+                below_trigger: true,
             };
         }
 
@@ -333,13 +378,22 @@ impl Compactor {
             trigger_tokens: self.cfg.trigger_tokens,
             keep_recent: self.cfg.keep_recent_smart_prune,
             target_tokens: self.cfg.target_tokens(),
+            calibration_scale: scale,
             ..Default::default()
         };
         let (after_sp, sp_report) = smart_prune(after_mc, &sp_cfg);
         let after_sp_tokens = estimate_messages(&after_sp);
-        if after_sp_tokens < self.cfg.target_tokens() {
+        if scaled_tokens(after_sp_tokens, scale) < self.cfg.target_tokens() {
             // 只在两个阶段均未修改消息时返回 Noop，避免丢弃前一阶段的成果。
             if !mc_report.was_compacted && !sp_report.was_compacted {
+                log_compaction_decision(
+                    "noop",
+                    after_sp_tokens,
+                    scale,
+                    reported,
+                    self.cfg.trigger_tokens,
+                    "nothing_prunable",
+                );
                 return CompactionOutcome::Noop {
                     event: ContextCompactedEvent {
                         strategy: ContextCompactedStrategy::Noop,
@@ -350,6 +404,18 @@ impl Compactor {
                     reason: "nothing_prunable",
                 };
             }
+            log_compaction_decision(
+                if sp_report.was_compacted {
+                    "smart_prune"
+                } else {
+                    "microcompact"
+                },
+                after_sp_tokens,
+                scale,
+                reported,
+                self.cfg.target_tokens(),
+                "below_target",
+            );
             return CompactionOutcome::Applied {
                 messages: after_sp,
                 event: ContextCompactedEvent {
@@ -366,6 +432,7 @@ impl Compactor {
                 micro_changed: mc_report.removed_count,
                 pruned: sp_report.removed_count,
                 truncated: sp_report.truncated_count,
+                below_trigger: below_trigger(after_sp_tokens, scale, self.cfg.trigger_tokens),
             };
         }
 
@@ -411,6 +478,14 @@ impl Compactor {
                     let tail = keep_recent_tail(&after_sp, self.cfg.keep_recent_smart_prune);
                     summary_msg.extend(tail);
                     let after_tokens = estimate_messages(&summary_msg);
+                    log_compaction_decision(
+                        "llm_summarize",
+                        after_tokens,
+                        scale,
+                        reported,
+                        self.cfg.trigger_tokens,
+                        "summarized",
+                    );
                     return CompactionOutcome::Applied {
                         messages: summary_msg,
                         event: ContextCompactedEvent {
@@ -423,6 +498,7 @@ impl Compactor {
                         micro_changed: mc_report.removed_count,
                         pruned: sp_report.removed_count,
                         truncated: sp_report.truncated_count,
+                        below_trigger: below_trigger(after_tokens, scale, self.cfg.trigger_tokens),
                     };
                 }
                 Err(e) => {
@@ -441,6 +517,14 @@ impl Compactor {
         // 会话被幽灵压缩引爆熔断)。空压一律降级为 Noop(不回写列表、
         // 不上膛守卫)。
         if !mc_report.was_compacted && !sp_report.was_compacted {
+            log_compaction_decision(
+                "noop",
+                after_sp_tokens,
+                scale,
+                reported,
+                self.cfg.trigger_tokens,
+                "nothing_prunable",
+            );
             return CompactionOutcome::Noop {
                 event: ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::Noop,
@@ -451,6 +535,18 @@ impl Compactor {
                 reason: "nothing_prunable",
             };
         }
+        log_compaction_decision(
+            if sp_report.was_compacted {
+                "smart_prune"
+            } else {
+                "microcompact"
+            },
+            after_sp_tokens,
+            scale,
+            reported,
+            self.cfg.trigger_tokens,
+            "still_above_trigger",
+        );
         CompactionOutcome::Applied {
             messages: after_sp,
             event: ContextCompactedEvent {
@@ -467,6 +563,7 @@ impl Compactor {
             micro_changed: mc_report.removed_count,
             pruned: sp_report.removed_count,
             truncated: sp_report.truncated_count,
+            below_trigger: below_trigger(after_sp_tokens, scale, self.cfg.trigger_tokens),
         }
     }
 }
@@ -562,7 +659,7 @@ fn keep_recent_tail(messages: &[ChatMessage], n: usize) -> Vec<ChatMessage> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use zhuye_llm::{AssistantContent, ContentBlock, ToolResult, UserContent};
+    use zhuye_llm::{AssistantContent, ContentBlock, ToolCallRequest, ToolResult, UserContent};
 
     /// 返回预制输出的 mock summarizer。
     struct MockSummarizer {
@@ -1112,10 +1209,10 @@ mod tests {
             }),
         );
         let msgs = vec![
-            ChatMessage::System("s".repeat(8_000)),
+            ChatMessage::System("s".repeat(1_000)),
             ChatMessage::Tool(ToolResult {
                 call_id: "c1".into(),
-                content: vec![ContentBlock::text("旧工具输出")],
+                content: vec![ContentBlock::text("x".repeat(8_000))],
                 is_error: false,
             }),
             ChatMessage::User(UserContent {
@@ -1186,11 +1283,256 @@ mod tests {
             }),
         ];
         let (out, event, _) = c.compact_with_prior_and_tokens(&msgs, None, None).await;
-        assert_eq!(event.strategy, ContextCompactedStrategy::SmartPrune);
+        assert_eq!(
+            event.strategy,
+            ContextCompactedStrategy::SmartPrune,
+            "removed={}",
+            event.removed_messages
+        );
         assert_eq!(event.removed_messages, 0);
         let output = out.expect("截断必须回写");
         assert!(matches!(&output[1], ChatMessage::Tool(result)
             if matches!(&result.content[0], ContentBlock::Text { text } if text.len() < 2_000)));
+    }
+
+    #[tokio::test]
+    async fn calibrated_report_continues_past_microcompact_into_smart_prune() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 5_800,
+                keep_recent_microcompact: 1,
+                keep_recent_smart_prune: 1,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        let mut msgs = vec![ChatMessage::System("s".repeat(1_000))];
+        for i in 0..12 {
+            msgs.push(ChatMessage::Tool(ToolResult {
+                call_id: format!("tool:bash:{i}"),
+                content: vec![ContentBlock::text("x".repeat(1_400))],
+                is_error: false,
+            }));
+        }
+        msgs.push(ChatMessage::User(UserContent {
+            blocks: vec![ContentBlock::text("最新问题")],
+        }));
+        let local = estimate_messages(&msgs);
+        let reported = ((local as f64) * 1.4).ceil() as u32;
+        let outcome = c.compact_outcome(&msgs, None, Some(reported)).await;
+        let CompactionOutcome::Applied {
+            messages: output,
+            event,
+            ..
+        } = outcome
+        else {
+            panic!("校准后仍超阈时必须继续压缩");
+        };
+        let local_after = estimate_messages(&output);
+        let scale = calibration_scale(local, Some(reported));
+        assert!(
+            scaled_tokens(local_after, scale) < 5_800,
+            "microcompact 未达标时同一次压缩必须继续升级: strategy={:?} local_after={local_after} scale={scale}",
+            event.strategy
+        );
+        assert!(
+            matches!(
+                event.strategy,
+                ContextCompactedStrategy::Microcompact | ContextCompactedStrategy::SmartPrune
+            ),
+            "校准水位达标后才能停止: {event:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrated_underestimate_continues_into_smart_prune() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 2_500,
+                keep_recent_microcompact: 1,
+                keep_recent_smart_prune: 1,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        // 占位符本身仍有体积。条数足够多时，microcompact 全部替换后，
+        // 2 倍校准水位仍高于阈值，同一次压缩必须继续 smart_prune。
+        let mut msgs = vec![ChatMessage::System("s".repeat(500))];
+        for i in 0..40 {
+            msgs.push(ChatMessage::Assistant(AssistantContent {
+                text: Some("调用工具做事情".repeat(5)),
+                tool_calls: vec![ToolCallRequest {
+                    id: format!("c{i}"),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"cmd": format!("{}{i}", "c".repeat(80))}),
+                }],
+                thinking: None,
+            }));
+            msgs.push(ChatMessage::Tool(ToolResult {
+                call_id: format!("c{i}"),
+                content: vec![ContentBlock::text("y".repeat(2_000))],
+                is_error: false,
+            }));
+        }
+        msgs.push(ChatMessage::User(UserContent {
+            blocks: vec![ContentBlock::text("最新问题")],
+        }));
+        let local = estimate_messages(&msgs);
+        let reported = local.saturating_mul(2);
+        let after_micro_floor = scaled_tokens(
+            estimate_messages(&{
+                let mut placeholders = msgs.clone();
+                for message in &mut placeholders {
+                    if let ChatMessage::Tool(result) = message {
+                        result.content = vec![ContentBlock::text(
+                            crate::microcompact::TRUNCATE_PLACEHOLDER,
+                        )];
+                    }
+                }
+                placeholders
+            }),
+            calibration_scale(local, Some(reported)),
+        );
+        assert!(
+            after_micro_floor >= 2_500,
+            "夹具失效：microcompact 单独就能压到阈值下 ({after_micro_floor})"
+        );
+        let outcome = c.compact_outcome(&msgs, None, Some(reported)).await;
+        let CompactionOutcome::Applied {
+            messages: output,
+            event,
+            below_trigger,
+            ..
+        } = outcome
+        else {
+            panic!("校准水位仍超阈时不得在 microcompact 提前返回");
+        };
+        assert_eq!(
+            event.strategy,
+            ContextCompactedStrategy::SmartPrune,
+            "microcompact 后校准水位仍超阈时必须继续 smart_prune"
+        );
+        assert!(below_trigger, "smart_prune 应把校准水位压到阈值以下");
+        assert!(
+            output
+                .iter()
+                .filter(|message| matches!(message, ChatMessage::Tool(_)))
+                .count()
+                < 40,
+            "smart_prune 应删除旧工具结果"
+        );
+        assert!(
+            scaled_tokens(
+                estimate_messages(&output),
+                calibration_scale(local, Some(reported))
+            ) < 2_500
+        );
+    }
+
+    #[tokio::test]
+    async fn extreme_report_is_clamped_and_still_above_does_not_claim_success() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 500,
+                keep_recent_microcompact: 20,
+                keep_recent_smart_prune: 20,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        let msgs = vec![
+            ChatMessage::System("s".repeat(3_500)),
+            ChatMessage::Tool(ToolResult {
+                call_id: "c1".into(),
+                content: vec![ContentBlock::text("x".repeat(4_000))],
+                is_error: false,
+            }),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("继续")],
+            }),
+        ];
+        let local = estimate_messages(&msgs);
+        assert_eq!(
+            calibration_scale(local, Some(local.saturating_mul(10))),
+            3.0
+        );
+        let outcome = c
+            .compact_outcome(&msgs, None, Some(local.saturating_mul(10)))
+            .await;
+        let CompactionOutcome::Applied {
+            below_trigger,
+            event,
+            ..
+        } = outcome
+        else {
+            panic!("有截断动作时不得降级成 Noop");
+        };
+        assert!(
+            !below_trigger,
+            "钳制后仍超阈的裁剪不得登记为成功压缩: {event:?}"
+        );
+        assert_eq!(event.strategy, ContextCompactedStrategy::SmartPrune);
+    }
+
+    #[tokio::test]
+    async fn missing_report_does_not_scale_local_estimate() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 2_000,
+                keep_recent_microcompact: 1,
+                keep_recent_smart_prune: 100,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        let msgs = vec![
+            ChatMessage::System("s".repeat(1_000)),
+            ChatMessage::Tool(ToolResult {
+                call_id: "tool:bash:1".into(),
+                content: vec![ContentBlock::text("x".repeat(8_000))],
+                is_error: false,
+            }),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("继续")],
+            }),
+        ];
+        let local = estimate_messages(&msgs);
+        assert!(local > 2_000, "夹具应先越过阈值: {local}");
+        assert!(
+            calibration_scale(local, None) == 1.0,
+            "没有上报时缩放必须保持 1"
+        );
+        let outcome = c.compact_outcome(&msgs, None, None).await;
+        match outcome {
+            CompactionOutcome::Applied {
+                below_trigger,
+                event,
+                ..
+            } => {
+                assert!(below_trigger, "无上报时按本地估算判定达标: {event:?}");
+                assert_eq!(event.strategy, ContextCompactedStrategy::Microcompact);
+                assert!(event.after_tokens < 2_000);
+            }
+            CompactionOutcome::Noop { reason, .. } => {
+                panic!("无上报时本地超阈必须压缩: {reason}")
+            }
+        }
     }
 
     /// 本地估算 = 50_000(大列表),LLM 上报 = 8_000,
