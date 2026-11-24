@@ -106,10 +106,12 @@ def _run_background(cx: lib.Ctx) -> None:
     first = s.turn("在后台跑一条命令,然后收尾。", timeout=cx.timeout())
 
     results = [r for r in first.tool_results() if "background task" in r["text"]]
-    if not results and "bash" not in first.tool_names:
+    if not results:
+        # 本轮没有后台任务可观察:模型可能改用前台 bash、或直接查
+        # background_status。协议面没暴露问题,确定性口径由 mock 自检覆盖。
         lib.skip_all(cx, ["bash 以 run_in_background 启动(回执含后台任务 id)",
                           "后台任务结果注入到下一轮上下文"],
-                     "模型未按提示调用带 run_in_background 的 bash(真模型自由发挥)")
+                     "本轮没有产生后台任务(模型未用 run_in_background,真模型自由发挥)")
         return
     cx.checks.add("bash 以 run_in_background 启动(回执含后台任务 id)",
                   bool(results), f"回执={[r['text'][:120] for r in results]}")
@@ -118,9 +120,16 @@ def _run_background(cx: lib.Ctx) -> None:
     # 等后台任务真正跑完再发下一条输入。
     time.sleep(2.0)
     second = s.turn("刚才后台任务的结果是什么?", timeout=cx.timeout())
+    # 注入项作为本轮用户消息落进 rollout —— 真模型不回显请求,rollout 是
+    # 可靠观测口;mock 自检另有 request_echo 佐证。
+    rollout = env.rollout_text(s.session_id or "")
     seen = " ".join(lib.echo_user_texts(lib.echo_text(second)))
-    cx.checks.add("后台任务结果注入到下一轮上下文",
-                  "background task" in seen, f"下一轮 user 文本={seen[:240]}")
+    cx.checks.add(
+        "后台任务结果注入到下一轮上下文",
+        ("background task" in rollout and "completed" in rollout) or "background task" in seen,
+        f"rollout 含注入项={'background task' in rollout},"
+        f"模型看到的 user 文本={seen[:200]}",
+    )
 
 
 def _mock_background(params: dict) -> list[dict]:
