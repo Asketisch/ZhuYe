@@ -127,16 +127,30 @@ def _run_steer(cx: lib.Ctx) -> None:
         if m.get("type") in ("agent_message", "agent_message_delta"):
             echo += (m.get("text") or m.get("delta") or "")
     seen = " ".join(lib.echo_user_texts(echo))
+    # 注入的转向消息会作为用户输入项落进 rollout —— 真模型下这是唯一
+    # 不依赖「模型回显请求」的观测口(mock 自检另有 request_echo 佐证)。
+    rollout = env.rollout_text(s.session_id or "")
     cx.checks.add(
-        "转向消息注入到后续模型请求",
-        steer_text in seen,
-        f"模型看到的 user 文本={seen[:240]}",
+        "转向消息注入到后续模型上下文(rollout 可见)",
+        steer_text in rollout,
+        f"rollout 含转向文本={steer_text in rollout}",
     )
-    cx.checks.add(
-        "转向消息带 <system-reminder> 包裹(attachment 档)",
-        ("<system-reminder>" in seen) == (str(cx.p("priority") or "now") == "attachment"),
-        f"seen={seen[:160]}",
-    )
+    if seen:
+        cx.checks.add(
+            "转向消息出现在模型请求的 user 文本里",
+            steer_text in seen,
+            f"模型看到的 user 文本={seen[:240]}",
+        )
+        cx.checks.add(
+            "转向消息带 <system-reminder> 包裹(attachment 档)",
+            ("<system-reminder>" in seen) == (str(cx.p("priority") or "now") == "attachment"),
+            f"seen={seen[:160]}",
+        )
+    else:
+        cx.checks.skip("转向消息出现在模型请求的 user 文本里",
+                       "本轮没有 request_echo 回显(真模型不回显请求)")
+        cx.checks.skip("转向消息带 <system-reminder> 包裹(attachment 档)",
+                       "本轮没有 request_echo 回显(真模型不回显请求)")
 
 
 def _mock_steer(params: dict) -> list[dict]:
@@ -251,6 +265,11 @@ def _run_approval(cx: lib.Ctx) -> None:
                   "(必须走 bash 工具,不要用 write 工具)。",
                   timeout=cx.timeout(), respond=[approve])
 
+    if not requests and "bash" not in turn.tool_names:
+        lib.skip_all(cx, ["产生 approval_request 事件", "审批类型为 tool(kind.type=tool)",
+                          "审批请求带 request_id", "批准后命令真的执行了(产物落盘)"],
+                     "模型未按提示调用 bash(真模型自由发挥),无审批请求可观察")
+        return
     cx.checks.add("产生 approval_request 事件", bool(requests),
                   f"审批请求数={len(requests)}")
     if requests:
@@ -297,6 +316,11 @@ def _run_approval_deny(cx: lib.Ctx) -> None:
                   "(必须走 bash 工具)。",
                   timeout=cx.timeout(), respond=[deny])
 
+    if not requests and "bash" not in turn.tool_names:
+        lib.skip_all(cx, ["产生 approval_request 事件", "被拒后命令未执行(无落盘)",
+                          "被拒的工具调用回执为错误"],
+                     "模型未按提示调用 bash(真模型自由发挥),无审批请求可观察")
+        return
     cx.checks.add("产生 approval_request 事件", bool(requests),
                   f"审批请求数={len(requests)}")
     cx.checks.add("被拒后命令未执行(无落盘)",

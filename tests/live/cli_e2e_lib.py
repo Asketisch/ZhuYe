@@ -1019,6 +1019,18 @@ def on_remote_tool(reply, log: list | None = None):
     return handler
 
 
+def skip_all(cx, names: list[str], reason: str) -> None:
+    """把一组检查项标为 skip。
+
+    真模型自由发挥:未必按提示词调用指定工具(如该用
+    `bash(run_in_background)` 却去查 `background_status`)。这种
+    「模型没按预期走」判**跳过**而非失败 —— 协议面本身没问题,
+    缺的是模型配合(确定性自检由 mock 模式覆盖)。
+    """
+    for name in names:
+        cx.checks.skip(name, reason)
+
+
 def last_json(text: str) -> dict | None:
     """取文本里最后一个完整 JSON 对象(mock request_echo 回复解析用)。"""
     end = text.rfind("}")

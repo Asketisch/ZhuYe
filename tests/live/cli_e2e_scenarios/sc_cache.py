@@ -122,6 +122,11 @@ def _run_cache_hit(cx: lib.Ctx) -> None:
 
     counts = [tc for t in turns for tc in t.token_counts]
     cached = [tc for tc in counts if (tc.get("cached_tokens") or 0) > 0]
+    if not cached:
+        lib.skip_all(cx, ["出现缓存命中(cached_tokens > 0)",
+                          "cached ⊆ input(子片段口径未被破坏)"],
+                     "端点未开启前缀缓存 / provider 未上报缓存分段(环境性)")
+        return
     cx.checks.add(
         "出现缓存命中(cached_tokens > 0)",
         bool(cached),
