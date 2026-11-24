@@ -169,34 +169,12 @@ def _run_ask_user(cx: lib.Ctx) -> None:
 
     questions: list[dict] = []
     inputs: list[dict] = []
-
-    def answer_question(session, evt):
-        if lib.etype(evt) != "ask_user_question":
-            return False
-        m = lib._msg(evt)
-        questions.append(m)
-        session.send(session._new_id("answer"), {
-            "type": "ask_user_question_response",
-            "id": m.get("request_id"),
-            "answers": {"answers": [{"selected": [0]}]},
-        })
-        return True
-
-    def answer_input(session, evt):
-        if lib.etype(evt) != "ask_user_input":
-            return False
-        m = lib._msg(evt)
-        inputs.append(m)
-        session.send(session._new_id("input"), {
-            "type": "ask_user_input_response",
-            "id": m.get("request_id"),
-            "text": cx.p("answer_text") or "用方案 A",
-        })
-        return True
+    answer = lib.on_question(lambda _m: [{"selected": [0]}], log=questions)
+    answer_text = lib.on_input(cx.p("answer_text") or "用方案 A", log=inputs)
 
     turn = s.turn("请调用 ask_user_question 工具问我要选哪个方案"
                   "(不要直接给答案),并等待我的回答。", timeout=cx.timeout(),
-                  respond=[answer_question, answer_input])
+                  respond=[answer, answer_text])
 
     if not questions and not inputs:
         # 真模型可能不理会提示、直接给答案 —— 协议面无异常,只是没进提问
