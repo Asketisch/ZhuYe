@@ -206,3 +206,16 @@ session_total_tokens = 1
 [scenarios.admin_ops]
 # 管理面 Op:子代理状态 / prompt guard 统计 / 提示词列表 / 扩展重扫 /
 # 权限模式切换与循环,各自回一条事件。
+
+# ── guard 组(边界与策略;确定性,自检与真模型都跑)─────────────────────
+[scenarios.sandbox_escape_blocked]
+# OS 沙箱:工作区内写入成功、工作区外写入被内核拒绝。
+# 越界目标放在本场景临时目录(宿主可达、沙箱只放行 workspace)。
+
+[scenarios.hooks_read_before_edit]
+# read_before_edit hook(headless 默认启用):未读先写被拒、读后放行。
+# 两回合:① 不读直接 write → 拒绝且文件不变;② 先 read 再 write → 成功。
+
+[scenarios.permission_policy]
+# 回合级审批策略(Op::UserInput.thread_settings.approval_policy):
+# deny 直接拒绝需审批的工具(不弹审批),full_access 自动批准。

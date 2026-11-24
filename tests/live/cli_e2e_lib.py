@@ -459,25 +459,6 @@ class Turn:
         return [_msg(e) for e in self.events if etype(e) in types]
 
 
-def _echo_json(text: str) -> dict | None:
-    """从 mock `request_echo` 的回复文本里解出 JSON(自检断言用)。"""
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start : i + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None
-
-
 class Session:
     """一个 `zhuye serve` 子进程的同步驱动。"""
 
@@ -1065,6 +1046,15 @@ def echo_user_texts(text: str) -> list[str]:
 def echo_tools(text: str) -> list[str]:
     data = last_json(text)
     return list((data or {}).get("tools") or [])
+
+
+def echo_text(turn) -> str:
+    """回合内全部助手文本(含 request_echo 回显、跨多次模型调用拼接)。
+
+    与 `Turn.text` 同源,单独抽成函数是因为 `Turn` 只在 `turn()` 返回值
+    里有,场景常需要「把某个 turn 的文本拿去解析回显」。
+    """
+    return turn.text
 
 
 def echo_messages(text: str) -> list[dict]:

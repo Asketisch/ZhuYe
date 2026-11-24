@@ -38,18 +38,6 @@ def _tool(name: str, args: dict) -> dict:
     return {"type": "tool_call", "name": name, "args": args}
 
 
-def _echo_text(turn: lib.Turn) -> str:
-    """取回本回合里 request_echo 类型的回复文本。"""
-    buf = []
-    for evt in turn.events:
-        m = lib._msg(evt)
-        if m.get("type") == "agent_message":
-            buf.append(m.get("text") or "")
-        elif m.get("type") == "agent_message_delta":
-            buf.append(m.get("delta") or "")
-    return "".join(buf)
-
-
 # ── interrupt:回合中途中断 ─────────────────────────────────────────────────
 
 
@@ -210,6 +198,15 @@ def _run_ask_user(cx: lib.Ctx) -> None:
                   "(不要直接给答案),并等待我的回答。", timeout=cx.timeout(),
                   respond=[answer_question, answer_input])
 
+    if not questions and not inputs:
+        # 真模型可能不理会提示、直接给答案 —— 协议面无异常,只是没进提问
+        # 路径;确定性口径由 mock 自检覆盖。
+        lib.skip_all(cx, ["收到 ask_user_question 事件",
+                          "问题结构含 header/question/options",
+                          "收到 ask_user_input 事件(自由文本提问)",
+                          "提问工具调用未被判错"],
+                     "模型未按提示调用提问工具(真模型自由发挥)")
+        return
     cx.checks.add("收到 ask_user_question 事件", bool(questions),
                   f"问题数={len(questions)},首个={questions[0] if questions else None}")
     if questions:
@@ -219,9 +216,13 @@ def _run_ask_user(cx: lib.Ctx) -> None:
                       f"questions={json.dumps(q, ensure_ascii=False)[:200]}")
     cx.checks.add("收到 ask_user_input 事件(自由文本提问)", bool(inputs),
                   f"输入请求数={len(inputs)}")
-    failed = [r for r in turn.tool_results() if r["is_error"]]
+    # 只关心提问工具自身是否被判错(模型可能顺带调别的工具)。
+    names = {lib._msg(e).get("call_id"): lib._msg(e).get("tool_name")
+             for e in turn.events if lib.etype(e) == "tool_call_begin"}
+    failed = [r for r in turn.tool_results()
+              if r["is_error"] and "ask_user" in (names.get(r["call_id"]) or "")]
     cx.checks.add("提问工具调用未被判错", not failed,
-                  f"失败={[(r['call_id'], r['text'][:120]) for r in failed]}")
+                  f"失败={[(names.get(r['call_id']), r['text'][:120]) for r in failed]}")
     cx.checks.add("回合正常收尾", turn.completed,
                   f"终态={turn.status or turn.aborted_reason}")
 

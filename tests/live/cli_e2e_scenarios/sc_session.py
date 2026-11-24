@@ -32,17 +32,6 @@ def _tool(name: str, args: dict) -> dict:
     return {"type": "tool_call", "name": name, "args": args}
 
 
-def _echo_text(turn: lib.Turn) -> str:
-    buf = []
-    for evt in turn.events:
-        m = lib._msg(evt)
-        if m.get("type") == "agent_message":
-            buf.append(m.get("text") or "")
-        elif m.get("type") == "agent_message_delta":
-            buf.append(m.get("delta") or "")
-    return "".join(buf)
-
-
 # ── resume:续作(回放历史)──────────────────────────────────────────────────
 
 
@@ -61,7 +50,7 @@ def _run_resume(cx: lib.Ctx) -> None:
                   f"原={session_id},续作={s2.session_id}")
 
     turn = s2.turn("第二轮:暗号是什么?", timeout=cx.timeout())
-    echo = _echo_text(turn)
+    echo = lib.echo_text(turn)
     seen = " ".join(lib.echo_user_texts(echo))
     # 续作历史落进续作会话的 rollout(第一轮的用户输入)—— 真模型不回显
     # 请求,rollout 是可靠的观测口;mock 自检另有 request_echo 佐证。
@@ -113,7 +102,7 @@ def _run_rewind(cx: lib.Ctx) -> None:
 
     # 回退后:新一轮的上下文里不应再有被回退那一轮的输入。
     turn = s.turn("回退后重新提问:暗号是什么?", timeout=cx.timeout())
-    seen = " ".join(lib.echo_user_texts(_echo_text(turn)))
+    seen = " ".join(lib.echo_user_texts(lib.echo_text(turn)))
     # rollout 是被截断的真相来源(rewind 物理截断记录):被回退那一轮的
     # 输入不再出现,更早那轮仍在。真模型不回显请求,不能用 echo 判定。
     rollout = env.rollout_text(s.session_id or "")

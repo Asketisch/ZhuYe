@@ -11,13 +11,15 @@
 - cache  —— prompt cache(命中读取 / 写入 / 保温);
 - interact —— 交互(中断 / 转向 / 提问 / 审批);
 - session—— 会话(续作 / 回退 / 限额 / 工具集);
-- ext    —— 扩展(子代理 / 后台任务 / 远程工具 / 管理面 Op)。
+- ext    —— 扩展(子代理 / 后台任务 / 远程工具 / 管理面 Op);
+- guard  —— 边界与策略(OS 沙箱越界 / read_before_edit hook / 回合级审批策略)。
 """
 
 from __future__ import annotations
 
 import cli_e2e_lib as lib
-from . import sc_cache, sc_compact, sc_ext, sc_goal, sc_interact, sc_plan, sc_session
+from . import (sc_cache, sc_compact, sc_ext, sc_goal, sc_guard, sc_interact,
+               sc_plan, sc_session)
 
 _ALL = (
     # plan
@@ -55,6 +57,10 @@ _ALL = (
     sc_ext.BACKGROUND,
     sc_ext.REMOTE_TOOL,
     sc_ext.ADMIN_OPS,
+    # guard
+    sc_guard.SANDBOX_ESCAPE,
+    sc_guard.READ_BEFORE_EDIT,
+    sc_guard.PERMISSION_POLICY,
 )
 
 SCENARIOS: dict[str, lib.Scenario] = {s.name: s for s in _ALL}

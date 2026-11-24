@@ -42,17 +42,6 @@ def _tool(name: str, args: dict) -> dict:
     return {"type": "tool_call", "name": name, "args": args}
 
 
-def _echo_text(turn: lib.Turn) -> str:
-    buf = []
-    for evt in turn.events:
-        m = lib._msg(evt)
-        if m.get("type") == "agent_message":
-            buf.append(m.get("text") or "")
-        elif m.get("type") == "agent_message_delta":
-            buf.append(m.get("delta") or "")
-    return "".join(buf)
-
-
 # ── subagent:子代理派生 ────────────────────────────────────────────────────
 
 
@@ -129,7 +118,7 @@ def _run_background(cx: lib.Ctx) -> None:
     # 等后台任务真正跑完再发下一条输入。
     time.sleep(2.0)
     second = s.turn("刚才后台任务的结果是什么?", timeout=cx.timeout())
-    seen = " ".join(lib.echo_user_texts(_echo_text(second)))
+    seen = " ".join(lib.echo_user_texts(lib.echo_text(second)))
     cx.checks.add("后台任务结果注入到下一轮上下文",
                   "background task" in seen, f"下一轮 user 文本={seen[:240]}")
 
