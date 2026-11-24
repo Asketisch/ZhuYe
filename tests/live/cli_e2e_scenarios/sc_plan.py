@@ -278,10 +278,11 @@ def _run_plan_readonly(cx: lib.Ctx) -> None:
     turn = s.turn(cx.p("prompt") or READONLY_PROMPT, timeout=cx.timeout(), respond=[revise])
 
     modes = [f"{m.get('from')}→{m.get('to')}" for m in turn._msgs("permission_mode_changed")]
+    left_plan = [m for m in modes if m.startswith("plan→") and m != "plan→plan"]
     cx.checks.add(
         "全程未离开 plan 模式(打回而非批准)",
-        all("plan→" not in m or m == "plan→plan" for m in modes),
-        f"权限切换={modes}",
+        not left_plan,
+        f"离开 plan 的切换={left_plan},全部切换={modes}",
     )
     leaked = [n for n in ("leak.txt",) if cx.exists(env.ws, n)]
     cx.checks.add(
