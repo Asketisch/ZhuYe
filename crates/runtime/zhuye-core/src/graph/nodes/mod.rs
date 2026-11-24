@@ -25,6 +25,7 @@ pub use check_stop::check_stop;
 pub use model_call::model_call;
 pub use nudge::{maybe_inject_progress_nudge, url_host};
 pub use pre_loop::pre_loop;
+pub(crate) use tool_exec::read_latest_plan_file;
 pub use tool_exec::tool_exec;
 
 use zhuye_protocol::{ContentBlock, MessageRole, RolloutRecord};
