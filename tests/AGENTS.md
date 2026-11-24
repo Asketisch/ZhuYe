@@ -75,6 +75,7 @@ provider 验证流水线可用 —— **不衡量模型能力**,真实基线必�
 
 - `tests/live/` 断言协议形状与运行时行为(事件序 / 终态 / usage 字段 / 工具成对),**不断言具体回答文本**。
 - 它需要外网与额度,默认 SKIP,不得当作 CI 门禁,也不与能力覆盖层互相替代。
+- `cli_e2e.sh`(**本地专用**,不进 CI / 门禁链):CLI headless 链路 × `cli_e2e.toml` 配置的真实模型的完整 agent 工作流(plan → 确认 → 开发 → git commit;隔离假 HOME,配置模板 `cli_e2e.example.toml`,真实 toml 已 gitignore)。免费模型池(pytest 用例)测协议形状;这个脚本测**真实模型下的完整工作流回归**。
 
 ### 覆盖矩阵同步
 

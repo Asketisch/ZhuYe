@@ -63,3 +63,6 @@ __pycache__
 .opencode
 .cargo
 .tmp-agent-harness/
+
+# cli_e2e 本地真实配置(端点 / 密钥不入库)
+tests/live/cli_e2e.toml

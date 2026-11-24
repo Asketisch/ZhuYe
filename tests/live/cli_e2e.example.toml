@@ -1,0 +1,51 @@
+# cli_e2e.example.toml —— CLI 真模型端到端演练的配置模板。
+#
+# 使用:复制为同目录 `cli_e2e.toml`(该文件名已 gitignore,真实端点 /
+# 密钥不会入库),按注释填写后运行:
+#
+#   ZHUYE_LIVE=1 bash tests/live/cli_e2e.sh
+#
+# 所有字段可用环境变量按字段名覆盖(前缀 ZHUYE_E2E_,见 cli_e2e.sh
+# 头部说明),环境变量优先于本文件。
+
+# ── 端点与模型 ──────────────────────────────────────────────────────────────
+# 演练用的真实模型服务。base_url 到版本段为止(引擎会拼 /chat/completions)。
+# 示例为占位值 —— 本地推理服务填它的局域网地址,云服务填真实地址与 key。
+[endpoint]
+base_url = "http://127.0.0.1:8000/v1"
+api_key = "anything"
+model = "your-model-name"
+# 线格式:openai / anthropic / ollama(与 ~/.zhuye/config.toml 的
+# model_group.endpoint 同口径)。vLLM / 大多数本地推理服务填 openai。
+endpoint = "openai"
+# 模型上下文窗口(token)。可选:省略时引擎按 静态表 → models.dev →
+# 128K 兜底 自动推导;压缩触发阈值 = 窗口 × 0.85(压缩比亦可在生成
+# 的引擎配置 [compact].trigger_ratio 调整)。建议与真实服务端
+# max_model_len 对齐。
+# context_window = 1000000
+
+# ── 运行参数 ────────────────────────────────────────────────────────────────
+[run]
+# 思考强度:low / medium / high / xhigh(超出模型支持档位会被引擎钳制)。
+effort = "xhigh"
+# 单阶段(出 plan / 开发 / 收尾)超时秒数。真实模型 + 高强度思考需要
+# 余量:实测一轮 plan ≈ 3-10 分钟。
+phase_timeout = 1200
+
+# ── 任务(下发给 agent 的真实工作)─────────────────────────────────────────
+# prompt 在 plan 模式下作为首个任务下发;continue_prompt 在批准 plan、
+# 开发回合结束后作为收尾指令下发(要求完成 git 提交 —— 这是沙箱 .git
+# 归属快照的端到端回归点:agent 在沙箱内 init / add / commit 必须
+# 全部成功)。换任务时同步调整下方 expect_* 三个验收期望。
+[task]
+prompt = """
+阅读本工作区的 README.md,为「烽火 Fanfire」制作一个单页介绍站:创建 index.html(内联 CSS 的原生单文件,不引任何外部依赖),内容需包含产品名、定位一句话、三个特性、快速开始命令。完成后把工作区初始化为 git 仓库(git init -b main)并把 README.md 与 index.html 一起提交(提交信息用「feat: 烽火介绍单页」;git 身份用 -c user.name/-c user.email 参数传入,不要依赖全局配置)。不要做 README 之外的事。
+"""
+continue_prompt = """
+如果 git init / commit 尚未完成请继续完成它(index.html 与 README.md 都要在提交里);已全部完成则直接给出最终答复。
+"""
+# 验收期望(断言与任务配对;换任务必须同步改):
+# expect_artifact  —— 开发完成后必须存在于工作区的产物(相对路径);
+# expect_commit_subject —— 提交信息的主题行(脚本 grep git log --format=%s)。
+expect_artifact = "index.html"
+expect_commit_subject = "feat: 烽火介绍单页"
