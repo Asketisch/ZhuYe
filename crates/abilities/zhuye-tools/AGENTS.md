@@ -53,6 +53,30 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 | `src/approval/mod.rs` | `ApprovalContext`：waiter 表族（审批 / 问答 / 询问 / MCP elicitation）+ 会话放行集 + 挂起交互注册表 |
 | `src/builtins/` | 各内置工具实现(按工具分文件) |
 | `src/loop_guard.rs` | 重复调用 / 无进展的循环守卫 |
+| `src/pending_subagent.rs` | 在飞异步子代理登记表(`PendingSubagentRegistry`)—— 异步派发写、引擎挂起等待读 |
+
+## 在飞异步子代理登记表
+
+`src/pending_subagent.rs` 的 `PendingSubagentRegistry` 是「异步子代理派发」与
+「回合挂起激活」两侧共用的状态:
+
+- **工具侧**(`ToolContext.pending_subagents`):派发时 `register`,子代理终态时
+  `complete`;
+- **引擎侧**(`zhuye-core` 的 `NodeContext.pending_subagents`):回合收尾前
+  `wait_any` 挂起等待,拿到结果后注入上下文并续跑本轮。
+
+三条不变式:
+
+1. **下沉到本 crate 是依赖方向的必然**:依赖是 `zhuye-subagent → zhuye-core →
+   zhuye-tools`,`zhuye-core` 不能反向依赖 `zhuye-subagent`。登记表必须能被
+   工具与引擎同时拿到,只能落在两者共同的下游。
+2. **每线程一份**:基座 `ToolContext` 在 `AgentThread::new` 里按 `AgentConfig`
+   构造,`AgentConfig::new` 为每个线程新建一张表 —— 嵌套场景下子代理用自己
+   的表,孙代理的完成不会误唤醒父回合。
+3. **终态首个为准 + 必须有兜底**:`complete` 幂等(先到者胜);`PendingCompletionGuard`
+   在析构时补写「已放弃」终态 —— 没有它,一个被中止的异步子代理会让条目永远
+   停在「在飞」,此后每个回合的 `check_stop` 都为它挂起等待(一次中止拖垮
+   整个会话)。
 
 ## v1.x 新增能力
 

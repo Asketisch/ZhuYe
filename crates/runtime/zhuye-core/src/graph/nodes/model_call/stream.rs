@@ -708,6 +708,7 @@ mod tests {
             plan_approval_gate: None,
             plan_session_subs: None,
             steering_queue: None,
+            pending_subagents: None,
             sandbox_override: None,
             cfg: crate::config::AgentConfig::new("stub/model", "/tmp"),
         };

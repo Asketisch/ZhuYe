@@ -34,6 +34,10 @@
 
 - 并发在途（in-flight）槽位上限常量 `MAX_DEPTH` 定义在 `crates/orchestration/zhuye-subagent/src/lib.rs`。它是**在途**计数而非累计 spawn 数：子代理终态回收后槽位自动释放。
 - 深度与并发是两件事：`MAX_DEPTH` 只管在途槽位，递归深度由治理模块另行守卫，两者不要混用同一个计数器。
+- **派发有两种模式**（`call_<role>` 的 `mode` 参数，缺省 `sync` = 旧行为）：
+  - `sync`：父回合阻塞等子代理结束，结果作为本次工具调用的回执。
+  - `async`：立即返回占位回执，子代理交给后台任务继续跑；结果由引擎在回合收尾前**挂起等待**并注入本轮上下文（见 `crates/runtime/zhuye-core/src/graph/nodes/check_stop.rs`）。
+- `async` 的四条约束：①登记表在 `zhuye_tools::PendingSubagentRegistry`（**每线程一份**，工具侧经 `ToolContext.pending_subagents` 写、引擎侧经 `NodeContext.pending_subagents` 读）；②`SpawnedChild` 必须移交给后台任务 —— 它析构会 cancel 子令牌，丢在工具 future 里等于当场杀掉子代理；③后台任务须带兜底守卫（`PendingCompletionGuard`），否则被中止的子代理会让条目永远停在「在飞」；④登记表缺席（纯库 / 测试）时**降级为同步**，不能给模型一个「已派发但没人回填」的假回执。
 
 ## 角色讨论
 

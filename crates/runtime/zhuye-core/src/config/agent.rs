@@ -205,6 +205,16 @@ pub struct AgentConfig {
     /// 向槽写快照,父会话经状态中心查询 —— 读取方永不阻塞子代理。
     /// `None` = 主会话 / 测试(不自报告)。
     pub subagent_status: Option<Arc<crate::subagent_registry::SubagentStatusSlot>>,
+    /// 在飞异步子代理登记表(异步派发 + 回合挂起激活的共享状态)。
+    ///
+    /// `AgentConfig::new` 为**每个线程**新建一份 —— 子代理 factory 用
+    /// `AgentConfig::new` 构造子配置,子代理线程因此天然拿到自己的表,
+    /// 孙代理的完成不会误唤醒父回合。`Clone` 走 `Arc`,同线程内的
+    /// 多份配置副本共享同一张表。
+    ///
+    /// 工具侧经 `ToolContext.pending_subagents` 写(登记 / 回填终态),
+    /// 引擎侧经 `NodeContext.pending_subagents` 读(回合收尾前挂起等待)。
+    pub pending_subagents: Arc<zhuye_tools::PendingSubagentRegistry>,
     /// v1.x:`[sandbox]` 段解析出的 OS 沙箱默认开关。
     /// `None` = 配置未表态 → 每 turn 的 `sandbox_policy` 未指定时跟随
     /// env(`OsSandbox::from_env`);`Some(b)` = 配置表态,Op 未覆盖时生效。
@@ -357,6 +367,7 @@ impl AgentConfig {
             last_abort_reason: Arc::new(RwLock::new(None)),
             subagent_runtime: None,
             subagent_status: None,
+            pending_subagents: Arc::new(zhuye_tools::PendingSubagentRegistry::new()),
             side_channel_driver: None,
             prompt_guard: None,
             guard_stats: None,
@@ -520,6 +531,11 @@ impl AgentConfig {
         ctx.os_sandbox_writable = self.sandbox_writable.clone();
         ctx.os_sandbox_network = self.sandbox_network;
         ctx.git_protection = self.git_protection.clone();
+        // 在飞异步子代理登记表:工具侧(`call_<role>` 的 mode="async")
+        // 登记 / 回填终态,引擎侧(`check_stop`)挂起等待。基座 context 是
+        // 每线程一份,所以这里注入的是**本线程**的表 —— 嵌套场景下子代理
+        // 用自己的表,不会把孙代理的完成误记到父会话。
+        ctx.pending_subagents = Some(Arc::clone(&self.pending_subagents));
         ctx
     }
 

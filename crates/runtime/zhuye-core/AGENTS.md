@@ -24,8 +24,9 @@
 
 - **StateGraph 是手写 `enum` + `match`**，转移表集中在 `src/graph/mod.rs` 的 `GraphNode::next`；本 crate 的 `Cargo.toml` 不依赖 petgraph 等图算法库，换成库实现属于架构级改动。
 - **节点提前终止有三态**：自然结束（`CheckStop` 终止时置 `state.completed_normally`）、取消（`CancellationToken` 触发）、错误（`model_call` / `tool_exec` 返回 `None`）。只有自然结束算正常完成，取消与错误都不置该标记。
-- **`NodeContext` 是回合级依赖的唯一装配点**：定义与组装都在 `src/submission_loop.rs`。它携带 model spec、路由策略、model registry、`HookEngine`、工具执行队列、事件通道、取消令牌、审批 gate 等。
+- **`NodeContext` 是回合级依赖的唯一装配点**：定义与组装都在 `src/submission_loop.rs`。它携带 model spec、路由策略、model registry、`HookEngine`、工具执行队列、事件通道、取消令牌、审批 gate、在飞异步子代理登记表（`pending_subagents`）等。
 - **Stop hook 否决续跑链路**在 `src/graph/nodes/check_stop.rs`：节点派发 `HookEvent::Stop`，被否决时累加尝试计数、把 hook 注入的提醒投递给下一轮，并让循环回到 `PreLoop` 强制续作；只有放行才终止本轮。
+- **异步子代理的挂起 / 激活**同样落在 `src/graph/nodes/check_stop.rs`：节点先查 `ctx.pending_subagents`（在飞异步子代理登记表，`zhuye_tools::PendingSubagentRegistry`）。有在飞项说明模型只是**还没拿到结果**，回合应挂起等待而非结束 —— `wait_any` 拿到结果后把结果作为尾部 user `<system-reminder>` 注入 `state.messages`，再回 `PreLoop` **在同一轮内**续跑。三条要点：①顺序上**先等子代理、再判 Stop hook**（让模型先看到结果再决定是否收尾）；②等待被取消（回合中断 / 会话关闭）时返回 `PreLoop` 而**不是** `None` —— `None` 会被 `graph/mod.rs` 记成 `completed_normally`，把「被打断」误报成正常完成，改由 `model_call` 入口的取消检查收敛成 `TurnAborted`；③注入是 ephemeral 的（与 steering / hook 提醒同纪律），**不落盘**。
 - **SessionMeta 落盘前的通告不持久化**（`src/submission_loop.rs`）：权限模式切换 / plan 派发发生在会话头未写（`meta_written=false`）时只广播内存事件，待会话头落地后按需补记 —— 保证 JSONL 物理首行是 `SessionMeta`，rollout 索引依赖此前置（索引侧的恢复兜底见 resources 层篇 `zhuye-rollout` 条目）。
 - **assistant 内容按步骤增量落盘**：`graph/nodes/mod.rs::persist_assistant_step` 在每次 `model_call` 产出（文本 + 工具调用）和每批 `tool_exec` 结果后立即写一条同 `turn_id` 的 assistant 记录。回合收尾不再整体重写，否则回填会把历史读两遍。流被取消时，已流出的半截文本由 `preserve_interrupted_text` 就地落盘。消费端 `RolloutRecord::coalesce_turn_messages` 按回合同角色把数组内容拼回一条，块顺序与旧的整体记录一致。
 - **工具输出上下文预算**：`tool_exec` 先向宿主发原始工具结果，再对全部来源的模型文本按至多 12 KiB 门槛处理；`tool_results` 可设更小门槛、预览字符数与是否落盘。默认保留 8 KiB 预览并安全溢出到工作区供 read 读回；该回执同时进入模型与 rollout，保证恢复一致。图片块保持原样。

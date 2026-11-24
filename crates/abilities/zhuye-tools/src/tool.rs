@@ -165,6 +165,14 @@ pub struct ToolContext {
     /// 父会话历史快照,由 `tool_exec` 注入并按工具声明分别限制。
     /// 元素是 llm 层 `ChatMessage` 的 JSON 形态,避免反向依赖。
     pub parent_tail_json: Arc<Vec<serde_json::Value>>,
+    /// 在飞异步子代理登记表。`None`(默认)= 本线程不支持异步子代理
+    /// 派发(纯库用法 / 测试),`call_<role>` 的 `mode="async"` 会降级为
+    /// 同步派发而非报错。
+    ///
+    /// `Some` 时由引擎在 `AgentThread::new` 注入 —— 它是**每线程一份**
+    /// (基座 context 按 `AgentConfig` 构造),因此嵌套场景天然隔离:
+    /// 子代理线程用自己的表,孙代理的完成不会误唤醒父回合。
+    pub pending_subagents: Option<Arc<crate::pending_subagent::PendingSubagentRegistry>>,
 }
 
 /// v1.4 C1:工具 → 引擎事件通道的转发器。`tool_exec` 在每批执行前构造
@@ -382,6 +390,7 @@ impl Default for ToolContext {
             git_protection: None,
             command_origin: None,
             loop_guard: None,
+            pending_subagents: None,
         }
     }
 }
