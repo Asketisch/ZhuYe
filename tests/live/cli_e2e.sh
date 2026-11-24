@@ -131,7 +131,11 @@ for scenario in $SCENARIOS; do
         > "$SC_DIR/run.out" 2> "$SC_DIR/run.err"
     rc=$?
     if [ "$rc" = "124" ]; then
-        tcase "$scenario · 场景执行未超时" false
+        # 超时既可能是端点排队(27B 模型 xhigh 思考 + 全套连跑),也可能是
+        # 引擎挂死 —— 都该被看见,所以判 FAIL;日志尾巴给出定位线索。
+        tcase "$scenario · 场景执行未超时(${TIMEOUT}s)" bash -c \
+            'printf "超时 ${TIMEOUT}s:可能是端点排队/慢;也查一遍 serve 日志确认不是引擎挂死\n"; exit 1'
+        tail -5 "$SC_DIR/run.err" 2>/dev/null | sed 's/^/         │ /'
         continue
     fi
     if [ "$rc" != "0" ] && [ ! -s "$RESULT" ]; then
