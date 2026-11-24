@@ -35,9 +35,13 @@
 #
 #   ZHUYE_LIVE=1 bash tests/live/cli_e2e.sh
 #   ZHUYE_E2E_TOML=/path/to/my-e2e.toml ZHUYE_LIVE=1 bash tests/live/cli_e2e.sh
+#   # 验证桌面端 pin 态:ZHUYE_E2E_BIN 指向桌面构建的二进制
+#   ZHUYE_E2E_BIN=../ZhuYe-Desktop/zhuye-agent/target/debug/zhuye \
+#     ZHUYE_LIVE=1 bash tests/live/cli_e2e.sh
 #
 # 未设 `ZHUYE_LIVE=1` 时整层 SKIP —— 不发任何网络请求;端点不可达判
-# **SKIP** 而非失败 —— 测的是代码,不是网络。
+# **SKIP** 而非失败 —— 测的是代码,不是网络。事件 / 结果 JSON 落临时
+# 目录,默认随清理消失;ZHUYE_E2E_KEEP=1 保留供事后翻查。
 #
 # ## 断言口径
 #
@@ -57,11 +61,8 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib.sh"
 
-suite_begin "live-cli-e2e"
-
 if [ "${ZHUYE_LIVE:-}" != "1" ]; then
-    tskip "CLI 真模型端到端" "未设 ZHUYE_LIVE=1 —— 默认不发网络请求"
-    tfinish
+    echo "  [SKIP] CLI 真模型端到端 —— 未设 ZHUYE_LIVE=1,默认不发网络请求"
     exit 0
 fi
 
@@ -69,8 +70,8 @@ fi
 BIN="${ZHUYE_E2E_BIN:-$ROOT/target/debug/zhuye}"
 if [ ! -x "$BIN" ]; then
     echo "  未找到 $BIN,执行 cargo build -p zhuye-cli …"
-    if ! (cd "$ROOT" && cargo build -p zhuye-cli) > "$RESULT_DIR/cli-e2e-build.log" 2>&1; then
-        tail -30 "$RESULT_DIR/cli-e2e-build.log" | sed 's/^/         │ /'
+    if ! (cd "$ROOT" && cargo build -p zhuye-cli) > "$WORK/cli-e2e-build.log" 2>&1; then
+        tail -30 "$WORK/cli-e2e-build.log" | sed 's/^/         │ /'
         tcase "构建 zhuye-cli" false
         tfinish
         exit 1
@@ -87,8 +88,7 @@ if [ ! -f "$TOML" ] && [ -f "$HERE/cli_e2e.example.toml" ]; then
     echo "  已从模板生成本地配置:$TOML(填写真实端点后重跑)"
 fi
 if [ ! -f "$TOML" ]; then
-    tskip "CLI 真模型端到端" "找不到测试配置 $TOML"
-    tfinish
+    echo "  [SKIP] CLI 真模型端到端 —— 找不到测试配置 $TOML"
     exit 0
 fi
 
@@ -172,8 +172,7 @@ done < "$WORK/config.env"
 [ -n "${ZHUYE_E2E_EXPECT_COMMIT:-}" ]     && CFG_EXPECT_COMMIT="$ZHUYE_E2E_EXPECT_COMMIT"
 
 if [ -z "$CFG_BASE_URL" ] || [ -z "$CFG_MODEL" ]; then
-    tskip "CLI 真模型端到端" "测试配置缺 base_url / model($TOML)"
-    tfinish
+    echo "  [SKIP] CLI 真模型端到端 —— 测试配置缺 base_url / model($TOML)"
     exit 0
 fi
 PHASE_TIMEOUT="$CFG_PHASE_TIMEOUT"
@@ -244,15 +243,14 @@ HTTP_CODE=$(curl -s -m 10 -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer $CFG_API_KEY" \
     "$CFG_BASE_URL/models" 2>/dev/null)
 if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" = "000" ]; then
-    tskip "CLI 真模型端到端" "模型端点不可达($CFG_BASE_URL)—— 环境问题,不判失败"
-    tfinish
+    echo "  [SKIP] CLI 真模型端到端 —— 模型端点不可达($CFG_BASE_URL),环境问题不判失败"
     exit 0
 fi
 echo "  端点可达:$CFG_BASE_URL (http=$HTTP_CODE)"
 
 # ── 4. 驱动(阶段超时来自 toml 的 run.phase_timeout)───────────────────────
-EVENTS="$RESULT_DIR/cli-e2e-events.jsonl"
-RESULT_JSON="$RESULT_DIR/cli-e2e-result.json"
+EVENTS="$WORK/cli-e2e-events.jsonl"
+RESULT_JSON="$WORK/cli-e2e-result.json"
 python3 "$HERE/cli_e2e_driver.py" \
     --bin "$BIN" \
     --workspace "$WS" \
@@ -263,20 +261,19 @@ python3 "$HERE/cli_e2e_driver.py" \
     --events "$EVENTS" \
     --result "$RESULT_JSON" \
     --phase-timeout "$PHASE_TIMEOUT" \
-    > "$RESULT_DIR/cli-e2e-summary.json" 2> "$RESULT_DIR/cli-e2e-driver.err"
+    > "$WORK/cli-e2e-summary.json" 2> "$WORK/cli-e2e-driver.err"
 DRIVER_STATUS=$?
 
 # ── 5. 断言(结构化;产物与 git 状态直接对工作区验)────────────────────────
 if [ "$DRIVER_STATUS" -eq 2 ]; then
-    # 环境性跳过(端点不可达):折成 SKIP,不算失败。
-    tskip "CLI 真模型端到端" "模型端点不可达(见 $RESULT_JSON)"
-    tfinish
+    # 环境性跳过(端点不可达):不算失败。
+    echo "  [SKIP] CLI 真模型端到端 —— 模型端点不可达(见 $RESULT_JSON)"
     exit 0
 fi
 
 if [ ! -s "$RESULT_JSON" ]; then
     echo "  驱动器没有产出结果 JSON"
-    tail -30 "$RESULT_DIR/cli-e2e-driver.err" | sed 's/^/         │ /'
+    tail -30 "$WORK/cli-e2e-driver.err" | sed 's/^/         │ /'
     tcase "结果 JSON 产出" false
     tfinish
     exit 1
