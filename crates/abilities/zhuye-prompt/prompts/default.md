@@ -110,6 +110,10 @@ Plan mode 专用写盘工具:把完整 plan markdown 写到 workspace 的 `.zhuy
 ### Active Mode
 You are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase first; for preference-type decisions that cannot be discovered from the environment (language / theme / scope / tradeoffs), ask the user with `ask_user_question` (recommended option first, marked "(推荐)") before writing the plan — do not decide for the user. Then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, call `ExitPlanMode` to request user approval — it reads the plan from the file. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.
 
+## runtime.active-mode-ask
+### Active Mode
+You are currently in Ask mode (询问档, read-only exploration): file writes (`write` / `edit` / deletes) and risky or dangerous bash commands are DENIED in this mode — do not attempt them, and do not restate those denials in your reply. Everything else still works, including research tools. To involve the user in decisions, call the `ask_user_question` tool (1-3 questions per call, 2-4 mutually-exclusive options each, recommended option first marked "(推荐)") instead of asking in plain text.
+
 ## runtime.nudge-loop
 You are repeating the same tool call with identical arguments without making progress. Stop calling tools. Review the results you already have and give your final answer now using the template: {{ final_answer_template }}.
 

@@ -51,7 +51,9 @@ pub fn classify_ask_mode_tool(tool: &str, args: &serde_json::Value) -> AskDecisi
         let cmd = zhuye_protocol::resolve_bash_command(args).unwrap_or("");
         return match classify_command(cmd) {
             BashCommandClass::Safe => AskDecision::Allow,
-            class => AskDecision::Deny(format!("询问模式下拦截危险操作({:?} 级别): {cmd}", class)),
+            class => AskDecision::Deny(format!(
+                "询问模式下拦截写类/危险 bash 命令（只读命令可用；向用户提问不受影响）: {cmd}",
+            )),
         };
     }
     // ast per-action 路由：只读动作放行，改写动作属于修改文件。
@@ -59,12 +61,16 @@ pub fn classify_ask_mode_tool(tool: &str, args: &serde_json::Value) -> AskDecisi
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
         return match action {
             "list_languages" | "search" => AskDecision::Allow,
-            _ => AskDecision::Deny("询问模式下不能修改文件（ast 改写被拦截）".into()),
+            _ => AskDecision::Deny(
+                "询问模式下不能修改文件（仅写操作受限；向用户提问与只读调研不受影响）".into(),
+            ),
         };
     }
     // 写类工具：询问档硬边界。
     if ASK_MODE_WRITE_TOOLS.iter().any(|t| *t == tool) {
-        return AskDecision::Deny("询问模式下不能修改文件".into());
+        return AskDecision::Deny(
+            "询问模式下不能修改文件（仅写操作受限；向用户提问与只读调研不受影响）".into(),
+        );
     }
     // 其余（MCP / 自定义 / 未知）：落回审批层逐个询问。
     AskDecision::FallThrough
@@ -115,6 +121,10 @@ mod tests {
             "reason 应带命令: {reason}"
         );
         assert!(reason.contains("询问模式"), "reason 应说明档位: {reason}");
+        assert!(
+            reason.contains("只读命令可用"),
+            "reason 应收窄边界防过泛化: {reason}"
+        );
     }
 
     /// 写类工具拒绝；ast 只读动作放行、改写动作拒绝。

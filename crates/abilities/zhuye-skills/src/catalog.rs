@@ -52,6 +52,17 @@ pub const ALWAYS_ON_TOOLS: &[&str] = &[
     // pre_loop 的 curated 过滤会把它从模型工具集移除,回执承诺落空
     // (真二进制 wire 实测暴露;引擎测试手工注册绕过了这层过滤)。
     "background_status",
+    // v1.x 修复:「工具受限无法弹窗」—— ask 三工具与 PlanWrite 同构:
+    // 系统提示词(system.plan-mode,全模式注入)要求「用 ask_user_question
+    // 提问」,但三者不在 always_on 时被 pre_loop 的 curated 过滤从 wire
+    // 工具集移除 —— 模型找不到工具,用 tool_search 搜又被 PlanModeGate
+    // 拒绝,只能退化纯文本提问(实测 session 7bf1393b)。三者为零副作用的
+    // 用户交互工具(required_permission = Auto;PlanModeGate / ask_mode
+    // 白名单均已放行),全模式常驻安全;request_human_input 非并发,由
+    // 工具队列串行化覆盖。
+    "ask_user_question",
+    "ask_user",
+    "request_human_input",
 ];
 
 /// 可用 skill 与当前激活 skill 集合的线程安全 catalog

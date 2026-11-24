@@ -77,6 +77,10 @@ pub fn default_read_only_allowlist() -> Vec<String> {
         "ask_user_question".into(),
         "ask_user".into(),
         "request_human_input".into(),
+        // v1.x:延迟工具发现面(tool-defer)—— tool_search 是注册表元数据
+        // 的只读检索,Plan 调研仍需发现 MCP / deferred 工具;不放行
+        // `deferred_call`(可执行任意延迟工具,有副作用)。
+        "tool_search".into(),
     ]
 }
 
@@ -310,7 +314,17 @@ mod tests {
     #[tokio::test]
     async fn plan_mode_allows_default_read_only_tools() {
         let h = PlanModeGate::default_mode();
-        for tool in ["read", "grep", "glob", "echo", "ExitPlanMode", "PlanWrite"] {
+        for tool in [
+            "read",
+            "grep",
+            "glob",
+            "echo",
+            "ExitPlanMode",
+            "PlanWrite",
+            // v1.x:延迟工具发现面(tool-defer)—— Plan 调研需要发现 MCP /
+            // deferred 工具;只读检索,放行。
+            "tool_search",
+        ] {
             assert_eq!(
                 h.handle(&pre_event(tool, PermissionMode::Plan))
                     .await
