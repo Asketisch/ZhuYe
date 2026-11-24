@@ -122,6 +122,7 @@ mod tests {
                 summary: "<summary>...</summary>".into(),
                 before_tokens: 0,
                 after_tokens: 0,
+                context_snapshot: None,
             },
             RolloutRecord::Fork {
                 parent_session_id: sid,

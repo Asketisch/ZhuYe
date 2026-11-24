@@ -168,6 +168,10 @@ pub fn build_default_m4_with_prompts(
         model,
     );
     let compactor = Arc::new(Compactor::new(compactor_cfg, summarizer));
+    compactor.set_trigger_policy(zhuye_core::config::compact_trigger_policy(
+        cfg.compact.trigger_tokens,
+        cfg.compact.trigger_ratio,
+    ));
 
     // ── Prompt builder(coordinator mode 注入对应 section) ────
     let prompt_builder = Arc::new(Mutex::new(PromptBuilder::new()));

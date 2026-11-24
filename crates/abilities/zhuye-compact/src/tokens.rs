@@ -54,10 +54,8 @@ pub trait TokenEstimator: Send + Sync {
             // 数值完全一致;多块时**偏大**:每块独立 ceil 与块间 `\n`
             // 分隔符都贡献增量,误差随块数线性累积(2 个 1 字符块旧 1 /
             // 新 3;10 个 1 字符块旧 6 / 新 19)。方向保守 —— `before_tokens`
-            // 偏大只会让压缩略早触发,不会破坏预算判断;估算值也仅用于
-            // 压缩触发判定。Image 块按 `content_as_text` 的占位符渲染
-            // 估算,口径不变(空 Text 块会触发分隔符,与旧实现的差异
-            // 同属上述保守方向)。
+            // 偏大只会让压缩略早触发。图片走同一个可替换估算器，不能按
+            // 短文本占位符估算，否则工具图片的实际模型成本会被严重低估。
             ChatMessage::Tool(r) => {
                 let mut t = 0u32;
                 let mut first = true;
@@ -68,12 +66,7 @@ pub trait TokenEstimator: Send + Sync {
                     first = false;
                     match b {
                         ContentBlock::Text { text } => t += self.estimate_text(text),
-                        ContentBlock::Image { data, mime_type } => {
-                            t += self.estimate_text(&format!(
-                                "[image: {mime_type}, {} bytes]",
-                                data.len()
-                            ));
-                        }
+                        image @ ContentBlock::Image { .. } => t += self.estimate_block(image),
                     }
                 }
                 t
@@ -207,7 +200,14 @@ pub mod tiktoken {
                             }
                             t
                         }
-                        CM::Tool(r) => count(bpe, &r.content_as_text()),
+                        CM::Tool(r) => r
+                            .content
+                            .iter()
+                            .map(|block| match block {
+                                ContentBlock::Text { text } => count(bpe, text),
+                                ContentBlock::Image { .. } => IMAGE_TOKENS,
+                            })
+                            .sum(),
                     }
                 })
                 .sum()
@@ -265,6 +265,23 @@ mod tests {
             }],
         })];
         assert_eq!(estimate_messages(&msgs), 1000);
+    }
+
+    #[test]
+    fn tool_image_uses_same_estimator_as_user_image() {
+        let image = ContentBlock::Image {
+            data: vec![1, 2, 3],
+            mime_type: "image/png".into(),
+        };
+        let user = ChatMessage::User(UserContent {
+            blocks: vec![image.clone()],
+        });
+        let tool = ChatMessage::Tool(ToolResult {
+            call_id: "img".into(),
+            content: vec![image],
+            is_error: false,
+        });
+        assert_eq!(estimate_messages(&[user]), estimate_messages(&[tool]));
     }
 
     #[test]

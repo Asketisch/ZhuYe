@@ -193,7 +193,8 @@ async fn handle_reload_pushes_config_reloaded_event() {
     let old_cfg = zhuye_config::ReflectConfig::default();
     let new_cfg = zhuye_config::ReflectConfig::default();
     let path = std::path::PathBuf::from("/tmp/test-config.toml");
-    let agent_cfg = AgentConfig::new("anthropic/x", "/tmp");
+    let agent_cfg = AgentConfig::new("anthropic/x", "/tmp")
+        .with_m4(zhuye_core::config::default_m4_deps("test"));
     let result = handle_reload(
         &old_cfg,
         &new_cfg,
@@ -250,7 +251,8 @@ async fn handle_reload_returns_err_when_channel_closed() {
     let old_cfg = zhuye_config::ReflectConfig::default();
     let new_cfg = zhuye_config::ReflectConfig::default();
     let path = std::path::PathBuf::from("/tmp/test.toml");
-    let agent_cfg = AgentConfig::new("anthropic/x", "/tmp");
+    let agent_cfg = AgentConfig::new("anthropic/x", "/tmp")
+        .with_m4(zhuye_core::config::default_m4_deps("test"));
     let result = handle_reload(
         &old_cfg,
         &new_cfg,
@@ -413,7 +415,8 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
     });
     new_cfg.compact.trigger_tokens = Some(20_000);
     let path = std::path::PathBuf::from("/tmp/test.toml");
-    let agent_cfg = AgentConfig::new("anthropic/x", "/tmp");
+    let agent_cfg = AgentConfig::new("anthropic/x", "/tmp")
+        .with_m4(zhuye_core::config::default_m4_deps("test"));
     handle_reload(
         &old_cfg,
         &new_cfg,
@@ -430,6 +433,17 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
     )
     .await
     .expect("handle_reload ok");
+    assert_eq!(
+        agent_cfg
+            .m4
+            .as_ref()
+            .unwrap()
+            .compactor
+            .for_window(Some(200_000))
+            .trigger_tokens(),
+        20_000,
+        "热重载后的显式压缩阈值必须优先于窗口推导"
+    );
     // 第一个 emit 是 SessionConfigured(model 没变 provider 也没变 →
     // 没 emit),然后是 ConfigReloaded。我们只关心 ConfigReloaded。
     let mut found_reloaded = false;

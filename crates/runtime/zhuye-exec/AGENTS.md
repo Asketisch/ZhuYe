@@ -22,6 +22,7 @@ headless 与 serve 的共享装配层：读参数、bootstrap 会话、把协议
 ## 本地契约与同步点
 
 - **stdout / stderr 分工是硬不变量**：协议事件以 JSONL 写 stdout，tracing 日志写 stderr（`src/runtime_config.rs` 的 `init_tracing`）。`zhuye exec | jq` 依赖这条，任何日志混进 stdout 都是回归。
+- **压缩热配置**：模型或配置变更时刷新压缩阈值策略与模型窗口覆盖；每次压缩决策以当前模型窗口计算有效阈值。
 - **`ExecArgs`（`src/lib.rs`）与 `ServeArgs`（`src/serve.rs`）是两个入口的参数结构**，也是 CLI 文档的同源定义；`zhuye-cli` 的 clap 外壳投影自它们。改参数先改这里，再改 CLI 侧投影。
 - **恢复链三选一**：`--resume <UUID>` / `-c`（`continue_last`）/ `-r N`（`resume_by`）在 clap 层用 `conflicts_with_all` 互斥；`async_main` 另有 `if/else if` 优先级链兜底（`--resume` 优先于 `-c` / `-r`，二者优先于 `prompt`）。两边都要改才能保持一致。
 - **`--prompt-profile` 三态提示词方案**（`ExecArgs::prompt_profile` + `src/lib.rs` 的 `apply_prompt_profile`）：取值 `default` / `auto` / 方案标识，映射 `PromptSelection` 后在会话装配前以一条 `Op::PromptCommand { Select }` 提交生效；与 resume 输入不互斥，仅设定本会话的提示词选择。方案库与来源登记见 abilities 层篇 `zhuye-prompt` 条目。

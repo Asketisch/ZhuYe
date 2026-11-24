@@ -167,6 +167,9 @@ pub enum RolloutRecord {
         /// 压缩后上下文 token 估算;旧 JSONL 缺省为 0。
         #[serde(default)]
         after_tokens: u32,
+        /// 压缩后的模型消息快照；旧记录缺省，按旧语义恢复。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_snapshot: Option<serde_json::Value>,
     },
     /// v1.x:流锚点恢复时**丢弃的尾部输出**留痕(审计用,不参与 resume
     /// 回放)。流式输出中途遇可重试错误时,已累积的半成品文本 / 思考被
@@ -448,6 +451,13 @@ impl RolloutRecord {
         let mut heads: std::collections::HashMap<TurnId, usize> = std::collections::HashMap::new();
         for record in records {
             match record {
+                Self::Compaction {
+                    context_snapshot: Some(_),
+                    ..
+                } => {
+                    heads.clear();
+                    out.push(record.clone());
+                }
                 Self::Message {
                     turn_id,
                     role: MessageRole::User,
@@ -632,6 +642,7 @@ mod tests {
             summary: "<summary>...</summary>".into(),
             before_tokens: 9_000,
             after_tokens: 2_000,
+            context_snapshot: None,
         };
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains(r#""type":"compaction""#));

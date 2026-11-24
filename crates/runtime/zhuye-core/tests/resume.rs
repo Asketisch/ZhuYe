@@ -115,6 +115,7 @@ fn compaction_summary_becomes_leading_system() {
             summary: "会话摘要:讨论了 X".into(),
             before_tokens: 0,
             after_tokens: 0,
+            context_snapshot: None,
         },
         // 后续消息保留(全量历史 + 摘要前置是既定语义)。
         msg(MessageRole::User, serde_json::json!("新问题")),

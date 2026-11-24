@@ -172,6 +172,11 @@ fn replace_compactable(
 ) -> (ChatMessage, bool) {
     match msg {
         ChatMessage::Tool(t) => {
+            // 重复遇到占位符不产生修改，避免把空操作登记为真实压缩。
+            if matches!(t.content.as_slice(), [ContentBlock::Text { text }] if text == TRUNCATE_PLACEHOLDER)
+            {
+                return (ChatMessage::Tool(t), false);
+            }
             // 通过 Assistant tool_calls 查找生成该结果的工具名,
             // 然后判断是否在 PRESERVE_TOOL_NAMES 中。
             // review 修复:表内混有大小写(write 小写 / TaskCreate 驼峰),

@@ -107,6 +107,13 @@ pub fn apply(output: &mut ToolOutput, tool: &str, call_id: &str, budget: &Result
     } else {
         None
     };
+    tracing::info!(
+        tool,
+        text_bytes,
+        limit = budget.max_inline_bytes,
+        persisted = artifact_path.is_some(),
+        "工具结果预算处理"
+    );
     let envelope = match artifact_path.as_ref() {
         Some(path) => {
             let preview: String = full_text.chars().take(budget.preview_chars).collect();
@@ -120,9 +127,17 @@ pub fn apply(output: &mut ToolOutput, tool: &str, call_id: &str, budget: &Result
                  用 read 工具按 path 读取)\n</persisted-output>"
             )
         }
-        None => truncate_middle(
-            &full_text,
-            budget.max_inline_bytes.saturating_div(3).max(1000),
+        None => format!(
+            "{}\n[{}]",
+            truncate_middle(
+                &full_text,
+                budget.max_inline_bytes.saturating_div(3).max(1000),
+            ),
+            if budget.persist {
+                "完整文本保存失败"
+            } else {
+                "完整文本保存已禁用"
+            }
         ),
     };
     // 替换全部文本块为单个信封块;非文本块原样保留。
@@ -141,11 +156,14 @@ pub fn apply(output: &mut ToolOutput, tool: &str, call_id: &str, budget: &Result
         }
     }
     output.content = new_content;
-    output.metadata["artifact"] = artifact_path
-        .as_ref()
-        .map_or(serde_json::json!("(persist disabled)"), |p| {
-            serde_json::json!(p.display().to_string())
-        });
+    output.metadata["artifact"] = artifact_path.as_ref().map_or(
+        serde_json::json!(if budget.persist {
+            "(persist failed)"
+        } else {
+            "(persist disabled)"
+        }),
+        |p| serde_json::json!(p.display().to_string()),
+    );
 }
 
 /// 把全文写到 artifacts 目录,返回绝对路径。目录按需创建。
