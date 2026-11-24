@@ -31,7 +31,7 @@ use crate::bash_classify::{BashCommandClass, classify_command};
 use crate::decision::HookDecision;
 use crate::event::{HookEvent, HookEventKind};
 use crate::hook::Hook;
-use zhuye_protocol::PermissionMode;
+use zhuye_protocol::{ApprovalPolicy, PermissionMode};
 
 /// 默认白名单:只读工具 + Plan mode 控制面工具(`ExitPlanMode` / `PlanWrite`)。
 ///
@@ -227,6 +227,13 @@ impl Hook for PlanModeGate {
             // 否则模型发 `{"command": "rm -rf x"}` 时 cmd 为空串,
             // `classify_command("")` 返回 Safe,写命令在 Plan mode 下被放行。
             if tool == "bash" {
+                // 用户显式选择「完全访问」审批策略时，Plan 阶段也允许跑
+                // 任意 shell 命令（调研常需要 install / git commit 等写类
+                // 命令；用户已用完全访问表达了不再逐项确认的意图）。
+                // 只放宽 bash：write/edit 仍受下面的 plan 目录白名单约束。
+                if ctx.approval_policy == Some(ApprovalPolicy::FullAccess) {
+                    return Ok(HookDecision::Allow);
+                }
                 let cmd = zhuye_protocol::resolve_bash_command(args).unwrap_or("");
                 return Ok(match classify_command(cmd) {
                     BashCommandClass::Safe => HookDecision::Allow,
@@ -278,7 +285,7 @@ mod tests {
     use super::*;
     use crate::event::HookContext;
     use std::path::PathBuf;
-    use zhuye_protocol::{PermissionMode, ThreadId, TurnId};
+    use zhuye_protocol::{ApprovalPolicy, PermissionMode, ThreadId, TurnId};
 
     /// 构造一个 `HookContext`,`permission_mode` 由调用方指定。
     fn ctx_with_mode(mode: PermissionMode) -> HookContext {
@@ -287,6 +294,7 @@ mod tests {
             turn_id: TurnId::new(),
             workspace: PathBuf::from("/tmp"),
             permission_mode: mode,
+            approval_policy: None,
         }
     }
 
@@ -482,7 +490,75 @@ mod tests {
         }
     }
 
-    /// 非 Plan mode(Auto / Prompt / Deny)下,所有工具一律 allow —— gate
+    /// bash 工具的 PreToolUse 事件,带 `cmd` 参数与指定审批策略
+    /// (供「完全访问放开 bash」用例使用)。
+    fn pre_bash_event_with_policy(
+        cmd: &str,
+        mode: PermissionMode,
+        policy: Option<ApprovalPolicy>,
+    ) -> HookEvent {
+        HookEvent::PreToolUse {
+            tool: "bash".into(),
+            args: serde_json::json!({"cmd": cmd}),
+            ctx: HookContext {
+                session_id: ThreadId::new(),
+                turn_id: TurnId::new(),
+                workspace: PathBuf::from("/tmp"),
+                permission_mode: mode,
+                approval_policy: policy,
+            },
+        }
+    }
+
+    /// 审批策略为完全访问时，Plan 模式下 Risky/Dangerous bash 也放行
+    /// （用户显式选择「完全访问」= 不再逐项确认；仅放宽 bash，
+    /// write/edit 仍受 plan 只读边界约束）。
+    #[tokio::test]
+    async fn full_access_allows_all_bash_in_plan_mode() {
+        let h = PlanModeGate::default_mode();
+        for cmd in [
+            "git commit -m x",
+            "npm install foo",
+            "rm -rf /tmp/x",
+            "sudo apt update",
+        ] {
+            assert_eq!(
+                h.handle(&pre_bash_event_with_policy(
+                    cmd,
+                    PermissionMode::Plan,
+                    Some(ApprovalPolicy::FullAccess),
+                ))
+                .await
+                .unwrap(),
+                HookDecision::Allow,
+                "完全访问下 Plan mode 应放行 bash: {cmd}"
+            );
+        }
+    }
+
+    /// 完全访问只放宽 bash —— write/edit 仍被 Plan 只读边界拒绝
+    /// （plan 文件之外的路径）。
+    #[tokio::test]
+    async fn full_access_does_not_relax_write_tools_in_plan_mode() {
+        let h = PlanModeGate::default_mode();
+        let event = HookEvent::PreToolUse {
+            tool: "write".into(),
+            args: serde_json::json!({"path": "/tmp/outside.txt", "content": "x"}),
+            ctx: HookContext {
+                session_id: ThreadId::new(),
+                turn_id: TurnId::new(),
+                workspace: PathBuf::from("/tmp"),
+                permission_mode: PermissionMode::Plan,
+                approval_policy: Some(ApprovalPolicy::FullAccess),
+            },
+        };
+        assert!(
+            matches!(h.handle(&event).await.unwrap(), HookDecision::Deny { .. }),
+            "完全访问不应放开 Plan 模式下的普通 write"
+        );
+    }
+
+    /// 非 Plan 模式(Auto / Prompt / Deny)下,所有工具一律 allow —— gate
     /// 只在 Plan mode 生效,不能污染普通执行模式的 hook 链。
     #[tokio::test]
     async fn non_plan_mode_bypasses_gate() {

@@ -3,12 +3,12 @@
 //! 参见 `docs/tools-and-hooks.md §4.1`。注意:`HookEvent` **不**直接
 //! 携带 `ToolContext`(后者位于 `zhuye-tools`),以避免依赖循环。
 //! 需要上下文的 hook 可读取此处暴露的精简字段
-//! (workspace、session_id、turn_id、permission_mode)。
+//! (workspace、session_id、turn_id、permission_mode、approval_policy)。
 //! 完整的 `ToolContext` 可由工具实现通过 `Tool::execute` 获得。
 
 use serde::{Deserialize, Serialize};
 
-use zhuye_protocol::{PermissionMode, ThreadId, ToolError, ToolOutput, TurnId};
+use zhuye_protocol::{ApprovalPolicy, PermissionMode, ThreadId, ToolError, ToolOutput, TurnId};
 
 /// `HookEvent` 的种类标签 —— 供 `Hook::events` 过滤使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -60,6 +60,13 @@ pub struct HookContext {
     pub turn_id: TurnId,
     pub workspace: std::path::PathBuf,
     pub permission_mode: PermissionMode,
+    /// 本回合的审批策略覆盖(`ThreadSettingsOverrides.approval_policy`)。
+    ///
+    /// `None` = 未覆盖/不在回合内。`PlanModeGate` 用它实现「完全访问
+    /// 下 Plan 模式放开 bash」；其余 hook 可忽略。additive 字段，旧
+    /// shell hook 的 JSON 输入缺该键时按 `None` 反序列化。
+    #[serde(default)]
+    pub approval_policy: Option<ApprovalPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +181,7 @@ mod tests {
             turn_id: TurnId::new(),
             workspace: PathBuf::from("/tmp"),
             permission_mode: PermissionMode::Auto,
+            approval_policy: None,
         };
         let e = HookEvent::PostCompact {
             strategy: "llm_summary".into(),
@@ -207,6 +215,7 @@ mod tests {
             turn_id: TurnId::new(),
             workspace: PathBuf::from("/tmp"),
             permission_mode: PermissionMode::Auto,
+            approval_policy: Some(ApprovalPolicy::FullAccess),
         };
         let back: HookContext = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back.workspace, PathBuf::from("/tmp"));

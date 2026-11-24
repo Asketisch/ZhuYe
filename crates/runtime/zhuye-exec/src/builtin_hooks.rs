@@ -221,6 +221,7 @@ mod tests {
                 turn_id: zhuye_protocol::TurnId::new(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 permission_mode: zhuye_protocol::PermissionMode::Auto,
+                approval_policy: None,
             },
         }
     }

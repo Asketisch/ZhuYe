@@ -548,6 +548,9 @@ impl ToolExecutionQueue {
             turn_id: ctx.turn_id,
             workspace: ctx.workspace_path(),
             permission_mode: ctx.permission_mode,
+            // 本回合审批策略：PlanModeGate 在 FullAccess 下放开 Plan 模式
+            // 的 bash（gate 按 thread_settings 构造，这里是同一份快照）。
+            approval_policy: gate.and_then(|g| g.turn_policy()),
         };
         let pre_decision = self
             .hook_engine

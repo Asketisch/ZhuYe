@@ -293,17 +293,22 @@ impl Compactor {
         ContextCompactedEvent,
         Option<MemoryWriteInfo>,
     ) {
-        self.compact_outcome(messages, prev_summary, llm_reported_input_tokens)
+        self.compact_outcome(messages, prev_summary, llm_reported_input_tokens, None)
             .await
             .into_legacy()
     }
 
     /// 以明确的动作结果供宿主驱动事件、回写和守卫。
+    ///
+    /// v1.x:`focus` 是 `/compact <指示>` 的用户附加指示 —— `Some` 时注入
+    /// 摘要 prompt(「## 用户附加指示」段),把摘要引向用户关心的部分;
+    /// `None` = 普通压缩,行为不变。
     pub async fn compact_outcome(
         &self,
         messages: &[ChatMessage],
         prev_summary: Option<&str>,
         llm_reported_input_tokens: Option<u32>,
+        focus: Option<&str>,
     ) -> CompactionOutcome {
         let local_estimate = estimate_messages(messages);
         let reported = llm_reported_input_tokens.filter(|n| *n > 0 && *n < u32::MAX);
@@ -437,15 +442,20 @@ impl Compactor {
         }
 
         // 第 4 步:LLM 摘要(若启用)。M5 v0:存在历史摘要时使用增量模式
-        // (`summarize_recent`),否则使用全量模式。
+        // (`summarize_recent`),否则使用全量模式。v1.x:`/compact <指示>`
+        // 的附加指示经 `*_with_focus` 注入摘要 prompt。
         if self.cfg.summarize_after {
             let result = match prev_summary {
                 Some(prev) => {
                     self.summarizer
-                        .summarize_recent(&after_sp, Some(prev))
+                        .summarize_recent_with_focus(&after_sp, Some(prev), focus)
                         .await
                 }
-                None => self.summarizer.summarize_full(&after_sp).await,
+                None => {
+                    self.summarizer
+                        .summarize_full_with_focus(&after_sp, focus)
+                        .await
+                }
             };
             match result {
                 Ok(summary) => {
@@ -1323,7 +1333,7 @@ mod tests {
         }));
         let local = estimate_messages(&msgs);
         let reported = ((local as f64) * 1.4).ceil() as u32;
-        let outcome = c.compact_outcome(&msgs, None, Some(reported)).await;
+        let outcome = c.compact_outcome(&msgs, None, Some(reported), None).await;
         let CompactionOutcome::Applied {
             messages: output,
             event,
@@ -1405,7 +1415,7 @@ mod tests {
             after_micro_floor >= 2_500,
             "夹具失效：microcompact 单独就能压到阈值下 ({after_micro_floor})"
         );
-        let outcome = c.compact_outcome(&msgs, None, Some(reported)).await;
+        let outcome = c.compact_outcome(&msgs, None, Some(reported), None).await;
         let CompactionOutcome::Applied {
             messages: output,
             event,
@@ -1469,7 +1479,7 @@ mod tests {
             3.0
         );
         let outcome = c
-            .compact_outcome(&msgs, None, Some(local.saturating_mul(10)))
+            .compact_outcome(&msgs, None, Some(local.saturating_mul(10)), None)
             .await;
         let CompactionOutcome::Applied {
             below_trigger,
@@ -1518,7 +1528,7 @@ mod tests {
             calibration_scale(local, None) == 1.0,
             "没有上报时缩放必须保持 1"
         );
-        let outcome = c.compact_outcome(&msgs, None, None).await;
+        let outcome = c.compact_outcome(&msgs, None, None, None).await;
         match outcome {
             CompactionOutcome::Applied {
                 below_trigger,
@@ -1605,5 +1615,72 @@ mod tests {
             "llm=0 must not suppress local-estimate over-budget, got strategy {:?}",
             evt.strategy
         );
+    }
+
+    /// v1.x:捕获 `summarize_full_with_focus` 的 focus 实参的 mock。
+    struct FocusCaptureSummarizer {
+        seen: std::sync::Mutex<Vec<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl Summarizer for FocusCaptureSummarizer {
+        async fn summarize_full(
+            &self,
+            _: &[ChatMessage],
+        ) -> Result<String, crate::summarizer::SummarizerError> {
+            Ok("# 摘要".into())
+        }
+        async fn summarize_recent(
+            &self,
+            _: &[ChatMessage],
+            _: Option<&str>,
+        ) -> Result<String, crate::summarizer::SummarizerError> {
+            Ok("# 摘要".into())
+        }
+        async fn summarize_full_with_focus(
+            &self,
+            _: &[ChatMessage],
+            focus: Option<&str>,
+        ) -> Result<String, crate::summarizer::SummarizerError> {
+            self.seen.lock().unwrap().push(focus.map(String::from));
+            Ok("# 摘要".into())
+        }
+    }
+
+    /// v1.x:`/compact <指示>` 的 focus 经 `compact_outcome` 传到摘要器;
+    /// `None` 传 None(自动压缩路径不携带残留指示)。
+    #[tokio::test]
+    async fn compact_focus_flows_into_summarizer() {
+        let mock = Arc::new(FocusCaptureSummarizer {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        // target_ratio 压到 0.01:prune 后仍高于 target,才能走到 LLM 摘要步
+        // (与 consolidation 系测试同一配方)。
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 100,
+                keep_recent_microcompact: 5,
+                keep_recent_smart_prune: 5,
+                target_ratio: 0.01,
+                summarize_after: true,
+                ..Default::default()
+            },
+            Arc::clone(&mock) as Arc<dyn Summarizer>,
+        );
+        let msgs = huge_message_list();
+
+        let outcome = c
+            .compact_outcome(&msgs, None, None, Some("聚焦数据库改动"))
+            .await;
+        assert!(matches!(outcome, CompactionOutcome::Applied { .. }));
+        assert_eq!(
+            *mock.seen.lock().unwrap(),
+            vec![Some("聚焦数据库改动".to_string())],
+            "focus 必须原样传到摘要器"
+        );
+
+        let outcome = c.compact_outcome(&msgs, None, None, None).await;
+        assert!(matches!(outcome, CompactionOutcome::Applied { .. }));
+        assert_eq!(*mock.seen.lock().unwrap().last().unwrap(), None);
     }
 }

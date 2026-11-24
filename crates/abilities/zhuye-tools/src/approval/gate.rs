@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use zhuye_hooks::builtins::ask_mode::{AskDecision, classify_ask_mode_tool};
 use zhuye_protocol::{
     ApprovalKind, ApprovalRequestEvent, AskUserAnswer, AskUserInputEvent, Event, EventMsg,
     InteractionKind, InteractionOutcome, InteractionResolvedEvent, PendingInteraction,
@@ -380,6 +381,14 @@ impl ApprovalGate {
         self
     }
 
+    /// 当前回合的审批策略快照（`ThreadSettingsOverrides.approval_policy`）。
+    ///
+    /// PreToolUse 的 `HookContext` 据此暴露 `approval_policy`，让
+    /// `PlanModeGate` 能在「完全访问」下放开 Plan 模式的 bash。
+    pub fn turn_policy(&self) -> Option<zhuye_protocol::ApprovalPolicy> {
+        self.turn_policy
+    }
+
     /// v1.9 S6:设置审批 TTL(覆盖默认 300s)。gate 构造起算,本 turn
     /// 全部挂起审批共享同一绝对死线。
     pub fn with_approval_ttl(mut self, ttl: std::time::Duration) -> Self {
@@ -690,6 +699,21 @@ impl ApprovalGate {
                     return ReviewDecision::Deny {
                         reason: "session permission mode is deny".into(),
                     };
+                }
+                // v1.x 询问档语义升级:Prompt 模式不再逐工具弹窗 —— 只读工具
+                // 与 Safe bash 自动放行;写类工具与 Risky/Dangerous bash 直接
+                // 拒绝(不能修改文件 / 拦截危险操作);其余(MCP 等)落 modal,
+                // 保留「询问」兜底。
+                if mode == PermissionMode::Prompt {
+                    match classify_ask_mode_tool(tool_name, args) {
+                        AskDecision::Allow if risk != RiskLevel::High => {
+                            return ReviewDecision::Approve;
+                        }
+                        AskDecision::Deny(reason) => {
+                            return ReviewDecision::Deny { reason };
+                        }
+                        _ => {}
+                    }
                 }
                 if risk != RiskLevel::High && self.is_session_allowed(tool_name) {
                     return ReviewDecision::Approve;

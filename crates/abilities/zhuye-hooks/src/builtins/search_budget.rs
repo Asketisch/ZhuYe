@@ -96,6 +96,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 workspace: PathBuf::from("/"),
                 permission_mode: PermissionMode::Auto,
+                approval_policy: None,
             },
         }
     }

@@ -29,7 +29,16 @@ pub enum Op {
     },
 
     /// 手动触发上下文压缩。
-    Compact,
+    ///
+    /// v1.x:`instructions` 为可选的用户附加指示 —— 随本轮强制压缩注入
+    /// 摘要 prompt(「## 用户附加指示」段),让 `/compact <focus>` 把摘要
+    /// 引向用户关心的部分。`None` = 普通压缩,行为不变(wire 兼容:旧
+    /// 客户端 `{"type":"compact"}` 反序列化出 `None`)。
+    Compact {
+        /// 压缩摘要的附加指示;`None` = 无。
+        #[serde(default)]
+        instructions: Option<String>,
+    },
 
     /// 中断当前 turn(保留状态,丢弃进行中的流)。
     ///
@@ -318,7 +327,7 @@ impl Op {
     pub fn discriminant(&self) -> &'static str {
         match self {
             Op::UserInput { .. } => "user_input",
-            Op::Compact => "compact",
+            Op::Compact { .. } => "compact",
             Op::Interrupt { .. } => "interrupt",
             Op::Rewind { .. } => "rewind",
             Op::Shutdown => "shutdown",
@@ -356,7 +365,7 @@ mod tests {
 
     #[test]
     fn discriminant_is_stable() {
-        assert_eq!(Op::Compact.discriminant(), "compact");
+        assert_eq!(Op::Compact { instructions: None }.discriminant(), "compact");
         assert_eq!(Op::Interrupt { child_id: None }.discriminant(), "interrupt");
         assert_eq!(Op::Shutdown.discriminant(), "shutdown");
         // 批次十九:Op::Rewind discriminant。

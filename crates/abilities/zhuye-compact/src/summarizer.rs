@@ -105,6 +105,39 @@ pub trait Summarizer: Send + Sync {
     ) -> Result<Vec<String>, SummarizerError> {
         Err(SummarizerError::Cancelled)
     }
+
+    /// v1.x:`/compact <指示>` 的附加指示注入版全量摘要。默认忽略 focus
+    /// 直接回落 [`Self::summarize_full`](测试 stub / 旧实现零适配);
+    /// `LlmSummarizer` 覆盖以把「## 用户附加指示」段拼进 prompt。
+    async fn summarize_full_with_focus(
+        &self,
+        msgs: &[ChatMessage],
+        focus: Option<&str>,
+    ) -> Result<String, SummarizerError> {
+        let _ = focus;
+        self.summarize_full(msgs).await
+    }
+
+    /// v1.x:附加指示注入版增量摘要(默认回落,同上)。
+    async fn summarize_recent_with_focus(
+        &self,
+        msgs: &[ChatMessage],
+        previous_summary: Option<&str>,
+        focus: Option<&str>,
+    ) -> Result<String, SummarizerError> {
+        let _ = focus;
+        self.summarize_recent(msgs, previous_summary).await
+    }
+}
+
+/// v1.x:`/compact <指示>` 附加指示 → prompt 段(空指示返回空串)。
+pub fn compact_focus_block(focus: Option<&str>) -> String {
+    match focus.map(str::trim) {
+        Some(f) if !f.is_empty() => {
+            format!("\n\n## 用户附加指示\n本次压缩摘要请特别关注以下用户指示:\n\n{f}\n")
+        }
+        _ => String::new(),
+    }
 }
 
 /// 由 LLM 驱动的 summarizer。流式读取模型响应,拼接
@@ -190,12 +223,7 @@ fn resolve_prompt_section(key: &str, fallback: &str) -> String {
 #[async_trait]
 impl Summarizer for LlmSummarizer {
     async fn summarize_full(&self, msgs: &[ChatMessage]) -> Result<String, SummarizerError> {
-        let conversation = serialize_messages(msgs);
-        // v1.6:prompt 从提示词库解析(`compact.full`),`{{ conversation }}`
-        // 占位符语义不变(库文件与常量同源)。
-        let template = resolve_prompt_section("compact.full", SUMMARIZE_PROMPT_FULL);
-        let prompt = template.replace("{{ conversation }}", &conversation);
-        call_summarizer(self, &prompt, None).await
+        self.summarize_full_with_focus(msgs, None).await
     }
 
     async fn summarize_recent(
@@ -203,19 +231,43 @@ impl Summarizer for LlmSummarizer {
         msgs: &[ChatMessage],
         previous_summary: Option<&str>,
     ) -> Result<String, SummarizerError> {
+        self.summarize_recent_with_focus(msgs, previous_summary, None)
+            .await
+    }
+
+    async fn summarize_full_with_focus(
+        &self,
+        msgs: &[ChatMessage],
+        focus: Option<&str>,
+    ) -> Result<String, SummarizerError> {
+        let conversation = serialize_messages(msgs);
+        // v1.6:prompt 从提示词库解析(`compact.full`),`{{ conversation }}`
+        // 占位符语义不变(库文件与常量同源)。
+        let template = resolve_prompt_section("compact.full", SUMMARIZE_PROMPT_FULL);
+        let mut prompt = template.replace("{{ conversation }}", &conversation);
+        prompt.push_str(&compact_focus_block(focus));
+        call_summarizer(self, &prompt, None).await
+    }
+
+    async fn summarize_recent_with_focus(
+        &self,
+        msgs: &[ChatMessage],
+        previous_summary: Option<&str>,
+        focus: Option<&str>,
+    ) -> Result<String, SummarizerError> {
         let recent = serialize_messages(msgs);
         let recent_template = resolve_prompt_section("compact.recent", SUMMARIZE_PROMPT_RECENT);
         let full_template = resolve_prompt_section("compact.full", SUMMARIZE_PROMPT_FULL);
-        let prompt = match previous_summary {
+        let mut prompt = match previous_summary {
             Some(prev) if !prev.is_empty() => recent_template
                 .replace("{{ previous_summary }}", prev)
                 .replace("{{ recent_conversation }}", &recent),
             _ => {
                 // 无先前摘要 → 行为等同 full。
-                let full = full_template.replace("{{ conversation }}", &recent);
-                return call_summarizer(self, &full, None).await;
+                full_template.replace("{{ conversation }}", &recent)
             }
         };
+        prompt.push_str(&compact_focus_block(focus));
         call_summarizer(self, &prompt, Some(previous_summary.unwrap_or(""))).await
     }
 
@@ -559,6 +611,19 @@ mod tests {
     #[test]
     fn parse_summary_returns_none_when_unclosed() {
         assert!(parse_summary("<summary>unfinished").is_none());
+    }
+
+    #[test]
+    fn compact_focus_block_empty_when_none_or_blank() {
+        assert_eq!(compact_focus_block(None), "");
+        assert_eq!(compact_focus_block(Some("   ")), "");
+    }
+
+    #[test]
+    fn compact_focus_block_carries_instruction() {
+        let block = compact_focus_block(Some("聚焦数据库改动"));
+        assert!(block.contains("## 用户附加指示"));
+        assert!(block.contains("聚焦数据库改动"));
     }
 
     #[test]
