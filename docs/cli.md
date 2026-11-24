@@ -116,7 +116,7 @@ github / git / url / file / directory)、`ls`、`refresh`、`discover`
   `list` / `delete --yes`;AES-256-GCM + machine key。
 - **security**:cargo audit 安全扫描。
 - **workspace**:git clone / sync。
-- **doctor**:`--check-network` 对当前 provider 发 1 token 探测;
+- **doctor**:显示可解析模型的上下文窗口、压缩阈值及配置来源；`--check-network` 对当前 provider 发 1 token 探测;
   `--dump-config` 打印当前生效配置的 JSON 快照(密钥只出 label)。
 - **update**:`--check-only` 仅打印检查说明,不联网。
 - **init**:`--force` 覆盖已存在的 AGENTS.md(默认跳过)。

@@ -23,6 +23,7 @@ async fn roundtrips_all_four_record_types() {
             summary: "<summary>...</summary>".into(),
             before_tokens: 0,
             after_tokens: 0,
+            context_snapshot: None,
         },
         RolloutRecord::Fork {
             child_session_id: None,

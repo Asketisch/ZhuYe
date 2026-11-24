@@ -7,8 +7,8 @@
 //! 4. 执行 smart_prune。若当前低于 `target` → 返回 `SmartPrune`。
 //! 5. 若 `summarize_after` 为 true,调用 LLM 摘要器。若摘要结果低于
 //!    `target` → 返回 `LlMSummarize`。
-//! 6. 回退到 smart_prune 的尽力而为结果;若 smart_prune 也什么都没裁
-//!    (removed=0 且 truncated=0,三级全部空转),整次判定降级为
+//! 6. 回退到 smart_prune 的尽力而为结果;若两个本地阶段都没有改动,
+//!    整次判定降级为
 //!    `Noop` —— 空压谎报非空策略会让调用方误判「压缩已发生」,给
 //!    rapid-refill 熔断器上膛后把正常 turn 连击误杀。
 //!
@@ -71,10 +71,54 @@ impl CompactorConfig {
 pub struct Compactor {
     cfg: CompactorConfig,
     summarizer: Arc<dyn Summarizer>,
+    trigger_policy: Arc<std::sync::RwLock<Option<TriggerPolicy>>>,
     /// v1.4 D2:记忆固化目标。`Some` 时 LLM 摘要成功后追加一步记忆
     /// 提取(extract_memories),把长期事实条目 append 进目标 scope。
     /// `None`(默认)= 关闭,零开销。
     consolidation: Option<ConsolidationTarget>,
+}
+
+/// 运行时按模型窗口重新计算，或使用明确指定的固定阈值。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TriggerPolicy {
+    Fixed(u32),
+    WindowRatio(f32),
+}
+
+/// 引擎内部压缩结果。只有 Applied 携带改动后的消息。
+pub enum CompactionOutcome {
+    Noop {
+        event: ContextCompactedEvent,
+        reason: &'static str,
+    },
+    Applied {
+        messages: Vec<ChatMessage>,
+        event: ContextCompactedEvent,
+        memory_write: Option<MemoryWriteInfo>,
+        micro_changed: usize,
+        pruned: usize,
+        truncated: usize,
+    },
+}
+
+impl CompactionOutcome {
+    fn into_legacy(
+        self,
+    ) -> (
+        Option<Vec<ChatMessage>>,
+        ContextCompactedEvent,
+        Option<MemoryWriteInfo>,
+    ) {
+        match self {
+            Self::Noop { event, .. } => (None, event, None),
+            Self::Applied {
+                messages,
+                event,
+                memory_write,
+                ..
+            } => (Some(messages), event, memory_write),
+        }
+    }
 }
 
 /// v1.4 D2:记忆固化目标(store + scope + agent 名)。
@@ -100,6 +144,7 @@ impl Compactor {
         Self {
             cfg,
             summarizer,
+            trigger_policy: Arc::new(std::sync::RwLock::new(None)),
             consolidation: None,
         }
     }
@@ -109,6 +154,54 @@ impl Compactor {
     /// 计入 refill 连击,避免把未超阈值的普通步也当 refill。
     pub fn trigger_tokens(&self) -> u32 {
         self.cfg.trigger_tokens
+    }
+
+    /// 更新共享策略；调用方在配置热重载时使用。
+    pub fn set_trigger_policy(&self, policy: TriggerPolicy) {
+        *self
+            .trigger_policy
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(policy);
+    }
+
+    /// 返回阈值来源类别；没有动态策略的压缩器保留构造时配置。
+    pub fn trigger_source(&self) -> &'static str {
+        match *self
+            .trigger_policy
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+        {
+            Some(TriggerPolicy::Fixed(_)) => "explicit",
+            Some(TriggerPolicy::WindowRatio(_)) => "window_ratio",
+            None => "configured",
+        }
+    }
+
+    /// 为一次决策固定阈值，避免并发模型切换使守卫与压缩器口径不同。
+    pub fn for_window(&self, window: Option<u32>) -> Self {
+        let policy = *self
+            .trigger_policy
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut cfg = self.cfg.clone();
+        cfg.trigger_tokens = match policy {
+            Some(TriggerPolicy::Fixed(value)) => value,
+            Some(TriggerPolicy::WindowRatio(ratio)) => {
+                let ratio = if ratio.is_finite() && ratio > 0.0 {
+                    ratio.min(1.0)
+                } else {
+                    0.85
+                };
+                (((window.unwrap_or(128_000) as f64) * (ratio as f64)) as u32).max(1_024)
+            }
+            None => cfg.trigger_tokens,
+        };
+        Self {
+            cfg,
+            summarizer: Arc::clone(&self.summarizer),
+            trigger_policy: Arc::clone(&self.trigger_policy),
+            consolidation: self.consolidation.clone(),
+        }
     }
 
     /// v1.4 D2:挂载记忆固化目标(bootstrap 在配置开启时调用)。
@@ -175,6 +268,18 @@ impl Compactor {
         ContextCompactedEvent,
         Option<MemoryWriteInfo>,
     ) {
+        self.compact_outcome(messages, prev_summary, llm_reported_input_tokens)
+            .await
+            .into_legacy()
+    }
+
+    /// 以明确的动作结果供宿主驱动事件、回写和守卫。
+    pub async fn compact_outcome(
+        &self,
+        messages: &[ChatMessage],
+        prev_summary: Option<&str>,
+        llm_reported_input_tokens: Option<u32>,
+    ) -> CompactionOutcome {
         let local_estimate = estimate_messages(messages);
         let before_tokens = match llm_reported_input_tokens {
             Some(n) => n.max(local_estimate),
@@ -185,16 +290,15 @@ impl Compactor {
 
         // 第 1 步:低于 micro 阈值 → noop(不回写,调用方保持原列表)。
         if before_tokens < micro_threshold {
-            return (
-                None,
-                ContextCompactedEvent {
+            return CompactionOutcome::Noop {
+                event: ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::Noop,
                     removed_messages: 0,
                     before_tokens,
                     after_tokens: before_tokens,
                 },
-                None,
-            );
+                reason: "below_threshold",
+            };
         }
 
         // 第 2 步:microcompact(仅在真正触发压缩时克隆一次)。
@@ -209,16 +313,19 @@ impl Compactor {
             // 直接尝试 smart_prune。
         } else if estimate_messages(&after_mc) < self.cfg.trigger_tokens {
             let after_tokens = estimate_messages(&after_mc);
-            return (
-                Some(after_mc),
-                ContextCompactedEvent {
+            return CompactionOutcome::Applied {
+                messages: after_mc,
+                event: ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::Microcompact,
                     removed_messages: mc_report.removed_count,
                     before_tokens,
                     after_tokens,
                 },
-                None,
-            );
+                memory_write: None,
+                micro_changed: mc_report.removed_count,
+                pruned: 0,
+                truncated: 0,
+            };
         }
 
         // 第 3 步:smart_prune。
@@ -231,32 +338,35 @@ impl Compactor {
         let (after_sp, sp_report) = smart_prune(after_mc, &sp_cfg);
         let after_sp_tokens = estimate_messages(&after_sp);
         if after_sp_tokens < self.cfg.target_tokens() {
-            // 幽灵压缩防御:removed=0 且 truncated=0 → 消息列表原样,
-            // 「低于目标」只是因为 before 取了 max(本地估算, LLM 上报)
-            // 而 after 只算本地估算 —— 口径差制造的假收敛。与尾部兜底
-            // 同规则:什么都没裁就降级 Noop(不回写、不上膛)。
-            if sp_report.removed_count == 0 && sp_report.truncated_count == 0 {
-                return (
-                    None,
-                    ContextCompactedEvent {
+            // 只在两个阶段均未修改消息时返回 Noop，避免丢弃前一阶段的成果。
+            if !mc_report.was_compacted && !sp_report.was_compacted {
+                return CompactionOutcome::Noop {
+                    event: ContextCompactedEvent {
                         strategy: ContextCompactedStrategy::Noop,
                         removed_messages: 0,
                         before_tokens,
                         after_tokens: before_tokens,
                     },
-                    None,
-                );
+                    reason: "nothing_prunable",
+                };
             }
-            return (
-                Some(after_sp),
-                ContextCompactedEvent {
-                    strategy: ContextCompactedStrategy::SmartPrune,
-                    removed_messages: sp_report.removed_count,
+            return CompactionOutcome::Applied {
+                messages: after_sp,
+                event: ContextCompactedEvent {
+                    strategy: if sp_report.was_compacted {
+                        ContextCompactedStrategy::SmartPrune
+                    } else {
+                        ContextCompactedStrategy::Microcompact
+                    },
+                    removed_messages: mc_report.removed_count + sp_report.removed_count,
                     before_tokens,
                     after_tokens: after_sp_tokens,
                 },
-                None,
-            );
+                memory_write: None,
+                micro_changed: mc_report.removed_count,
+                pruned: sp_report.removed_count,
+                truncated: sp_report.truncated_count,
+            };
         }
 
         // 第 4 步:LLM 摘要(若启用)。M5 v0:存在历史摘要时使用增量模式
@@ -301,16 +411,19 @@ impl Compactor {
                     let tail = keep_recent_tail(&after_sp, self.cfg.keep_recent_smart_prune);
                     summary_msg.extend(tail);
                     let after_tokens = estimate_messages(&summary_msg);
-                    return (
-                        Some(summary_msg),
-                        ContextCompactedEvent {
+                    return CompactionOutcome::Applied {
+                        messages: summary_msg,
+                        event: ContextCompactedEvent {
                             strategy: ContextCompactedStrategy::LlMSummarize,
                             removed_messages: sp_report.removed_count + 1,
                             before_tokens,
                             after_tokens,
                         },
                         memory_write,
-                    );
+                        micro_changed: mc_report.removed_count,
+                        pruned: sp_report.removed_count,
+                        truncated: sp_report.truncated_count,
+                    };
                 }
                 Err(e) => {
                     tracing::warn!(?e, "summarize failed; returning best-effort smart_prune");
@@ -320,35 +433,41 @@ impl Compactor {
 
         // 回退:摘要不可用(无 provider / 摘要失败 / summarize_after 关)
         // 时返回 smart_prune 的尽力而为结果。但**必须核实确实裁剪过
-        // 东西**:removed=0 且 truncated=0 意味着三级全部空转、消息列表
+        // 东西**:两个阶段都没有修改才意味着消息列表
         // 原样 —— 此时谎报 `SmartPrune` 就是「幽灵压缩」:调用方
         // (pre_loop)会登记 rapid-refill 熔断锚点并广播压缩事件,而
         // 上下文一个字节没少,下一迭代立即再次越阈 → Skip/Abort 连击,
         // 把正常推进的 turn 误杀(桌面 sess_77cd626f 实证:12K token
         // 会话被幽灵压缩引爆熔断)。空压一律降级为 Noop(不回写列表、
         // 不上膛守卫)。
-        if sp_report.removed_count == 0 && sp_report.truncated_count == 0 {
-            return (
-                None,
-                ContextCompactedEvent {
+        if !mc_report.was_compacted && !sp_report.was_compacted {
+            return CompactionOutcome::Noop {
+                event: ContextCompactedEvent {
                     strategy: ContextCompactedStrategy::Noop,
                     removed_messages: 0,
                     before_tokens,
                     after_tokens: before_tokens,
                 },
-                None,
-            );
+                reason: "nothing_prunable",
+            };
         }
-        (
-            Some(after_sp),
-            ContextCompactedEvent {
-                strategy: ContextCompactedStrategy::SmartPrune,
-                removed_messages: sp_report.removed_count,
+        CompactionOutcome::Applied {
+            messages: after_sp,
+            event: ContextCompactedEvent {
+                strategy: if sp_report.was_compacted {
+                    ContextCompactedStrategy::SmartPrune
+                } else {
+                    ContextCompactedStrategy::Microcompact
+                },
+                removed_messages: mc_report.removed_count + sp_report.removed_count,
                 before_tokens,
                 after_tokens: after_sp_tokens,
             },
-            None,
-        )
+            memory_write: None,
+            micro_changed: mc_report.removed_count,
+            pruned: sp_report.removed_count,
+            truncated: sp_report.truncated_count,
+        }
     }
 }
 
@@ -484,6 +603,24 @@ mod tests {
             }));
         }
         msgs
+    }
+
+    #[test]
+    fn trigger_policy_tracks_window_and_fixed_override() {
+        let c = Compactor::new(
+            CompactorConfig::default(),
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        c.set_trigger_policy(TriggerPolicy::WindowRatio(0.5));
+        assert_eq!(c.for_window(Some(1_000_000)).trigger_tokens(), 500_000);
+        assert_eq!(c.for_window(Some(8_000)).trigger_tokens(), 4_000);
+        assert_eq!(c.for_window(None).trigger_tokens(), 64_000);
+        c.set_trigger_policy(TriggerPolicy::Fixed(7_000));
+        assert_eq!(c.for_window(Some(8_000)).trigger_tokens(), 7_000);
+        assert_eq!(c.for_window(Some(1_000_000)).trigger_tokens(), 7_000);
     }
 
     #[tokio::test]
@@ -957,6 +1094,103 @@ mod tests {
             evt.strategy
         );
         assert!(out.is_none(), "空压不得回写消息列表");
+    }
+
+    #[tokio::test]
+    async fn microcompact_kept_when_smart_prune_has_no_changes() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 1_000,
+                keep_recent_microcompact: 1,
+                keep_recent_smart_prune: 100,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        let msgs = vec![
+            ChatMessage::System("s".repeat(8_000)),
+            ChatMessage::Tool(ToolResult {
+                call_id: "c1".into(),
+                content: vec![ContentBlock::text("旧工具输出")],
+                is_error: false,
+            }),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("继续")],
+            }),
+        ];
+        let (out, event, _) = c.compact_with_prior_and_tokens(&msgs, None, None).await;
+        assert_eq!(event.strategy, ContextCompactedStrategy::Microcompact);
+        assert_eq!(event.removed_messages, 1);
+        assert!(matches!(&out.unwrap()[1], ChatMessage::Tool(result)
+            if matches!(&result.content[0], ContentBlock::Text { text } if text == crate::microcompact::TRUNCATE_PLACEHOLDER)));
+    }
+
+    #[tokio::test]
+    async fn repeated_microcompact_does_not_report_an_unchanged_placeholder() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 1_000,
+                keep_recent_microcompact: 1,
+                keep_recent_smart_prune: 100,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        let msgs = vec![
+            ChatMessage::System("s".repeat(8_000)),
+            ChatMessage::Tool(ToolResult {
+                call_id: "c1".into(),
+                content: vec![ContentBlock::text(
+                    crate::microcompact::TRUNCATE_PLACEHOLDER,
+                )],
+                is_error: false,
+            }),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("继续")],
+            }),
+        ];
+        let (out, event, _) = c.compact_with_prior_and_tokens(&msgs, None, None).await;
+        assert_eq!(event.strategy, ContextCompactedStrategy::Noop);
+        assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn smart_prune_can_change_content_without_removing_messages() {
+        let c = Compactor::new(
+            CompactorConfig {
+                trigger_tokens: 1_000,
+                keep_recent_microcompact: 100,
+                keep_recent_smart_prune: 100,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(MockSummarizer {
+                canned: String::new(),
+                fail: false,
+            }),
+        );
+        let msgs = vec![
+            ChatMessage::System("s".repeat(8_000)),
+            ChatMessage::Tool(ToolResult {
+                call_id: "c1".into(),
+                content: vec![ContentBlock::text("x".repeat(2_000))],
+                is_error: false,
+            }),
+        ];
+        let (out, event, _) = c.compact_with_prior_and_tokens(&msgs, None, None).await;
+        assert_eq!(event.strategy, ContextCompactedStrategy::SmartPrune);
+        assert_eq!(event.removed_messages, 0);
+        let output = out.expect("截断必须回写");
+        assert!(matches!(&output[1], ChatMessage::Tool(result)
+            if matches!(&result.content[0], ContentBlock::Text { text } if text.len() < 2_000)));
     }
 
     /// 本地估算 = 50_000(大列表),LLM 上报 = 8_000,

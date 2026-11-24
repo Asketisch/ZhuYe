@@ -317,6 +317,10 @@ pub(crate) fn bootstrap_m4(
         (scope, _) => scope,
     };
     let compactor_base = Compactor::new(compactor_cfg, summarizer);
+    compactor_base.set_trigger_policy(zhuye_core::config::compact_trigger_policy(
+        toml_trigger_tokens,
+        cfg.compact.trigger_ratio,
+    ));
     let compactor = match consolidation_scope {
         Some(scope) if registry.next_for(&model, &[]).is_some() => {
             tracing::info!(?scope, "memory consolidation enabled");

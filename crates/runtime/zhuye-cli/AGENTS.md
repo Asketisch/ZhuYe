@@ -22,6 +22,7 @@
 ## 本地契约与同步点
 
 - **`enum Command`（`src/main.rs`）是 CLI 参数面的唯一权威**：子命令集合、旗标名、互斥关系、帮助文案都从这里出。`docs/cli.md` 的总览表是它的文档投影，不是另一份事实源。
+- `doctor` 展示静态可解析模型的窗口、压缩阈值及来源；未解析模型应明确说明阈值尚未确定。
 - **新增子命令的同步点**：① `src/main.rs` 的 `enum Command` 与 dispatch 分支；② `docs/cli.md` 的总览表与对应小节；③ `tests/functional/` 下的参数面用例（能力面统一用 Python 写）；④ 若因此新增了 crate，补 runtime 层篇的 crate 速览导航。
 - **clap 外壳与逻辑下沉的分工**：`exec` / `serve` 的参数结构与业务逻辑都在 `zhuye-exec`，本 crate 只做投影与转发；工具类子命令（config / session / task / pipeline / plugin / mcp / lsp / hooks / secrets / models / doctor / workspace / update / init / login / traces / skill / security）在本 crate 内直接实现。
 - **本二进制不含 `tui` 子命令**：交互式 TUI 已拆至独立仓库，这里只提供 headless 与工具类子命令。

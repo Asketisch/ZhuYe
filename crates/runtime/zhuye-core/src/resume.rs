@@ -11,14 +11,41 @@
 //!   `tool_calls`;ToolResult → 独立 `ChatMessage::Tool` 且**紧跟**
 //!   Assistant 之后(provider 要求 assistant/tool 角色交替)。工具对
 //!   忠实重建,不丢弃。
-//! - `Compaction`:取最近一次非空 summary,前置为合成的 `System` 消息。
-//!   注意:compaction 之前的旧消息**不丢弃**(全量历史 + 摘要前置),
-//!   上下文收敛交给 Compactor 运行时处理。
+//! - `Compaction`:有快照时恢复压缩后的消息；旧记录没有快照时保留
+//!   全量历史，并将最近一次非空摘要前置为合成的 `System` 消息。
 //! - 其余记录(SessionMeta/Fork/Checkpoint/Rewind/TokenCount/Plan*/
 //!   PermissionModeChanged/DiscussionTranscript)是审计轨迹,不注入对话。
 
 use zhuye_llm::ChatMessage;
 use zhuye_protocol::RolloutRecord;
+
+/// 系统消息是字符串新类型，需单独编码以避免内部标签枚举的 serde 限制。
+pub(crate) fn encode_context_snapshot(
+    messages: &[ChatMessage],
+) -> Result<serde_json::Value, serde_json::Error> {
+    let items = messages
+        .iter()
+        .map(|message| match message {
+            ChatMessage::System(text) => Ok(serde_json::json!({"role": "system", "text": text})),
+            other => serde_json::to_value(other),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(serde_json::Value::Array(items))
+}
+
+fn decode_context_snapshot(value: &serde_json::Value) -> Option<Vec<ChatMessage>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|item| {
+            if item.get("role").and_then(|v| v.as_str()) == Some("system") {
+                Some(ChatMessage::System(item.get("text")?.as_str()?.to_owned()))
+            } else {
+                serde_json::from_value(item.clone()).ok()
+            }
+        })
+        .collect()
+}
 
 /// 把 rollout 记录切片映射为适用于 `AgentThread` 的历史消息。
 ///
@@ -150,8 +177,11 @@ pub fn records_to_preload(records: &[RolloutRecord]) -> Vec<ChatMessage> {
                     _ => {}
                 }
             }
-            RolloutRecord::Compaction { summary, .. } => {
-                if !summary.is_empty() {
+            RolloutRecord::Compaction { summary, context_snapshot, .. } => {
+                if let Some(snapshot) = context_snapshot.as_ref().and_then(decode_context_snapshot) {
+                    messages = snapshot;
+                    last_summary = None;
+                } else if !summary.is_empty() {
                     last_summary = Some(summary.clone());
                 }
             }
@@ -318,4 +348,54 @@ pub fn unsettled_input_turns(records: &[RolloutRecord]) -> Vec<String> {
         .filter(|t| !settled.contains(t))
         .take(5)
         .collect()
+}
+
+#[cfg(test)]
+mod compaction_snapshot_tests {
+    use super::*;
+    use zhuye_protocol::{MessageRole, TurnId};
+
+    #[test]
+    fn snapshot_replaces_earlier_messages_and_keeps_later_fragments() {
+        let turn = TurnId::new();
+        let snapshot = vec![
+            ChatMessage::System("<summary>摘要</summary>".into()),
+            ChatMessage::User(zhuye_llm::UserContent {
+                blocks: vec![zhuye_llm::ContentBlock::Text {
+                    text: "压缩后的问题".into(),
+                }],
+            }),
+        ];
+        let records = vec![
+            RolloutRecord::message(turn, MessageRole::User, serde_json::json!("旧问题")),
+            RolloutRecord::message(
+                turn,
+                MessageRole::Assistant,
+                serde_json::json!([{"type":"text","text":"旧回答"}]),
+            ),
+            RolloutRecord::Compaction {
+                turn_id: turn,
+                strategy: "smart_prune".into(),
+                removed_count: 0,
+                summary: String::new(),
+                before_tokens: 100,
+                after_tokens: 20,
+                context_snapshot: Some(encode_context_snapshot(&snapshot).unwrap()),
+            },
+            RolloutRecord::message(
+                turn,
+                MessageRole::Assistant,
+                serde_json::json!([{"type":"text","text":"新回答"}]),
+            ),
+        ];
+        let replay = records_to_preload(&records);
+        assert_eq!(replay.len(), 3);
+        assert!(matches!(&replay[0], ChatMessage::System(s) if s == "<summary>摘要</summary>"));
+        assert!(
+            matches!(&replay[1], ChatMessage::User(u) if matches!(&u.blocks[0], zhuye_llm::ContentBlock::Text { text } if text == "压缩后的问题"))
+        );
+        assert!(
+            matches!(&replay[2], ChatMessage::Assistant(a) if a.text.as_deref() == Some("新回答"))
+        );
+    }
 }

@@ -608,7 +608,19 @@ async fn limit_model_tool_output(
     if text.len() <= limit {
         return;
     }
+    let text_bytes = text.len();
+    let images = content
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::Image { .. }))
+        .count();
     if budget.is_some_and(|b| !b.persist) {
+        tracing::info!(
+            text_bytes,
+            limit,
+            images,
+            outcome = "truncated_persist_disabled",
+            "工具输出模型预算"
+        );
         let truncated = zhuye_tools::result_budget::truncate_middle(&text, limit / 3);
         let mut emitted = false;
         *content = content
@@ -624,7 +636,7 @@ async fn limit_model_tool_output(
             .collect();
         return;
     }
-    let preview = match budget {
+    let mut preview = match budget {
         Some(b) => {
             let preview: String = text.chars().take(b.preview_chars).collect();
             zhuye_protocol::truncate_str(&preview, MODEL_TOOL_TEXT_PREVIEW_BYTES.min(limit))
@@ -632,22 +644,35 @@ async fn limit_model_tool_output(
         }
         None => zhuye_protocol::truncate_str(&text, MODEL_TOOL_TEXT_PREVIEW_BYTES).to_owned(),
     };
+    let fallback =
+        zhuye_tools::result_budget::truncate_middle(&text, limit.saturating_div(3).max(1_000));
     let workspace = workspace.to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         zhuye_tools::sandbox::write_spill_text(&workspace, &text)
     })
     .await;
     let notice = match result {
-        Ok(Ok(path)) => format!(
-            "\n[工具输出已截断，完整文本可用 read 字节分页读取: {}；从 byte_offset=0 开始，按 next_byte_offset 继续]",
-            path.display()
-        ),
+        Ok(Ok(path)) => {
+            tracing::info!(
+                text_bytes,
+                limit,
+                images,
+                outcome = "spilled",
+                "工具输出模型预算"
+            );
+            format!(
+                "\n[工具输出已截断，完整文本可用 read 字节分页读取: {}；从 byte_offset=0 开始，按 next_byte_offset 继续]",
+                path.display()
+            )
+        }
         Ok(Err(error)) => {
             tracing::warn!(%error, "工具输出溢出文件写入失败");
+            preview = fallback;
             "\n[工具输出已截断，完整文本保存失败；请缩小查询范围]".to_string()
         }
         Err(error) => {
             tracing::warn!(%error, "工具输出溢出任务失败");
+            preview = fallback;
             "\n[工具输出已截断，完整文本保存失败；请缩小查询范围]".to_string()
         }
     };
@@ -1045,14 +1070,16 @@ mod tests {
     #[tokio::test]
     async fn failed_spill_reports_loss_without_claiming_readback() {
         let workspace = tempfile::tempdir().unwrap();
-        let mut content = vec![ContentBlock::text(
-            "x".repeat(MODEL_TOOL_TEXT_LIMIT_BYTES + 1),
-        )];
+        let mut content = vec![ContentBlock::text(format!(
+            "开始{}结束",
+            "x".repeat(MODEL_TOOL_TEXT_LIMIT_BYTES + 1)
+        ))];
         limit_model_tool_output(&mut content, &workspace.path().join("missing"), None).await;
         let ContentBlock::Text { text } = &content[0] else {
             panic!("缺少失败回执")
         };
         assert!(text.contains("完整文本保存失败"));
+        assert!(text.contains("开始") && text.contains("结束"));
         assert!(!text.contains("完整文本可用 read 字节分页读取"));
     }
 

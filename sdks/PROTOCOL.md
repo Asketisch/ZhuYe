@@ -36,7 +36,7 @@ non-breaking,客户端必须容忍未知 `"type"`)。
 - 改动既有变体字段属 breaking,禁止;
 - serve 的 SDK 扩展(如 `submission_closed`)在本文单独标注引入版本;
 - `RolloutRecord` 的持久化形态见 `crates/protocol/zhuye-protocol/src/recorder.rs`:
-  `SessionMeta`(首条)/ `Message` / `Compaction`(resume 回放压缩边界)/
+  `SessionMeta`(首条)/ `Message` / `Compaction`(可选 `context_snapshot` 用于恢复压缩后的模型消息；旧记录无此字段时兼容回放)/
   `Fork`(分叉标记)/ `Checkpoint` / `DiscussionTranscript` /
   `TokenCount`(token / 成本索引)。文件 256 KiB 轮转 ×3,单条 16 KiB
   截断 + 密钥脱敏(见 [docs/sanitize.md](../docs/sanitize.md));

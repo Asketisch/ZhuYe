@@ -61,6 +61,20 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         return Some(GraphNode::ModelCall);
     };
 
+    let model = ctx.model.read().clone();
+    let window = ctx
+        .cfg
+        .context_window_override_for(&model)
+        .or_else(|| zhuye_llm::context_window_for(&model));
+    let compactor = m4.compactor.for_window(window);
+    tracing::debug!(model = %model, window, threshold = compactor.trigger_tokens(), source = compactor.trigger_source(), window_known = window.is_some(), "上下文压缩决策配置");
+    if !state.history_seeded && window.is_none() && compactor.trigger_source() == "window_ratio" {
+        tracing::warn!(model = %model, fallback_window = 128_000, threshold = compactor.trigger_tokens(), "未知模型窗口，压缩阈值使用回退值");
+    }
+    if !state.history_seeded && window.is_some_and(|w| compactor.trigger_tokens() > w) {
+        tracing::warn!(model = %model, window, threshold = compactor.trigger_tokens(), source = compactor.trigger_source(), "压缩阈值超过模型窗口");
+    }
+
     // Review 2026-06-29 BUG-2 修复: `compact_triggered` 必须先重置再决策,
     // 否则 `AgentState` 跨 turn 持久化时,上一轮触发的 true 会泄漏到本轮,
     // 导致 active file meta-message 反复注入。
@@ -127,13 +141,10 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         .cfg
         .model_step_counter
         .load(std::sync::atomic::Ordering::Relaxed);
-    let will_trigger = force_compact
-        || llm_reported.is_some_and(|reported| {
-            ctx.m4
-                .as_ref()
-                .is_some_and(|m4| reported >= m4.compactor.trigger_tokens())
-        });
-    let refill_skip_reminder: Option<String> = if !will_trigger {
+    let estimated = zhuye_compact::estimate_messages(&state.messages.messages);
+    let observed = llm_reported.unwrap_or(0).max(estimated);
+    let will_trigger = observed >= compactor.trigger_tokens();
+    let refill_skip_reminder: Option<String> = if !will_trigger || force_compact {
         None
     } else {
         let decision = {
@@ -146,6 +157,20 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         };
         match decision {
             zhuye_compact::RefillDecision::Allow => None,
+            zhuye_compact::RefillDecision::Skip
+                if window.is_some_and(|w| u64::from(observed) * 100 >= u64::from(w) * 95) =>
+            {
+                state.deferred_error = Some(zhuye_protocol::ErrorEvent {
+                    code: "compact_rapid_refill_window_full".into(),
+                    message:
+                        "上下文快速回填且接近模型窗口上限，无法安全继续；请缩小任务或开启新会话。"
+                            .into(),
+                    details: Some(
+                        serde_json::json!({"model": model, "window": window, "observed": observed, "threshold": compactor.trigger_tokens()}),
+                    ),
+                });
+                return None;
+            }
             zhuye_compact::RefillDecision::Skip => Some(format!(
                 "<system-reminder>\n上下文刚压缩过又在很短的几步内再次逼近阈值\
                  (rapid refill,连续第 {} 次)。为避免无限压缩循环,本次已跳过\
@@ -236,32 +261,62 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             None,
         )
     } else {
-        m4.compactor
-            .compact_with_prior_and_tokens(
+        match compactor
+            .compact_outcome(
                 &state.messages.messages,
                 state.compaction_summary.as_deref(),
                 llm_reported,
             )
             .await
+        {
+            zhuye_compact::CompactionOutcome::Noop { event, reason } => {
+                tracing::debug!(reason, "上下文压缩未发生");
+                (None, event, None)
+            }
+            zhuye_compact::CompactionOutcome::Applied {
+                messages,
+                event,
+                memory_write,
+                micro_changed,
+                pruned,
+                truncated,
+            } => {
+                tracing::debug!(micro_changed, pruned, truncated, "上下文压缩阶段结果");
+                (Some(messages), event, memory_write)
+            }
+        }
     };
+    tracing::debug!(model = %model, threshold = compactor.trigger_tokens(), local_estimate = estimated, llm_reported, strategy = ?evt.strategy, applied = compacted.is_some(), "上下文压缩结果");
+    if !force_compact
+        && !compact_denied
+        && refill_skip_reminder.is_none()
+        && compacted.is_none()
+        && window.is_some_and(|w| observed >= w)
+    {
+        state.deferred_error = Some(zhuye_protocol::ErrorEvent {
+            code: "compact_unavailable_window_full".into(),
+            message: "上下文已达到模型窗口且没有可压缩的消息；请缩小输入或调整模型窗口配置。"
+                .into(),
+            details: Some(
+                serde_json::json!({"model": model, "window": window, "observed": observed, "threshold": compactor.trigger_tokens()}),
+            ),
+        });
+        return None;
+    }
     // 从压缩后的消息列表里抽取 LLM 生成的摘要
     // (它是带 `<summary>...</summary>` 的 System 消息)。
     // iter().flatten() 对 None(未回写)短路,对无摘要的
     // Microcompact / SmartPrune 同样安全。
-    let summary_text = compacted.iter().flatten().find_map(|m| match m {
-        ChatMessage::System(s) if s.contains("<summary>") => Some(s.clone()),
-        _ => None,
-    });
-    // v1.x:幽灵压缩防御(与 zhuye-compact 兜底降级互为纵深)——「压缩
-    // 实际发生」不只看策略名,还要核实结果确实收敛:有移除或有摘要
-    // (与落盘空压守卫同口径)。removed=0 且无摘要的非 Noop 事件不登记
-    // rapid-refill 锚点、不发 wire 事件、不注入 ActiveFiles 恢复 ——
-    // 消息列表原样的「压缩」会让熔断器把正常 turn 连击误杀(桌面
-    // sess_77cd626f 实证:12K token 会话被幽灵压缩引爆熔断)。注意不能
-    // 用 after<before 代替:before 取 max(本地估算, LLM 上报) 而 after
-    // 只算本地估算,口径不一致时「列表原样」也会被误判成变小。
-    state.compact_triggered = !matches!(evt.strategy, ContextCompactedStrategy::Noop)
-        && (evt.removed_messages > 0 || summary_text.is_some());
+    let summary_text = if matches!(evt.strategy, ContextCompactedStrategy::LlMSummarize) {
+        compacted.iter().flatten().find_map(|m| match m {
+            ChatMessage::System(s) if s.contains("<summary>") => Some(s.clone()),
+            _ => None,
+        })
+    } else {
+        None
+    };
+    // 压缩器仅在消息确实改动时返回 Some；只截断但未删除消息也要计入。
+    state.compact_triggered = compacted.is_some();
     if state.compact_triggered {
         // v1.x:压缩实际发生 → 登记守卫窗口锚点(rapid-refill 计时起点)。
         ctx.cfg.compact_refill.lock().on_compacted(step_no);
@@ -314,30 +369,37 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
 
         // M5:持久化 Compaction 记录,让 `resume` 能回放。
         //
-        // v1.2 P2:空 compaction 守卫。SmartPrune / Microcompact 在消息很少时
-        // 可能判定「触发压缩」但 removed_count=0 且无 summary —— 此前每个 turn
-        // 都会写一条 `removed_count:0 summary:""` 的噪声(磁盘实证:236 条空
-        // compaction vs 75 条 message)。只有真正移除了消息或产生了摘要才落盘。
-        if removed_count > 0 || summary_text.as_ref().is_some_and(|s| !s.is_empty()) {
-            if let Some(rec) = ctx.recorder.as_ref() {
-                let strategy_str = match strategy {
-                    ContextCompactedStrategy::Noop => "noop",
-                    ContextCompactedStrategy::Microcompact => "microcompact",
-                    ContextCompactedStrategy::SmartPrune => "smart_prune",
-                    ContextCompactedStrategy::LlMSummarize => "llm_summarize",
-                };
-                let _ = rec
-                    .record(RolloutRecord::Compaction {
-                        turn_id: ctx.turn_id,
-                        strategy: strategy_str.into(),
-                        removed_count,
-                        summary: summary_text.clone().unwrap_or_default(),
-                        // v1.x:压缩前后 token 估算落盘(此前只在内存事件里,
-                        // 会话统计无法回答「压缩省了多少」)。
-                        before_tokens,
-                        after_tokens,
-                    })
-                    .await;
+        // 有实际改动即记审计；仅截断时删除数也可能为零。
+        if let Some(rec) = ctx.recorder.as_ref() {
+            let strategy_str = match strategy {
+                ContextCompactedStrategy::Noop => "noop",
+                ContextCompactedStrategy::Microcompact => "microcompact",
+                ContextCompactedStrategy::SmartPrune => "smart_prune",
+                ContextCompactedStrategy::LlMSummarize => "llm_summarize",
+            };
+            if let Err(error) = rec
+                .record(RolloutRecord::Compaction {
+                    turn_id: ctx.turn_id,
+                    strategy: strategy_str.into(),
+                    removed_count,
+                    summary: summary_text.clone().unwrap_or_default(),
+                    // v1.x:压缩前后 token 估算落盘(此前只在内存事件里,
+                    // 会话统计无法回答「压缩省了多少」)。
+                    before_tokens,
+                    after_tokens,
+                    context_snapshot: compacted.as_ref().and_then(|messages| {
+                        match crate::resume::encode_context_snapshot(messages) {
+                            Ok(snapshot) => Some(snapshot),
+                            Err(error) => {
+                                tracing::warn!(%error, "压缩快照编码失败，恢复时使用旧历史");
+                                None
+                            }
+                        }
+                    }),
+                })
+                .await
+            {
+                tracing::warn!(%error, "压缩快照记录失败，恢复时可能使用旧历史");
             }
         }
 

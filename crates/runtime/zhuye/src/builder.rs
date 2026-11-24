@@ -388,7 +388,8 @@ impl ZhuyeBuilder {
             m4.recorder = None;
         }
         let mut cfg = AgentConfig::new(self.model.clone(), self.workspace.clone())
-            .with_approvals(self.approvals);
+            .with_approvals(self.approvals)
+            .with_context_window_overrides(app_cfg.effective_context_window_overrides(&self.model));
         if self.plan_mode {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
         }
@@ -554,7 +555,8 @@ impl ZhuyeBuilder {
         factory.set_parent_skills(skills_for_plugins.clone());
 
         let mut cfg = AgentConfig::new(self.model.clone(), self.workspace.clone())
-            .with_approvals(self.approvals);
+            .with_approvals(self.approvals)
+            .with_context_window_overrides(app_cfg.effective_context_window_overrides(&self.model));
         // 0.5:Plan mode 必须**既设 permission mode,又注册 PlanModeGate**。
         // 此前这里只做了前者 —— `PermissionMode::Plan` 单独存在时没有任何
         // 强制力(它只是让审批层知道当前是 Plan 模式),写工具照样放行。

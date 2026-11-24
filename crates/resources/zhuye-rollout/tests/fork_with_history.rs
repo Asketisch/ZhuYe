@@ -71,6 +71,7 @@ fn write_parent(
                 summary: s.to_string(),
                 before_tokens: 0,
                 after_tokens: 0,
+                context_snapshot: None,
             })
             .unwrap()
         )
