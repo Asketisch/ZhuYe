@@ -40,6 +40,8 @@ def _run_sandbox_escape(cx: lib.Ctx) -> None:
     outside = os.path.join(cx.work, "outside-write.txt")
     if os.path.exists(outside):
         os.remove(outside)
+    # 把越界目标透给 mock 脚本,让自检走与真实模型**同一条**命令路径。
+    cx.params["outside_path"] = outside
     env = cx.env()
     s = cx.session(env)
 
@@ -64,7 +66,7 @@ def _run_sandbox_escape(cx: lib.Ctx) -> None:
 
 
 def _mock_sandbox_escape(params: dict) -> list[dict]:
-    outside = params.get("_outside") or "/tmp/zhuye-e2e-outside.txt"
+    outside = params.get("outside_path") or "/tmp/zhuye-e2e-outside.txt"
     return [
         _tool("bash", {"command": "echo inside > inside.txt"}),
         _tool("bash", {"command": f"echo outside > {outside}"}),
@@ -101,6 +103,14 @@ def _run_read_before_edit(cx: lib.Ctx) -> None:
     )
     names = {lib._msg(e).get("call_id"): lib._msg(e).get("tool_name")
              for e in denied_turn.events if lib.etype(e) == "tool_call_begin"}
+    if "write" not in names.values():
+        lib.skip_all(cx, ["未读先写被 hook 拦下(工具回执为错误)",
+                          "拒绝原因指向「先读再写」(read before edit 提示)",
+                          "被拦下时文件内容未被改写",
+                          "读过之后写入放行(内容已更新为 v2)",
+                          "两个回合都正常收尾"],
+                     "模型未按提示调用 write(真模型自由发挥)")
+        return
     denied = [r for r in denied_turn.tool_results() if r["is_error"]]
     cx.checks.add(
         "未读先写被 hook 拦下(工具回执为错误)",
@@ -181,6 +191,14 @@ def _run_permission_policy(cx: lib.Ctx) -> None:
     s = cx.session(env)
 
     deny_turn = _policy_turn(s, "deny", "echo denied > policy-denied.txt", cx.timeout())
+    if "bash" not in deny_turn.tool_names:
+        lib.skip_all(cx, ["approval_policy=deny:需审批的工具被直接拒绝(回执为错误)",
+                          "approval_policy=deny:命令未执行(无落盘)",
+                          "approval_policy=full_access:命令被执行",
+                          "approval_policy=deny:回合有终态",
+                          "approval_policy=full_access:回合有终态"],
+                     "模型未按提示调用 bash(真模型自由发挥)")
+        return
     denied_errs = [r for r in deny_turn.tool_results() if r["is_error"]]
     cx.checks.add(
         "approval_policy=deny:需审批的工具被直接拒绝(回执为错误)",
