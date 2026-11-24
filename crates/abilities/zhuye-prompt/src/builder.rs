@@ -117,7 +117,7 @@ pub fn append_active_mode_section_with_set(
         ),
         zhuye_protocol::PermissionMode::Plan => (
             "runtime.active-mode",
-            "## Active Mode\nYou are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase, then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, call `ExitPlanMode` to request user approval — it reads the plan from the file. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.\n",
+            "## Active Mode\nYou are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase, then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, you MUST end the turn by calling `ExitPlanMode` to request user approval — it reads the plan from the file. Do not end the turn with a text summary and do NOT use the FINAL ANSWER template after PlanWrite succeeds. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.\n",
         ),
         _ => return,
     };

@@ -5,6 +5,7 @@
 //! `<system-reminder>` 引导模型给出最终答案。
 
 use zhuye_llm::ChatMessage;
+use zhuye_protocol::PermissionMode;
 
 use crate::graph::state::AgentState;
 
@@ -105,34 +106,57 @@ pub fn url_host(url: &str) -> Option<String> {
 /// `FINAL ANSWER:`,而非带着 "Let me check ..." 中途用尽迭代。
 pub fn maybe_inject_progress_nudge(state: &mut AgentState, max_iterations: u32) {
     let set = zhuye_prompt::library().resolve("");
-    maybe_inject_progress_nudge_with_set(state, max_iterations, &set);
+    maybe_inject_progress_nudge_with_set(state, max_iterations, &set, PermissionMode::Auto);
 }
 
+/// v1.x:Plan 模式下任何 progress-nudge 的收尾指令都必须指向
+/// `ExitPlanMode`,而不是 `FINAL ANSWER` 模板 —— 否则模型会在写完 plan
+/// 文件后被 nudge 逼成纯文本收尾,`PlanReady` 永不派发(实测 session
+/// 889c3bd0:第 31/32 轮 PlanWrite 成功 → `runtime.nudge-final` → 模型
+/// 输出「FINAL ANSWER: 计划已写入…」)。
 pub(crate) fn maybe_inject_progress_nudge_with_set(
     state: &mut AgentState,
     max_iterations: u32,
     set: &zhuye_prompt::PromptSet,
+    mode: PermissionMode,
 ) {
+    let plan_mode = matches!(mode, PermissionMode::Plan);
     let mut nudge_lines: Vec<String> = Vec::new();
 
     // 触发条件 0:迭代剩余很少 → 必须立即作答(最高优先级,与 web_fetch 无关,
     // 故不再因 web_fetch_history 为空而提前 return)。
     let remaining = max_iterations.saturating_sub(state.iteration);
     if remaining <= MAX_ITERATIONS_REMAINING_THRESHOLD && max_iterations > 0 {
-        // v1.6:文案外置为 `runtime.nudge-final` section。
-        nudge_lines.push(render_nudge(
-            set,
-            "runtime.nudge-final",
-            "You are on iteration {{ iteration }}/{{ max_iterations }} and are about to run out of turns. \
-             Stop calling tools NOW. Give your final answer immediately using the \
-             template: {{ final_answer_template }}. Base it on the information you \
-             already have — do not attempt any further tool calls.",
-            &serde_json::json!({
-                "iteration": state.iteration,
-                "max_iterations": max_iterations,
-                "final_answer_template": zhuye_prompt::FINAL_ANSWER_TEMPLATE,
-            }),
-        ));
+        let vars = serde_json::json!({
+            "iteration": state.iteration,
+            "max_iterations": max_iterations,
+            "final_answer_template": zhuye_prompt::FINAL_ANSWER_TEMPLATE,
+        });
+        if plan_mode {
+            // v1.x:Plan 模式的预算收尾指向 ExitPlanMode(见函数头注释)。
+            nudge_lines.push(render_nudge(
+                set,
+                "runtime.nudge-final-plan",
+                "You are on iteration {{ iteration }}/{{ max_iterations }} and are about to run \
+                 out of turns. Stop researching NOW. If you have already written the plan file \
+                 with PlanWrite, call ExitPlanMode immediately to submit it for approval. If \
+                 you have not, write a concise plan with PlanWrite first, then call \
+                 ExitPlanMode. Do NOT answer with the {{ final_answer_template }} template and \
+                 do NOT end the turn with a text summary.",
+                &vars,
+            ));
+        } else {
+            // v1.6:文案外置为 `runtime.nudge-final` section。
+            nudge_lines.push(render_nudge(
+                set,
+                "runtime.nudge-final",
+                "You are on iteration {{ iteration }}/{{ max_iterations }} and are about to run out of turns. \
+                 Stop calling tools NOW. Give your final answer immediately using the \
+                 template: {{ final_answer_template }}. Base it on the information you \
+                 already have — do not attempt any further tool calls.",
+                &vars,
+            ));
+        }
     }
 
     // 触发条件 1:N 次 web_fetch → 列出已抓 URL + 片段(让模型看到自己的进度)
@@ -197,6 +221,21 @@ pub(crate) fn maybe_inject_progress_nudge_with_set(
 
     if nudge_lines.is_empty() {
         return;
+    }
+
+    // Plan 模式:web 类 nudge 的原文仍指向 FINAL ANSWER,统一补一条尾注
+    // 把收尾动作拉回「写 plan → ExitPlanMode」。
+    if plan_mode {
+        nudge_lines.push(render_nudge(
+            set,
+            "runtime.nudge-plan-tail",
+            "Plan mode: do NOT answer with the {{ final_answer_template }} template. Finish by \
+             writing the plan with PlanWrite (if not yet written) and then calling \
+             ExitPlanMode to request approval.",
+            &serde_json::json!({
+                "final_answer_template": zhuye_prompt::FINAL_ANSWER_TEMPLATE,
+            }),
+        ));
     }
 
     let nudge = nudge_lines.join("\n");

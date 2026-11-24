@@ -2,6 +2,7 @@
 
 use zhuye_hooks::{HookEvent, StopReason};
 use zhuye_llm::{ChatMessage, ContentBlock, UserContent};
+use zhuye_protocol::PermissionMode;
 
 use crate::graph::GraphNode;
 use crate::graph::state::AgentState;
@@ -18,6 +19,35 @@ use crate::submission_loop::NodeContext;
 /// 也永远到不了模型。现在按叶子判定否决,并把 hook 注入的提醒以
 /// system-reminder User 消息追加进历史,让续作轮能看到否决原因。
 pub async fn check_stop(state: &mut AgentState, ctx: &NodeContext) -> Option<GraphNode> {
+    // v1.x 计划收尾守卫:Plan 模式下 plan 文件已写、PlanReady 未派发时,
+    // 否决「纯文本收尾」并逼模型立即调 ExitPlanMode(上限 2 次,防死循环;
+    // 命中上限说明模型确实无法收口,放行由用户人工接管)。实测 session
+    // 889c3bd0:PlanWrite 成功后模型被 nudge 逼成「FINAL ANSWER: 计划已
+    // 写入…」收尾,PlanReady 永不派发,审批链路死锁。
+    if ctx.cfg.permission_mode() == PermissionMode::Plan
+        && state.plan_draft_written
+        && !state.plan_ready_dispatched
+        && state.plan_stop_guard_attempts < 2
+    {
+        state.plan_stop_guard_attempts = state.plan_stop_guard_attempts.saturating_add(1);
+        tracing::warn!(
+            attempt = state.plan_stop_guard_attempts,
+            "plan stop guard: plan written but ExitPlanMode not called; vetoing text completion"
+        );
+        let set = ctx.cfg.resolve_prompt(&ctx.model.read()).set;
+        let nudge = set.get_or(
+            "runtime.nudge-plan-submit",
+            "The plan file has been written with PlanWrite but ExitPlanMode has NOT been              called yet. Call ExitPlanMode NOW to submit the plan for user approval. Do not \
+             output any other content.",
+        );
+        state.messages.messages.push(ChatMessage::User(UserContent {
+            blocks: vec![ContentBlock::Text {
+                text: format!("<system-reminder>\n{}\n</system-reminder>", nudge),
+            }],
+        }));
+        return Some(GraphNode::PreLoop);
+    }
+
     let decision = ctx
         .hook_engine
         .dispatch(&HookEvent::Stop {
