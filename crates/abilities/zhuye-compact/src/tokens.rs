@@ -125,6 +125,32 @@ pub fn estimate_text(text: &str) -> u32 {
     global_estimator().estimate_text(text)
 }
 
+/// 用同一次模型上报校准本地估算。没有可用上报时为 1；
+/// 上报低于本地估算时不缩小；单次异常偏高时上限为 3。
+/// `u32::MAX` 是手动强制压缩的哨兵，不是测量值。
+pub fn calibration_scale(local_estimate: u32, reported: Option<u32>) -> f64 {
+    let Some(reported) = reported.filter(|n| *n > 0 && *n < u32::MAX) else {
+        return 1.0;
+    };
+    if local_estimate == 0 {
+        return 3.0;
+    }
+    ((reported as f64) / (local_estimate as f64)).clamp(1.0, 3.0)
+}
+
+/// 把本地估算换算成校准后的水位。比例为 1 时保持原值。
+pub fn scaled_tokens(local: u32, scale: f64) -> u32 {
+    if !scale.is_finite() || scale <= 1.0 {
+        return local;
+    }
+    let scaled = f64::from(local) * scale;
+    if scaled >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        scaled.ceil() as u32
+    }
+}
+
 // ── tiktoken 实现(feature = "tokenizer") ──────────────────────────
 
 #[cfg(feature = "tokenizer")]
@@ -239,6 +265,24 @@ mod tests {
     #[test]
     fn empty_messages_yield_zero() {
         assert_eq!(estimate_messages(&[]), 0);
+    }
+
+    #[test]
+    fn calibration_scale_uses_one_without_report_and_clamps_high_reports() {
+        assert_eq!(calibration_scale(1_000, None), 1.0);
+        assert_eq!(calibration_scale(1_000, Some(0)), 1.0);
+        assert_eq!(calibration_scale(1_000, Some(u32::MAX)), 1.0);
+        assert_eq!(calibration_scale(1_000, Some(500)), 1.0);
+        assert_eq!(calibration_scale(1_000, Some(1_000)), 1.0);
+        assert_eq!(calibration_scale(1_000, Some(2_000)), 2.0);
+        assert_eq!(calibration_scale(1_000, Some(10_000)), 3.0);
+        assert_eq!(calibration_scale(0, Some(10)), 3.0);
+    }
+
+    #[test]
+    fn scaled_tokens_keeps_local_value_at_unit_scale() {
+        assert_eq!(scaled_tokens(5_789, 1.0), 5_789);
+        assert_eq!(scaled_tokens(5_789, 1.4), 8_105);
     }
 
     #[test]

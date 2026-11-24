@@ -84,9 +84,18 @@ impl Summarizer for NoopSummarizer {
 }
 
 fn make_m4_deps(agent_name: &str, system_prompt: &str) -> M4Deps {
+    make_m4_deps_with_trigger(
+        agent_name,
+        system_prompt,
+        zhuye_compact::DEFAULT_TRIGGER_TOKENS,
+    )
+}
+
+fn make_m4_deps_with_trigger(agent_name: &str, system_prompt: &str, trigger_tokens: u32) -> M4Deps {
     let compactor = Arc::new(Compactor::new(
         CompactorConfig {
             summarize_after: false, // never call the LLM in tests
+            trigger_tokens,
             ..Default::default()
         },
         Arc::new(NoopSummarizer),
@@ -2618,5 +2627,98 @@ async fn m4_phantom_compaction_does_not_abort_healthy_turn() {
     assert_eq!(
         calls, 6,
         "5 轮工具调用 + 1 轮收尾都要发生(修复前会在第 6 次 pre_loop 被熔断,只调 5 次)"
+    );
+}
+
+/// 本地估算刚压到阈值下、按同一次上报折算仍超阈时，有效裁剪必须回写，
+/// 但不能给 rapid-refill 守卫上膛。随后的越阈步因此仍可继续压缩，
+/// 而不是被 Skip 拦住。
+#[tokio::test]
+async fn m4_underestimate_does_not_arm_rapid_refill() {
+    let registry = Arc::new(ModelRegistry::new());
+    let tool_round = |n: usize, input_tokens: u32| -> Vec<ChatEvent> {
+        vec![
+            ChatEvent::MessageStart {
+                id: format!("m{n}"),
+                model: "stub-1".into(),
+            },
+            ChatEvent::ToolUseStart {
+                id: format!("tc{n}"),
+                name: "echo".into(),
+                input_json: String::new(),
+            },
+            ChatEvent::ToolUseDelta(format!(r#"{{"text":"{}"}}"#, "z".repeat(4_000))),
+            ChatEvent::Usage {
+                input_tokens,
+                output_tokens: 20,
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+            },
+            ChatEvent::MessageStop,
+        ]
+    };
+    let stub = Arc::new(SeqStubClient::new(vec![
+        vec![
+            ChatEvent::MessageStart {
+                id: "m3".into(),
+                model: "stub-1".into(),
+            },
+            ChatEvent::ContentDelta("done".into()),
+            ChatEvent::Usage {
+                input_tokens: 1_200,
+                output_tokens: 10,
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+            },
+            ChatEvent::MessageStop,
+        ],
+        tool_round(2, 4_000),
+        tool_round(1, 3_200),
+    ]));
+    registry.register_pool(
+        "stub",
+        CredentialPool {
+            entries: vec![PoolEntry {
+                client: stub.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let m4 = make_m4_deps_with_trigger("tester", "You are a tester.", 1_500);
+    let thread = build_thread(registry, m4);
+    let mut handle = thread.submit(make_sub("explore the projects")).await;
+    let mut strategies = Vec::new();
+    let mut rapid_refill_abort = false;
+    let mut completed = false;
+    while let Some(ev) = handle.next().await {
+        match ev.msg {
+            EventMsg::ContextCompacted(event) => strategies.push(event.strategy),
+            EventMsg::Error(error) if error.code == "compact_rapid_refill" => {
+                rapid_refill_abort = true;
+            }
+            EventMsg::TurnComplete(_) => {
+                completed = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(!rapid_refill_abort, "未压到真实水位以下不得上膛熔断");
+    assert!(completed, "turn 必须继续走完");
+    assert_eq!(stub.requests.lock().len(), 3, "第二次越阈必须仍能调用模型");
+    assert!(
+        strategies
+            .iter()
+            .filter(|strategy| {
+                matches!(
+                    strategy,
+                    zhuye_protocol::ContextCompactedStrategy::Microcompact
+                        | zhuye_protocol::ContextCompactedStrategy::SmartPrune
+                )
+            })
+            .count()
+            >= 2,
+        "第一次弱压缩不得挡住下一次升级: {strategies:?}"
     );
 }
