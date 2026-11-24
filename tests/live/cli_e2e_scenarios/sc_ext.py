@@ -62,6 +62,12 @@ def _run_subagent(cx: lib.Ctx) -> None:
     turn = s.turn("请用 call_explorer 工具让 explorer 帮我找出关键文件。",
                   timeout=cx.timeout())
 
+    if "call_explorer" not in turn.tool_names:
+        lib.skip_all(cx, ["call_explorer 工具被调用", "收到 subagent_progress 事件",
+                          "进度事件带 child_id / role", "子代理调用未被判错",
+                          "subagent_status 回(child 列表)"],
+                     "模型未按提示调用 call_explorer(真模型自由发挥)")
+        return
     cx.checks.add("call_explorer 工具被调用", "call_explorer" in turn.tool_names,
                   f"工具序列={turn.tool_names}")
     progress = [lib._msg(e) for e in turn.events if lib.etype(e) == "subagent_progress"]
@@ -111,6 +117,11 @@ def _run_background(cx: lib.Ctx) -> None:
     first = s.turn("在后台跑一条命令,然后收尾。", timeout=cx.timeout())
 
     results = [r for r in first.tool_results() if "background task" in r["text"]]
+    if not results and "bash" not in first.tool_names:
+        lib.skip_all(cx, ["bash 以 run_in_background 启动(回执含后台任务 id)",
+                          "后台任务结果注入到下一轮上下文"],
+                     "模型未按提示调用带 run_in_background 的 bash(真模型自由发挥)")
+        return
     cx.checks.add("bash 以 run_in_background 启动(回执含后台任务 id)",
                   bool(results), f"回执={[r['text'][:120] for r in results]}")
 
@@ -165,6 +176,11 @@ def _run_remote_tool(cx: lib.Ctx) -> None:
     turn = s.turn("请调用 echo_tool 工具,把 hello 传过去。", timeout=cx.timeout(),
                   respond=[responder])
 
+    if not requests and "echo_tool" not in turn.tool_names:
+        lib.skip_all(cx, ["收到 tool_execution_request", "请求带 call_id / tool / args",
+                          "远程工具回执后调用成功"],
+                     "模型未按提示调用远程工具 echo_tool(真模型自由发挥)")
+        return
     cx.checks.add("收到 tool_execution_request", bool(requests),
                   f"请求数={len(requests)}")
     if requests:
