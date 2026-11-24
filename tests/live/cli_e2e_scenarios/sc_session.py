@@ -144,6 +144,12 @@ def _run_max_iterations(cx: lib.Ctx) -> None:
     s = cx.session(env)
     turn = s.turn("请用 bash 工具反复执行命令 `echo tick`(至少 8 次),最后再收尾。",
                   timeout=cx.timeout())
+    if len(turn.tool_names) < limit:
+        # 模型没按提示反复调工具 —— 迭代数够不到上限,协议面无从观察。
+        lib.skip_all(cx, ["触达迭代上限时以 max_iterations 收尾",
+                          "无文本产出时补发 iteration_budget_exhausted"],
+                     f"模型只调用了 {len(turn.tool_names)} 次工具,够不到上限 {limit}")
+        return
     cx.checks.add(
         "触达迭代上限时以 max_iterations 收尾",
         turn.status == "max_iterations",
