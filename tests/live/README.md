@@ -230,6 +230,55 @@ scripts/free_model_practice.sh --models cohere/north-mini-code:free --out report
 | **prompt 可能被上游记录** | Kilo 模型卡明示 | **只用合成数据**,不要喂真实仓库内容 / 凭据 |
 | **`context_window` 可能不披露** | OpenCode 原生车道只给 id | 用 `[context_windows]` 段显式声明 |
 
+## `cli_e2e` —— CLI headless 链路的场景套件(本地专用)
+
+与上面的 pytest 用例**同层不同车道**:pytest 用例打的是「模型 + 协议
+形状」,而 `cli_e2e` 打的是**完整 agent 会话**(真实模型自己决定调什么
+工具、走几步、怎么收尾),断言的是协议事件形状 + 产物存在性。
+
+**定位:本地专用,不进 CI、不接 `run_all.sh` 门禁链** —— 真模型场景
+依赖本机可达的端点,CI 环境没有;默认跳过(`ZHUYE_LIVE=1` / 自检模式
+`ZHUYE_E2E_MOCK=1` 双保险)。
+
+### 两种跑法
+
+```bash
+# 真模型:走 cli_e2e.toml 里的端点
+ZHUYE_LIVE=1 bash tests/live/cli_e2e.sh
+
+# 自检:内置 mock provider,离线、不发网络请求 —— 验证场景脚本本身
+ZHUYE_E2E_MOCK=1 bash tests/live/cli_e2e.sh
+```
+
+### 文件布局
+
+| 文件 | 职责 |
+|---|---|
+| `cli_e2e.sh` | 套件入口:逐场景起独立进程,每个检查项折成一条 tcase |
+| `cli_e2e_run.py` | 单场景执行器(一场景一进程,崩溃/超时互不牵连) |
+| `cli_e2e_lib.py` | 共享库:配置解析、隔离环境、`serve` 会话驱动、检查报告 |
+| `cli_e2e_scenarios/` | 场景模块(按域分文件)+ 注册表 `__init__.py` |
+| `cli_e2e.example.toml` | 配置模板(全中文注释);真实 `cli_e2e.toml` 已 gitignore |
+
+### 场景分组
+
+| 组 | 场景 | 覆盖 |
+|---|---|---|
+| plan | `plan_dev_commit` / `plan_revise` / `plan_readonly` | 出 plan、打回修订、只读门控;含沙箱 `.git` 归属快照回归点 |
+| goal | `goal_met` / `goal_unmet` / `goal_budget` / `goal_plugin` | 目标模式自校验闭环、续作注入、预算熔断、goal-queue 插件 |
+| compact | `compact_auto` / `compact_manual` / `compact_summarize` / `compact_refill_guard` / `compact_window_full` | 阈值自动压缩、手动强制、LLM 摘要、**rapid-refill 熔断**(sess_77cd626f 事故形态)、窗口占满收口 |
+| cache | `cache_warming` / `cache_hit` / `cache_write` | 空闲期保温、缓存命中读取、缓存写入分段 |
+| interact | `interrupt` / `steer` / `ask_user` / `approval` / `approval_deny` | 中断、转向、提问、审批放行与拒绝 |
+| session | `resume` / `rewind` / `max_iterations` / `token_budget` | 续作回放、回退截断、迭代上限、token 预算 |
+| ext | `subagent` / `background` / `remote_tool` / `admin_ops` | 子代理、后台任务、客户端远程工具、管理面 Op |
+
+### 两条约束
+
+1. **断言协议形状与产物,不断言模型文本** —— 模型自由发挥,文本断言不可靠;
+2. **每个场景一个隔离环境** —— 假 HOME(ZHUYE_HOME)+ 独立引擎配置 +
+   独立工作区,rollout / traces / session notes 全落临时目录,
+   不读、不写真实 `~/.zhuye`。
+
 ## 排障
 
 **`no model configured for the active provider`**

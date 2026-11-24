@@ -1,12 +1,19 @@
-# cli_e2e.example.toml —— CLI 真模型端到端演练的配置模板。
+# cli_e2e.example.toml —— CLI 端到端演练套件的配置模板。
 #
 # 使用:复制为同目录 `cli_e2e.toml`(该文件名已 gitignore,真实端点 /
 # 密钥不会入库),按注释填写后运行:
 #
+#   # 真模型模式(需要下面的端点可达)
 #   ZHUYE_LIVE=1 bash tests/live/cli_e2e.sh
 #
-# 所有字段可用环境变量按字段名覆盖(前缀 ZHUYE_E2E_,见 cli_e2e.sh
+#   # 自检模式(mock provider,离线、不发网络请求):不需要填端点
+#   ZHUYE_E2E_MOCK=1 bash tests/live/cli_e2e.sh
+#
+# 所有顶层字段可用环境变量按字段名覆盖(前缀 ZHUYE_E2E_,见 cli_e2e.sh
 # 头部说明),环境变量优先于本文件。
+#
+# 场景清单与各自参数见文件末尾的 [scenarios.*] 段 —— 每个场景都能
+# 单独覆盖参数(如换窗口大小、换任务文案);不写就用脚本内置默认值。
 
 # ── 端点与模型 ──────────────────────────────────────────────────────────────
 # 演练用的真实模型服务。base_url 到版本段为止(引擎会拼 /chat/completions)。
@@ -49,3 +56,153 @@ continue_prompt = """
 # expect_commit_subject —— 提交信息的主题行(脚本 grep git log --format=%s)。
 expect_artifact = "index.html"
 expect_commit_subject = "feat: 烽火介绍单页"
+
+# ── 场景参数 ────────────────────────────────────────────────────────────────
+# 每个 [scenarios.<场景名>] 段对应一个端到端场景;**不写即用内置默认值**。
+# 场景名与 cli_e2e_scenarios/ 下的模块一一对应(注册表见
+# cli_e2e_scenarios/__init__.py)。
+#
+# 场景分组:plan(规划门控)/ goal(目标模式)/ compact(上下文压缩)/
+# cache(prompt cache)/ interact(交互)/ session(会话)/ ext(扩展)。
+
+# ── plan 组 ────────────────────────────────────────────────────────────────
+[scenarios.plan_dev_commit]
+# plan → 批准 → 开发 → git init + commit(沙箱 .git 归属快照回归点)。
+# max_continue_turns —— 开发未收尾时的续推轮数上限(用上面的
+# [task].continue_prompt 续推,直到产物与提交都到位)。
+max_continue_turns = 2
+
+[scenarios.plan_revise]
+# plan → 打回(revise)→ 按反馈修订 → 批准 → 开发。
+# prompt —— 首轮下发给 agent 的任务文案。
+prompt = "为产品创建 a.txt(内容 hello)。先给出计划,不要直接动手。"
+
+[scenarios.plan_readonly]
+# plan 模式只读门控:写工具与高风险 bash 被拦,工作区不落盘。
+prompt = "请直接创建文件 leak.txt(内容 hello),不需要规划,现在就创建。如果无法创建,就改为提交一份创建它的计划。"
+
+# ── compact 组(全部只跑自检模式:依赖给 mock 模型配小窗口的确定性构造)──
+[scenarios.compact_auto]
+# window —— 给 mock 模型的上下文窗口(token);压缩阈值 = window × 0.85。
+# rounds —— 脚本化模型回复里连续读文件的次数(累积上下文直到越阈)。
+# file_chars —— 夹具文件字符数(≈ file_chars/4.16 token)。
+window = 4500
+rounds = 30
+file_chars = 420
+
+[scenarios.compact_manual]
+# Op::Compact 强制压缩:受理即回 Noop 回执,下一回合无视阈值执行压缩;
+# 且**绕过 rapid-refill 守卫**(守卫已上膛时强制压缩照常执行)。
+# user_chars —— 首条用户消息字符数(固定保留、压不动):与 file_chars
+# 一起把上下文顶到触发阈值之上,让守卫上膛。
+window = 8000
+rounds = 120
+user_chars = 20800
+file_chars = 420
+
+[scenarios.compact_summarize]
+# 单条超大历史 → 走 LLM 摘要压缩(前两级压不动时的最后一级)。
+window = 4500
+big_chars = 17000
+
+[scenarios.compact_refill_guard]
+# rapid-refill 熔断回归(sess_77cd626f 事故形态):压缩后又立刻填满。
+# user_chars 越大,上下文越贴近窗口上限,越可能命中「接近窗口上限」
+# 的那个收口分支。
+window = 4500
+file_chars = 420
+user_chars = 9800
+rounds = 40
+
+[scenarios.compact_window_full]
+# 上下文占满单条不可压消息 → compact_unavailable_window_full 收口。
+window = 4500
+huge_chars = 20000
+
+# ── goal 组 ────────────────────────────────────────────────────────────────
+[scenarios.goal_met]
+# 目标模式:LLM 自校验判 met + 校验命令通过 → complete。
+# goal —— 目标陈述;verify_command —— AND 条件校验命令(退出码 0 才算达成)。
+goal = "创建 out.txt"
+verify_command = "test -f out.txt"
+
+[scenarios.goal_unmet]
+# 目标模式:首轮判 unmet → 续作文本入队 → 下一回合合并注入后达成。
+goal = "创建 out.txt"
+
+[scenarios.goal_budget]
+# 目标模式:token 预算耗尽 → budget_limited 终态。
+# token_budget —— 目标模式的累计 token 预算(mock 下一次模型调用即超)。
+goal = "做一个长期任务"
+token_budget = 1
+
+[scenarios.goal_plugin]
+# goal-queue 插件:goal / queue 两个工具注册且可调用(模型经 tool_search
+# 发现它们 —— 插件工具不进 always_on 广播集)。
+
+# ── cache 组 ───────────────────────────────────────────────────────────────
+[scenarios.cache_warming]
+# 空闲期 prompt cache 保温(引擎配置由脚本生成:enabled+force,TTL 压到
+# 4 秒以便在测试里等到重放)。无需参数。
+
+[scenarios.cache_hit]
+# 真模型前缀缓存命中:连跑几轮,断言第 2 轮起 cached_tokens > 0。
+# 依赖真实 provider 上报缓存分段(mock 恒为 0)—— 仅真模型模式运行。
+rounds = 3
+
+[scenarios.cache_write]
+# 缓存写入分段(cache_write_tokens)。仅 Anthropic 线缆会报,其他线格式
+# 自动跳过该断言。
+
+# ── interact 组 ────────────────────────────────────────────────────────────
+[scenarios.interrupt]
+# 回合中途中断:长 sleep 被取消,turn 以 user_interrupt 收口。
+# sleep_secs —— 被中断的 bash 睡眠时长。
+sleep_secs = 30
+
+[scenarios.steer]
+# 回合中途转向:steer 消息在下一个安全点注入模型上下文。
+# priority —— now(用户中途说话) / attachment(参考资料,<system-reminder> 包裹)。
+# steer_text —— 投喂的文本。
+priority = "now"
+steer_text = "改用方案 B:不要写文件,只汇报。"
+
+[scenarios.ask_user]
+# 向用户提问:ask_user_question(结构化选项)/ ask_user(自由文本)。
+# answer_text —— 对自由文本提问的回答。
+answer_text = "用方案 A"
+
+[scenarios.approval]
+# 工具审批:非只读 bash 触发 approval_request,批准后真的执行。
+
+[scenarios.approval_deny]
+# 工具审批:拒绝后命令不执行、工具回执为错误。
+
+# ── session 组 ─────────────────────────────────────────────────────────────
+[scenarios.resume]
+# 会话续作:--resume 回放历史,模型看得到上一轮输入。
+
+[scenarios.rewind]
+# 会话回退:Op::Rewind 截断历史,下一轮看不到被回退的输入。
+
+[scenarios.max_iterations]
+# 迭代上限:max_iterations 触顶后回合以 max_iterations 收尾。
+max_iterations = 3
+
+[scenarios.token_budget]
+# 会话级 token 预算:耗尽后回合以 token_budget_exceeded 收尾。
+session_total_tokens = 1
+
+# ── ext 组 ─────────────────────────────────────────────────────────────────
+[scenarios.subagent]
+# 子代理:派生 call_explorer,回报 subagent_progress 与状态快照。
+
+[scenarios.background]
+# 后台任务:bash run_in_background,完成结果注入下一轮上下文。
+
+[scenarios.remote_tool]
+# 客户端远程工具:RegisterTools → tool_execution_request → 客户端回执。
+
+[scenarios.admin_ops]
+# 管理面 Op:子代理状态 / prompt guard 统计 / 提示词列表 / 扩展重扫 /
+# 权限模式切换与循环,各自回一条事件。

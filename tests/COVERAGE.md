@@ -15,7 +15,7 @@
 | SDK 单测 | `sdks/*/tests/` | SDK 纯逻辑(mock serve),随包发布 | ✅ | Python 28 / TS 40 条 |
 | 原生 Python 绑定 | `tests/native-python/` | 安装实际构建的 PyO3 wheel,验证 Python 接口 | ✅ | 2 条 |
 | crate 单测 | `crates/**/tests/` | 内部单元与集成 | — | 既有 |
-| **实模型演练层**(可选) | `tests/live/` | **真实模型**下的引擎行为(协议形状) | ❌ | 10 条 |
+| **实模型演练层**(可选) | `tests/live/` | **真实模型**下的引擎行为(协议形状) | ❌ | 10 条 pytest + 28 场景(cli_e2e 套件,本地专用) |
 
 **新增能力断言只落能力覆盖层一处** —— 不要在 SDK 测试里重复写协议/能力断言。
 理由:SDK 自身的 bug 会把 Rust 的 bug 遮住(见 §6 已修复项 D1)。
