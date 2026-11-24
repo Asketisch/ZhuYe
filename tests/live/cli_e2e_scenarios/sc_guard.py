@@ -24,6 +24,10 @@ import os
 import cli_e2e_lib as lib
 
 
+# hook 覆盖的写工具(read_before_edit 的 WRITE_TOOLS 口径)。
+_WRITE_TOOLS = ("write", "edit", "notebook_edit")
+
+
 def _tool(name: str, args: dict) -> dict:
     return {"type": "tool_call", "name": name, "args": args}
 
@@ -106,7 +110,7 @@ def _run_read_before_edit(cx: lib.Ctx) -> None:
     if "write" not in names.values():
         lib.skip_all(cx, ["未读先写被 hook 拦下(工具回执为错误)",
                           "拒绝原因指向「先读再写」(read before edit 提示)",
-                          "被拦下时文件内容未被改写",
+                          "成功读取之前没有任何成功的写入",
                           "读过之后写入放行(内容已更新为 v2)",
                           "两个回合都正常收尾"],
                      "模型未按提示调用 write(真模型自由发挥)")
@@ -123,14 +127,39 @@ def _run_read_before_edit(cx: lib.Ctx) -> None:
         ("read" in blob) or ("读" in blob),
         f"拒绝文案={blob[:200]}",
     )
-    content = (cx.read_file(env.ws, "a.txt") or "").strip()
-    cx.checks.add("被拦下时文件内容未被改写", content == "v1", f"a.txt={content!r}")
+    # 真正的保证是**顺序**:成功读取之前不允许有任何成功的写入。
+    # (不能用「回合结束后文件未变」判定 —— 模型可能在被拒后于同一回合内
+    # 自己补一次 read 再写,那时文件理应已更新,而这正是 hook 的放行路径。)
+    seq: list[tuple[str | None, bool]] = []
+    for evt in denied_turn.events:
+        m = lib._msg(evt)
+        if lib.etype(evt) == "tool_call_end":
+            res = m.get("output") or {}
+            seq.append((names.get(m.get("call_id")), bool(res.get("is_error"))))
+    first_ok_read = next(
+        (i for i, (n, err) in enumerate(seq) if n == "read" and not err), None
+    )
+    writes_before = [
+        n for i, (n, err) in enumerate(seq)
+        if first_ok_read is not None and i < first_ok_read and n in _WRITE_TOOLS and not err
+    ]
+    cx.checks.add(
+        "成功读取之前没有任何成功的写入",
+        not writes_before,
+        f"首次成功 read 之前的成功写入={writes_before},调用序列={seq[:12]}",
+    )
 
     # 第二回合:先读再写 → 放行,内容更新。
     ok_turn = s.turn("请先 read 一次 a.txt,然后把它覆盖成 v2。", timeout=cx.timeout())
     content = (cx.read_file(env.ws, "a.txt") or "").strip()
-    cx.checks.add("读过之后写入放行(内容已更新为 v2)", content == "v2",
-                  f"a.txt={content!r}")
+    wrote = [m.get("tool_name") for m in ok_turn._msgs("tool_call_begin")
+             if m.get("tool_name") in _WRITE_TOOLS]
+    if not wrote:
+        lib.skip_all(cx, ["读过之后写入放行(内容已更新为 v2)"],
+                     "第二回合模型没有再次写入,无放行路径可观察")
+    else:
+        cx.checks.add("读过之后写入放行(内容已更新为 v2)", content == "v2",
+                      f"a.txt={content!r},写工具调用={wrote}")
     cx.checks.add("两个回合都正常收尾",
                   denied_turn.completed and ok_turn.completed,
                   f"终态={denied_turn.status}/{ok_turn.status}")
