@@ -106,20 +106,37 @@ pub fn append_active_mode_section_with_set(
     mode: zhuye_protocol::PermissionMode,
     resolved: &crate::PromptSet,
 ) {
-    if !matches!(mode, zhuye_protocol::PermissionMode::Plan) {
-        return;
-    }
-    // v1.6:段文案外置为 `runtime.active-mode` section(含 `## Active Mode`
-    // 标题),可经 `.zhuye/prompts/*.md` 按模型覆盖;缺失时回落编译期
-    // 内嵌默认(provider-independent 措辞,避免各 provider 措辞漂移)。
-    // 覆盖为 `off` / `none` / `disabled` / `false` 时视为显式关闭,
-    // 不注入该段(与 `system.plan-mode` 的关闭语义一致)。
-    let overridden = resolved.get("runtime.active-mode");
+    // v1.x:按档位选择段文案 —— Plan 沿用 `runtime.active-mode`;询问档
+    // (Prompt)注入只读边界告知 `runtime.active-mode-ask`:ask_mode 会拒绝
+    // 写类工具与危险 bash,没有这段时模型把拒绝过泛化成「所有交互受限」,
+    // 退化成纯文本提问(实测「工具受限无法弹窗」)。其余档位不注入。
+    let (section_key, embedded_default): (&str, &str) = match mode {
+        zhuye_protocol::PermissionMode::Prompt => (
+            "runtime.active-mode-ask",
+            "## Active Mode\nYou are currently in Ask mode (read-only exploration): file writes (`write` / `edit` / deletes) and risky or dangerous bash commands are DENIED in this mode — do not attempt them, and do not restate those denials in your reply. Everything else still works, including research tools. To involve the user in decisions, call the `ask_user_question` tool (1-3 questions per call, 2-4 mutually-exclusive options each, recommended option first marked \"(推荐)\") instead of asking in plain text.\n",
+        ),
+        zhuye_protocol::PermissionMode::Plan => (
+            "runtime.active-mode",
+            "## Active Mode\nYou are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase, then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, call `ExitPlanMode` to request user approval — it reads the plan from the file. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.\n",
+        ),
+        _ => return,
+    };
+    // v1.6:段文案外置为库 section(含 `## Active Mode` 标题),可经
+    // `.zhuye/prompts/*.md` 按模型覆盖;缺失时回落编译期内嵌默认
+    // (provider-independent 措辞,避免各 provider 措辞漂移)。覆盖为
+    // `off` / `none` / `disabled` / `false` 时视为显式关闭,不注入该段
+    // (与 `system.plan-mode` 的关闭语义一致)。
+    let overridden = resolved.get(section_key);
     if overridden.is_some_and(is_section_off) {
         return;
     }
-    let section = overridden.unwrap_or("## Active Mode\nYou are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase, then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, call `ExitPlanMode` to request user approval — it reads the plan from the file. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.\n").to_string();
+    let section = overridden.unwrap_or(embedded_default);
     let Some(plan_start) = core.find(PLAN_MODE_HEADER) else {
+        // Plan 规则段缺失(提示词库被自定义覆盖)时直接 append 到 core
+        // 末尾 —— 状态告知不能因锚点缺失而整段丢失(询问档尤甚:没有
+        // 这段模型会把只读边界过泛化)。
+        core.push('\n');
+        core.push_str(&section);
         return;
     };
     // 在 plan_start 之后找下一个 `## ` 段开头(MEMORY_HEADER 或任何
@@ -721,16 +738,37 @@ mod tests {
         );
     }
 
-    /// 非 Plan mode( Auto / Prompt 等)下 `append_active_mode_section`
-    /// 不动 core —— 不能在普通执行模式误注入「你是 Plan mode」误导 LLM。
+    /// 非 Plan mode 下 `Auto` 不注入(普通执行模式不能误注入「你是 Plan
+    /// mode」);`Prompt`(询问档)注入只读边界告知 ask 段 —— ask_mode 会
+    /// 拒绝写类工具与危险 bash,没有这段模型把拒绝过泛化成「所有交互
+    /// 受限」,退化成纯文本提问(实测「工具受限无法弹窗」)。
     #[test]
-    fn append_active_mode_section_noop_outside_plan_mode() {
+    fn append_active_mode_section_noop_in_auto_adds_ask_in_prompt() {
         let original = LayeredPrompt::compose_core("base", "");
         let mut s = original.clone();
         append_active_mode_section(&mut s, zhuye_protocol::PermissionMode::Auto);
         assert_eq!(s, original, "Auto mode 不能改 core");
+
+        let mut s = original.clone();
         append_active_mode_section(&mut s, zhuye_protocol::PermissionMode::Prompt);
-        assert_eq!(s, original, "Prompt mode 不能改 core");
+        assert!(
+            s.contains("## Active Mode") && s.contains("Ask mode"),
+            "Prompt mode 应注入询问档边界告知;got: {s}"
+        );
+        assert!(s.contains("ask_user_question"), "ask 段应指引提问工具");
+        // off 覆盖语义:显式关闭后不注入。
+        let mut set = crate::PromptSet::default();
+        set.extend_from(
+            [("runtime.active-mode-ask".to_string(), "off".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let mut s = LayeredPrompt::compose_core("base", "");
+        append_active_mode_section_with_set(&mut s, zhuye_protocol::PermissionMode::Prompt, &set);
+        assert!(
+            !s.contains("Ask mode"),
+            "显式关闭 runtime.active-mode-ask 后不应注入;got: {s}"
+        );
     }
 
     /// Active Mode 段必须出现在 Plan mode 通用规则(## Plan Mode)之后、
