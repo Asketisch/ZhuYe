@@ -241,52 +241,70 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // 的事实),供下方落盘 MemoryAccess 审计。
     // 消息列表按借用传入;压缩判定每迭代执行且绝大多数走 Noop ——
     // None 表示未压缩,保持原列表不回写,不为「借一下」深拷贝整个会话。
-    let (compacted, evt, memory_write) = if compact_denied || refill_skip_reminder.is_some() {
-        if refill_skip_reminder.is_some() {
-            tracing::info!(
-                step = step_no,
-                "rapid refill:跳过本轮自动压缩(窗口内连续触发),已注入收敛提醒"
-            );
-        } else {
-            tracing::info!("PreCompact hook denied; skipping compaction this round");
-        }
-        (
-            None,
-            zhuye_protocol::ContextCompactedEvent {
-                strategy: ContextCompactedStrategy::Noop,
-                removed_messages: 0,
-                before_tokens: 0,
-                after_tokens: 0,
-            },
-            None,
-        )
-    } else {
-        match compactor
-            .compact_outcome(
-                &state.messages.messages,
-                state.compaction_summary.as_deref(),
-                llm_reported,
+    let (compacted, evt, memory_write, below_trigger) =
+        if compact_denied || refill_skip_reminder.is_some() {
+            if refill_skip_reminder.is_some() {
+                tracing::info!(
+                    step = step_no,
+                    "rapid refill:跳过本轮自动压缩(窗口内连续触发),已注入收敛提醒"
+                );
+            } else {
+                tracing::info!("PreCompact hook denied; skipping compaction this round");
+            }
+            (
+                None,
+                zhuye_protocol::ContextCompactedEvent {
+                    strategy: ContextCompactedStrategy::Noop,
+                    removed_messages: 0,
+                    before_tokens: 0,
+                    after_tokens: 0,
+                },
+                None,
+                false,
             )
-            .await
-        {
-            zhuye_compact::CompactionOutcome::Noop { event, reason } => {
-                tracing::debug!(reason, "上下文压缩未发生");
-                (None, event, None)
+        } else {
+            match compactor
+                .compact_outcome(
+                    &state.messages.messages,
+                    state.compaction_summary.as_deref(),
+                    llm_reported,
+                )
+                .await
+            {
+                zhuye_compact::CompactionOutcome::Noop { event, reason } => {
+                    tracing::debug!(reason, "上下文压缩未发生");
+                    (None, event, None, false)
+                }
+                zhuye_compact::CompactionOutcome::Applied {
+                    messages,
+                    event,
+                    memory_write,
+                    micro_changed,
+                    pruned,
+                    truncated,
+                    below_trigger,
+                } => {
+                    tracing::info!(
+                        micro_changed,
+                        pruned,
+                        truncated,
+                        below_trigger,
+                        "上下文压缩阶段结果"
+                    );
+                    (Some(messages), event, memory_write, below_trigger)
+                }
             }
-            zhuye_compact::CompactionOutcome::Applied {
-                messages,
-                event,
-                memory_write,
-                micro_changed,
-                pruned,
-                truncated,
-            } => {
-                tracing::debug!(micro_changed, pruned, truncated, "上下文压缩阶段结果");
-                (Some(messages), event, memory_write)
-            }
-        }
-    };
-    tracing::debug!(model = %model, threshold = compactor.trigger_tokens(), local_estimate = estimated, llm_reported, strategy = ?evt.strategy, applied = compacted.is_some(), "上下文压缩结果");
+        };
+    tracing::info!(
+        model = %model,
+        threshold = compactor.trigger_tokens(),
+        local_estimate = estimated,
+        reported_tokens = llm_reported,
+        strategy = ?evt.strategy,
+        applied = compacted.is_some(),
+        below_trigger,
+        "上下文压缩结果"
+    );
     if !force_compact
         && !compact_denied
         && refill_skip_reminder.is_none()
@@ -318,8 +336,18 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // 压缩器仅在消息确实改动时返回 Some；只截断但未删除消息也要计入。
     state.compact_triggered = compacted.is_some();
     if state.compact_triggered {
-        // v1.x:压缩实际发生 → 登记守卫窗口锚点(rapid-refill 计时起点)。
-        ctx.cfg.compact_refill.lock().on_compacted(step_no);
+        // 只有校准水位真正低于阈值才给快速回填守卫上膛。
+        // 仍超阈的有效裁剪照常回写、发事件和记快照，但不能挡住下一次更强压缩。
+        // 手动压缩在进入压缩器前已经绕过预检。
+        if below_trigger {
+            ctx.cfg.compact_refill.lock().on_compacted(step_no);
+        } else {
+            tracing::info!(
+                step = step_no,
+                threshold = compactor.trigger_tokens(),
+                "压缩后的校准水位仍不低于触发阈值，不登记快速回填锚点"
+            );
+        }
         // 在 `evt` 被移入 wire event 之前捕获我们需要的字段。
         let strategy = evt.strategy;
         let removed_count = evt.removed_messages;
@@ -924,5 +952,176 @@ async fn inject_steering_messages(
                 serde_json::to_value(&protocol_blocks).unwrap_or(serde_json::Value::Null),
             ))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod calibration_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+    use zhuye_compact::{Compactor, CompactorConfig, Summarizer, SummarizerError};
+    use zhuye_llm::{ChatMessage, ContentBlock, ToolResult, UserContent};
+
+    struct FailingSummarizer;
+    #[async_trait::async_trait]
+    impl Summarizer for FailingSummarizer {
+        async fn summarize_full(&self, _: &[ChatMessage]) -> Result<String, SummarizerError> {
+            Err(SummarizerError::Cancelled)
+        }
+        async fn summarize_recent(
+            &self,
+            _: &[ChatMessage],
+            _: Option<&str>,
+        ) -> Result<String, SummarizerError> {
+            Err(SummarizerError::Cancelled)
+        }
+    }
+
+    fn test_context(trigger: u32, reported: u32) -> (AgentState, NodeContext) {
+        let compactor = Arc::new(Compactor::new(
+            CompactorConfig {
+                trigger_tokens: trigger,
+                keep_recent_microcompact: 1,
+                keep_recent_smart_prune: 1,
+                summarize_after: false,
+                ..Default::default()
+            },
+            Arc::new(FailingSummarizer),
+        ));
+        let mut state = AgentState {
+            history_seeded: true,
+            last_llm_input_tokens: Some(reported),
+            ..Default::default()
+        };
+        state.messages.messages = vec![
+            ChatMessage::System("s".repeat(500)),
+            ChatMessage::Tool(ToolResult {
+                call_id: "tool:bash:1".into(),
+                content: vec![ContentBlock::text("x".repeat(8_000))],
+                is_error: false,
+            }),
+            ChatMessage::User(UserContent {
+                blocks: vec![ContentBlock::text("继续")],
+            }),
+        ];
+        let (event_tx, _rx) = tokio::sync::mpsc::channel(8);
+        let engine = Arc::new(zhuye_hooks::HookEngine::new());
+        let ctx = NodeContext {
+            session_seq: None,
+            turn_id: zhuye_protocol::TurnId::new(),
+            session_id: zhuye_protocol::ThreadId::new(),
+            model: Arc::new(parking_lot::RwLock::new("stub/model".into())),
+            policy: Arc::new(zhuye_llm::RoutingPolicy::default()),
+            registry: Arc::new(zhuye_llm::ModelRegistry::new()),
+            hook_engine: Arc::clone(&engine),
+            tools_queue: Arc::new(zhuye_tools::ToolExecutionQueue::with_defaults(
+                Arc::new(zhuye_tools::ToolRegistry::new()),
+                engine,
+                zhuye_tools::ToolContext::for_workspace("."),
+            )),
+            sub_id: "sub".into(),
+            cancel: CancellationToken::new(),
+            event_tx,
+            messages: vec![],
+            max_iterations: 4,
+            m4: Some(crate::config::M4Deps {
+                compactor,
+                memory: Arc::new(zhuye_memory::InMemoryStore::new()),
+                skills: Arc::new(zhuye_skills::SkillsCatalog::new()),
+                prompt_builder: Arc::new(parking_lot::Mutex::new(
+                    zhuye_prompt::PromptBuilder::new(),
+                )),
+                active_agent_def: Arc::new(zhuye_agent_def::AgentDefinition::default()),
+                recorder: None,
+                note_store: Arc::new(zhuye_notes::InMemoryNoteStore::new()),
+                file_recovery: Arc::new(zhuye_recovery::ActiveFileRecovery::new(Arc::from(
+                    std::path::PathBuf::from("."),
+                ))),
+                subagent_registry: zhuye_recovery::SubagentRegistry::shared(),
+                prompt_dirs: Vec::new(),
+                skill_dirs: Vec::new(),
+                bundled_skills: false,
+            }),
+            recorder: None,
+            approval_gate: None,
+            effort: Arc::new(parking_lot::RwLock::new(
+                zhuye_protocol::ReasoningEffortMirror::Medium,
+            )),
+            session_usage: Arc::new(parking_lot::RwLock::new(
+                zhuye_protocol::TokenUsage::default(),
+            )),
+            token_budget: Arc::new(parking_lot::RwLock::new(None)),
+            force_compact_next: Arc::new(parking_lot::RwLock::new(false)),
+            telemetry: None,
+            goal: Arc::new(parking_lot::RwLock::new(None)),
+            todos_slot: Arc::new(parking_lot::RwLock::new(None)),
+            quota_tracker: None,
+            plan_approval_gate: None,
+            plan_session_subs: None,
+            steering_queue: None,
+            sandbox_override: None,
+            cfg: crate::config::AgentConfig::new("stub/model", "."),
+        };
+        (state, ctx)
+    }
+
+    #[tokio::test]
+    async fn still_above_calibrated_level_does_not_arm_refill_guard() {
+        let (mut state, ctx) = test_context(1_000, 8_000);
+        let next = pre_loop(&mut state, &ctx).await;
+        assert_eq!(next, Some(GraphNode::ModelCall));
+        assert!(state.compact_triggered, "有效裁剪仍要回写");
+        let anchor = ctx.cfg.compact_refill.lock();
+        assert_eq!(anchor.consecutive(), 0);
+        drop(anchor);
+        // 直接检查锚点：未压到阈值下时 last_compact_step 必须保持空。
+        let decision = {
+            let mut guard = ctx.cfg.compact_refill.lock();
+            guard.pre_check(100, 3, 3)
+        };
+        assert_eq!(decision, zhuye_compact::RefillDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn below_calibrated_level_still_arms_refill_guard() {
+        let (mut state, ctx) = test_context(4_000, 5_000);
+        let next = pre_loop(&mut state, &ctx).await;
+        assert_eq!(next, Some(GraphNode::ModelCall));
+        assert!(state.compact_triggered);
+        let decision = {
+            let mut guard = ctx.cfg.compact_refill.lock();
+            guard.pre_check(1, 3, 3)
+        };
+        assert_eq!(decision, zhuye_compact::RefillDecision::Skip);
+    }
+
+    #[tokio::test]
+    async fn manual_compact_bypasses_refill_precheck() {
+        let (_state, ctx) = test_context(4_000, 5_000);
+        ctx.cfg.compact_refill.lock().on_compacted(0);
+        ctx.cfg
+            .model_step_counter
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        *ctx.force_compact_next.write() = true;
+        let mut state = AgentState {
+            history_seeded: true,
+            last_llm_input_tokens: Some(12_000),
+            ..Default::default()
+        };
+        state.messages.messages = vec![ChatMessage::User(UserContent {
+            blocks: vec![ContentBlock::text("手动压缩")],
+        })];
+        let blocked = {
+            let mut guard = ctx.cfg.compact_refill.lock();
+            guard.pre_check(1, 3, 3)
+        };
+        assert_eq!(blocked, zhuye_compact::RefillDecision::Skip);
+        // 上面的预检只证明窗口已武装。真正的手动路径必须绕过它。
+        ctx.cfg.compact_refill.lock().on_compacted(0);
+        let next = pre_loop(&mut state, &ctx).await;
+        assert_eq!(next, Some(GraphNode::ModelCall));
+        assert!(state.deferred_error.is_none(), "手动压缩不得被熔断错误拦住");
+        assert!(!*ctx.force_compact_next.read());
     }
 }

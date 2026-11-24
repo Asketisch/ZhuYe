@@ -132,7 +132,7 @@ Responsibilities of each node:
 
 | Node | Responsibility |
 |------|------|
-| PreLoop | Compaction escalation decisions (upgrading step by step per input token threshold), pre-processing hooks, history assembly, harvesting the steering queue |
+| PreLoop | Compaction escalation decisions (upgrading by the level calibrated from the same model report), pre-processing hooks, history assembly, harvesting the steering queue |
 | ModelCall | After resolving the primary model via `RoutingPolicy`, call `ModelClient` (SSE streaming), producing text/thinking deltas and tool calls |
 | ToolExec | Approval gate check → execute tools (built-in / MCP / remote) via `ToolExecutionQueue` → write results back into history; Plan mode switches here |
 | CheckStop | Decides turn end when the model has no new tool calls; dispatches the Stop hook, which may veto and force continuation |
