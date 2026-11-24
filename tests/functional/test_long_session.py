@@ -68,6 +68,7 @@ def test_摘要压缩后跨进程恢复并增量摘要(sandbox, serve_session, k
             assert compressed["msg"]["before_tokens"] == 2**32 - 1
             assert compressed["msg"]["after_tokens"] > 0
             assert first_event(second, "turn_complete")["msg"]["status"] == "success", msg_types(second)
+            assert first_event(session.submit({"type": "compact"}), "context_compacted")["msg"]["strategy"] == "noop"
             third = session.submit({"type": "user_input", "items": [
                 {"type": "text", "text": "同一会话继续"}
             ]}, timeout=30)
@@ -91,6 +92,8 @@ def test_摘要压缩后跨进程恢复并增量摘要(sandbox, serve_session, k
         compactions = [r for r in records if r.get("type") == "compaction" and r.get("strategy") == "llm_summarize"]
         assert len(compactions) == 2, compactions
         record = compactions[0]
+        assert isinstance(record.get("context_snapshot"), list), record
+        assert any(m.get("role") == "system" and "摘要版本1" in m.get("text", "") for m in record["context_snapshot"]), record
         assert "保留项目代号北极星;摘要版本1" in record["summary"], record
         assert record["before_tokens"] == compressed["msg"]["before_tokens"]
         assert record["after_tokens"] == compressed["msg"]["after_tokens"]
@@ -102,6 +105,7 @@ def test_摘要压缩后跨进程恢复并增量摘要(sandbox, serve_session, k
         assert "摘要版本2" in json.dumps(requests[-1]["messages"], ensure_ascii=False)
 
         with serve_session(args=["--resume", tid], env=env) as resumed:
+            assert first_event(resumed.submit({"type": "compact"}), "context_compacted")["msg"]["strategy"] == "noop"
             fourth = resumed.submit({"type": "user_input", "items": [
                 {"type": "text", "text": "继续处理这个项目"}
             ]}, timeout=30)

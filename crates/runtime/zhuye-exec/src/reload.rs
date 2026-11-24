@@ -130,7 +130,22 @@ pub async fn handle_reload(
     let new_spec = zhuye_config::resolve_model_spec(new_cfg, registry)
         .await
         .map_err(|e| format!("resolve new model failed: {e}"))?;
+    if let Some(m4) = agent_cfg.m4.as_ref() {
+        m4.compactor
+            .set_trigger_policy(zhuye_core::config::compact_trigger_policy(
+                new_cfg.compact.trigger_tokens,
+                new_cfg.compact.trigger_ratio,
+            ));
+    }
     let model_changed = old_spec != new_spec && new_spec.is_some();
+    let effective_model = new_spec.as_deref().unwrap_or("");
+    let effective_model = if effective_model.is_empty() {
+        agent_cfg.current_model()
+    } else {
+        effective_model.to_owned()
+    };
+    agent_cfg
+        .set_context_window_overrides(new_cfg.effective_context_window_overrides(&effective_model));
     if let Some(new_model) = new_spec.as_ref() {
         if model_changed {
             agent_cfg.set_model(new_model.clone());

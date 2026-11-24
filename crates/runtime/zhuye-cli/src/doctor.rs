@@ -42,6 +42,45 @@ pub async fn run(check_network: bool, dump_config: bool) -> anyhow::Result<()> {
         }
     }
 
+    if let Some(model) = cfg.resolved_model_spec() {
+        let explicit_window = cfg.configured_context_window_for(&model);
+        let known_window = explicit_window.or_else(|| zhuye_llm::context_window_for(&model));
+        let effective = zhuye_core::config::compactor_config_with_window(
+            cfg.compact.trigger_tokens,
+            cfg.compact.trigger_ratio,
+            explicit_window,
+            &model,
+        );
+        let source = if std::env::var(zhuye_core::config::AUTO_COMPACT_INPUT_TOKENS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .is_some()
+        {
+            "env"
+        } else if cfg.compact.trigger_tokens.is_some() {
+            "toml"
+        } else if known_window.is_some() {
+            "window"
+        } else {
+            "fallback"
+        };
+        println!(
+            "{OK} compact   model={model} window={} threshold={} source={source}",
+            known_window.map_or_else(
+                || "unknown (fallback 128000)".to_string(),
+                |w| w.to_string()
+            ),
+            effective.trigger_tokens
+        );
+        if known_window.is_some_and(|w| effective.trigger_tokens > w) {
+            println!("{WARN} compact   threshold exceeds known model window");
+        }
+    } else {
+        println!(
+            "{WARN} compact   model unresolved; effective threshold depends on the selected model"
+        );
+    }
+
     // ── 2. provider 可达性(provider reachability)──
     if check_network {
         if let Some(group) = cfg.active_group() {

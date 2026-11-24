@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 zhuye-exec       = { workspace = true }
+zhuye-core       = { workspace = true }
 zhuye-discussion = { workspace = true }
 zhuye-rollout    = { workspace = true }
 zhuye-config     = { workspace = true }

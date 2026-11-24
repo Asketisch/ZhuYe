@@ -606,6 +606,7 @@ mod tests {
                 summary: String::new(),
                 before_tokens: 12_000,
                 after_tokens: 3_000,
+                context_snapshot: None,
             })
             .unwrap(),
         ];

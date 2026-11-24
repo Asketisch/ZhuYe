@@ -105,6 +105,22 @@ fn sanitize_trigger_ratio(raw: Option<f32>) -> f32 {
     }
 }
 
+/// 保留阈值来源，以便每次决策按当前模型窗口重新推导。
+pub fn compact_trigger_policy(
+    toml_tokens: Option<u32>,
+    ratio: Option<f32>,
+) -> zhuye_compact::TriggerPolicy {
+    if let Some(value) = std::env::var(AUTO_COMPACT_INPUT_TOKENS_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .or(toml_tokens)
+    {
+        zhuye_compact::TriggerPolicy::Fixed(value)
+    } else {
+        zhuye_compact::TriggerPolicy::WindowRatio(sanitize_trigger_ratio(ratio))
+    }
+}
+
 /// v1.x:窗口感知的压缩触发阈值。优先级:
 /// env `ZHUYE_AUTO_COMPACT_INPUT_TOKENS` > TOML `[compact].trigger_tokens` >
 /// **模型上下文窗口 × `[compact].trigger_ratio`(默认 0.85)**。

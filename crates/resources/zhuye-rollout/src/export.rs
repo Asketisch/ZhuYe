@@ -775,6 +775,7 @@ mod tests {
             summary: "<summary/>".into(),
             before_tokens: 9000,
             after_tokens: 2000,
+            context_snapshot: None,
         }];
         let md = render_transcript(&id, &records);
         assert!(md.contains("9000 → 2000 tokens (saved 7000)"));
@@ -792,6 +793,7 @@ mod tests {
             summary: String::new(),
             before_tokens: 0,
             after_tokens: 0,
+            context_snapshot: None,
         }];
         let md = render_transcript(&id, &records);
         assert!(md.contains("removed 3 messages"));
@@ -972,6 +974,7 @@ mod tests {
                 summary: "<summary>old context</summary>".into(),
                 before_tokens: 12_000,
                 after_tokens: 3_000,
+                context_snapshot: None,
             },
             RolloutRecord::Fork {
                 parent_session_id: parent,
