@@ -284,6 +284,16 @@ def _run_plan_readonly(cx: lib.Ctx) -> None:
         not left_plan,
         f"离开 plan 的切换={left_plan},全部切换={modes}",
     )
+    if not turn.tool_names:
+        # 模型一个工具都没调(只在文本里说「plan 模式不能写文件」)——
+        # 只读门控压根没被触发,没有可断言的协议面。
+        lib.skip_all(cx, ["plan 模式下工作区未被写入",
+                          "写操作被只读门控拦截(工具结果为错误)",
+                          "最终仍产出 plan(plan_ready)"],
+                     "模型未发起任何工具调用(仅文本回应),只读门控未被触发")
+        cx.checks.add("回合正常收尾", turn.completed,
+                      f"终态={turn.status or turn.aborted_reason}")
+        return
     leaked = [n for n in ("leak.txt",) if cx.exists(env.ws, n)]
     cx.checks.add(
         "plan 模式下工作区未被写入",
