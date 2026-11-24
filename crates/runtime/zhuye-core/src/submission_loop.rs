@@ -148,6 +148,14 @@ pub struct NodeContext {
     /// 合并,正在跑的回合无法收到补充指示。`None`(测试 / 旧构造方)=
     /// 跳过收割,行为不变。
     pub steering_queue: Option<Arc<Mutex<SteeringQueue>>>,
+    /// 在飞异步子代理登记表(与工具侧 `ToolContext.pending_subagents`
+    /// 同一份 `Arc`)。
+    ///
+    /// `check_stop` 在回合收尾前查它:有在飞子代理说明模型其实还没拿到
+    /// 结果,回合应**挂起等待**而不是结束;子代理终结后把结果注入上下文
+    /// 并回到 `PreLoop` 续跑本轮。`None`(测试 / 旧构造方)= 无异步子代理
+    /// 能力,`check_stop` 行为与旧版一致。
+    pub pending_subagents: Option<Arc<zhuye_tools::PendingSubagentRegistry>>,
     /// v1.5 R1:OS 沙箱覆盖(`ThreadSettingsOverrides.sandbox_policy` 每
     /// turn 下发)。`tool_exec` 经 ToolEventForwarder 透传给队列 →
     /// `ToolContext.os_sandbox` → BashTool。`None` = 跟随 env。
@@ -764,6 +772,9 @@ pub async fn submission_loop(
                     session_seq: Some(Arc::clone(&session_seq)),
                     // v1.4 A2:共享会话级转向队列,pre_loop 每次入口收割。
                     steering_queue: Some(steering_queue.clone()),
+                    // 在飞异步子代理登记表(与工具侧同一份 Arc)—— check_stop
+                    // 据此挂起等待并把子代理结果注回本轮上下文。
+                    pending_subagents: Some(cfg.pending_subagents.clone()),
                     // v1.5 R1:每回合沙箱覆盖。
                     sandbox_override,
                     // 同上:把 `cfg.clone()` 传下去,让

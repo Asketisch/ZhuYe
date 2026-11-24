@@ -25,6 +25,8 @@ pub mod code_mode;
 pub mod loop_guard;
 /// F37:Office 文档格式识别 + 提取计划 + 结构化内容。
 pub mod office;
+/// 在飞异步子代理委派登记表(异步派发 + 回合挂起激活的共享状态)。
+pub mod pending_subagent;
 pub mod plan_approval;
 pub mod queue;
 pub mod registry;
@@ -54,6 +56,9 @@ pub use builtin_tools::{
 pub use builtins::bash::{BashCommandClass, classify_command};
 pub use checkpoint_tool::{CheckpointTool, RewindTool};
 pub use loop_guard::{GuardDecision, LoopGuard, LoopGuardConfig};
+pub use pending_subagent::{
+    PendingCompletionGuard, PendingSubagentRegistry, PendingSubagentResult,
+};
 pub use plan_approval::{PlanApprovalGate, PlanApprovalWaiters, complete_plan_approval};
 pub use queue::{ToolCallRequest, ToolExecutionQueue, ToolResult};
 pub use registry::{ToolRegistry, ToolSource};

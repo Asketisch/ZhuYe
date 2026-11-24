@@ -5,10 +5,36 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use zhuye_protocol::{ToolError, ToolOutput};
-use zhuye_tools::{Tool, ToolContext};
+use zhuye_tools::{PendingSubagentRegistry, PendingSubagentResult, Tool, ToolContext};
 
 use crate::factory::SubAgentFactory;
 use crate::spec::SubAgentSpec;
+
+/// 子代理派发模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchMode {
+    /// 同步(默认):父回合阻塞等子代理结束,结果作为本次工具调用的回执。
+    Sync,
+    /// 异步:立即返回占位回执,子代理在后台继续跑;结果由引擎在回合收尾
+    /// 前**挂起等待**并注入本轮上下文(见 `zhuye-core` 的 `check_stop`)。
+    Async,
+}
+
+/// 解析 `mode` 参数。**缺省 / 非法值一律按同步处理** —— 派发方式退化
+/// 必须是安全方向(同步 = 旧行为),不能让一个拼错的参数把父回合变成
+/// 「派发出去就不管」的半吊子状态。
+fn parse_mode(args: &serde_json::Value) -> DispatchMode {
+    match args.get("mode").and_then(|v| v.as_str()) {
+        Some("async") => DispatchMode::Async,
+        _ => DispatchMode::Sync,
+    }
+}
+
+/// 子代理中间事件的进度回调。
+///
+/// 必须是 `'static + Send + Sync` —— 异步派发要把它**移进**后台任务
+/// (父回合的工具 future 早已返回),裸闭包做不到。
+type ProgressCallback = Arc<dyn Fn(&zhuye_protocol::Event) + Send + Sync>;
 
 /// 委托给 `SubAgentFactory::spawn` + 结果抽取的 `Tool` 实现。
 pub struct CallSubAgentTool {
@@ -24,7 +50,7 @@ impl std::fmt::Debug for CallSubAgentTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallSubAgentTool")
             .field("spec", &self.spec)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -34,6 +60,241 @@ impl CallSubAgentTool {
             factory,
             spec,
             tool_name_cache: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// 构造子代理中间事件的转发回调(助手文本 / 工具起止 → 父回合事件通道)。
+    ///
+    /// 返回 `Arc<dyn Fn(..)>` 而非裸闭包:异步派发要把回调**移进**后台
+    /// 任务(父回合的工具 future 早已返回),需要 `'static + Send + Sync`。
+    fn build_progress_cb(
+        forwarder: Option<Arc<zhuye_tools::ToolEventForwarder>>,
+        child_id: &str,
+        role: &str,
+    ) -> Option<ProgressCallback> {
+        // 转发器缺席(测试 / 直接构造)时 no-op。
+        forwarder.map(|fwd| {
+            let child_id = child_id.to_string();
+            let role = role.to_string();
+            // 回调以 `&(dyn Fn(..))` 形式被 collect 消费 —— 需要保持 Fn,
+            // 可变映射用 Mutex 包裹(Interior mutability)。
+            let tool_names: std::sync::Mutex<std::collections::HashMap<String, String>> =
+                std::sync::Mutex::new(std::collections::HashMap::new());
+            Arc::new(move |ev: &zhuye_protocol::Event| {
+                if matches!(
+                    &ev.msg,
+                    zhuye_protocol::EventMsg::ApprovalRequest(_)
+                        | zhuye_protocol::EventMsg::AskUserQuestion(_)
+                        | zhuye_protocol::EventMsg::AskUserInput(_)
+                        | zhuye_protocol::EventMsg::PermissionBubble(_)
+                ) {
+                    fwd.forward(ev.msg.clone());
+                    return;
+                }
+                let payload = match &ev.msg {
+                    zhuye_protocol::EventMsg::AgentMessage(m) => Some((
+                        zhuye_protocol::SubagentProgressKind::Message,
+                        m.text.clone(),
+                        None,
+                    )),
+                    zhuye_protocol::EventMsg::ToolCallBegin(b) => {
+                        tool_names
+                            .lock()
+                            .unwrap()
+                            .insert(b.call_id.clone(), b.tool_name.clone());
+                        Some((
+                            zhuye_protocol::SubagentProgressKind::ToolBegin,
+                            b.tool_name.clone(),
+                            Some(b.call_id.clone()),
+                        ))
+                    }
+                    zhuye_protocol::EventMsg::ToolCallEnd(e) => {
+                        // 反查工具名;未见 Begin(极端时序)时退化为占位名。
+                        let name = tool_names
+                            .lock()
+                            .unwrap()
+                            .remove(&e.call_id)
+                            .unwrap_or_else(|| "tool".to_string());
+                        let text = if e.is_error {
+                            format!("{name} (failed)")
+                        } else {
+                            name
+                        };
+                        Some((
+                            zhuye_protocol::SubagentProgressKind::ToolEnd,
+                            text,
+                            Some(e.call_id.clone()),
+                        ))
+                    }
+                    _ => None,
+                };
+                if let Some((kind, text, call_id)) = payload {
+                    fwd.forward(zhuye_protocol::EventMsg::SubagentProgress(
+                        zhuye_protocol::SubagentProgressEvent {
+                            child_id: child_id.clone(),
+                            role: role.clone(),
+                            kind,
+                            text,
+                            call_id,
+                        },
+                    ));
+                }
+            }) as ProgressCallback
+        })
+    }
+
+    /// 同步路径的收尾:抽结果 → coordinator footer → 写完成记录 → 回执。
+    fn finish_sync(
+        &self,
+        result: String,
+        prompt: String,
+        child_session_id: &str,
+        turn_iteration: u32,
+    ) -> ToolOutput {
+        // v1.1.0:coordinator 模式下 subagent 返回后向父协调者注入 principle footer。
+        let result_text = if self.factory.is_coordinator_mode() {
+            crate::data_transfer::append_coordinator_principle_footer(
+                &result,
+                self.factory.coordinator_footer().as_deref(),
+            )
+        } else {
+            result.clone()
+        };
+        // v1.1.0 Phase 6 P0:成功后写入 subagent registry(若 factory
+        // 注入了)。失败子代理不写,避免污染 `<system-reminder>`。
+        // coordinator 模式下 task_summary 追加 worker role,便于 pre_loop
+        // reminder 区分不同 worker 的派工摘要。
+        let mut task_summary = prompt;
+        if self.factory.is_coordinator_mode() {
+            task_summary.push_str(&format!(" [worker: {}]", self.spec.role));
+        }
+        // `iteration` 用 `TurnId` 的低 32 位 —— UUID v4 全局唯一,
+        // 这里只作排序键,不需要严格按 turn 序号。
+        if let Some(reg) = self.factory.subagent_registry() {
+            reg.record(zhuye_recovery::SubagentRegistryEntry {
+                tool_name: format!("call_{}", self.spec.role),
+                task_summary,
+                result_summary: result,
+                iteration: turn_iteration,
+                created_at: chrono::Utc::now(),
+            });
+        }
+        let active_workers = self
+            .factory
+            .subagent_registry()
+            .map_or(0, |r| r.snapshot().len());
+        ToolOutput {
+            content: vec![zhuye_protocol::ContentBlock::Text { text: result_text }],
+            is_error: false,
+            metadata: serde_json::json!({
+                "subagent_role": self.spec.role,
+                "session_id": child_session_id,
+                "activeWorkers": active_workers,
+            }),
+            elapsed_ms: 0,
+        }
+    }
+
+    /// 异步派发:登记到在飞表 → 把子代理交给后台任务 → 立即返回占位回执。
+    ///
+    /// 后台任务持有 `SpawnedChild` —— 不能在工具 future 返回时丢在地上:
+    /// `SpawnedChild` 析构会 **cancel 子令牌**,子代理会被立刻杀掉。任务
+    /// 跑到终态后回填在飞表,引擎据此唤醒父回合。
+    fn dispatch_async(
+        &self,
+        spawned: crate::factory::SpawnedChild,
+        payload: SpawnPayload,
+        progress_cb: Option<ProgressCallback>,
+        registry: Arc<PendingSubagentRegistry>,
+    ) -> ToolOutput {
+        registry.register(
+            payload.child_session_id.clone(),
+            payload.role.clone(),
+            payload.call_id.clone(),
+        );
+        // 兜底守卫:后台任务被中止(会话关闭 / runtime 掉线)时,把条目落到
+        // 终态 —— 否则该条目永远停在「在飞」,此后每个回合的 `check_stop`
+        // 都会为它挂起等待(一次中止拖垮整个会话)。
+        let guard = zhuye_tools::PendingCompletionGuard::new(
+            registry.clone(),
+            payload.child_session_id.clone(),
+            payload.role.clone(),
+            payload.call_id.clone(),
+        );
+        let factory = self.factory.clone();
+        let reg = registry.clone();
+        // 占位回执用的副本 —— `payload` 整体移进后台任务。
+        let out_role = payload.role.clone();
+        let out_session = payload.child_session_id.clone();
+        tokio::spawn(async move {
+            // `_guard` 绑定到块尾 —— 真实结果先写入,守卫析构时的兜底
+            // 因「首个终态为准」被忽略。
+            let _guard = guard;
+            let outcome = spawned
+                .collect_result_with_progress(progress_cb.as_deref())
+                .await;
+            let (ok, text, error) = match outcome {
+                Ok(res) => {
+                    let raw = res.text;
+                    // coordinator 模式:回填给父协调者的文本同样带 footer
+                    // (同步路径在 `finish_sync` 里做,这里是异步对应物)。
+                    let text = if factory.is_coordinator_mode() {
+                        crate::data_transfer::append_coordinator_principle_footer(
+                            &raw,
+                            factory.coordinator_footer().as_deref(),
+                        )
+                    } else {
+                        raw.clone()
+                    };
+                    // 写完成记录(防重复 spawn)—— 与同步路径同口径。
+                    let mut task_summary = payload.prompt.clone();
+                    if factory.is_coordinator_mode() {
+                        task_summary.push_str(&format!(" [worker: {}]", payload.role));
+                    }
+                    if let Some(r) = factory.subagent_registry() {
+                        r.record(zhuye_recovery::SubagentRegistryEntry {
+                            tool_name: format!("call_{}", payload.role),
+                            task_summary,
+                            result_summary: raw,
+                            iteration: payload.turn_iteration,
+                            created_at: chrono::Utc::now(),
+                        });
+                    }
+                    (true, text, None)
+                }
+                Err(e) => (false, String::new(), Some(e.to_string())),
+            };
+            reg.complete(PendingSubagentResult {
+                child_id: payload.child_session_id,
+                role: payload.role,
+                call_id: payload.call_id,
+                ok,
+                text,
+                error,
+            });
+        });
+        let active_workers = self
+            .factory
+            .subagent_registry()
+            .map_or(0, |r| r.snapshot().len());
+        ToolOutput {
+            content: vec![zhuye_protocol::ContentBlock::Text {
+                text: format!(
+                    "[已派发子代理 {role}(session={session})] 正在后台运行;完成后结果将自动回填本轮上下文。",
+                    role = out_role,
+                    session = out_session
+                ),
+            }],
+            is_error: false,
+            metadata: serde_json::json!({
+                "subagent_role": out_role,
+                "session_id": out_session,
+                "child_id": out_session,
+                "async": true,
+                "pending": true,
+                "activeWorkers": active_workers,
+            }),
+            elapsed_ms: 0,
         }
     }
 }
@@ -50,7 +311,9 @@ impl Tool for CallSubAgentTool {
     fn description(&self) -> &str {
         static DESC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         DESC.get_or_init(|| {
-            "Spawn a sub-agent invocation with the given prompt. The sub-agent has its own session and tools; the returned text is its final answer.".to_string()
+            "Spawn a sub-agent invocation with the given prompt. The sub-agent has its own session and tools; the returned text is its final answer. \
+             mode=\"sync\" (default) blocks until the sub-agent finishes. mode=\"async\" returns immediately; the sub-agent keeps running in the background and its result is injected back into the current turn once it completes."
+                .to_string()
         })
         // 必须返回 `&str`。用另一种技巧:每个实例泄漏一份。
         .as_str()
@@ -65,6 +328,12 @@ impl Tool for CallSubAgentTool {
                     "type": "integer",
                     "description": "Optional override of the parent's pass_context_messages setting.",
                     "default": 0,
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["sync", "async"],
+                    "default": "sync",
+                    "description": "sync (default): block until the sub-agent finishes and return its answer. async: return immediately and let the sub-agent run in the background; its result is injected into the current turn when it finishes."
                 }
             },
             "required": ["prompt"]
@@ -125,126 +394,60 @@ impl Tool for CallSubAgentTool {
         // review 修复:ToolEnd 的 text 按协议契约回填工具名 —— End 事件
         // 本身只带 call_id,这里用 Begin 事件积累的 call_id → 工具名映射
         // 反查(此前发的是 "tool done"/"tool failed",与协议 doc 相悖)。
-        let progress_cb = ctx.event_forwarder.clone().map(|fwd| {
-            let child_id = child_session_id.clone();
-            let role = self.spec.role.clone();
-            // 回调以 `&(dyn Fn(..))` 形式被 collect 消费 —— 需要保持 Fn,
-            // 可变映射用 Mutex 包裹(Interior mutability)。
-            let tool_names: std::sync::Mutex<std::collections::HashMap<String, String>> =
-                std::sync::Mutex::new(std::collections::HashMap::new());
-            move |ev: &zhuye_protocol::Event| {
-                if matches!(
-                    &ev.msg,
-                    zhuye_protocol::EventMsg::ApprovalRequest(_)
-                        | zhuye_protocol::EventMsg::AskUserQuestion(_)
-                        | zhuye_protocol::EventMsg::AskUserInput(_)
-                        | zhuye_protocol::EventMsg::PermissionBubble(_)
-                ) {
-                    fwd.forward(ev.msg.clone());
-                    return;
-                }
-                let payload = match &ev.msg {
-                    zhuye_protocol::EventMsg::AgentMessage(m) => Some((
-                        zhuye_protocol::SubagentProgressKind::Message,
-                        m.text.clone(),
-                        None,
-                    )),
-                    zhuye_protocol::EventMsg::ToolCallBegin(b) => {
-                        tool_names
-                            .lock()
-                            .unwrap()
-                            .insert(b.call_id.clone(), b.tool_name.clone());
-                        Some((
-                            zhuye_protocol::SubagentProgressKind::ToolBegin,
-                            b.tool_name.clone(),
-                            Some(b.call_id.clone()),
-                        ))
-                    }
-                    zhuye_protocol::EventMsg::ToolCallEnd(e) => {
-                        // 反查工具名;未见 Begin(极端时序)时退化为占位名。
-                        let name = tool_names
-                            .lock()
-                            .unwrap()
-                            .remove(&e.call_id)
-                            .unwrap_or_else(|| "tool".to_string());
-                        let text = if e.is_error {
-                            format!("{name} (failed)")
-                        } else {
-                            name
-                        };
-                        Some((
-                            zhuye_protocol::SubagentProgressKind::ToolEnd,
-                            text,
-                            Some(e.call_id.clone()),
-                        ))
-                    }
-                    _ => None,
-                };
-                if let Some((kind, text, call_id)) = payload {
-                    fwd.forward(zhuye_protocol::EventMsg::SubagentProgress(
-                        zhuye_protocol::SubagentProgressEvent {
-                            child_id: child_id.clone(),
-                            role: role.clone(),
-                            kind,
-                            text,
-                            call_id,
-                        },
-                    ));
-                }
+        let progress_cb = Self::build_progress_cb(
+            ctx.event_forwarder.clone(),
+            &child_session_id,
+            &self.spec.role,
+        );
+        // `iteration` 用 `TurnId` 的低 32 位 —— UUID v4 全局唯一,
+        // 这里只作排序键,不需要严格按 turn 序号。
+        let turn_iteration = ctx.turn_id.0.as_u128() as u32;
+
+        // ── 异步派发 ────────────────────────────────────────────
+        // 立即返回占位回执,子代理在后台继续跑;结果由引擎在回合收尾前
+        // 挂起等待并注入本轮上下文(见 `zhuye-core` 的 `check_stop`)。
+        if parse_mode(&args) == DispatchMode::Async {
+            // 引擎侧的在飞登记表是**每线程一份**(随 `ToolContext` 注入)。
+            // 缺席 = 本线程不支持异步派发(纯库 / 测试)→ 降级同步,
+            // 不能让模型拿到一个「已派发但没人会回填」的假回执。
+            if let Some(registry) = ctx.pending_subagents.clone() {
+                return Ok(self.dispatch_async(
+                    spawned,
+                    SpawnPayload {
+                        prompt: prompt.clone(),
+                        child_session_id: child_session_id.clone(),
+                        role: self.spec.role.clone(),
+                        call_id: ctx.call_id.clone(),
+                        turn_iteration,
+                    },
+                    progress_cb,
+                    registry,
+                ));
             }
-        });
+            tracing::warn!(
+                role = %self.spec.role,
+                "本线程无在飞子代理登记表,异步派发降级为同步派发"
+            );
+        }
+
+        // ── 同步派发(默认,行为不变)────────────────────────────
         let result = tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
-            result = spawned.collect_result_with_progress(
-                progress_cb
-                    .as_ref()
-                    .map(|cb| cb as &(dyn Fn(&zhuye_protocol::Event) + Send + Sync)),
-            ) => result.map_err(ToolError::from)?.text,
+            result = spawned.collect_result_with_progress(progress_cb.as_deref()) =>
+                result.map_err(ToolError::from)?.text,
         };
-        // v1.1.0:coordinator 模式下 subagent 返回后向父协调者注入 principle footer。
-        let result_text = if self.factory.is_coordinator_mode() {
-            crate::data_transfer::append_coordinator_principle_footer(
-                &result,
-                self.factory.coordinator_footer().as_deref(),
-            )
-        } else {
-            result.clone()
-        };
-        // v1.1.0 Phase 6 P0:成功后写入 subagent registry(若 factory
-        // 注入了)。失败子代理不写,避免污染 `<system-reminder>`。
-        // coordinator 模式下 task_summary 追加 worker role,便于 pre_loop
-        // reminder 区分不同 worker 的派工摘要。
-        let mut task_summary = prompt;
-        if self.factory.is_coordinator_mode() {
-            task_summary.push_str(&format!(" [worker: {}]", self.spec.role));
-        }
-        // `iteration` 用 `TurnId` 的低 32 位 —— UUID v4 全局唯一,
-        // 这里只作排序键,不需要严格按 turn 序号。
-        if let Some(reg) = self.factory.subagent_registry() {
-            reg.record(zhuye_recovery::SubagentRegistryEntry {
-                tool_name: format!("call_{}", self.spec.role),
-                task_summary,
-                result_summary: result,
-                iteration: ctx.turn_id.0.as_u128() as u32,
-                created_at: chrono::Utc::now(),
-            });
-        }
-        let active_workers = self
-            .factory
-            .subagent_registry()
-            .map_or(0, |r| r.snapshot().len());
-        Ok(ToolOutput {
-            content: vec![zhuye_protocol::ContentBlock::Text { text: result_text }],
-            is_error: false,
-            metadata: serde_json::json!({
-                "subagent_role": self.spec.role,
-                "session_id": child_session_id,
-                "activeWorkers": active_workers,
-            }),
-            elapsed_ms: 0,
-        })
+        Ok(self.finish_sync(result, prompt, &child_session_id, turn_iteration))
     }
+}
+
+/// 异步派发要带进后台任务的载荷。
+struct SpawnPayload {
+    prompt: String,
+    child_session_id: String,
+    role: String,
+    call_id: String,
+    turn_iteration: u32,
 }
 
 // `SubAgentSpec::role_for_tool_name` 已废弃:此前每次调用 `Box::leak` 一份
@@ -308,6 +511,215 @@ mod tests {
         let schema = tool.parameters_schema();
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "prompt"));
+    }
+
+    /// schema 必须暴露 `mode` 参数(否则模型无法选择异步派发)。
+    #[test]
+    fn parameters_schema_exposes_mode() {
+        let factory = Arc::new(SubAgentFactory::new(
+            ThreadId::new(),
+            "openai/gpt-4o",
+            std::sync::Arc::new(zhuye_llm::ModelRegistry::new()),
+            None,
+            Arc::new(ToolRegistry::default()),
+            CancellationToken::new(),
+            None,
+        ));
+        let tool = CallSubAgentTool::new(
+            factory,
+            SubAgentSpec {
+                name: "Explorer".into(),
+                role: "explorer".into(),
+                model: None,
+                system_prompt: "x".into(),
+                allowed_tools: vec![],
+                data_transfer: DataTransferConfig::default(),
+                max_turns: None,
+                allowed_skills: vec![],
+            },
+        );
+        let schema = tool.parameters_schema();
+        let mode = &schema["properties"]["mode"];
+        assert_eq!(mode["type"], "string");
+        assert_eq!(mode["default"], "sync");
+        let variants = mode["enum"].as_array().expect("mode 应是枚举");
+        assert!(variants.iter().any(|v| v == "sync"));
+        assert!(variants.iter().any(|v| v == "async"));
+    }
+
+    /// `mode` 解析:缺省 / 非法值一律退回同步(退化方向必须安全)。
+    #[test]
+    fn parse_mode_falls_back_to_sync() {
+        assert_eq!(
+            parse_mode(&serde_json::json!({"prompt": "x"})),
+            DispatchMode::Sync
+        );
+        assert_eq!(
+            parse_mode(&serde_json::json!({"prompt": "x", "mode": "async"})),
+            DispatchMode::Async
+        );
+        assert_eq!(
+            parse_mode(&serde_json::json!({"prompt": "x", "mode": "ASYNC"})),
+            DispatchMode::Sync,
+            "大小写不匹配时按同步处理(不猜模型意图)"
+        );
+        assert_eq!(
+            parse_mode(&serde_json::json!({"prompt": "x", "mode": "wat"})),
+            DispatchMode::Sync
+        );
+        assert_eq!(
+            parse_mode(&serde_json::json!({"prompt": "x", "mode": 3})),
+            DispatchMode::Sync
+        );
+    }
+
+    /// 异步派发端到端(用 mock provider 跑真实子代理回合):
+    /// 工具**立即**返回占位回执,子代理结果随后经在飞表回填。
+    #[tokio::test]
+    async fn async_dispatch_returns_placeholder_and_publishes_result() {
+        use zhuye_llm::{CredentialPool, MockClient, MockReply, ModelRegistry, PoolEntry};
+
+        let client = Arc::new(MockClient::with_script(vec![MockReply::Text {
+            text: "子代理结论".into(),
+        }]));
+        let registry = Arc::new(ModelRegistry::new());
+        registry.register_pool(
+            "mock",
+            CredentialPool {
+                entries: vec![PoolEntry {
+                    client: client.clone(),
+                    label: "default".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        let factory = Arc::new(SubAgentFactory::new(
+            ThreadId::new(),
+            "mock",
+            registry,
+            None,
+            Arc::new(ToolRegistry::default()),
+            CancellationToken::new(),
+            None,
+        ));
+        let pending = Arc::new(zhuye_tools::PendingSubagentRegistry::new());
+        let tool = CallSubAgentTool::new(
+            factory,
+            SubAgentSpec {
+                name: "Explorer".into(),
+                role: "explorer".into(),
+                model: None,
+                system_prompt: "你是探索子代理".into(),
+                allowed_tools: vec![],
+                data_transfer: DataTransferConfig::default(),
+                max_turns: None,
+                allowed_skills: vec![],
+            },
+        );
+        let ctx = zhuye_tools::ToolContext {
+            call_id: "call-1".into(),
+            pending_subagents: Some(pending.clone()),
+            ..Default::default()
+        };
+
+        let out = tool
+            .execute(
+                ctx,
+                serde_json::json!({"prompt": "调研模块", "mode": "async"}),
+            )
+            .await
+            .expect("异步派发应成功");
+        let text = out
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                zhuye_protocol::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("已派发子代理 explorer"), "占位回执:{text}");
+        assert_eq!(
+            out.metadata.get("async").and_then(|v| v.as_bool()),
+            Some(true),
+            "回执 metadata 应标记 async:{text}"
+        );
+        assert_eq!(
+            out.metadata.get("pending").and_then(|v| v.as_bool()),
+            Some(true),
+            "回执 metadata 应标记 pending:{text}"
+        );
+
+        // 子代理跑完后,结果经在飞表回填 —— 引擎据此挂起等待并注入。
+        let cancel = CancellationToken::new();
+        let done = pending.wait_any(&cancel).await.expect("等待不应被取消");
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert!(done[0].ok, "{done:?}");
+        assert_eq!(done[0].text, "子代理结论", "{done:?}");
+        assert_eq!(done[0].role, "explorer", "{done:?}");
+        assert_eq!(done[0].call_id, "call-1", "{done:?}");
+    }
+
+    /// 异步派发但本线程无在飞登记表(纯库 / 测试)→ **降级为同步**,
+    /// 不能给模型一个「已派发但没人会回填」的假回执。
+    #[tokio::test]
+    async fn async_dispatch_without_registry_falls_back_to_sync() {
+        use zhuye_llm::{CredentialPool, MockClient, MockReply, ModelRegistry, PoolEntry};
+
+        let client = Arc::new(MockClient::with_script(vec![MockReply::Text {
+            text: "同步结论".into(),
+        }]));
+        let registry = Arc::new(ModelRegistry::new());
+        registry.register_pool(
+            "mock",
+            CredentialPool {
+                entries: vec![PoolEntry {
+                    client: client.clone(),
+                    label: "default".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        let factory = Arc::new(SubAgentFactory::new(
+            ThreadId::new(),
+            "mock",
+            registry,
+            None,
+            Arc::new(ToolRegistry::default()),
+            CancellationToken::new(),
+            None,
+        ));
+        let tool = CallSubAgentTool::new(
+            factory,
+            SubAgentSpec {
+                name: "Explorer".into(),
+                role: "explorer".into(),
+                model: None,
+                system_prompt: "你是探索子代理".into(),
+                allowed_tools: vec![],
+                data_transfer: DataTransferConfig::default(),
+                max_turns: None,
+                allowed_skills: vec![],
+            },
+        );
+        // `ToolContext::default()` 的 pending_subagents = None。
+        let out = tool
+            .execute(
+                zhuye_tools::ToolContext::default(),
+                serde_json::json!({"prompt": "调研模块", "mode": "async"}),
+            )
+            .await
+            .expect("降级路径应成功");
+        let text = out
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                zhuye_protocol::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        assert_eq!(text, "同步结论", "无登记表时应同步返回真实结果:{text}");
     }
 
     /// SubagentRegistry 未注入时,`execute` 不应 panic,正常返回结果。
