@@ -264,13 +264,14 @@ ZHUYE_E2E_MOCK=1 bash tests/live/cli_e2e.sh
 
 | 组 | 场景 | 覆盖 |
 |---|---|---|
-| plan | `plan_dev_commit` / `plan_revise` / `plan_readonly` | 出 plan、打回修订、只读门控;含沙箱 `.git` 归属快照回归点 |
+| plan | `plan_dev_commit` / `plan_revise` / `plan_readonly` | 出 plan、打回修订、只读门控(打回后仍停在 plan 模式);含沙箱 `.git` 归属快照回归点 |
 | goal | `goal_met` / `goal_unmet` / `goal_budget` / `goal_plugin` | 目标模式自校验闭环、续作注入、预算熔断、goal-queue 插件 |
 | compact | `compact_auto` / `compact_manual` / `compact_summarize` / `compact_refill_guard` / `compact_window_full` | 阈值自动压缩、手动强制、LLM 摘要、**rapid-refill 熔断**(sess_77cd626f 事故形态)、窗口占满收口 |
 | cache | `cache_warming` / `cache_hit` / `cache_write` | 空闲期保温、缓存命中读取、缓存写入分段 |
 | interact | `interrupt` / `steer` / `ask_user` / `approval` / `approval_deny` | 中断、转向、提问、审批放行与拒绝 |
 | session | `resume` / `rewind` / `max_iterations` / `token_budget` | 续作回放、回退截断、迭代上限、token 预算 |
 | ext | `subagent` / `background` / `remote_tool` / `admin_ops` | 子代理、后台任务、客户端远程工具、管理面 Op |
+| guard | `sandbox_escape_blocked` / `hooks_read_before_edit` / `permission_policy` | OS 沙箱越界拦截、`read_before_edit` hook(未读先写被拒)、回合级审批策略(deny / full_access) |
 
 ### 两条约束
 

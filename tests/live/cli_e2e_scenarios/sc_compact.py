@@ -35,8 +35,6 @@ import cli_e2e_lib as lib
 REFILL_CODES = {"compact_rapid_refill", "compact_rapid_refill_window_full"}
 # force 路径把 before_tokens 抬到 u32::MAX(「无视阈值」的实现标志)。
 FORCE_BEFORE_TOKENS = 4294967295
-# tiktoken(cl100k)对英文的实测字符/token。
-CHARS_PER_TOKEN = 4.16
 
 
 def _read(path: str) -> dict:
