@@ -63,8 +63,15 @@ def _run_resume(cx: lib.Ctx) -> None:
     turn = s2.turn("第二轮:暗号是什么?", timeout=cx.timeout())
     echo = _echo_text(turn)
     seen = " ".join(lib.echo_user_texts(echo))
-    cx.checks.add("续作会话恢复了上一轮历史(模型看得到旧输入)",
-                  "青鸟" in seen, f"模型看到的 user 文本={seen[:240]}")
+    # 续作历史落进续作会话的 rollout(第一轮的用户输入)—— 真模型不回显
+    # 请求,rollout 是可靠的观测口;mock 自检另有 request_echo 佐证。
+    resumed_rollout = s2.env.rollout_text(session_id or "")
+    cx.checks.add(
+        "续作会话恢复了上一轮历史(模型看得到旧输入)",
+        "青鸟" in seen or "青鸟" in resumed_rollout,
+        f"续作 rollout 含旧输入={'青鸟' in resumed_rollout},"
+        f"模型看到的 user 文本={seen[:160]}",
+    )
 
 
 def _mock_resume(params: dict) -> list[dict]:
@@ -107,10 +114,16 @@ def _run_rewind(cx: lib.Ctx) -> None:
     # 回退后:新一轮的上下文里不应再有被回退那一轮的输入。
     turn = s.turn("回退后重新提问:暗号是什么?", timeout=cx.timeout())
     seen = " ".join(lib.echo_user_texts(_echo_text(turn)))
+    # rollout 是被截断的真相来源(rewind 物理截断记录):被回退那一轮的
+    # 输入不再出现,更早那轮仍在。真模型不回显请求,不能用 echo 判定。
+    rollout = env.rollout_text(s.session_id or "")
     cx.checks.add("被回退那一轮的输入已从上下文移除",
-                  "再确认一次" not in seen, f"模型看到的 user 文本={seen[:240]}")
+                  "再确认一次" not in rollout and "再确认一次" not in seen,
+                  f"rollout 含被回退输入={'再确认一次' in rollout},"
+                  f"模型看到的 user 文本={seen[:160]}")
     cx.checks.add("更早的输入仍在上下文里(只回退最近一轮)",
-                  "第一轮" in seen, f"模型看到的 user 文本={seen[:240]}")
+                  "第一轮" in rollout or "第一轮" in seen,
+                  f"rollout 含更早输入={'第一轮' in rollout}")
     cx.checks.add("回退后回合正常收尾", turn.completed,
                   f"终态={turn.status or turn.aborted_reason}")
 

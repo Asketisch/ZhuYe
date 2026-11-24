@@ -263,14 +263,26 @@ READONLY_PROMPT = (
 
 
 def _run_plan_readonly(cx: lib.Ctx) -> None:
+    """plan 模式只读门控。
+
+    plan 的提交**必须打回**(revise):批准会合法地切出 plan 模式,之后的
+    写入就不再受只读门控约束 —— 那样测的就不是门控了。打回后会话仍停在
+    plan 模式,任何写路径都必须失败、工作区不落盘。
+    """
     env = cx.env(serve_args=["--plan-mode"], setup=_setup)
 
     plans: list[dict] = []
-    approve = lib.on_plan_ready("manual_approve", log=plans)
+    revise = lib.on_plan_ready("revise", log=plans)
 
     s = cx.session(env)
-    turn = s.turn(cx.p("prompt") or READONLY_PROMPT, timeout=cx.timeout(), respond=[approve])
+    turn = s.turn(cx.p("prompt") or READONLY_PROMPT, timeout=cx.timeout(), respond=[revise])
 
+    modes = [f"{m.get('from')}→{m.get('to')}" for m in turn._msgs("permission_mode_changed")]
+    cx.checks.add(
+        "全程未离开 plan 模式(打回而非批准)",
+        all("plan→" not in m or m == "plan→plan" for m in modes),
+        f"权限切换={modes}",
+    )
     leaked = [n for n in ("leak.txt",) if cx.exists(env.ws, n)]
     cx.checks.add(
         "plan 模式下工作区未被写入",
@@ -278,7 +290,7 @@ def _run_plan_readonly(cx: lib.Ctx) -> None:
         f"泄漏文件={leaked}" if leaked else "无文件落盘",
     )
     failed = [r for r in turn.tool_results() if r["is_error"]]
-    # 真实模型可能读到工具集里没有 write 就直接改走规划,不硬性要求
+    # 真实模型可能发现工具集里没有 write 就直接改走规划,不硬性要求
     # 出现失败的工具调用;mock 自检则必须观察到两条写路径都被拦。
     ok = len(failed) >= 2 if cx.mock else True
     cx.checks.add(
