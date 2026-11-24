@@ -683,6 +683,9 @@ impl SubAgentFactory {
             cfg.sandbox_default = parent.sandbox_default;
             cfg.sandbox_writable = parent.sandbox_writable.clone();
             cfg.sandbox_network = parent.sandbox_network;
+            // `.git` 归属快照与父共享同一份判定(父会话里 init 的仓库,
+            // 子代理同样要能 commit)。
+            cfg.git_protection = parent.git_protection.clone();
             cfg.tool_env = parent.tool_env.clone();
             // F01:子代理继承父会话注入 guard 与裁决统计(子会话工具输出
             // 同样是注入面;统计共享同一实例,父 /status 可见全量计数)。

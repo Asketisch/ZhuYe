@@ -403,6 +403,9 @@ impl zhuye_tools::TaskSpawner for CoreTaskSpawner {
         if let Some(net) = sandbox_ctx.network {
             sandbox.allow_network = net;
         }
+        // 会话级 `.git` 归属快照 —— 与前台 bash 同源(见
+        // zhuye_sandbox::GitProtectionSnapshot)。
+        sandbox.git_snapshot = sandbox_ctx.git_protection.clone();
         sandbox
             .enforce_or_fail()
             .map_err(|reason| zhuye_protocol::ToolError::SandboxUnavailable { reason })?;

@@ -433,6 +433,10 @@ impl Tool for BashTool {
         if let Some(net) = ctx.os_sandbox_network {
             sandbox.allow_network = net;
         }
+        // 会话级 `.git` 归属快照:agent 自建的空仓库全程可写(见
+        // zhuye_sandbox::GitProtectionSnapshot)。ForceSandbox 重建分支
+        // 随后照搬,保证强制沙箱不丢会话口径。
+        sandbox.git_snapshot = ctx.git_protection.clone();
         // v1.9 S2:不可信来源强制隔离闸门。模型/流程写的命令不受全局
         // 沙箱开关约束 —— 后端可用时强制沙箱,后端不可用时拒绝执行。
         // 见 zhuye_sandbox::untrusted 模块文档(模块文档即规则)。
@@ -451,6 +455,7 @@ impl Tool for BashTool {
                     forced.allow_network = sandbox.allow_network;
                     forced.protected_paths = std::mem::take(&mut sandbox.protected_paths);
                     forced.strict_paths = sandbox.strict_paths;
+                    forced.git_snapshot = sandbox.git_snapshot.clone();
                     sandbox = forced;
                 }
                 // 即使沙箱原本已启用,初始化失败也不能降级为裸执行。

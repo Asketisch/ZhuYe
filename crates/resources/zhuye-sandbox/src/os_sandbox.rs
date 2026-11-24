@@ -28,7 +28,9 @@
 //!
 //! 验证标准(gap doc):sandbox 内执行 `rm -rf /` 应被阻止。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 #[cfg(target_os = "linux")]
 #[path = "network_filter.rs"]
 mod network_filter;
@@ -67,12 +69,95 @@ pub enum OsSandboxStatus {
 /// [`PathProtectionVerdict::Unsupported`])。
 pub const DEFAULT_PROTECTED_ENTRIES: [&str; 3] = [".git", ".agents", ".aws"];
 
-/// 元数据条目是否存在(跟随符号链接本身:链接存在即视为存在,保护
-/// 语义跟着路径走)。`.git` 的 deny 规则按此条件生成 —— 不存在则没有
-/// 可篡改面,保护它只会堵死 `git init`(见 [`DEFAULT_PROTECTED_ENTRIES`]
-/// 两处消费点:seatbelt_profile 与 path_protection_report)。
-fn meta_entry_exists(root: &std::path::Path, name: &str) -> bool {
-    root.join(name).symlink_metadata().is_ok()
+/// `.git` 是否承载用户资产:HEAD 指向的分支**有提交**即视为用户仓库
+/// (改它的 hook / config 即提权 —— 用户随后在自己的终端跑 git,hook
+/// 以用户身份、在沙箱外执行);刚 `git init` 的空仓库(unborn HEAD,无
+/// 任何提交)视为脚手架,归 agent 所有,全程可写。
+///
+/// 判定失败(读不到 HEAD 等)一律 fail-closed 视为用户资产;`.git` 为
+/// 文件(worktree 指针)同样 fail-closed —— 穿过它的写落在主仓库
+/// `.git`,后者有独立的保护口径。
+fn git_dir_is_user_owned(git_dir: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(git_dir) else {
+        return false; // 不存在 → 非用户资产
+    };
+    if !meta.is_dir() {
+        return true; // worktree 指针文件 → fail-closed
+    }
+    let Ok(head) = std::fs::read_to_string(git_dir.join("HEAD")) else {
+        return true; // 读不到 HEAD → fail-closed
+    };
+    let head = head.trim();
+    let Some(ref_name) = head.strip_prefix("ref: ") else {
+        return true; // detached HEAD(指向具体 commit)→ 必有历史
+    };
+    let ref_name = ref_name.trim();
+    if git_dir.join(ref_name).symlink_metadata().is_ok() {
+        return true; // refs/heads/<branch> 存在 → 有提交
+    }
+    match std::fs::read_to_string(git_dir.join("packed-refs")) {
+        Ok(packed) => packed
+            .lines()
+            .any(|line| line.split_whitespace().nth(1) == Some(ref_name)),
+        Err(_) => false, // 松散与打包引用都没有 → unborn HEAD → 空仓库
+    }
+}
+
+/// 可写根顶层的 `.git` 是否受保护(非空仓库 = 用户资产)。
+fn root_git_is_protected(root: &Path) -> bool {
+    git_dir_is_user_owned(&root.join(".git"))
+}
+
+/// 会话级 `.git` 归属快照:可写根 → 本会话**首次**为该根构建 profile 时,
+/// 其顶层 `.git` 是否为用户资产(有提交历史的仓库,见
+/// [`root_git_is_protected`])。
+///
+/// `.git` 只读保护的是**会话开始前就属于用户的仓库** —— 改它的 hook /
+/// config 即提权(用户随后在自己的终端里跑 git,hook 以用户身份、在沙箱
+/// 外执行)。会话内 agent `git init` 出来的仓库(含跨会话续作时仍是
+/// 空仓库的情形)没有这层含义:其中的一切与 agent 写的脚本同级信任,
+/// 必须**全程**可写 —— 提交历史一经产生,下个会话起按用户资产恢复保护。
+///
+/// 判定必须锚在会话上,不能按「此刻是否存在」逐条命令判:`OsSandbox`
+/// 每条命令新建、profile 每条命令重建,逐命令判定会让 agent 卡进「init
+/// 与 add 在同一条命令里成功,下一条命令起整个 `.git` 变只读,commit
+/// 永远拿不到 index.lock」的半截状态(桌面 sess_99d9bf0a 实证)。而无条件
+/// deny 则连 `git init` 本身都不可能(更早的实证)。
+///
+/// 判定时刻取「首次为该根构建 profile」而非会话对象创建:第一条 bash
+/// 命令之前 agent 没有任何手段创建 `.git`(文件工具层拒绝含 `.git` 分量
+/// 的路径),两者等价;这样也不必在配置装配期就凑齐全部可写根(workspace
+/// 可热切换,额外可写目录每 turn 下发)。
+///
+/// `.agents` / `.aws` / `.zhuye` 不在快照范围内,恒受保护(凭据与引擎
+/// 托管配置不应由 agent 创建)。
+#[derive(Clone, Default)]
+pub struct GitProtectionSnapshot(Arc<std::sync::Mutex<HashMap<PathBuf, bool>>>);
+
+impl GitProtectionSnapshot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `root` 顶层的 `.git` 在本会话内是否受保护;首次询问时按归属判定
+    /// 并记忆,之后不再随文件系统变化(下一条命令就要写 `.git`)。
+    pub fn protects(&self, root: &Path) -> bool {
+        let mut roots = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *roots
+            .entry(root.to_path_buf())
+            .or_insert_with(|| root_git_is_protected(root))
+    }
+}
+
+impl std::fmt::Debug for GitProtectionSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitProtectionSnapshot")
+            .field("roots", &self.0.lock().map_or(0, |roots| roots.len()))
+            .finish()
+    }
 }
 
 /// 单条敏感路径的保护结论。
@@ -177,6 +262,10 @@ pub struct OsSandbox {
     /// 敏感路径保护是否必须落地。`true` 时任何「平台无法强制」的受保护
     /// 路径都会让沙箱拒绝执行(默认 false:报告但不阻断)。
     pub strict_paths: bool,
+    /// 会话级 `.git` 归属快照(见 [`GitProtectionSnapshot`]):`Some` 时
+    /// `.git` 仅在会话开始前已存在才受保护,agent 自建的仓库全程可写;
+    /// `None` = 调用方没有会话上下文,`.git` 恒受保护(历史口径)。
+    pub git_snapshot: Option<GitProtectionSnapshot>,
     /// 探测到的 backend(`enabled=false` 时为 `Disabled`)。
     backend: OsSandboxStatus,
 }
@@ -191,6 +280,7 @@ impl Default for OsSandbox {
             strict: true,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: detect_backend(),
         }
     }
@@ -207,6 +297,7 @@ impl OsSandbox {
             strict: false,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: OsSandboxStatus::Disabled,
         }
     }
@@ -221,6 +312,7 @@ impl OsSandbox {
             strict: true,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: detect_backend(),
         }
     }
@@ -428,11 +520,11 @@ impl OsSandbox {
         let mut report: Vec<PathProtection> = Vec::new();
 
         // 默认元数据条目:每个可写根顶层的 `.git` / `.agents` / `.aws`。
-        // `.git` 仅在已存在时列入 —— 不存在则没有可篡改面,报告它只会
-        // 撒谎(实际允许创建,见 seatbelt_profile 同口径过滤)。
+        // `.git` 的归属随会话快照(见 git_is_protected):agent 自建的仓库
+        // 实际可写,报告它只会撒谎。
         for root in &roots {
             for name in DEFAULT_PROTECTED_ENTRIES {
-                if name == ".git" && !meta_entry_exists(root, name) {
+                if name == ".git" && !self.git_is_protected(root) {
                     continue;
                 }
                 let candidate = root.join(name);
@@ -581,6 +673,15 @@ impl OsSandbox {
         }
     }
 
+    /// 可写根 `root` 顶层的 `.git` 是否受保护:有会话快照时随快照
+    /// ([`GitProtectionSnapshot`]),没有则恒受保护。
+    fn git_is_protected(&self, root: &Path) -> bool {
+        match &self.git_snapshot {
+            Some(snapshot) => snapshot.protects(root),
+            None => true,
+        }
+    }
+
     // ── macOS Seatbelt ──────────────────────────────────────────────
 
     /// 生成 Seatbelt `.sb` profile 文本(给 `sandbox-exec -p`)。
@@ -588,7 +689,8 @@ impl OsSandbox {
     /// 策略:
     /// - `deny` 为默认(显式 allow 才放行)。
     /// - 允许写:workspace + `writable_dirs` + `$TMPDIR` + `/private/var/folders`
-    ///   (macOS 真实 tempdir);**顶层 `.git` / `.zhuye` 保持只读**(改 hook
+    ///   (macOS 真实 tempdir);**顶层 `.zhuye` 保持只读**,顶层 `.git`
+    ///   仅保护会话开始前已存在的仓库(见 [`GitProtectionSnapshot`];改 hook
     ///   与配置是常见提权面,deny 规则置于末尾优先)。
     /// - 允许读:全盘(`(allow file-read*)`)—— 编译 / 分析常需读系统头与
     ///   依赖,限制读会大面积破坏可用性。写受限是核心安全边界。
@@ -703,20 +805,15 @@ impl OsSandbox {
         let mut meta_readonly_paths: Vec<String> = meta_roots
             .iter()
             .flat_map(|root| {
+                let root_path = Path::new(root);
                 DEFAULT_PROTECTED_ENTRIES
                     .iter()
-                    // `.git` 仅在已存在时 deny:保护目的是防「改已有仓库
-                    // 的 hook 提权」,不存在的 `.git` 没有可篡改面,无条件
-                    // deny 反而堵死非仓库 workspace 的 `git init`(桌面
-                    // sess_99d9bf0a 实证:mkdir/touch .git 全部 EPERM)。
-                    // 会话内 agent 自己 `git init` 出的仓库不做追溯保护
-                    // —— agent 对自建仓库的 hook 与对自己写的脚本同级
-                    // 信任;用户已有仓库在会话启动时 .git 已存在,deny
-                    // 照常生效。`.agents` / `.aws` / `.zhuye` 保持无条件
-                    // (凭据与引擎托管配置不应由 agent 创建)。
-                    .filter(|name| {
-                        **name != ".git" || meta_entry_exists(std::path::Path::new(root), name)
-                    })
+                    // `.git` 的归属随会话快照:只保护会话开始前已存在的
+                    // 仓库(防改 hook 提权),agent 自建的仓库全程可写
+                    // —— 无条件 deny 连 `git init` 都不可能,逐命令按存在
+                    // 性判又会卡在 init 之后(见 GitProtectionSnapshot)。
+                    // `.agents` / `.aws` / `.zhuye` 保持无条件 deny。
+                    .filter(|name| **name != ".git" || self.git_is_protected(root_path))
                     .map(move |name| format!("{root}/{name}"))
                     .chain(std::iter::once(format!("{root}/.zhuye")))
             })
@@ -1442,11 +1539,11 @@ mod tests {
     }
 
     /// 默认元数据条目(`.git` / `.agents` / `.aws`)总是出现在报告里,
-    /// 让宿主看到真实状态(而不是只看到「沙箱已启用」)。
+    /// 让宿主看到真实状态(而不是只看到「沙箱已启用」)。无会话快照时
+    /// `.git` 恒受保护,与其是否存在无关。
     #[test]
     fn default_entries_appear_in_report() {
         let workspace = std::env::temp_dir().join("zhuye-pp-default-ws");
-        let _ = std::fs::create_dir_all(workspace.join(".git"));
         let sandbox = OsSandbox::enabled(Vec::new());
         let report = sandbox.path_protection_report(&workspace);
         for name in DEFAULT_PROTECTED_ENTRIES {
@@ -1459,57 +1556,52 @@ mod tests {
         }
     }
 
-    /// `.git` 保护的存在性条件:不存在的 `.git` 不得进 deny 列表
-    /// (堵死非仓库 workspace 的 `git init`,桌面 sess_99d9bf0a 实证);
-    /// 一旦 `git init` 建出 `.git`,后续会话启动即恢复保护。`.agents` /
-    /// `.aws` / `.zhuye` 保持无条件 deny(凭据与引擎托管配置不应由
-    /// agent 创建)。
+    /// `.git` 归属随会话快照(报告口径,平台无关):无快照恒保护;快照下
+    /// 全新 workspace 不保护,且**不随 `git init` 翻转**(下一条命令就要写
+    /// `.git`);下一个会话开始时仓库已存在,恢复保护;快照经 Clone 共享,
+    /// 同一会话的各条命令看到同一份判定。
     #[test]
-    fn git_entry_protected_only_when_it_exists() {
-        let workspace = std::env::temp_dir().join("zhuye-pp-git-exists-ws");
+    fn git_protection_follows_session_snapshot_in_report() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-git-snapshot-ws");
         let _ = std::fs::remove_dir_all(&workspace);
         let _ = std::fs::create_dir_all(&workspace);
-        // profile / 报告都会 canonicalize(macOS tempdir /var → /private/var),
-        // 断言标记串必须用同一口径。
-        let ws = workspace.canonicalize().unwrap();
-        let sandbox = OsSandbox::enabled(Vec::new());
-
-        // 全新 workspace(无 .git):报告与 profile 都不得出现 .git deny。
-        let report = sandbox.path_protection_report(&workspace);
-        assert!(
-            !report
+        let has_git = |sandbox: &OsSandbox| {
+            sandbox
+                .path_protection_report(&workspace)
                 .iter()
-                .any(|item| item.resolved.file_name().is_some_and(|v| v == ".git")),
-            "不存在的 .git 不得出现在保护报告里: {report:?}"
-        );
-        let profile = sandbox.seatbelt_profile(&workspace);
-        // deny 规则的路径经 serde_json 序列化(带引号,引号同时防前缀误配)。
-        let deny_marker = format!("(subpath \"{}/.git\")", ws.display());
-        assert!(
-            !profile.contains(&deny_marker),
-            "全新 workspace 的 profile 不得 deny .git: {}",
-            deny_marker
-        );
-        // 其余条目保持无条件。
-        assert!(
-            profile.contains(&format!("(subpath \"{}/.agents\")", ws.display())),
-            "profile 必须无条件 deny .agents"
-        );
+                .any(|item| {
+                    item.resolved
+                        .file_name()
+                        .is_some_and(|value| value == ".git")
+                })
+        };
 
-        // `git init` 之后(.git 出现):下一次 profile 构建恢复保护。
+        // 无会话快照(调用方没有会话上下文):恒保护,与是否存在无关。
+        let bare = OsSandbox::enabled(Vec::new());
+        assert!(has_git(&bare), "无快照时 .git 必须恒受保护");
+
+        let mut session = OsSandbox::enabled(Vec::new());
+        session.git_snapshot = Some(GitProtectionSnapshot::new());
+        assert!(
+            !has_git(&session),
+            "全新 workspace 的 .git 属于 agent,不得报告为受保护"
+        );
         let _ = std::fs::create_dir_all(workspace.join(".git"));
-        let report2 = sandbox.path_protection_report(&workspace);
         assert!(
-            report2
-                .iter()
-                .any(|item| item.resolved.file_name().is_some_and(|v| v == ".git")),
-            "已存在的 .git 必须出现在保护报告里: {report2:?}"
+            !has_git(&session),
+            "快照一旦判定不得随文件系统翻转(init 之后下一条命令就要写 .git)"
         );
-        let profile2 = sandbox.seatbelt_profile(&workspace);
+        let cloned = session;
         assert!(
-            profile2.contains(&deny_marker),
-            "已存在 .git 的 profile 必须 deny: {}",
-            deny_marker
+            !has_git(&cloned),
+            "快照经 Clone 共享,同一会话的各条命令必须看到同一份判定"
+        );
+
+        let mut next_session = OsSandbox::enabled(Vec::new());
+        next_session.git_snapshot = Some(GitProtectionSnapshot::new());
+        assert!(
+            has_git(&next_session),
+            "下一个会话开始时仓库已存在,必须恢复保护"
         );
         let _ = std::fs::remove_dir_all(&workspace);
     }
@@ -1570,6 +1662,7 @@ mod tests {
             strict: true,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: OsSandboxStatus::NoBackend,
         };
         assert!(s.enforce_or_fail().is_err());
@@ -1619,6 +1712,7 @@ mod tests {
             strict: true,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: OsSandboxStatus::Landlock,
         };
         let line = ll.status_line();
@@ -1659,6 +1753,7 @@ mod tests {
             strict: true,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: OsSandboxStatus::Seatbelt,
         };
         assert!(sb.status_line().contains("网络:仅本机"));
@@ -1687,6 +1782,7 @@ mod tests {
             strict: true,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: OsSandboxStatus::Landlock,
         };
         let supported = landlock_kernel_supported();
@@ -1729,6 +1825,7 @@ mod tests {
             strict: false,
             protected_paths: Vec::new(),
             strict_paths: false,
+            git_snapshot: None,
             backend: OsSandboxStatus::NoBackend,
         };
         assert_eq!(s.enforce_or_fail().is_err(), cfg!(target_os = "linux"));
@@ -1778,11 +1875,9 @@ mod tests {
         assert!(prof.contains("(allow network-outbound (remote unix-socket))"));
         assert!(!prof.contains("(allow network*)"));
         assert!(!prof.contains("(deny network*)"));
-        // 元数据只读:workspace 顶层 .zhuye 拒写。`.git` 例外 —— 虚构
-        // 路径(/Users/x/project 在测试机不存在)不再产生 deny:保护
-        // 只针对**已存在**的 .git(防改 hook 提权),不存在则允许
-        // `git init`(正反用例见 git_entry_protected_only_when_it_exists)。
-        assert!(!prof.contains("(subpath \"/Users/x/project/.git\")"));
+        // 元数据只读:workspace 顶层 .git / .zhuye 拒写(无会话快照 →
+        // `.git` 恒保护;快照语义见 git_deny_rule_follows_session_snapshot)。
+        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/project/.git\"))"));
         assert!(prof.contains("(deny file-write* (subpath \"/Users/x/project/.zhuye\"))"));
         // 进程执行不限目录(子进程继承沙箱)。
         assert!(prof.contains("(allow process-exec)\n"));
@@ -1795,8 +1890,49 @@ mod tests {
         s.allow_network = true;
         let prof = s.seatbelt_profile(Path::new("/Users/x/p"));
         assert!(prof.contains("(allow network*)"));
-        // 额外可写目录:不存在的 .git 不产生 deny(同上口径)。
-        assert!(!prof.contains("(subpath \"/Users/x/extra/.git\")"));
+        // 额外可写目录的顶层 .git 同样拒写(无会话快照 → 恒保护)。
+        assert!(prof.contains("(deny file-write* (subpath \"/Users/x/extra/.git\"))"));
+    }
+
+    /// `.git` 归属随会话快照(profile 口径 —— Seatbelt 真正消费的 deny
+    /// 列表)。无快照恒 deny;快照下全新 workspace 不 deny;快照下会话
+    /// 开始前已存在的仓库照常 deny。`.agents` / `.zhuye` 不受快照影响。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn git_deny_rule_follows_session_snapshot() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-git-profile-ws");
+        let _ = std::fs::remove_dir_all(&workspace);
+        let _ = std::fs::create_dir_all(&workspace);
+        // profile 里的路径经 canonicalize + serde_json 序列化(带引号,
+        // 引号同时防前缀误配),断言标记串用同一口径。
+        let ws = workspace.canonicalize().unwrap();
+        let deny_git = format!("(deny file-write* (subpath \"{}/.git\"))", ws.display());
+        let deny_agents = format!("(subpath \"{}/.agents\")", ws.display());
+
+        let bare = OsSandbox::enabled(Vec::new());
+        assert!(bare.seatbelt_profile(&workspace).contains(&deny_git));
+
+        let mut session = OsSandbox::enabled(Vec::new());
+        session.git_snapshot = Some(GitProtectionSnapshot::new());
+        let fresh = session.seatbelt_profile(&workspace);
+        assert!(!fresh.contains(&deny_git), "全新 workspace 不得 deny .git");
+        assert!(fresh.contains(&deny_agents), ".agents 必须保持无条件 deny");
+        // `git init` 之后重建 profile(每条命令都会重建):仍不得 deny。
+        let _ = std::fs::create_dir_all(workspace.join(".git"));
+        assert!(
+            !session.seatbelt_profile(&workspace).contains(&deny_git),
+            "init 之后下一条命令就要写 .git,不得因它已存在而翻转"
+        );
+
+        let mut next_session = OsSandbox::enabled(Vec::new());
+        next_session.git_snapshot = Some(GitProtectionSnapshot::new());
+        assert!(
+            next_session
+                .seatbelt_profile(&workspace)
+                .contains(&deny_git),
+            "下一个会话开始时仓库已存在,必须恢复 deny"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     /// v1.3 回归:`.zhuye` 三明治 —— 整树放行(spill / plan / worktrees /
@@ -1940,6 +2076,84 @@ mod tests {
         assert!(
             stdout.contains("PLAIN_OK"),
             "普通文件必须可写;stdout: {stdout}"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// 在 Seatbelt 里跑一条命令,返回(是否成功,stdout + stderr)。
+    #[cfg(target_os = "macos")]
+    fn run_in_seatbelt(sandbox: &OsSandbox, workspace: &Path, script: &str) -> (bool, String) {
+        let (prog, args) = sandbox
+            .seatbelt_argv(workspace, script)
+            .expect("seatbelt argv");
+        let out = std::process::Command::new(prog)
+            .args(&args)
+            .output()
+            .expect("sandbox-exec 必须可运行");
+        // BashTool 在命令结束后删除临时 profile;测试同样不留。
+        let _ = std::fs::remove_file(&args[1]);
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+
+    /// 真机回归(桌面 sess_99d9bf0a):agent 在全新 workspace 里分几条命令
+    /// `git init` → `git add` → `git commit`,每条命令各自重建 profile,
+    /// 必须全部成功。此前 init 之后下一条命令起 `.git` 变只读,commit
+    /// 永远拿不到 index.lock;更早则连 `git init` 都不可能。会话开始前
+    /// 已存在的仓库不受影响(对照见下一用例)。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn agent_can_init_add_and_commit_across_commands_in_fresh_workspace() {
+        let workspace =
+            std::env::temp_dir().join(format!("zhuye-sandbox-git-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).expect("建工作区");
+        std::fs::write(workspace.join("README.md"), "hello\n").expect("写文件");
+        let mut s = OsSandbox::enabled(Vec::new());
+        s.git_snapshot = Some(GitProtectionSnapshot::new());
+        let cd = format!("cd '{}' && ", workspace.display());
+        let steps = [
+            format!("{cd}git init -b main"),
+            format!("{cd}git add README.md"),
+            format!(
+                "{cd}git -c user.name=t -c user.email=t@example.com \
+                 -c commit.gpgsign=false commit -m init"
+            ),
+            format!("{cd}git rev-parse HEAD"),
+        ];
+        for step in &steps {
+            let (ok, output) = run_in_seatbelt(&s, &workspace, step);
+            assert!(ok, "沙箱内 git 命令必须成功: {step}\n{output}");
+        }
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// 对照:会话开始前已存在的仓库,即使挂了会话快照,`.git` 仍不可写
+    /// (快照只认会话开始前的归属,不因 agent 在会话内动了什么而让步)。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_keeps_preexisting_git_readonly_with_session_snapshot() {
+        let workspace =
+            std::env::temp_dir().join(format!("zhuye-sandbox-git-existing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(workspace.join(".git")).expect("建工作区");
+        let mut s = OsSandbox::enabled(Vec::new());
+        s.git_snapshot = Some(GitProtectionSnapshot::new());
+        let script = format!(
+            "cd '{ws}' && (echo x > .git/hook.sh) 2>/dev/null; \
+             test -f .git/hook.sh && echo GIT_WROTE || echo GIT_BLOCKED",
+            ws = workspace.display()
+        );
+        let (_, output) = run_in_seatbelt(&s, &workspace, &script);
+        assert!(
+            output.contains("GIT_BLOCKED"),
+            "已有仓库的 .git 必须不可写;输出: {output}"
         );
         let _ = std::fs::remove_dir_all(&workspace);
     }
