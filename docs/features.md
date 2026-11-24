@@ -144,7 +144,7 @@ rollout、不进 session_usage、不发 TokenCount、不喂 CacheBreakDetector)�
 - **流锚点恢复** —— 可重试流错误(断流 / 网络 / 5xx)已有可见增量时,
   从安全锚点重开而非整段重来;丢弃的尾部以 `StreamRecoveryDiscarded`
   留痕(resume 不回放),恢复过程经 `stream_recovery_*` 四事件可观察;
-- **压缩 rapid-refill 熔断** —— 「压缩 → 立即填满」连续 3 次即收口
+- **压缩 rapid-refill 熔断** —— 只有校准水位降到触发阈值以下才登记锚点。「压缩 → 立即填满」连续 3 次即收口
   (`compact_rapid_refill`),窗口内前几次跳过并注入收敛提醒;
 - **空结果防护** —— provider 自证零产出的正常结束判为可疑
   (`suspicious_empty_model_result`),details 持久化原始归因;

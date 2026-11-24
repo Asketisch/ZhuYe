@@ -38,6 +38,8 @@ pub struct SmartPruneConfig {
     pub max_tool_result_chars: usize,
     pub max_assistant_chars: usize,
     pub max_tool_result_lines: usize,
+    /// 同一次模型上报对本地估算的缩放；1 表示不缩放。
+    pub calibration_scale: f64,
 }
 
 impl Default for SmartPruneConfig {
@@ -50,6 +52,7 @@ impl Default for SmartPruneConfig {
             max_tool_result_chars: MAX_TOOL_RESULT_CHARS,
             max_assistant_chars: MAX_ASSISTANT_CHARS,
             max_tool_result_lines: MAX_TOOL_RESULT_LINES,
+            calibration_scale: 1.0,
         }
     }
 }
@@ -70,7 +73,7 @@ pub fn smart_prune(
     cfg: &SmartPruneConfig,
 ) -> (Vec<ChatMessage>, CompactReport) {
     let before = crate::tokens::estimate_messages(&messages);
-    if before < cfg.trigger_tokens {
+    if crate::tokens::scaled_tokens(before, cfg.calibration_scale) < cfg.trigger_tokens {
         return (
             messages,
             CompactReport {
@@ -153,7 +156,9 @@ pub fn smart_prune(
     let mut use_idx = crate::tool_pair::find_tool_use_indices(&keep);
     let mut result_idx = crate::tool_pair::find_tool_result_indices(&keep);
     let mut drop_idx = 0;
-    while current_tokens >= cfg.target_tokens && drop_idx < keep.len() {
+    while crate::tokens::scaled_tokens(current_tokens, cfg.calibration_scale) >= cfg.target_tokens
+        && drop_idx < keep.len()
+    {
         if pinned.contains(&drop_idx) || drop_idx >= keep_start {
             drop_idx += 1;
             continue;
