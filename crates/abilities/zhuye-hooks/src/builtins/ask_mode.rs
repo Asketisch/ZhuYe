@@ -51,9 +51,13 @@ pub fn classify_ask_mode_tool(tool: &str, args: &serde_json::Value) -> AskDecisi
         let cmd = zhuye_protocol::resolve_bash_command(args).unwrap_or("");
         return match classify_command(cmd) {
             BashCommandClass::Safe => AskDecision::Allow,
-            class => AskDecision::Deny(format!(
-                "询问模式下拦截写类/危险 bash 命令（只读命令可用；向用户提问不受影响）: {cmd}",
-            )),
+            // 拦截文案收窄边界防模型过泛化；级别词留进 reason 供观测。
+            class @ (BashCommandClass::Risky | BashCommandClass::Dangerous) => {
+                AskDecision::Deny(format!(
+                    "询问模式下拦截{:?}级 bash 命令（只读命令可用；向用户提问不受影响）: {cmd}",
+                    class
+                ))
+            }
         };
     }
     // ast per-action 路由：只读动作放行，改写动作属于修改文件。
