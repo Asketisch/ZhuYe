@@ -61,6 +61,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 workspace: ".".into(),
                 permission_mode: PermissionMode::Auto,
+                approval_policy: None,
             },
         };
         assert!(matches!(

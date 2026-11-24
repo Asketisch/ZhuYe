@@ -19,7 +19,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
             items,
             thread_settings: ThreadSettingsOverrides::default(),
         }),
-        Just(Op::Compact),
+        Just(Op::Compact { instructions: None }),
         arb_text().prop_map(|child_id| Op::Interrupt {
             child_id: (!child_id.is_empty()).then_some(child_id),
         }),

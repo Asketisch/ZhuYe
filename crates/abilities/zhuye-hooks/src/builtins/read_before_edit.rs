@@ -304,6 +304,7 @@ mod tests {
             turn_id: TurnId::new(),
             workspace: ws.to_path_buf(),
             permission_mode: mode,
+            approval_policy: None,
         }
     }
 

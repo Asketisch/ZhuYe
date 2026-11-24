@@ -1,5 +1,6 @@
 //! 引擎自带的内置 hook。
 
+pub mod ask_mode;
 pub mod langfuse_tracker;
 pub mod plan_completion;
 pub mod plan_mode_gate;
@@ -8,6 +9,7 @@ pub mod search_budget;
 pub mod test_runner;
 pub mod verification;
 
+pub use ask_mode::{AskDecision, classify_ask_mode_tool};
 pub use langfuse_tracker::LangfuseTracker;
 pub use plan_completion::PlanCompletionHook;
 pub use plan_mode_gate::PlanModeGate;

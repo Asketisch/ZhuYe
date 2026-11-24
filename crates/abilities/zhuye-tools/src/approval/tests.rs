@@ -1125,6 +1125,159 @@ async fn bubble_mode_still_auto_approves_medium_risk_tool() {
     ));
 }
 
+/// v1.x 询问档语义升级:`Prompt` 会话模式下,只读工具与 Safe bash 自动
+/// 放行(不弹 modal);写类工具与危险 bash 直接拒绝;未知工具落 modal。
+#[tokio::test]
+async fn prompt_mode_auto_approves_read_only_and_safe_bash() {
+    let (tx, mut rx) = mpsc::channel::<Event>(4);
+    let waiters: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ReviewDecision>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let session_allow: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let mode_lock: Arc<parking_lot::RwLock<PermissionMode>> =
+        Arc::new(parking_lot::RwLock::new(PermissionMode::Prompt));
+    let gate = ApprovalGate::with_state(
+        tx,
+        "sub-prompt-safe",
+        waiters.clone(),
+        session_allow,
+        None,
+        None,
+        None,
+        Some(mode_lock),
+    );
+    let gate = Arc::new(gate);
+    let cancel = CancellationToken::new();
+
+    // Safe bash(git status)→ 免弹窗放行。
+    let decision = gate
+        .ask_tool(
+            "bash",
+            &serde_json::json!({"command": "git status"}),
+            RiskLevel::Low,
+            &cancel,
+        )
+        .await;
+    assert!(
+        matches!(decision, ReviewDecision::Approve),
+        "Prompt 模式应自动放行 Safe bash: got {decision:?}"
+    );
+    // 只读工具(read)→ 同样放行。
+    let decision = gate
+        .ask_tool(
+            "read",
+            &serde_json::json!({"path": "/tmp/a"}),
+            RiskLevel::Low,
+            &cancel,
+        )
+        .await;
+    assert!(matches!(decision, ReviewDecision::Approve));
+    // 全程不应发出 ApprovalRequest(免弹窗)。
+    assert!(rx.try_recv().is_err(), "放行不应 emit 审批请求");
+}
+
+#[tokio::test]
+async fn prompt_mode_denies_write_tools_and_dangerous_bash() {
+    let (tx, mut rx) = mpsc::channel::<Event>(4);
+    let waiters: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ReviewDecision>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let session_allow: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let mode_lock: Arc<parking_lot::RwLock<PermissionMode>> =
+        Arc::new(parking_lot::RwLock::new(PermissionMode::Prompt));
+    let gate = ApprovalGate::with_state(
+        tx,
+        "sub-prompt-deny",
+        waiters.clone(),
+        session_allow,
+        None,
+        None,
+        None,
+        Some(mode_lock),
+    );
+    let cancel = CancellationToken::new();
+
+    // 写类工具 → 直接拒绝(不能修改文件)。
+    let decision = gate
+        .ask_tool(
+            "write",
+            &serde_json::json!({"path": "/tmp/a"}),
+            RiskLevel::Low,
+            &cancel,
+        )
+        .await;
+    let ReviewDecision::Deny { reason } = decision else {
+        panic!("write 在询问模式应被拒绝");
+    };
+    assert!(
+        reason.contains("不能修改文件"),
+        "reason 应说明边界: {reason}"
+    );
+
+    // 危险 bash → 直接拒绝并带命令。
+    let decision = gate
+        .ask_tool(
+            "bash",
+            &serde_json::json!({"command": "rm -rf /tmp/x"}),
+            RiskLevel::Low,
+            &cancel,
+        )
+        .await;
+    let ReviewDecision::Deny { reason } = decision else {
+        panic!("危险 bash 在询问模式应被拦截");
+    };
+    assert!(reason.contains("rm -rf /tmp/x"));
+    // 全程不应发出 ApprovalRequest。
+    assert!(rx.try_recv().is_err(), "拒绝不应 emit 审批请求");
+}
+
+#[tokio::test]
+async fn prompt_mode_unknown_tool_falls_through_to_modal() {
+    let (tx, mut rx) = mpsc::channel::<Event>(4);
+    let waiters: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ReviewDecision>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let session_allow: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let mode_lock: Arc<parking_lot::RwLock<PermissionMode>> =
+        Arc::new(parking_lot::RwLock::new(PermissionMode::Prompt));
+    let gate = ApprovalGate::with_state(
+        tx,
+        "sub-prompt-fallthrough",
+        waiters.clone(),
+        session_allow,
+        None,
+        None,
+        None,
+        Some(mode_lock),
+    );
+    let gate = Arc::new(gate);
+    let cancel = CancellationToken::new();
+    let gate_c = gate.clone();
+    let asker = tokio::spawn(async move {
+        gate_c
+            .ask_tool(
+                "mcp__demo__query",
+                &serde_json::json!({}),
+                RiskLevel::Low,
+                &cancel,
+            )
+            .await
+    });
+    // 未知工具落回审批弹窗(询问兜底)。
+    let ev = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("未知工具应落 modal(收到 ApprovalRequest)")
+        .expect("event channel open");
+    assert!(matches!(ev.msg, EventMsg::ApprovalRequest(_)));
+    let req_id = match ev.msg {
+        EventMsg::ApprovalRequest(req) => req.request_id,
+        other => panic!("expected ApprovalRequest, got {other:?}"),
+    };
+    assert!(gate.complete(&req_id, ReviewDecision::Approve));
+    let decision = timeout(Duration::from_secs(2), asker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(decision, ReviewDecision::Approve));
+}
+
 /// 回合级中断(`Op::Interrupt` 取消**回合令牌**)必须解除审批等待。
 ///
 /// 此前 gate 只观察**会话级**令牌(调用方 `ToolContext.cancel` 传的是它)

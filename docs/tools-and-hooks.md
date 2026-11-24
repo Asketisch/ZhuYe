@@ -161,7 +161,9 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 
 `HookEvent` 不携带完整 `ToolContext`(避免 tools↔hooks 循环依赖),
 需要上下文的事件提供精简 `HookContext { session_id, turn_id, workspace,
-permission_mode }`。
+permission_mode, approval_policy }`(`approval_policy` 为本回合的审批策略
+覆盖,`None` = 未覆盖;`PlanModeGate` 用它实现「完全访问下 Plan 模式放开
+bash」)。
 
 ### §4.2 决策(7 种,`decision.rs`)
 

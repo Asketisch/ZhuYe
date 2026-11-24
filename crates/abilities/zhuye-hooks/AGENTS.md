@@ -5,7 +5,7 @@
 ## 本 crate 是什么
 
 `HookEngine`(注册、派发、合并)、hook 的事件与决策类型、内置 hook 实现、以及把 hook 逻辑委托给外部进程的 shell hook。
-本 crate **不依赖 `zhuye-tools`**(依赖方向是 `zhuye-tools` → 本 crate,单向):hook 事件不携带 `ToolContext`,需要上下文时只读事件上暴露的精简字段(workspace / session_id / turn_id / permission_mode),完整上下文由工具实现自己在 `Tool::execute` 里拿 —— 这是为了不与 `zhuye-tools` 成环。
+本 crate **不依赖 `zhuye-tools`**(依赖方向是 `zhuye-tools` → 本 crate,单向):hook 事件不携带 `ToolContext`,需要上下文时只读事件上暴露的精简字段(workspace / session_id / turn_id / permission_mode / approval_policy),完整上下文由工具实现自己在 `Tool::execute` 里拿 —— 这是为了不与 `zhuye-tools` 成环。
 
 ## 本地契约
 
@@ -28,6 +28,7 @@
 ### 3. 内置 hook 与启用语义
 
 - 内置 hook 实现放在 `src/builtins/`;各自的配置段在 `[hooks]` 下(如 `[hooks.search_budget]`),schema 见 `docs/tools-and-hooks.md` §5.5。
+- **`builtins::ask_mode` 不是 hook**,是询问档(`PermissionMode::Prompt`)的工具判定共享函数(`classify_ask_mode_tool`:只读工具与 Safe bash → Allow,写类工具与 Risky/Dangerous bash → Deny,其余 FallThrough)——消费方是 `zhuye-tools` 审批门的 Prompt 臂,不注册进 HookEngine。
 - `HooksConfig.enabled` 为 `None` 表示**全部启用**;调用方可收紧这一默认 —— 例如 serve 嵌入场景通过 `hooks_explicit_only`(定义在 `crates/runtime/zhuye-exec/src/headless.rs`)把「未配置 = 全部启用」收紧为「未配置 = 不启用任何内置 hook」,显式列出的照常启用。**这是调用方的选择,不是本 crate 的默认行为**,改默认值前先确认 serve 场景的意图。
 - **verify-hooks 门控插件的插件路径**经 `HooksConfig::enable_hook_names` 注入(把 hook 短名并进 `enabled` 列表,幂等;`None` 全启用语义不动):verification / test_runner 的启用是**双路径**(config `[hooks] enabled` 显式列出 OR `verify-hooks` 插件启用,等价),装配层在 explicit-only 收紧**之后**调用注入,保证 serve / 嵌入场景同样生效。
 

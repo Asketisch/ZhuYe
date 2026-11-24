@@ -120,6 +120,10 @@ pub struct AgentConfig {
     /// trigger_tokens 阈值),压缩后清零。共享 `Arc<RwLock>` 让
     /// `submission_loop` 的 `Op::Compact` 分支与 `pre_loop` 节点通信。
     pub force_compact_next: Arc<RwLock<bool>>,
+    /// v1.x:`/compact <指示>` 的用户附加指示槽。`Op::Compact` 写入,
+    /// 下一个 turn 的 `pre_loop` 取出并清零,注入摘要 prompt
+    /// (「## 用户附加指示」段)。`None` = 无附加指示。
+    pub compact_focus: Arc<RwLock<Option<String>>>,
     /// v1.2 P1:本地 Langfuse 式日志 sink。由 `zhuye-exec` /
     /// `zhuye-tui` 在 bootstrap 时按 `[telemetry]` 配置构造。
     /// `None` = telemetry 关闭(测试 / 旧调用方)。
@@ -342,6 +346,7 @@ impl AgentConfig {
             context_window_size: Arc::new(RwLock::new(None)),
             context_window_overrides: Arc::new(RwLock::new(HashMap::new())),
             force_compact_next: Arc::new(RwLock::new(false)),
+            compact_focus: Arc::new(RwLock::new(None)),
             telemetry: None,
             goal: Arc::new(RwLock::new(None)),
             todos_slot: Arc::new(RwLock::new(None)),
@@ -791,6 +796,17 @@ impl AgentConfig {
         let v = *g;
         *g = false;
         v
+    }
+
+    /// v1.x:设置 `/compact` 附加指示(由 `Op::Compact` 调,与
+    /// [`Self::request_force_compact`] 配对)。
+    pub fn set_compact_focus(&self, instructions: Option<String>) {
+        *self.compact_focus.write() = instructions.filter(|s| !s.trim().is_empty());
+    }
+
+    /// v1.x:读 + 清零附加指示(由 `pre_loop` 调,注入摘要 prompt)。
+    pub fn take_compact_focus(&self) -> Option<String> {
+        self.compact_focus.write().take()
     }
 
     /// v1.2 P1-12:会话级累计 token 用量快照(读 `RwLock` 后 clone)。

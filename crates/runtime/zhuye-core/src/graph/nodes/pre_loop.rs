@@ -126,6 +126,13 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
         *g = false;
         v
     };
+    // v1.x:`/compact <指示>` 的附加指示 —— 与强制标志同批取出(仅在
+    // 手动压缩本轮注入摘要 prompt;阈值触发的自动压缩不消费残留值)。
+    let compact_focus = if force_compact {
+        ctx.cfg.take_compact_focus()
+    } else {
+        None
+    };
     let llm_reported = if force_compact {
         Some(u32::MAX)
     } else {
@@ -216,6 +223,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             turn_id: ctx.turn_id,
             workspace: ctx.cfg.current_workspace(),
             permission_mode: ctx.cfg.permission_mode(),
+            approval_policy: None,
         };
         let trigger = if force_compact { "manual" } else { "threshold" };
         let decision = ctx
@@ -268,6 +276,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                     &state.messages.messages,
                     state.compaction_summary.as_deref(),
                     llm_reported,
+                    compact_focus.as_deref(),
                 )
                 .await
             {
@@ -376,6 +385,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                 turn_id: ctx.turn_id,
                 workspace: ctx.cfg.current_workspace(),
                 permission_mode: ctx.cfg.permission_mode(),
+                approval_policy: None,
             };
             let strategy_name = match strategy {
                 ContextCompactedStrategy::Noop => "noop",
@@ -675,7 +685,11 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // 不应允许 write/edit 任意路径；`PlanWrite` 内置 `.zhuye/plan/` 路径
     // 强制，语义更窄、更安全。`PlanModeGate` hook 的 `.zhuye/plan/` 特例
     // 保留作防御性兜底（万一未来有 skill 把 write 显式加回 always_on）。
-    if matches!(current_mode, PermissionMode::Plan) {
+    //
+    // v1.x 询问档语义升级：Prompt 模式同为只读探索档（`AskModeGate` 判定：
+    // 写类工具直接拒绝），同样从可见工具集移除 write/edit —— 模型不再
+    // 浪费轮次尝试注定被拒的调用。
+    if matches!(current_mode, PermissionMode::Plan | PermissionMode::Prompt) {
         effective.remove("write");
         effective.remove("edit");
     }

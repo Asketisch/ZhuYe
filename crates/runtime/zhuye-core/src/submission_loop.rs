@@ -514,6 +514,7 @@ pub async fn submission_loop(
                         turn_id,
                         workspace: cfg.current_workspace(),
                         permission_mode: cfg.permission_mode(),
+                        approval_policy: thread_settings.approval_policy,
                     };
                     let prompt_text = merged_items
                         .iter()
@@ -1204,11 +1205,14 @@ pub async fn submission_loop(
                     }
                 });
             }
-            zhuye_protocol::Op::Compact => {
+            zhuye_protocol::Op::Compact { instructions } => {
                 // v1.x 保温:压缩将改写历史 → 取消在飞保温 + bump 代际
                 // (候选前缀即将失效)。
                 cfg.cache_warming.cancel_active();
                 cfg.bump_cache_generation();
+                // v1.x:`/compact <指示>` 的附加指示写入共享槽,下一轮
+                // `pre_loop` 取出注入摘要 prompt。
+                cfg.set_compact_focus(instructions);
                 // v1.2 P1-12(已有-B):`/compact` 设置 `force_compact_next`
                 // 标志,让下一个 turn 的 `pre_loop` 强制运行 compactor(无视
                 // trigger_tokens 阈值)。架构原因:`Op::Compact` 到达时无活跃
@@ -2487,6 +2491,13 @@ pub(crate) async fn dispatch_plan_request(
     task: String,
     meta_written: bool,
 ) {
+    // 已在 Plan 模式：EnterPlanMode 是冗余调用（用户已选择计划模式），
+    // 不再发 PlanRequest 让客户端弹确认框。与 tool_exec 的工具路径守卫
+    // 同口径，补上 Op 路径。
+    if cfg.permission_mode() == PermissionMode::Plan {
+        tracing::info!(%task, "EnterPlanMode requested but already in Plan mode; skipping PlanRequest");
+        return;
+    }
     let plan_id = PlanId::new();
     // v1.12:带摘要注册 —— 挂起交互查询面(plan 类)可见规划目标。
     let rx = gate.register_with_summary(plan_id, task.clone(), serde_json::json!({ "task": task }));
@@ -2721,6 +2732,11 @@ pub(crate) async fn dispatch_plan_request_blocking(
     task: String,
     turn_cancel: tokio_util::sync::CancellationToken,
 ) -> Option<zhuye_protocol::PlanApprovalChoice> {
+    // 已在 Plan 模式：同 spawn 版守卫，不注册 waiter / 不发 PlanRequest。
+    if cfg.permission_mode() == PermissionMode::Plan {
+        tracing::info!(%task, "EnterPlanMode requested but already in Plan mode; skipping PlanRequest");
+        return None;
+    }
     let plan_id = PlanId::new();
     // v1.12:带摘要注册(同 spawn 版)。
     let rx = gate.register_with_summary(plan_id, task.clone(), serde_json::json!({ "task": task }));
@@ -3156,6 +3172,39 @@ mod tests {
             gate.waiters().lock().len(),
             1,
             "dispatch_plan_request should register exactly one waiter"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_plan_request_skips_when_already_in_plan_mode() {
+        let gate = Arc::new(PlanApprovalGate::new());
+        let session_subs: Arc<Mutex<Vec<mpsc::Sender<Event>>>> = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (turn_tx, mut turn_rx) = mpsc::channel::<Event>(8);
+        // 用户已显式选择计划模式：EnterPlanMode 是冗余调用，不得再发
+        // PlanRequest（否则客户端会弹「进入计划模式？」确认框）。
+        let cfg = test_cfg().with_initial_permission_mode(PermissionMode::Plan);
+
+        dispatch_plan_request(
+            &gate,
+            &session_subs,
+            Arc::clone(&session_seq),
+            turn_tx,
+            "sub-1".to_string(),
+            cfg,
+            "refactor auth".to_string(),
+            true,
+        )
+        .await;
+
+        assert!(
+            turn_rx.try_recv().is_err(),
+            "already in Plan mode must not emit PlanRequest"
+        );
+        assert_eq!(
+            gate.waiters().lock().len(),
+            0,
+            "already in Plan mode must not register a plan waiter"
         );
     }
 
