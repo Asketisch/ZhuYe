@@ -9,8 +9,9 @@ pub mod os_sandbox;
 pub mod untrusted;
 
 pub use os_sandbox::{
-    DEFAULT_PROTECTED_ENTRIES, OsSandbox, OsSandboxStatus, OsSandboxStubStatus, PathProtection,
-    PathProtectionVerdict, detect_backend, probe_landlock_exec,
+    DEFAULT_PROTECTED_ENTRIES, GitProtectionSnapshot, OsSandbox, OsSandboxStatus,
+    OsSandboxStubStatus, PathProtection, PathProtectionVerdict, detect_backend,
+    probe_landlock_exec,
 };
 pub use untrusted::{CommandOrigin, GateDecision, UntrustedGate};
 

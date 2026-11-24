@@ -222,6 +222,10 @@ pub struct AgentConfig {
     pub sandbox_writable: Vec<PathBuf>,
     /// v1.x:`[sandbox].allow_network` 透传。
     pub sandbox_network: Option<bool>,
+    /// 会话级 `.git` 归属快照(见 `zhuye_sandbox::GitProtectionSnapshot`)。
+    /// `AgentConfig::new` 创建,整条会话(含子代理)共享同一份判定;
+    /// 经 `tool_context()` 透传到每个 `ToolContext`。
+    pub git_protection: Option<zhuye_sandbox::GitProtectionSnapshot>,
     /// v1.11 桌面#3:复杂度分级路由 —— effort 档位 → 模型 spec 映射
     /// (config `[routing.main.complexity]`,bootstrap / 热重载装配;
     /// core 不读 config)。`model_call` 在 effort 档位命中映射时覆盖
@@ -354,6 +358,7 @@ impl AgentConfig {
             sandbox_default: None,
             sandbox_writable: Vec::new(),
             sandbox_network: None,
+            git_protection: Some(zhuye_sandbox::GitProtectionSnapshot::new()),
             effort_model_routes: Arc::new(RwLock::new(HashMap::new())),
             cache_generation,
             cache_warming,
@@ -509,6 +514,7 @@ impl AgentConfig {
         // 框架内无任何消费方,只有桌面端自己解析)。
         ctx.os_sandbox_writable = self.sandbox_writable.clone();
         ctx.os_sandbox_network = self.sandbox_network;
+        ctx.git_protection = self.git_protection.clone();
         ctx
     }
 

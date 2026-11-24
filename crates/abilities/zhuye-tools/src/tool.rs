@@ -140,6 +140,10 @@ pub struct ToolContext {
     /// v1.x:`[sandbox].allow_network` 透传。`None` = 不覆盖
     /// `OsSandbox` 默认(false = 禁出站)。
     pub os_sandbox_network: Option<bool>,
+    /// 会话级 `.git` 归属快照(见 `zhuye_sandbox::GitProtectionSnapshot`)。
+    /// 会话内 agent `git init` 的空仓库全程可写,用户已有仓库只读;
+    /// `None` = 无会话上下文,`.git` 恒受保护(历史口径)。
+    pub git_protection: Option<zhuye_sandbox::GitProtectionSnapshot>,
     /// v1.9 S2:本次调用命令文本的来源(authorship)。`None` = 默认
     /// `ModelAuthored`(harness 里 bash 工具的命令几乎都是模型产出)。
     /// 不可信来源经 `zhuye_sandbox::UntrustedGate` 强制沙箱 —— 全局
@@ -268,6 +272,9 @@ pub struct BackgroundBashSandbox {
     pub writable_dirs: Vec<PathBuf>,
     /// 出站网络开关(`[sandbox].allow_network`);`None` = 跟随 env。
     pub network: Option<bool>,
+    /// 会话级 `.git` 归属快照(`ToolContext.git_protection`),与前台
+    /// bash 同源 —— 后台任务同样要能 commit agent 自建的仓库。
+    pub git_protection: Option<zhuye_sandbox::GitProtectionSnapshot>,
 }
 
 impl BackgroundBashSandbox {
@@ -277,6 +284,7 @@ impl BackgroundBashSandbox {
             os_sandbox: ctx.os_sandbox,
             writable_dirs: ctx.os_sandbox_writable.clone(),
             network: ctx.os_sandbox_network,
+            git_protection: ctx.git_protection.clone(),
         }
     }
 }
@@ -371,6 +379,7 @@ impl Default for ToolContext {
             parent_tail_json: Arc::new(Vec::new()),
             os_sandbox_writable: Vec::new(),
             os_sandbox_network: None,
+            git_protection: None,
             command_origin: None,
             loop_guard: None,
         }
