@@ -631,76 +631,37 @@ pub(super) async fn limit_model_tool_output(
         .iter()
         .filter(|block| matches!(block, ContentBlock::Image { .. }))
         .count();
-    if budget.is_some_and(|b| !b.persist) {
-        tracing::info!(
-            text_bytes,
-            limit,
-            images,
-            outcome = "truncated_persist_disabled",
-            "工具输出模型预算"
-        );
-        let truncated = zhuye_tools::result_budget::truncate_middle(&text, limit / 3);
-        let mut emitted = false;
-        *content = content
-            .drain(..)
-            .filter_map(|block| match block {
-                ContentBlock::Image { .. } => Some(block),
-                _ if !emitted => {
-                    emitted = true;
-                    Some(ContentBlock::text(truncated.clone()))
-                }
-                _ => None,
+    let preview_chars = budget.map_or(usize::MAX, |b| b.preview_chars);
+    let persist = !budget.is_some_and(|b| !b.persist);
+    let result = if persist {
+        let workspace = workspace.to_path_buf();
+        let full_text = text.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                zhuye_tools::sandbox::write_spill_text(&workspace, &full_text)
             })
-            .collect();
-        return;
-    }
-    let mut preview = match budget {
-        Some(b) => {
-            let preview: String = text.chars().take(b.preview_chars).collect();
-            zhuye_protocol::truncate_str(&preview, MODEL_TOOL_TEXT_PREVIEW_BYTES.min(limit))
-                .to_owned()
-        }
-        None => zhuye_protocol::truncate_str(&text, MODEL_TOOL_TEXT_PREVIEW_BYTES).to_owned(),
+            .await,
+        )
+    } else {
+        None
     };
-    // 兜底文本与 preview 走同一道字节闸:`truncate_middle` 按**字符**计,
-    // limit/3 个 CJK 字符 ≈ limit 字节,再加省略标记就突破预算 —— 溢出落盘
-    // 失败(非 unix 平台、目录缺失)时这条是唯一出口,Windows CI 实测回执
-    // 超限(回归用例:model_output_without_spill_falls_back_to_failure_notice)。
-    let fallback = zhuye_protocol::truncate_str(
-        &zhuye_tools::result_budget::truncate_middle(&text, limit.saturating_div(3).max(1_000)),
-        MODEL_TOOL_TEXT_PREVIEW_BYTES.min(limit),
-    )
-    .to_owned();
-    let workspace = workspace.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        zhuye_tools::sandbox::write_spill_text(&workspace, &text)
-    })
-    .await;
-    let notice = match result {
-        Ok(Ok(path)) => {
-            tracing::info!(
-                text_bytes,
-                limit,
-                images,
-                outcome = "spilled",
-                "工具输出模型预算"
-            );
-            format!(
-                "\n[工具输出已截断，完整文本可用 read 字节分页读取: {}；从 byte_offset=0 开始，按 next_byte_offset 继续]",
-                path.display()
-            )
-        }
-        Ok(Err(error)) => {
+    let status = match result {
+        Some(Ok(Ok(path))) => format!(
+            "完整文本可用 read 字节分页读取: {}；建议先搜索错误或查看末尾，再从 byte_offset=头部结束偏移 按 next_byte_offset 继续",
+            path.display()
+        ),
+        Some(Ok(Err(error))) => {
             tracing::warn!(%error, "工具输出溢出文件写入失败");
-            preview = fallback;
-            "\n[工具输出已截断，完整文本保存失败；请缩小查询范围]".to_string()
+            "完整文本保存失败，无法读回".to_string()
         }
-        Err(error) => {
+        Some(Err(error)) => {
             tracing::warn!(%error, "工具输出溢出任务失败");
-            preview = fallback;
-            "\n[工具输出已截断，完整文本保存失败；请缩小查询范围]".to_string()
+            "完整文本保存失败，无法读回".to_string()
         }
+        None => "完整文本保存已禁用，无法读回".to_string(),
     };
+    tracing::info!(text_bytes, limit, images, "工具输出模型预算");
+    let preview = model_tool_receipt(&text, limit, preview_chars, &status);
     let mut emitted = false;
     *content = content
         .drain(..)
@@ -708,11 +669,53 @@ pub(super) async fn limit_model_tool_output(
             ContentBlock::Image { .. } => Some(block),
             _ if !emitted => {
                 emitted = true;
-                Some(ContentBlock::text(format!("{preview}{notice}")))
+                Some(ContentBlock::text(preview.clone()))
             }
             _ => None,
         })
         .collect();
+}
+
+/// 在总预算内生成可定位的头尾预览，偏移始终指向原始 UTF-8 文本。
+fn model_tool_receipt(text: &str, limit: usize, preview_chars: usize, status: &str) -> String {
+    let total = text.len();
+    let char_head = preview_chars / 2;
+    let char_tail = preview_chars.saturating_sub(char_head);
+    let head_chars_end = text.char_indices().nth(char_head).map_or(total, |(i, _)| i);
+    let tail_chars_start = text
+        .char_indices()
+        .rev()
+        .nth(char_tail.saturating_sub(1))
+        .map_or(0, |(i, _)| i);
+    let tail_chars_start = if char_tail == 0 {
+        total
+    } else {
+        tail_chars_start
+    };
+    let mut allowance = MODEL_TOOL_TEXT_PREVIEW_BYTES.min(limit);
+    loop {
+        let head_end =
+            zhuye_protocol::truncate_str(text, (allowance / 2).min(head_chars_end)).len();
+        let mut tail_start = total
+            .saturating_sub(allowance - allowance / 2)
+            .max(tail_chars_start)
+            .max(head_end);
+        while tail_start < total && !text.is_char_boundary(tail_start) {
+            tail_start += 1;
+        }
+        let notice = format!(
+            "\n[输出已截断，中间省略；总字节数={total}；头部结束偏移={head_end}；尾部起始偏移={tail_start}；{status}]\n"
+        );
+        let size = head_end + notice.len() + total - tail_start;
+        if size <= limit {
+            return format!("{}{notice}{}", &text[..head_end], &text[tail_start..]);
+        }
+        if allowance == 0 {
+            // 极小预算无法容纳路径和说明时，优先保证上限与截断信号。
+            return zhuye_protocol::truncate_str("[输出已截断，回执预算不足]", limit).to_owned();
+        }
+        allowance = allowance.saturating_sub(size - limit);
+    }
 }
 
 // ── v1.x Plan mode helpers (LLM-driven path) ──────────────────────────
@@ -1109,6 +1112,32 @@ mod tests {
         assert!(text.contains("完整文本保存失败"));
         assert!(text.contains("开始") && text.contains("结束"));
         assert!(!text.contains("完整文本可用 read 字节分页读取"));
+    }
+
+    #[test]
+    fn receipt_respects_utf8_offsets_and_tiny_budgets() {
+        let input = format!("开头{}结尾", "😀中".repeat(5000));
+        let receipt = model_tool_receipt(&input, 800, 100, "可回读");
+        assert!(receipt.len() <= 800);
+        assert!(receipt.starts_with("开头") && receipt.ends_with("结尾"));
+        let value = |name: &str| -> usize {
+            receipt
+                .split(name)
+                .nth(1)
+                .unwrap()
+                .split('；')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let head = value("头部结束偏移=");
+        let tail = value("尾部起始偏移=");
+        assert!(input.is_char_boundary(head) && input.is_char_boundary(tail));
+        assert!(receipt.starts_with(&input[..head]) && receipt.ends_with(&input[tail..]));
+        for limit in 0..200 {
+            assert!(model_tool_receipt(&input, limit, 100, "可回读").len() <= limit);
+        }
     }
 
     fn text(s: &str) -> ContentBlock {

@@ -18,7 +18,7 @@
 //! 不代表前台 shell 的去向)。命令被超时/取消杀死时拿不到 sentinel,
 //! 保持旧状态。sentinel 行对模型不可见(解析后从两条流中剥除;剥除后
 //! 恢复一个尾部换行,保持与未包裹时字节语义一致)。输出超过
-//! [`OUTPUT_LIMIT`] 截断时,把已捕获的完整输出落盘到临时文件并在输出
+//! [`OUTPUT_LIMIT`] 截断时,把已捕获的输出落盘到临时文件并在输出
 //! 末尾给出路径,供模型用 read 工具取回。
 
 use std::collections::HashMap;
@@ -155,17 +155,17 @@ async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(
     pipe: Option<R>,
     progress: Option<&crate::tool::ProgressSink>,
     is_stderr: bool,
-) -> Vec<u8> {
+) -> (Vec<u8>, bool) {
     use tokio::io::AsyncReadExt;
     let mut buf = Vec::with_capacity(8192);
     let Some(pipe) = pipe else {
-        return buf;
+        return (buf, false);
     };
     let mut limited = pipe.take(OUTPUT_LIMIT as u64);
-    match progress {
+    let (discarded, tail) = match progress {
         None => {
             let _ = limited.read_to_end(&mut buf).await;
-            drain_after_cap(&mut limited).await;
+            drain_after_cap(&mut limited).await
         }
         Some(sink) => {
             use tokio::io::AsyncBufReadExt;
@@ -200,23 +200,59 @@ async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(
             if let Some(p) = pending.take() {
                 sink.emit(is_stderr, &String::from_utf8_lossy(&p));
             }
-            drain_after_cap(reader.get_mut()).await;
+            drain_after_cap(reader.get_mut()).await
+        }
+    };
+    // 状态行由包装器追加；只丢弃状态行不等于丢弃了命令输出。
+    let mut suffix = if discarded <= tail.len() {
+        buf.clone()
+    } else {
+        Vec::new()
+    };
+    suffix.extend_from_slice(&tail);
+    let (state, cleaned) = extract_shell_state(&suffix);
+    let state_bytes = if state.is_some() {
+        suffix.len().saturating_sub(cleaned.len())
+    } else {
+        0
+    };
+    let output_bytes = buf
+        .len()
+        .saturating_add(discarded)
+        .saturating_sub(state_bytes);
+    let truncated = output_bytes > OUTPUT_LIMIT;
+    if state.is_some() && discarded > 0 {
+        buf.truncate(output_bytes.min(buf.len()));
+        if let Some((rc, cwd)) = state {
+            buf.extend_from_slice(format!("\n{SENTINEL_PREFIX}rc={rc} cwd={cwd}").as_bytes());
         }
     }
-    buf
+    (buf, truncated)
 }
 
 /// 捕获满后继续排空管道(丢弃剩余输出)直至 EOF,防子进程写满 pipe
 /// 缓冲后阻塞在 write 上(见 [`drain_pipe`] 的 review 修复说明)。
-async fn drain_after_cap<T: tokio::io::AsyncRead + Unpin>(limited: &mut tokio::io::Take<T>) {
+async fn drain_after_cap<T: tokio::io::AsyncRead + Unpin>(
+    limited: &mut tokio::io::Take<T>,
+) -> (usize, Vec<u8>) {
     use tokio::io::AsyncReadExt;
     let mut discard = [0u8; 8192];
+    let mut count = 0usize;
+    let mut tail = Vec::new();
     loop {
         match limited.get_mut().read(&mut discard).await {
             Ok(0) | Err(_) => break,
-            Ok(_) => {}
+            Ok(n) => {
+                count = count.saturating_add(n);
+                tail.extend_from_slice(&discard[..n]);
+                // 保留有界尾部以识别包装器的状态行；只保留头部会误判恰好封顶的输出。
+                if tail.len() > 16384 {
+                    tail.drain(..tail.len() - 16384);
+                }
+            }
         }
     }
+    (count, tail)
 }
 
 #[async_trait]
@@ -591,15 +627,19 @@ impl Tool for BashTool {
             }) => Some(result),
         };
 
-        let (out_bytes, err_bytes, exit_code) = match result {
+        let (out_bytes, err_bytes, stdout_truncated, stderr_truncated, exit_code) = match result {
             None => {
                 child.terminate();
                 let _ = child.wait().await;
-                (Vec::new(), Vec::new(), -1)
+                (Vec::new(), Vec::new(), false, false, -1)
             }
-            Some(Ok((out, err, status))) => {
-                (out, err, status.ok().and_then(|s| s.code()).unwrap_or(-1))
-            }
+            Some(Ok(((out, out_truncated), (err, err_truncated), status))) => (
+                out,
+                err,
+                out_truncated,
+                err_truncated,
+                status.ok().and_then(|s| s.code()).unwrap_or(-1),
+            ),
             Some(Err(_)) => {
                 warn!(cmd, "bash tool timed out");
                 child.terminate();
@@ -658,7 +698,7 @@ impl Tool for BashTool {
             }
         }
         if text.len() > OUTPUT_LIMIT {
-            // v1.7 截断落盘:完整输出(stdout/stderr 分段)写到
+            // v1.7 截断落盘:已捕获输出(stdout/stderr 分段)写到
             // `<workspace>/.zhuye/spill/`(v1.11 F5:原写 /tmp —— read 工具
             // 有 workspace 边界检查,模型按提示读回会被 PathEscape 拒掉,
             // 「落盘供读回」的承诺形同虚设。`.zhuye/` 在边界内,与
@@ -681,8 +721,19 @@ impl Tool for BashTool {
             zhuye_protocol::truncate_string_in_place(&mut text, OUTPUT_LIMIT);
             text.push_str("\n... [truncated]");
             if spilled {
-                text.push_str(&format!("\n[完整输出已落盘: {}]", spill_path.display()));
+                text.push_str(&format!("\n[已捕获输出已落盘: {}]", spill_path.display()));
             }
+        }
+
+        if stdout_truncated || stderr_truncated {
+            let streams = match (stdout_truncated, stderr_truncated) {
+                (true, true) => "stdout、stderr",
+                (true, false) => "stdout",
+                _ => "stderr",
+            };
+            text.push_str(&format!(
+                "\n[命令输出不完整：{streams} 超过采集上限，部分内容已丢弃]"
+            ));
         }
 
         // M3:exit_code 进 metadata,TUI reducer 据此渲染 `ExecResult` 单元格;
@@ -739,8 +790,10 @@ impl Tool for BashTool {
             content: vec![zhuye_protocol::ContentBlock::text(text)],
             is_error,
             metadata: serde_json::json!({
-                "stdout_bytes": out_bytes.len(),
-                "stderr_bytes": err_bytes.len(),
+                "stdout_bytes": out_bytes.len().min(OUTPUT_LIMIT),
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "stderr_bytes": err_bytes.len().min(OUTPUT_LIMIT),
                 "exit_code": exit_code,
                 "network_restriction": network_restriction,
                 "path_protection": path_protection,
@@ -1572,6 +1625,40 @@ mod tests {
         assert!(text.contains("tmp"), "应回落到 workspace 根: {text:?}");
     }
 
+    #[tokio::test]
+    async fn reports_actual_discard_for_each_stream() {
+        let t = BashTool::default();
+        for (cmd, stdout, stderr) in [
+            (
+                format!("head -c {OUTPUT_LIMIT} /dev/zero | tr \"\\0\" x"),
+                false,
+                false,
+            ),
+            (
+                format!("head -c {} /dev/zero | tr \"\\0\" x", OUTPUT_LIMIT + 1),
+                true,
+                false,
+            ),
+            (
+                format!("head -c {} /dev/zero | tr \"\\0\" x >&2", OUTPUT_LIMIT + 1),
+                false,
+                true,
+            ),
+        ] {
+            let out = t
+                .execute(unsandboxed_ctx("/tmp"), serde_json::json!({"cmd": cmd}))
+                .await
+                .unwrap();
+            assert_eq!(out.metadata["stdout_truncated"], stdout);
+            assert_eq!(out.metadata["stderr_truncated"], stderr);
+            assert_eq!(out.metadata["exit_code"], 0);
+            let zhuye_protocol::ContentBlock::Text { text } = &out.content[0] else {
+                panic!("缺少文本")
+            };
+            assert_eq!(text.contains("命令输出不完整"), stdout || stderr);
+        }
+    }
+
     /// 输出超过 OUTPUT_LIMIT → 截断 + 完整捕获输出落盘,输出末尾给出路径。
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
@@ -1605,7 +1692,7 @@ mod tests {
             _ => panic!("expected text"),
         };
         assert!(text.contains("... [truncated]"), "应截断");
-        let marker = "[完整输出已落盘: ";
+        let marker = "[已捕获输出已落盘: ";
         let path_str = text
             .split(marker)
             .nth(1)
