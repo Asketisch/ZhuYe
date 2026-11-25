@@ -191,6 +191,28 @@ pub struct PathProtection {
 const LANDLOCK_NESTED_UNSUPPORTED: &str = "Landlock 的规则按位合并:可写根授予的写权会传播到其下的嵌套路径,\
      内核没有按路径撤销(deny)规则的能力,因此可写根内的嵌套敏感路径无法被强制只读";
 
+/// 平台后端无法强制敏感路径只读时的原因说明(按后端如实分述)。
+///
+/// 报告口径的红线:平台做不到的事不静默宣称成功。三类后端要分开说 ——
+/// - `Disabled`:沙箱根本没启用(透传执行),不是「平台没有后端」;
+/// - `WindowsJobObject`:后端(F24)**已实现**,但**未接入 bash spawn 路径**
+///   —— 命令实际未受文件/网络约束。既不能说「无可用后端」(后端存在),
+///   也不能说「已强制只读」(没强制);
+/// - 其余(`NoBackend`):确实没有可用后端。
+fn unsupported_path_protection_reason(status: OsSandboxStatus) -> String {
+    match status {
+        OsSandboxStatus::Disabled => {
+            "沙箱未启用(命令透传执行,未受任何文件/网络约束),无法强制敏感路径只读".to_string()
+        }
+        OsSandboxStatus::WindowsJobObject => {
+            "Windows Job Object 后端已实现但未接入 bash spawn 路径(命令实际未受文件/网络约束),\
+             无法强制敏感路径只读"
+                .to_string()
+        }
+        _ => format!("当前平台无可用沙箱后端(status={status:?}),无法强制敏感路径只读"),
+    }
+}
+
 /// `ZHUYE_SANDBOX_STRICT_PATHS` → 敏感路径保护必须落地(默认关)。
 fn strict_paths_from_env() -> bool {
     std::env::var("ZHUYE_SANDBOX_STRICT_PATHS")
@@ -559,13 +581,13 @@ impl OsSandbox {
             OsSandboxStatus::Seatbelt | OsSandboxStatus::Landlock
         ) {
             PathProtectionVerdict::Unsupported {
-                reason: format!("当前平台无可用沙箱后端(status={status:?}),无法强制敏感路径只读"),
+                reason: unsupported_path_protection_reason(status),
             }
         } else if !inside_writable_root {
             // 可写根之外:写被默认拒绝,等价只读。
             PathProtectionVerdict::EnforcedByDefault
         } else {
-            match self.status() {
+            match status {
                 // Seatbelt 支持 deny 规则且后匹配优先 → 可写根内的嵌套
                 // 路径可以真正只读。
                 OsSandboxStatus::Seatbelt => PathProtectionVerdict::Enforced,
@@ -573,11 +595,10 @@ impl OsSandbox {
                 OsSandboxStatus::Landlock => PathProtectionVerdict::Unsupported {
                     reason: LANDLOCK_NESTED_UNSUPPORTED.to_string(),
                 },
+                // 上一分支已排除 Seatbelt/Landlock,此处不可达;
+                // 仍按「平台无法强制」兜底,不静默宣称成功。
                 _ => PathProtectionVerdict::Unsupported {
-                    reason: format!(
-                        "当前平台无可用沙箱后端(status={:?}),无法强制敏感路径只读",
-                        self.status()
-                    ),
+                    reason: unsupported_path_protection_reason(status),
                 },
             }
         };
@@ -1474,22 +1495,97 @@ mod tests {
     }
 
     /// 敏感路径报告:落在可写根之外的路径本就被默认拒绝(等价只读)。
+    ///
+    /// 结论必须**如实分平台**:「可写根外的写被默认拒绝」只在沙箱**真的
+    /// 接管了命令执行**的平台成立(macOS Seatbelt / Linux Landlock)。
+    /// Windows 的 Job Object 后端(F24)已实现但**未接入 bash spawn 路径**
+    /// —— 命令透传执行,写权并未被撤销,此时报「已强制只读」是对宿主撒谎。
+    /// 与兄弟用例 `nested_protected_path_verdict_is_platform_specific`
+    /// 同一口径:平台做不到的事如实说做不到。
     #[test]
     fn protected_path_outside_writable_root_is_enforced_by_default() {
         let workspace = std::env::temp_dir().join("zhuye-pp-outside-ws");
         let outside = std::env::temp_dir().join("zhuye-pp-outside-target");
-        let sandbox = OsSandbox::enabled(Vec::new()).with_protected_paths([outside], false);
+        let sandbox = OsSandbox::enabled(Vec::new()).with_protected_paths([outside.clone()], false);
         let report = sandbox.path_protection_report(&workspace);
         let target = report
             .iter()
             .find(|item| item.explicit)
             .expect("显式受保护路径必须在报告里");
-        assert_eq!(
-            target.verdict,
-            PathProtectionVerdict::EnforcedByDefault,
-            "{target:?}"
+        match sandbox.status() {
+            // 沙箱真的接管执行:可写根之外的写本就被默认拒绝 → 等价只读。
+            OsSandboxStatus::Seatbelt | OsSandboxStatus::Landlock => {
+                assert_eq!(
+                    target.verdict,
+                    PathProtectionVerdict::EnforcedByDefault,
+                    "{target:?}"
+                );
+                assert!(sandbox.unprotected_paths(&workspace).is_empty());
+            }
+            // 后端存在但未接入执行路径(Windows):命令透传 → 无法强制。
+            OsSandboxStatus::WindowsJobObject => {
+                assert!(
+                    matches!(target.verdict, PathProtectionVerdict::Unsupported { .. }),
+                    "{target:?}"
+                );
+                // 宿主强制要求只读而平台做不到 → 必须失败关闭。
+                let strict = sandbox.with_protected_paths([outside], true);
+                assert!(strict.enforce_protected_paths(&workspace).is_err());
+            }
+            // 沙箱未启用 / 无可用后端:同样无法强制。
+            OsSandboxStatus::Disabled | OsSandboxStatus::NoBackend => {
+                assert!(
+                    matches!(target.verdict, PathProtectionVerdict::Unsupported { .. }),
+                    "{target:?}"
+                );
+            }
+        }
+    }
+
+    /// 跨平台回归:Windows 后端(F24 Job Object)已实现但**未接入 bash
+    /// spawn 路径** —— 命令透传执行,写权并未被撤销,因此敏感路径结论
+    /// 必须是 `Unsupported` 而**不是**「已强制只读」。
+    ///
+    /// 这条用例**不依赖运行平台**:显式构造后端为 `WindowsJobObject` 的
+    /// 沙箱,在 macOS / Linux / Windows 上跑同一份断言 —— 避免「只在
+    /// Windows runner 上才红」的盲区(上游 CI 的跨平台 job 不跑本 crate
+    /// 的全部测试,桌面端 CI 才覆盖 Windows)。
+    #[test]
+    fn windows_backend_reports_unsupported_until_spawn_path_wired() {
+        let workspace = std::env::temp_dir().join("zhuye-pp-win-ws");
+        let outside = std::env::temp_dir().join("zhuye-pp-win-target");
+        let sandbox = OsSandbox {
+            enabled: true,
+            writable_dirs: Vec::new(),
+            allow_network: false,
+            strict: true,
+            protected_paths: Vec::new(),
+            strict_paths: false,
+            git_snapshot: None,
+            backend: OsSandboxStatus::WindowsJobObject,
+        }
+        .with_protected_paths([outside.clone()], false);
+
+        let report = sandbox.path_protection_report(&workspace);
+        let target = report
+            .iter()
+            .find(|item| item.explicit)
+            .expect("显式受保护路径必须在报告里");
+        assert!(
+            matches!(target.verdict, PathProtectionVerdict::Unsupported { .. }),
+            "Windows 后端未接入执行路径时不得宣称已强制只读:{target:?}"
         );
-        assert!(sandbox.unprotected_paths(&workspace).is_empty());
+        // 原因说明要如实点出「未接入 spawn 路径」,不能写成「无可用后端」
+        // (后端存在) —— 宿主据此判断能力边界。
+        let reason = match &target.verdict {
+            PathProtectionVerdict::Unsupported { reason } => reason.clone(),
+            _ => String::new(),
+        };
+        assert!(reason.contains("未接入 bash spawn 路径"), "{reason}");
+
+        // 宿主强制要求只读而平台做不到 → 必须失败关闭(绝不无保护执行)。
+        let strict = sandbox.with_protected_paths([outside], true);
+        assert!(strict.enforce_protected_paths(&workspace).is_err());
     }
 
     /// 可写根**内**的嵌套路径:macOS Seatbelt 能强制只读,Linux Landlock
