@@ -726,6 +726,8 @@ def test_T10_双流截断后保留失败退出码(serve_session, mock_script) ->
     assert metadata["exit_code"] == 1, metadata
     assert metadata["stdout_bytes"] == 100 * 1024, metadata
     assert metadata["stderr_bytes"] == 100 * 1024, metadata
+    assert metadata["stdout_truncated"] is True and metadata["stderr_truncated"] is True
+    assert "命令输出不完整" in _tool_text(end)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="测试依赖可执行 Git shell hook")

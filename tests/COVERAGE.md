@@ -41,7 +41,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 压缩 rapid-refill 熔断(窗口 3 步 / 连续 3 次 → `compact_rapid_refill`) | — | — | — | ✅(`zhuye-compact/src/refill.rs` 表驱动 5 条:窗口/升级/清零/同步号) | — |
 | 空/可疑模型结果防护(0 输出 + input>0 → `suspicious_empty_model_result`) | — | — | — | ✅(守卫条件单测随 core lib) | — |
 | Steer 输入字节上限(200KB wire 实测 → `steer_input_too_large`) | — | — | — | ✅(协议常量 + 分支条件) | — |
-| 工具结果预算(宿主完整输出、模型侧工作区溢出或中间截断) | ✅(`test_spill_readback.py` / `test_v1x_reliability.py`) | — | — | ✅(`result_budget.rs` 边界与非文本保护) | — |
+| 工具结果预算(宿主原始结果、模型侧头尾预览及偏移、工作区溢出或中间截断；bash 分流丢弃标记) | ✅(`test_spill_readback.py` / `test_v1x_reliability.py`) | — | — | ✅(`result_budget.rs` 边界与非文本保护) | — |
 | stop_turn 级联(工具 metadata 请求结算后收口) | — | — | — | ✅(tool_exec 置 force_final_answer 分支) | — |
 | strict schema 折叠(不支持约束写进 description,折不掉降级) | — | — | — | ✅(`schema_fold.rs` 4 条:保留/移除/组合子放弃/嵌套) | — |
 | tool-defer 按需加载(MCP 目录公告、注册门控、目标审批和非法转发拒绝) | ✅(`test_v1x_reliability.py`:门控、嵌套拒绝、MCP 审批与拒绝) | — | — | ✅(registry deferred_tool_names / queue 展开分支) | — |
@@ -144,7 +144,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | v1.11 基建#13:GitHub topic 插件发现(`marketplace discover --topic`,默认 zhuye-plugin) | ✔(2 条,见 `test_plugin_discover.py`:参数面字段级 / 网络解析链路条件跑) | ✅(clap 参数面由用例 1 直接驱动) | —(纯 CLI 展示面,无 Op/EventMsg) | ✅(zhuye-plugin discover 4 例:空 topic 拒绝 / URL 构造与 limit 钳制 0→1·超限→100 / 响应全字段解析与空白描述过滤·topics 缺省 / 坏 JSON 与空清单;非 2xx 错误映射为网络路径,由条件网络用例覆盖) | — |
 | v1.11 桌面#3:复杂度分级路由(`[routing.main.complexity]` effort 档位→模型映射,model_call 自动选模型) | ✔(2 条,见 `test_complexity_routing.py`:low 档命中映射模型 / 未配置档位回退 primary / 无映射模型不变) | —(config 参数面,由 zhuye-config 单测承担) | —(无新 Op/EventMsg 变体;复用 SetEffort) | ✅(zhuye-config 复杂度解析 2 例:非空档位提取 / 空白丢弃;zhuye-core `effort_model_route` 查表 1 例:命中 / 未配置 / 空表 / Clone 共享 RwLock 热重载可见;ReasoningEffortMirror 增 Hash derive) | — |
 | v1.11 F6:组合透明性(`zhuye doctor --dump-config` 生效配置 JSON 快照,密钥脱敏) | ✔(2 条,见 `test_dump_config.py`:空配置结构 + 密钥值不出现在整份 JSON / anthropic 段生效反映 provider·model_spec·凭据 label·has_api_key;runner 门禁下的 env 隔离口径见用例内注释) | ✅(doctor 子命令参数面) | —(CLI 只读诊断面,无 Op/EventMsg) | ✅(zhuye-cli doctor 2 例:凭据脱敏只出布尔·条目无 api_key 字段·段级与池双路径 / 路由与 complexity 档位映射·无 routing 段不 panic) | — |
-| v1.11 F5:大输出溢出落盘(spill)与读回路径 | ✔(2 条,见 `test_spill_readback.py`:stdout+stderr 合并超限 → 截断 + 落盘标记 + 路径在 `<workspace>/.zhuye/spill/` + 文件字节超上限 / read 工具读回 spill 目录文件原文) | —(工具内部行为) | —(无 Op/EventMsg 变更) | ✅(zhuye-tools bash 1 例:oversized_output_spilled_to_disk 含路径不变量与截断标记) | — |
+| v1.11 F5:大输出溢出落盘(spill)与读回路径 | ✔(2 条,见 `test_spill_readback.py`:stdout+stderr 合并超限 → 已捕获内容落盘 + 分流丢弃标记 / 模型回执首尾与 UTF-8 偏移 / 恢复后分页重建落盘文本) | —(工具内部行为) | —(无 Op/EventMsg 变更) | ✅(zhuye-tools bash 1 例:oversized_output_spilled_to_disk 含路径不变量与截断标记) | — |
 
 ## 2. 能力覆盖层明细(`tests/functional/`)
 

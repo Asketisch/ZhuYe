@@ -2,10 +2,10 @@
 
 覆盖(gap-report F5,`crates/abilities/zhuye-tools/src/builtins/bash.rs`):
 - 超过 `OUTPUT_LIMIT`(100 KiB)的 bash 输出 → 工具文本截断 + 落盘标记
-  `[完整输出已落盘: <path>]`,路径必须在 **workspace 内**
+  `[已捕获输出已落盘: <path>]`,路径必须在 **workspace 内**
   `<workspace>/.zhuye/spill/`(v1.11 修复点:原 /tmp 路径被 read 工具的
   workspace 边界检查挡死,「供 read 取回」承诺形同虚设);
-- 落盘文件字节数 > 截断上限(完整输出,不是截断副本);
+- 落盘文件字节数 > 截断上限(已捕获内容,不是合并后的预览副本);
 - **read 工具可读回 `.zhuye/spill/` 路径**(边界放行的 wire 级验证 ——
   与溢出场景独立成两段:溢出路径含 pid+纳秒时间戳,静态脚本无法预知,
   用固定 probe 文件验证同目录前缀的可达性)。
@@ -25,7 +25,7 @@ from wire import DRAIN_TIMEOUT, first_event, msg_types, require_binary, rollout_
 
 pytestmark = pytest.mark.usefixtures("sandbox")
 
-SPILL_MARKER = "[完整输出已落盘: "
+SPILL_MARKER = "[已捕获输出已落盘: "
 # bash.rs 的截断上限(字节);超出即触发溢出落盘。
 OUTPUT_LIMIT = 100 * 1024
 
@@ -54,7 +54,7 @@ def test_远程工具大输出进入模型前溢出并可读回(serve_session, m
     require_binary()
     if configured_budget:
         sandbox.write_config("\n[tool_results]\nmax_inline_bytes = 8000\n")
-    original = "中文内容" * 5000 + "TAIL-MARKER"
+    original = "中文内容" * 1100 + "TAIL-MARKER"
     script = mock_script([
         '{"type":"tool_call","name":"remote_large","args":{}}',
         '{"type":"request_echo"}',
@@ -73,25 +73,40 @@ def test_远程工具大输出进入模型前溢出并可读回(serve_session, m
         model = json.loads("".join(chunks))
         tool = next(m for m in model["messages"] if m.get("role") == "tool")
         text = tool["text"]
-        assert "完整文本可用 read 字节分页读取:" in text and "TAIL-MARKER" not in text
+        assert "完整文本可用 read 字节分页读取:" in text and "TAIL-MARKER" in text
+        head = int(re.search(r"头部结束偏移=(\d+)", text).group(1))
+        tail = int(re.search(r"尾部起始偏移=(\d+)", text).group(1))
+        encoded = original.encode("utf-8")
+        assert text.startswith(encoded[:head].decode("utf-8"))
+        assert text.endswith(encoded[tail:].decode("utf-8"))
+        assert f"总字节数={len(encoded)}" in text
         path = re.search(r"完整文本可用 read 字节分页读取: (.+?)；", text).group(1)
         assert os.path.commonpath([str(sandbox.cwd.resolve()), path]) == str(sandbox.cwd.resolve())
         assert open(path, encoding="utf-8").read() == original
     tid = rollout_thread_id(sandbox.home)
-    tail_offset = len(original.encode("utf-8")) - len("TAIL-MARKER")
+    offsets = (0, 4095, 8190, 12285)
     resume_script = mock_script([
-        json.dumps({"type": "tool_call", "name": "read", "args": {"path": path, "byte_offset": tail_offset}}),
-        '{"type":"request_echo"}',
-    ])
+        json.dumps({"type": "tool_call", "name": "read", "args": {"path": path, "byte_offset": offset, "byte_limit": 4096}})
+        for offset in offsets
+    ] + ['{"type":"request_echo"}'])
     with serve_session(args=["--resume", tid], env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(resume_script)}) as resumed:
         events = resumed.submit({"type": "user_input", "items": [{"type": "text", "text": "继续"}]}, timeout=DRAIN_TIMEOUT)
     chunks = [e["msg"].get("delta", "") for e in events if e["msg"].get("type") == "agent_message_delta"]
     model = json.loads("".join(chunks))
     restored = next(m for m in model["messages"] if m.get("role") == "tool")
     assert restored["text"] == text
-    end = _tool_end(events)
-    assert end["is_error"] is False and _tool_text(end).startswith("TAIL-MARKER\n")
-    assert end["output"]["metadata"]["has_more"] is False
+    ends = [event["msg"] for event in events if event["msg"].get("type") == "tool_call_end"]
+    assert len(ends) == len(offsets)
+    parts = []
+    for index, end in enumerate(ends):
+        assert end["is_error"] is False
+        meta = end["output"]["metadata"]
+        assert meta["byte_offset"] == offsets[index]
+        assert meta["next_byte_offset"] == (offsets[index + 1] if index + 1 < len(offsets) else len(original.encode("utf-8")))
+        assert meta["has_more"] is (index + 1 < len(offsets))
+        parts.append(_tool_text(end).rsplit("\n[字节分页:", 1)[0])
+    assert "".join(parts) == original
+
 
 
 def _tool_end(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -132,7 +147,7 @@ def _tool_text(msg: dict[str, Any]) -> str:
 
 def test_大输出溢出落盘到workspace且文件完整(serve_session, mock_script, sandbox) -> None:
     """>100KiB 的 bash 输出:工具文本截断 + 落盘标记;spill 文件在
-    `<workspace>/.zhuye/spill/` 且字节数超过上限(完整输出)。"""
+    `<workspace>/.zhuye/spill/` 且字节数超过上限(已捕获内容)。"""
     require_binary()
     # 触发口径与 bash.rs 单测一致:单流捕获恰好封顶在 OUTPUT_LIMIT 不触发
     # 截断,必须 **stdout + stderr 合并**超限 —— stdout 大量输出(捕获被
@@ -150,7 +165,11 @@ def test_大输出溢出落盘到workspace且文件完整(serve_session, mock_sc
             {"type": "user_input", "items": [{"type": "text", "text": "大输出"}]},
             timeout=DRAIN_TIMEOUT,
         )
-    text = _tool_text(_tool_end(evs))
+    end = _tool_end(evs)
+    assert end["output"]["metadata"]["stdout_truncated"] is True
+    assert end["output"]["metadata"]["stderr_truncated"] is False
+    text = _tool_text(end)
+    assert "命令输出不完整" in text
     # 截断 + 落盘标记同时存在,且能解出落盘路径。
     assert SPILL_MARKER in text, f"缺落盘标记:{text[-200:]!r}"
     m = re.search(re.escape(SPILL_MARKER) + r"([^\]]+)\]", text)
@@ -158,9 +177,9 @@ def test_大输出溢出落盘到workspace且文件完整(serve_session, mock_sc
     spill_path = m.group(1)
     # v1.11 F5 修复口径:必须落 在workspace 内的 .zhuye/spill/ 下。
     assert ".zhuye/spill/" in spill_path.replace("\\", "/"), f"路径不在 spill 目录:{spill_path}"
-    # 完整输出落盘(非截断副本):字节数必须超过截断上限。
+    # 已捕获内容落盘(非预览副本):字节数必须超过截断上限。
     size = os.path.getsize(spill_path)
-    assert size > OUTPUT_LIMIT, f"落盘文件仅 {size} 字节,应含完整输出(>{OUTPUT_LIMIT})"
+    assert size > OUTPUT_LIMIT, f"落盘文件仅 {size} 字节,应含已捕获内容(>{OUTPUT_LIMIT})"
     # 工具文本本身已被截断(不含第 11999 行的完整重复,长度远小于全量)。
     assert len(text) < size, f"工具文本({len(text)})不应大于落盘全文({size})"
 
