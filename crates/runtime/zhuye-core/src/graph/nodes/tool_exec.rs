@@ -596,7 +596,10 @@ const MODEL_TOOL_TEXT_PREVIEW_BYTES: usize = 8 * 1024;
 const MODEL_TOOL_TEXT_LIMIT_BYTES: usize = 12 * 1024;
 
 /// 限制进入模型的工具文本，图片仍保持独立内容块。
-async fn limit_model_tool_output(
+///
+/// `check_stop` 注入异步子代理结果时复用同一入口 —— 异步结果相当于迟到
+/// 的工具回执，不应绕开这层预算治理。
+pub(super) async fn limit_model_tool_output(
     content: &mut Vec<ContentBlock>,
     workspace: &std::path::Path,
     budget: Option<&zhuye_tools::result_budget::ResultBudget>,
@@ -659,8 +662,15 @@ async fn limit_model_tool_output(
         }
         None => zhuye_protocol::truncate_str(&text, MODEL_TOOL_TEXT_PREVIEW_BYTES).to_owned(),
     };
-    let fallback =
-        zhuye_tools::result_budget::truncate_middle(&text, limit.saturating_div(3).max(1_000));
+    // 兜底文本与 preview 走同一道字节闸:`truncate_middle` 按**字符**计,
+    // limit/3 个 CJK 字符 ≈ limit 字节,再加省略标记就突破预算 —— 溢出落盘
+    // 失败(非 unix 平台、目录缺失)时这条是唯一出口,Windows CI 实测回执
+    // 超限(回归用例:model_output_without_spill_falls_back_to_failure_notice)。
+    let fallback = zhuye_protocol::truncate_str(
+        &zhuye_tools::result_budget::truncate_middle(&text, limit.saturating_div(3).max(1_000)),
+        MODEL_TOOL_TEXT_PREVIEW_BYTES.min(limit),
+    )
+    .to_owned();
     let workspace = workspace.to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         zhuye_tools::sandbox::write_spill_text(&workspace, &text)
@@ -906,6 +916,7 @@ fn resolve_plan_draft_path(
 ///   端可据 `draft_id` 辨识是否同一草稿的迭代,做覆盖式更新。
 /// - **空文件不 emit** —— 避免工具调用失败但 is_error=false 的边界场景
 ///   把空 plan 推给 TUI。
+///
 /// 返回是否真的 emit 了草稿事件(`check_stop` 的计划收尾守卫据此置位)。
 async fn maybe_emit_plan_draft_updated(
     tool_name: &str,
