@@ -148,6 +148,14 @@ pub struct NodeContext {
     /// 合并,正在跑的回合无法收到补充指示。`None`(测试 / 旧构造方)=
     /// 跳过收割,行为不变。
     pub steering_queue: Option<Arc<Mutex<SteeringQueue>>>,
+    /// 在飞异步子代理登记表(与工具侧 `ToolContext.pending_subagents`
+    /// 同一份 `Arc`)。
+    ///
+    /// `check_stop` 在回合收尾前查它:有在飞子代理说明模型其实还没拿到
+    /// 结果,回合应**挂起等待**而不是结束;子代理终结后把结果注入上下文
+    /// 并回到 `PreLoop` 续跑本轮。`None`(测试 / 旧构造方)= 无异步子代理
+    /// 能力,`check_stop` 行为与旧版一致。
+    pub pending_subagents: Option<Arc<zhuye_tools::PendingSubagentRegistry>>,
     /// v1.5 R1:OS 沙箱覆盖(`ThreadSettingsOverrides.sandbox_policy` 每
     /// turn 下发)。`tool_exec` 经 ToolEventForwarder 透传给队列 →
     /// `ToolContext.os_sandbox` → BashTool。`None` = 跟随 env。
@@ -764,6 +772,9 @@ pub async fn submission_loop(
                     session_seq: Some(Arc::clone(&session_seq)),
                     // v1.4 A2:共享会话级转向队列,pre_loop 每次入口收割。
                     steering_queue: Some(steering_queue.clone()),
+                    // 在飞异步子代理登记表(与工具侧同一份 Arc)—— check_stop
+                    // 据此挂起等待并把子代理结果注回本轮上下文。
+                    pending_subagents: Some(cfg.pending_subagents.clone()),
                     // v1.5 R1:每回合沙箱覆盖。
                     sandbox_override,
                     // 同上:把 `cfg.clone()` 传下去,让
@@ -846,6 +857,8 @@ pub async fn submission_loop(
                 let warming_clone = cfg.cache_warming.clone();
                 // v1.x 输入守恒:终态处置落盘需要 cfg(recorder 槽)。
                 let cfg_ledger = cfg.clone();
+                // 在飞异步子代理登记表:回合收尾时放弃本回合来不及等待的条目。
+                let pending_subagents = cfg.pending_subagents.clone();
                 // v1.2 P1:turn 级 telemetry span(RAII guard,drop 时自动写
                 // `turn.completed` + duration)。guard 在 spawned task 内创建,
                 // 这样 drop 时机 = turn 真正完成(而非 spawn 时刻)。
@@ -855,6 +868,16 @@ pub async fn submission_loop(
                         .as_ref()
                         .map(|sink| sink.enter_turn(&turn_id.to_string()));
                     let mut final_state = graph.run().await;
+                    // 异步子代理不跨越派发它的回合:回合已收尾,仍登记在表的
+                    // 本回合条目一并放弃。正常收尾时表里已无本回合条目
+                    // (`check_stop` 等到了全部结果),这里是空操作;起作用的是
+                    // 被打断 / 出错 / 触顶收尾时来不及等待的子代理 —— 后台任务
+                    // 监听回合令牌与本条目的放弃句柄,子代理随之取消,这里负责
+                    // 清掉表项(被打断的回合令牌已触发,子代理其实早已停下)。
+                    // 修复原因:不清的话子代理在用户中断后继续跑完,结果被之后
+                    // 某个回合的 `check_stop` 当成待回填结果注入;若它卡在审批上,
+                    // 此后每个回合收尾都会为它挂起。
+                    pending_subagents.abandon_turn(&turn_cancel_clone);
                     // 显式标完成(带 status),防止 guard 只写兜底的 note。
                     if let Some(g) = &turn_span_guard {
                         let status = if final_state.completed_normally {

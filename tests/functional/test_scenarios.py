@@ -278,11 +278,12 @@ def test_读取文件审批修改并执行验证(sandbox, serve_session, decisio
         }
         approvals = []
         with serve_session(env=env) as session:
-            # 默认档(Auto)如今自动批准文件编辑;本用例验证审批链路,先切 Ask(prompt)。
-            session.submit({"type": "set_permission_mode", "mode": "prompt"})
+            # 审批链路用回合级 `approval_policy=prompt` 钉住逐工具弹窗;会话档
+            # prompt(询问档)如今是只读语义(写类直接拒绝,不弹窗),制造不了
+            # approval_request。
             submission = session.send({"type": "user_input", "items": [
                 {"type": "text", "text": "更新 artifact.txt 并验证结果"}
-            ]})
+            ], "thread_settings": {"approval_policy": "prompt"}})
 
             def approve(event):
                 msg = event["msg"]
@@ -392,9 +393,11 @@ def test_中断待审批写入后迟到批准无副作用(sandbox, serve_session
     ])
     env = sandbox.mock_env(script, ZHUYE_HOME=str(sandbox.home / ".zhuye"), ZHUYE_APPROVALS="1")
     with serve_session(env=env) as session:
-        # 默认档(Auto)如今自动批准文件编辑;本用例验证审批链路,先切 Ask(prompt)。
-        session.submit({"type": "set_permission_mode", "mode": "prompt"})
-        first_id = session.send({"type": "user_input", "items": [{"type": "text", "text": "创建文件"}]})
+        # 回合级 `approval_policy=prompt` 钉住写入弹窗;会话档 prompt(询问档)
+        # 如今对写类工具是直接拒绝、不弹窗,制造不了待审批状态。
+        first_id = session.send({"type": "user_input",
+                                 "items": [{"type": "text", "text": "创建文件"}],
+                                 "thread_settings": {"approval_policy": "prompt"}})
         approval = session.wait_event(first_id, "approval_request", timeout=10)["msg"]
         assert approval["kind"]["tool_name"] == "write", approval
         assert not target.exists()

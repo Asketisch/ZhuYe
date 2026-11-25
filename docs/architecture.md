@@ -107,7 +107,9 @@ CheckStop`。转移由 `GraphNode::next(has_tool_calls)` 用枚举 + match 手�
 - `ModelCall` 有工具调用 → `ToolExec`;无工具调用 → `CheckStop`
 - `ToolExec` → `PreLoop`(工具结果回灌模型,继续多步推理)
 - `CheckStop` 允许 → 结束 turn;Stop hook 否决 → 反馈追加历史后回
-  `PreLoop`(强制续跑,见 `graph/nodes/check_stop.rs:20-43`)
+  `PreLoop`(强制续跑,见 `graph/nodes/check_stop.rs:58-81`)
+- `CheckStop` 发现在飞异步子代理 → 挂起等待,结果落盘并注入后回
+  `PreLoop`(同轮续跑,见 `graph/nodes/check_stop.rs:42-55`)
 
 ```
 PreLoop ──▶ ModelCall ──▶ ToolExec ─┐
@@ -127,17 +129,25 @@ PreLoop ──▶ ModelCall ──▶ ToolExec ─┐
 | PreLoop | 压缩 escalation 判定(按同一次模型上报校准后的水位逐级升级)、hooks 前置处理、history 组装、转向队列收割 |
 | ModelCall | 经 `RoutingPolicy` 解析主模型后调用 `ModelClient`(SSE 流式),产出文本/思考增量与工具调用 |
 | ToolExec | 审批 gate 检查 → 经 `ToolExecutionQueue` 执行工具(内置 / MCP / 远程)→ 结果回填 history;Plan mode 在此切换 |
-| CheckStop | 模型无新工具调用时判定回合结束;分发 Stop hook,可否决强制续跑 |
+| CheckStop | 模型无新工具调用时判定回合结束;有在飞异步子代理时先挂起等待并把结果注入上下文;分发 Stop hook,可否决强制续跑 |
 
 Stop hook 否决时,`check_stop` 按决策叶子的 `deny_reason` 判定否决,把 hook
 注入的提醒(如失败测试输出)以 `<system-reminder>` User 消息追加进历史,然后
 回到 `PreLoop` 让模型看到否决原因并续作;`stop_hook_attempts` 计数,
 max-iteration 安全阀兜底防止无限续跑。
 
+异步子代理(`call_<role>` 的 `mode="async"`)的挂起 / 激活也在 `CheckStop`:
+模型不再发工具调用但仍有子代理在飞时,节点先挂起等待,把结果(走与工具回执
+相同的上下文预算)作为尾部 user `<system-reminder>` 注入并写入会话记录,再回
+`PreLoop` 在同一轮内续跑。异步子代理**不跨越派发它的回合**:父回合收尾时
+`submission_loop` 调 `PendingSubagentRegistry::abandon_turn` 放弃仍在表的
+条目,后台任务随之取消子代理 —— 打断父回合即级联取消,与同步模式一致。
+
 异常与取消:`model_call` / `tool_exec` 因错误或 `CancellationToken` 触发而
 返回 `None` 时,turn 为**异常结束**,不标记 `completed_normally`;只有
-`CheckStop` 自然终止才置位。取消来自用户中断、超时或预算耗尽,`TurnHandle`
-随之关闭。
+`CheckStop` 自然终止**且回合令牌未触发**才置位(`GraphNode::is_natural_stop`
+—— 等待异步子代理时被取消的 `CheckStop` 同样返回 `None`,不算自然完成)。
+取消来自用户中断、超时或预算耗尽,`TurnHandle` 随之关闭。
 
 ### 编排、路由、恢复的实际消费点
 

@@ -208,7 +208,11 @@ A subagent failing mid-way is returned to the parent as a tool error;
 status queries show `failed`; interruption shows `cancelled`.
 The `context_tail` of `call_<role>` does not pass parent history
 by default; when set, it passes tail messages and pads pairings at
-tool-call boundaries.
+tool-call boundaries. Dispatching with `mode="async"` returns a
+placeholder receipt at once while the subagent runs in the background;
+the turn suspends once the model has nothing else to do, and the result
+is injected into the current turn and written to the session record.
+Interrupting the parent turn also cancels in-flight async subagents.
 Tools inside a subagent that require approval send
 `approval_request` to the parent session; a `tool_approval`
 receipt from the same session wakes the subagent's tool call, and

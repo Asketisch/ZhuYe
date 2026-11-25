@@ -106,6 +106,14 @@ key 也能跑)与 OpenAI Responses 实现。OpenAI 兼容接口可以服务其�
 | 流水线 | `zhuye-pipeline` | DAG 流水线;`Abort` / `ContinueCollect` 失败策略 |
 | 目标模式 | `zhuye-goal` | `EnterGoalMode` 后每轮 `on_turn_end` 自校验 + 续作 |
 
+子代理的 `call_<role>` 支持两种派发模式:`mode="sync"`(默认)父回合阻塞
+等子代理结束并直接拿到结果;`mode="async"` 立即返回占位回执,子代理在后台
+继续跑 —— 父 agent 期间可以推进别的事,等「没有别的任务」时回合**挂起**
+等待子代理;子代理结束后其结果被注入回本轮上下文(与工具回执走同一套
+上下文预算,并写入会话记录供后续回合查看),主 agent 在**同一个回合内**
+被激活续跑。异步子代理不跨越派发它的回合:打断父回合会一并取消在途的
+异步子代理,与同步模式一致。
+
 side-channel 让用户发起的并发 agent 与主轮次并行互不干扰(由 `zhuye-core`
 承接)。
 

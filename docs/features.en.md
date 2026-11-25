@@ -115,6 +115,16 @@ primitives is its own crate:
 | Pipeline | `zhuye-pipeline` | DAG pipeline; `Abort` / `ContinueCollect` failure policies |
 | Goal mode | `zhuye-goal` | After `EnterGoalMode`, each turn's `on_turn_end` self-check + continuation |
 
+A sub-agent's `call_<role>` supports two dispatch modes. `mode="sync"` (default) blocks the
+parent turn until the sub-agent finishes and returns its result directly. `mode="async"` returns
+a placeholder receipt immediately while the sub-agent keeps running in the background: the parent
+agent can make progress on other work, and once it has nothing else to do the turn **suspends**
+waiting for the sub-agent. When the sub-agent finishes, its result is injected back into the
+current turn's context (under the same context budget as tool results, and written to the session
+record so later turns can still see it) and the main agent is resumed **within the same turn**.
+An async sub-agent never outlives the turn that dispatched it: interrupting the parent turn also
+cancels its in-flight async sub-agents, exactly as in sync mode.
+
 The side-channel lets user-initiated concurrent agents run in parallel with the main turn without
 interfering with each other (carried by `zhuye-core`).
 

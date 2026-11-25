@@ -22,12 +22,14 @@ def test_审批与中断交错只产生单一终态(seed, sandbox, serve_session
     script.append('{"type":"text","text":"后续回合成功"}')
     env = sandbox.mock_env(mock_script(script), ZHUYE_APPROVALS="1")
     with serve_session(env=env) as session:
-        # 默认档(Auto)如今自动批准文件编辑(write);本用例验证的是
-        # 审批/中断交错链路,先切 Ask(prompt)钉住"每工具询问"语义。
-        session.submit({"type": "set_permission_mode", "mode": "prompt"})
+        # 审批链路用回合级 `approval_policy=prompt` 钉住「逐工具弹窗」;
+        # 会话档 prompt(询问档)如今是只读语义(写类直接拒绝,不弹窗),
+        # 不能再拿来制造 approval_request。
         for index, action in enumerate(actions):
             target = sandbox.cwd / f"out-{index}.txt"
-            turn = session.send({"type": "user_input", "items": [{"type": "text", "text": f"执行任务 {index}"}]})
+            turn = session.send({"type": "user_input",
+                                 "items": [{"type": "text", "text": f"执行任务 {index}"}],
+                                 "thread_settings": {"approval_policy": "prompt"}})
             request = session.wait_event(turn, "approval_request", timeout=15)["msg"]
             assert not target.exists(), (seed, actions, index)
             if action == "interrupt":
@@ -53,12 +55,14 @@ def test_审批与中断交错只产生单一终态(seed, sandbox, serve_session
                                        if event["msg"]["type"] == "agent_message_delta")
 
 
-@pytest.mark.parametrize("mode,expect", [("prompt", "ask"), ("deny", "deny"), ("auto", "run")])
+@pytest.mark.parametrize("mode,expect", [("prompt", "run"), ("deny", "deny"), ("auto", "run")])
 def test_工作模式对只读bash的闸门语义(mode, expect, sandbox, serve_session, mock_script):
-    """三段工作模式 × F04 只读捷径的边界(回归:`printf hi` 曾在 Ask/Deny 下静默执行)。
+    """三段工作模式 × F04 只读捷径的边界。
 
-    - Ask(prompt):承诺每次调用前询问 → 只读 bash 也必须弹 approval_request;
-    - Deny:禁止所有工具执行 → 只读 bash 直接被拒(不弹窗、不执行);
+    - Ask(prompt):v1.x 询问档只读语义 —— Safe 只读命令自动放行(无弹窗);
+      写类与危险命令直接拒绝(不弹窗)。回归:`printf hi` 曾在旧 Ask 语义下
+      静默执行,现按设计放行且不冒充「已审批」;
+    - Deny(已弃用档):禁止所有工具执行 → 只读 bash 直接被拒(不弹窗);
     - 默认(auto):只读捷径正常放行(无审批事件、命令执行)。
     """
     script = mock_script([
@@ -70,21 +74,14 @@ def test_工作模式对只读bash的闸门语义(mode, expect, sandbox, serve_s
     with serve_session(env=env) as session:
         session.submit({"type": "set_permission_mode", "mode": mode})
         turn = session.send({"type": "user_input", "items": [{"type": "text", "text": "跑"}]})
-        if expect == "ask":
-            request = session.wait_event(turn, "approval_request", timeout=15)["msg"]
-            assert request["kind"]["tool_name"] == "bash", request
-            session.send({"type": "tool_approval", "id": request["request_id"],
-                          "decision": "approve"})
+        if expect == "run":
             events = session.collect(turn, timeout=15)
-            assert first_event(events, "turn_complete")["msg"]["status"] == "success", events
+            end = first_event(events, "tool_call_end")
+            assert end is not None and end["msg"]["is_error"] is False, events
+            assert "readonly-marker" in json.dumps(end["msg"]["output"]), end
+            assert first_event(events, "approval_request") is None, events
         else:
             events = session.collect(turn, timeout=15)
-            if expect == "deny":
-                end = first_event(events, "tool_call_end")
-                assert end is not None and end["msg"]["is_error"] is True, events
-                assert "deny" in json.dumps(end["msg"]["output"]).lower(), end
-            else:
-                end = first_event(events, "tool_call_end")
-                assert end is not None and end["msg"]["is_error"] is False, events
-                assert "readonly-marker" in json.dumps(end["msg"]["output"]), end
-                assert first_event(events, "approval_request") is None, events
+            end = first_event(events, "tool_call_end")
+            assert end is not None and end["msg"]["is_error"] is True, events
+            assert "deny" in json.dumps(end["msg"]["output"]).lower(), end
