@@ -857,6 +857,8 @@ pub async fn submission_loop(
                 let warming_clone = cfg.cache_warming.clone();
                 // v1.x 输入守恒:终态处置落盘需要 cfg(recorder 槽)。
                 let cfg_ledger = cfg.clone();
+                // 在飞异步子代理登记表:回合收尾时放弃本回合来不及等待的条目。
+                let pending_subagents = cfg.pending_subagents.clone();
                 // v1.2 P1:turn 级 telemetry span(RAII guard,drop 时自动写
                 // `turn.completed` + duration)。guard 在 spawned task 内创建,
                 // 这样 drop 时机 = turn 真正完成(而非 spawn 时刻)。
@@ -866,6 +868,16 @@ pub async fn submission_loop(
                         .as_ref()
                         .map(|sink| sink.enter_turn(&turn_id.to_string()));
                     let mut final_state = graph.run().await;
+                    // 异步子代理不跨越派发它的回合:回合已收尾,仍登记在表的
+                    // 本回合条目一并放弃。正常收尾时表里已无本回合条目
+                    // (`check_stop` 等到了全部结果),这里是空操作;起作用的是
+                    // 被打断 / 出错 / 触顶收尾时来不及等待的子代理 —— 后台任务
+                    // 监听回合令牌与本条目的放弃句柄,子代理随之取消,这里负责
+                    // 清掉表项(被打断的回合令牌已触发,子代理其实早已停下)。
+                    // 修复原因:不清的话子代理在用户中断后继续跑完,结果被之后
+                    // 某个回合的 `check_stop` 当成待回填结果注入;若它卡在审批上,
+                    // 此后每个回合收尾都会为它挂起。
+                    pending_subagents.abandon_turn(&turn_cancel_clone);
                     // 显式标完成(带 status),防止 guard 只写兜底的 note。
                     if let Some(g) = &turn_span_guard {
                         let status = if final_state.completed_normally {

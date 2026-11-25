@@ -40,6 +40,16 @@ impl GraphNode {
             (GraphNode::CheckStop, false) => None, // turn complete
         }
     }
+
+    /// `node` 返回 `None` 是否代表回合**自然结束**。
+    ///
+    /// 只有 `CheckStop` 的 `None` 是自然结束(`model_call` / `tool_exec` 的
+    /// `None` 是错误或取消)。但 `CheckStop` 在等待异步子代理时被取消同样
+    /// 返回 `None` —— 回合令牌已触发就不算自然完成,否则「被打断」会被记成
+    /// `completed_normally`,终态误报为 `TurnComplete`。
+    pub(crate) fn is_natural_stop(node: GraphNode, turn_cancelled: bool) -> bool {
+        matches!(node, GraphNode::CheckStop) && !turn_cancelled
+    }
 }
 
 pub struct StateGraph {
@@ -69,7 +79,7 @@ impl StateGraph {
                 // 自然终止来自 check_stop 返回 None(= allow)。若
                 // model_call / tool_exec 返回 None,turn 为异常结束,
                 // 不标记 completed_normally。
-                if matches!(node, GraphNode::CheckStop) {
+                if GraphNode::is_natural_stop(node, self.ctx.cancel.is_cancelled()) {
                     self.state.completed_normally = true;
                 }
                 break;
@@ -83,6 +93,20 @@ impl StateGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn natural_stop_requires_check_stop_and_live_turn() {
+        assert!(GraphNode::is_natural_stop(GraphNode::CheckStop, false));
+        // 等待异步子代理时被取消:CheckStop 也返回 None,但不算自然完成。
+        assert!(!GraphNode::is_natural_stop(GraphNode::CheckStop, true));
+        for node in [
+            GraphNode::PreLoop,
+            GraphNode::ModelCall,
+            GraphNode::ToolExec,
+        ] {
+            assert!(!GraphNode::is_natural_stop(node, false));
+        }
+    }
 
     #[test]
     fn pre_loop_always_goes_to_model_call() {

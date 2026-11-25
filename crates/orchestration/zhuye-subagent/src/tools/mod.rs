@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 use zhuye_protocol::{ToolError, ToolOutput};
 use zhuye_tools::{PendingSubagentRegistry, PendingSubagentResult, Tool, ToolContext};
 
@@ -17,6 +18,7 @@ enum DispatchMode {
     Sync,
     /// 异步:立即返回占位回执,子代理在后台继续跑;结果由引擎在回合收尾
     /// 前**挂起等待**并注入本轮上下文(见 `zhuye-core` 的 `check_stop`)。
+    /// 子代理不跨越派发它的回合 —— 父回合被打断时一并取消。
     Async,
 }
 
@@ -200,19 +202,27 @@ impl CallSubAgentTool {
     /// 后台任务持有 `SpawnedChild` —— 不能在工具 future 返回时丢在地上:
     /// `SpawnedChild` 析构会 **cancel 子令牌**,子代理会被立刻杀掉。任务
     /// 跑到终态后回填在飞表,引擎据此唤醒父回合。
+    ///
+    /// `owner` 是父回合的回合级取消令牌(`ToolContext::cancel`)。同步模式下
+    /// 「打断父回合 ⇒ 子代理一并取消」是工具 future 被丢弃的副产品;异步模式
+    /// 的后台任务不随工具 future 析构,这条级联必须显式接线:后台任务监听
+    /// `owner`,引擎收尾时经 `abandon_turn` 触发条目的放弃句柄。**异步子代理
+    /// 不跨越派发它的回合**。
     fn dispatch_async(
         &self,
         spawned: crate::factory::SpawnedChild,
         payload: SpawnPayload,
         progress_cb: Option<ProgressCallback>,
         registry: Arc<PendingSubagentRegistry>,
+        owner: CancellationToken,
     ) -> ToolOutput {
-        registry.register(
+        let abort = registry.register(
             payload.child_session_id.clone(),
             payload.role.clone(),
             payload.call_id.clone(),
+            owner.clone(),
         );
-        // 兜底守卫:后台任务被中止(会话关闭 / runtime 掉线)时,把条目落到
+        // 兜底守卫:后台任务意外中止(runtime 掉线、panic)时,把条目落到
         // 终态 —— 否则该条目永远停在「在飞」,此后每个回合的 `check_stop`
         // 都会为它挂起等待(一次中止拖垮整个会话)。
         let guard = zhuye_tools::PendingCompletionGuard::new(
@@ -222,7 +232,6 @@ impl CallSubAgentTool {
             payload.call_id.clone(),
         );
         let factory = self.factory.clone();
-        let reg = registry.clone();
         // 占位回执用的副本 —— `payload` 整体移进后台任务。
         let out_role = payload.role.clone();
         let out_session = payload.child_session_id.clone();
@@ -230,22 +239,29 @@ impl CallSubAgentTool {
             // `_guard` 绑定到块尾 —— 真实结果先写入,守卫析构时的兜底
             // 因「首个终态为准」被忽略。
             let _guard = guard;
-            let outcome = spawned
-                .collect_result_with_progress(progress_cb.as_deref())
-                .await;
-            let (ok, text, error) = match outcome {
+            // 父回合结束(被打断 / 被引擎放弃)→ 立刻停子代理:丢弃 collect
+            // future 即析构 `SpawnedChild`(cancel 子令牌 + 释放 in-flight
+            // 槽位)。两个取消分支分工:`owner` 让用户按下中断的瞬间子代理
+            // 就停,不必等父回合自己收尾;`abort` 覆盖回合「正常收尾但没等
+            // 它」的情形(触顶收尾),那种收尾并不会 cancel 回合令牌。
+            let outcome = tokio::select! {
+                biased;
+                _ = abort.cancelled() => None,
+                _ = owner.cancelled() => None,
+                result = spawned
+                    .collect_result_with_progress(progress_cb.as_deref()) => Some(result),
+            };
+            let Some(result) = outcome else {
+                tracing::info!(
+                    role = %payload.role,
+                    child_id = %payload.child_session_id,
+                    "父回合已结束,异步子代理随回合取消,结果不回填"
+                );
+                return;
+            };
+            let (ok, text, error) = match result {
                 Ok(res) => {
                     let raw = res.text;
-                    // coordinator 模式:回填给父协调者的文本同样带 footer
-                    // (同步路径在 `finish_sync` 里做,这里是异步对应物)。
-                    let text = if factory.is_coordinator_mode() {
-                        crate::data_transfer::append_coordinator_principle_footer(
-                            &raw,
-                            factory.coordinator_footer().as_deref(),
-                        )
-                    } else {
-                        raw.clone()
-                    };
                     // 写完成记录(防重复 spawn)—— 与同步路径同口径。
                     let mut task_summary = payload.prompt.clone();
                     if factory.is_coordinator_mode() {
@@ -255,16 +271,26 @@ impl CallSubAgentTool {
                         r.record(zhuye_recovery::SubagentRegistryEntry {
                             tool_name: format!("call_{}", payload.role),
                             task_summary,
-                            result_summary: raw,
+                            result_summary: raw.clone(),
                             iteration: payload.turn_iteration,
                             created_at: chrono::Utc::now(),
                         });
                     }
+                    // coordinator 模式:回填给父协调者的文本同样带 footer
+                    // (同步路径在 `finish_sync` 里做,这里是异步对应物)。
+                    let text = if factory.is_coordinator_mode() {
+                        crate::data_transfer::append_coordinator_principle_footer(
+                            &raw,
+                            factory.coordinator_footer().as_deref(),
+                        )
+                    } else {
+                        raw
+                    };
                     (true, text, None)
                 }
                 Err(e) => (false, String::new(), Some(e.to_string())),
             };
-            reg.complete(PendingSubagentResult {
+            registry.complete(PendingSubagentResult {
                 child_id: payload.child_session_id,
                 role: payload.role,
                 call_id: payload.call_id,
@@ -411,6 +437,9 @@ impl Tool for CallSubAgentTool {
             // 缺席 = 本线程不支持异步派发(纯库 / 测试)→ 降级同步,
             // 不能让模型拿到一个「已派发但没人会回填」的假回执。
             if let Some(registry) = ctx.pending_subagents.clone() {
+                // 父回合的回合级取消令牌(队列从 `turn_cancel` 注入)——
+                // 「打断父回合 ⇒ 取消在途子代理」靠它级联。
+                let owner = ctx.cancel.clone();
                 return Ok(self.dispatch_async(
                     spawned,
                     SpawnPayload {
@@ -422,6 +451,7 @@ impl Tool for CallSubAgentTool {
                     },
                     progress_cb,
                     registry,
+                    owner,
                 ));
             }
             tracing::warn!(
@@ -465,7 +495,6 @@ impl SubAgentSpec {
 mod tests {
     use super::*;
     use crate::data_transfer::DataTransferConfig;
-    use tokio_util::sync::CancellationToken;
     use zhuye_protocol::ThreadId;
     use zhuye_tools::ToolRegistry;
 
@@ -658,6 +687,167 @@ mod tests {
         assert_eq!(done[0].text, "子代理结论", "{done:?}");
         assert_eq!(done[0].role, "explorer", "{done:?}");
         assert_eq!(done[0].call_id, "call-1", "{done:?}");
+    }
+
+    /// 挂起的 stub 模型:`stream()` 一直等到请求的取消令牌触发才返回 ——
+    /// 模拟一个迟迟不返回的子代理模型请求。
+    struct HangingClient {
+        started: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl zhuye_llm::ModelClient for HangingClient {
+        fn name(&self) -> &str {
+            "hanging-stub"
+        }
+        async fn stream(
+            &self,
+            _request: zhuye_llm::ChatRequest,
+            cancel: CancellationToken,
+        ) -> Result<
+            std::pin::Pin<
+                Box<
+                    dyn futures::Stream<Item = Result<zhuye_llm::ChatEvent, zhuye_llm::LlmError>>
+                        + Send,
+                >,
+            >,
+            zhuye_llm::LlmError,
+        > {
+            self.started.notify_one();
+            cancel.cancelled().await;
+            Err(zhuye_llm::LlmError::Cancelled)
+        }
+    }
+
+    /// 「子代理模型请求挂起」的异步派发场景。
+    struct HangingDispatch {
+        pending: Arc<zhuye_tools::PendingSubagentRegistry>,
+        /// 父回合的回合级取消令牌。
+        owner: CancellationToken,
+        factory: Arc<SubAgentFactory>,
+    }
+
+    impl HangingDispatch {
+        /// 等到子代理释放在途槽位 —— `SpawnedChild` 只在析构 / collect 结束时
+        /// 释放槽位,归零即证明后台任务确实丢弃了子代理句柄(子代理被取消)。
+        async fn wait_for_child_stopped(&self) {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while self.factory.depth() != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("父回合结束后在途异步子代理应被取消并释放槽位");
+        }
+    }
+
+    /// 派发一个子代理模型请求会一直挂起的异步委派,等到子代理真的发起
+    /// 模型请求后才返回。
+    async fn hanging_async_dispatch() -> HangingDispatch {
+        use zhuye_llm::{CredentialPool, ModelRegistry, PoolEntry};
+
+        let client = Arc::new(HangingClient {
+            started: tokio::sync::Notify::new(),
+        });
+        let registry = Arc::new(ModelRegistry::new());
+        registry.register_pool(
+            "hanging-stub",
+            CredentialPool {
+                entries: vec![PoolEntry {
+                    client: client.clone(),
+                    label: "default".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        let factory = Arc::new(SubAgentFactory::new(
+            ThreadId::new(),
+            "hanging-stub",
+            registry,
+            None,
+            Arc::new(ToolRegistry::default()),
+            CancellationToken::new(),
+            None,
+        ));
+        let pending = Arc::new(zhuye_tools::PendingSubagentRegistry::new());
+        let tool = CallSubAgentTool::new(
+            factory.clone(),
+            SubAgentSpec {
+                name: "Explorer".into(),
+                role: "explorer".into(),
+                model: None,
+                system_prompt: "你是探索子代理".into(),
+                allowed_tools: vec![],
+                data_transfer: DataTransferConfig::default(),
+                max_turns: None,
+                allowed_skills: vec![],
+            },
+        );
+        let owner = CancellationToken::new();
+        let ctx = zhuye_tools::ToolContext {
+            call_id: "call-1".into(),
+            // 生产路径上队列注入的就是父回合的回合级令牌。
+            cancel: owner.clone(),
+            pending_subagents: Some(pending.clone()),
+            ..Default::default()
+        };
+        let out = tool
+            .execute(
+                ctx,
+                serde_json::json!({"prompt": "调研模块", "mode": "async"}),
+            )
+            .await
+            .expect("异步派发应成功");
+        assert_eq!(
+            out.metadata.get("async").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        client.started.notified().await;
+        assert_eq!(factory.depth(), 1, "子代理应占着一个在途槽位");
+        HangingDispatch {
+            pending,
+            owner,
+            factory,
+        }
+    }
+
+    /// 打断父回合(回合令牌触发)⇒ 在途异步子代理立刻取消。
+    ///
+    /// 回归:同步模式下「打断父回合 ⇒ 取消在途子代理」是工具 future 被丢弃
+    /// 的副产品;异步子代理由后台任务持有,不随工具 future 析构 —— 此前用户
+    /// 按下中断后子代理照常跑完,结果被之后某个回合注入。
+    #[tokio::test]
+    async fn interrupting_parent_turn_cancels_async_child() {
+        let dispatch = hanging_async_dispatch().await;
+
+        // 模拟 `Op::Interrupt`:回合级令牌触发。
+        dispatch.owner.cancel();
+        dispatch.wait_for_child_stopped().await;
+
+        // 引擎在回合任务收尾时清扫表项。
+        assert_eq!(dispatch.pending.abandon_turn(&dispatch.owner), 1);
+        // 迟到的兜底写入不会重建条目,之后也没有结果可回填。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !dispatch.pending.has_pending(),
+            "被取消的子代理不应回填结果"
+        );
+    }
+
+    /// 回合**正常**收尾但没等某个子代理(如触顶收尾):回合令牌未触发,
+    /// 照样经放弃句柄停掉子代理 —— 异步子代理不跨越派发它的回合。
+    #[tokio::test]
+    async fn turn_end_abandons_unwaited_async_child_without_cancelling_turn_token() {
+        let dispatch = hanging_async_dispatch().await;
+
+        assert_eq!(dispatch.pending.abandon_turn(&dispatch.owner), 1);
+        assert!(!dispatch.owner.is_cancelled(), "正常收尾不取消回合令牌");
+        dispatch.wait_for_child_stopped().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !dispatch.pending.has_pending(),
+            "未等待的子代理不应回填结果"
+        );
     }
 
     /// 异步派发但本线程无在飞登记表(纯库 / 测试)→ **降级为同步**,
