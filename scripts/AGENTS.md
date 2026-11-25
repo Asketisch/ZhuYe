@@ -35,10 +35,20 @@
 
 | 脚本 | 一句话职责 |
 |---|---|
-| `e2e.sh` | 端到端冒烟:构建 + 文档 + examples + headless + 全量测试 + clippy/fmt |
-| `sdk_smoke.sh` | Python / TypeScript SDK 对真实 `zhuye serve` 二进制的离线冒烟 |
-| `full_link.sh` | 全链路集成测试(只 mock LLM,贯通引擎完整链路) |
-| `discussion_smoke.sh` | 真实 LLM 的 discussion 编排冒烟 |
+| `e2e.sh` | 端到端冒烟:构建 + 文档 + examples + headless + 全量测试 + clippy/fmt(引擎步骤跑一次性 `ZHUYE_HOME` 沙箱) |
+| `sdk_smoke.sh` | Python / TypeScript SDK 对真实 `zhuye serve` 二进制的离线冒烟(整体 `ZHUYE_HOME` 沙箱) |
+| `full_link.sh` | 全链路集成测试(只 mock LLM,贯通引擎完整链路;整脚本 `ZHUYE_HOME` 沙箱) |
+| `discussion_smoke.sh` | 真实 LLM 的 discussion 编排冒烟(用真实数据目录读配置,**不隔离**) |
+
+**数据目录隔离契约**:凡是会跑引擎进程(example / `exec` / `serve` /
+discussion)的 mock 冒烟,必须把 `ZHUYE_HOME` 指向一次性临时目录(`mktemp -d`
++ trap 清理;`ZHUYE_HOME` 优先级高于 `$HOME/.zhuye`,见
+`zhuye-config::paths`)—— 引擎默认 recorder 落 `$HOME/.zhuye/sessions/`,
+mock 会话会在真实数据目录留下「只有 meta、无用户消息」的壳会话,污染桌面端
+(TUI / GUI)的会话列表(实测 2026-11:一天 8 个 8 位 ID 空条目)。例外:
+`discussion_smoke.sh` 走真实 provider 配置,隔离会破坏鉴权;`bench.py` 已
+自带隔离。不能全局 export 的反例见 `e2e.sh` 头注(workspace 测试含断言
+`$HOME/.zhuye/sessions` 形态的用例)。
 
 ### 发布
 

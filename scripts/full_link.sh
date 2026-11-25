@@ -14,6 +14,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# 引擎进程沙箱:当前用例全用内存 rollout 录制器(不落盘),但任何用例一旦
+# 挂上默认 recorder,就会把 mock 会话写进真实 `$HOME/.zhuye/sessions/`,
+# 留下污染桌面端会话列表的壳会话(实测 2026-11)。`ZHUYE_HOME` 优先级高于
+# `$HOME/.zhuye`(zhuye-config::paths),整脚本统一隔离进一次性目录;本脚本
+# 只跑 cargo test,无依赖真实数据目录的断言。
+SANDBOX_HOME="$(mktemp -d)"
+trap 'rm -rf "$SANDBOX_HOME"' EXIT
+export ZHUYE_HOME="$SANDBOX_HOME"
+
 echo "── zhuye 全链路测试(模拟 LLM,离线)"
 ZHUYE_MODEL=mock cargo test -p zhuye-core --test full_link -- --test-threads=4
 

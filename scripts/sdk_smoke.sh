@@ -24,6 +24,12 @@ TS_BIN="$ROOT/sdks/typescript"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# 引擎进程沙箱:SDK spawn 的是真 `zhuye serve` 二进制,默认 recorder 会把
+# mock 会话写进真实 `$HOME/.zhuye/sessions/`,留下污染桌面端会话列表的
+# 壳会话(实测 2026-11)。`ZHUYE_HOME` 优先级高于 `$HOME/.zhuye`
+# (zhuye-config::paths),整体隔离进本脚本的临时目录(随 trap 一并清理)。
+export ZHUYE_HOME="$TMP/zhuye-home"
+
 # mock 脚本 A(多轮):第 1 轮文本 "first-reply",第 2 轮 "second-reply"。
 cat > "$TMP/multi.jsonl" <<'EOF'
 {"type":"text","text":"first-reply"}

@@ -26,6 +26,9 @@
 # 同一依赖,CI 里由 `apt-get install -y jq` 提供)、`node`(步骤 13 的
 # SDK 冒烟)、`python3` + pytest(步骤 5 / 13 的 SDK 用例)。
 #
+# 引擎进程(3 / 4 / 9 / 12 / 13)在一次性 `ZHUYE_HOME` 沙箱里跑,不写
+# 真实 `~/.zhuye`;见下方 E2E_HOME 注释。
+#
 # 每步快速失败。退出码 0 = 全部通过。
 
 set -euo pipefail
@@ -37,6 +40,16 @@ BIN="$ROOT/target/release/zhuye"
 export BIN  # 内层 bash -c 步骤(login/doctor 等)需要继承
 LOG="$ROOT/target/e2e.log"
 mkdir -p "$(dirname "$LOG")"
+
+# 引擎进程沙箱:facade / recorder 默认把 rollout 落到 `$HOME/.zhuye/sessions/`,
+# mock 冒烟会在真实数据目录留下「只有 meta、无用户消息」的壳会话,污染桌面端
+# 会话列表(实测 2026-11:一天 8 个 8 位 ID 空条目)。只对会跑引擎进程的步骤
+# (3 / 4 / 9 / 12,13 经 sdk_smoke.sh 自带沙箱)按步注入 `ZHUYE_HOME` ——
+# 不能全局 export:步骤 5 的 workspace 测试含断言 `$HOME/.zhuye/sessions`
+# 形态的用例(zhuye-rollout `default_base_unchanged`),步骤 10 / 11 自管
+# HOME 隔离且断言 `$HOME/.zhuye` 路径,全局注入会破坏它们。
+E2E_HOME="$(mktemp -d)"
+trap 'rm -rf "$E2E_HOME"' EXIT
 
 step() {
     local name="$1"; shift
@@ -58,7 +71,7 @@ step "2/13 cargo doc --no-deps" \
 # 3. 5 个 example(ZHUYE_MODEL=mock 跳过真实网络;mock 下应当全绿,不吞错误)
 #    review 修复:此前 `|| true` 让 example 失败也判过 —— 冒烟形同虚设。
 step "3/13 5 examples (mock provider, offline)" \
-    bash -c '
+    env ZHUYE_HOME="$E2E_HOME" bash -c '
         set -euo pipefail
         for ex in headless_run custom_tool multi_turn custom_provider hook_listener; do
             echo "--- example: $ex"
@@ -80,7 +93,7 @@ step "3/13 5 examples (mock provider, offline)" \
 #    review 修复:此前注入假 OPENAI_API_KEY 打真网络必然失败,再被 `||`
 #    吞掉 —— 该核心断言从未真正生效。改走 mock,严格失败。
 step "4/13 headless exec emits TurnComplete (mock provider)" \
-    bash -c '
+    env ZHUYE_HOME="$E2E_HOME" bash -c '
         set -euo pipefail
         TMP=$(mktemp -d)
         trap "rm -rf $TMP" EXIT
@@ -146,8 +159,9 @@ EOF
     '
 
 # 10. (M9) discussion 冒烟 —— `zhuye discussion run` CLI + discussion_demo example。
+#    discussion 的参与线程同样落 rollout,一并关进沙箱。
 step "9/13 discussion smoke (M9)" \
-    bash -c '
+    env ZHUYE_HOME="$E2E_HOME" bash -c '
         set -euo pipefail
         # 9a. `zhuye discussion --help` 输出 Run / Ls
         ./target/release/zhuye discussion --help | grep -iE "run|ls" >/dev/null || { echo "FAIL: discussion --help missing Run/Ls"; exit 1; }
@@ -191,7 +205,7 @@ step "11/13 doctor smoke (v0.4)" \
 #     tool_call_end / turn_complete / shutdown 全链路(wire 协议见
 #     sdks/PROTOCOL.md)。
 step "12/13 serve smoke (mock provider, remote tool)" \
-    bash -c '
+    env ZHUYE_HOME="$E2E_HOME" bash -c '
         set -euo pipefail
         TMP=$(mktemp -d)
         trap "rm -rf $TMP" EXIT
