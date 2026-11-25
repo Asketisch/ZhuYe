@@ -395,6 +395,10 @@ fn tool_names(req: &zhuye_llm::ChatRequest) -> Vec<&str> {
 /// 触顶的强制收口轮此前清空全部工具 —— 调研耗尽预算的 plan 永远无法经
 /// PlanReady 提交,只能纯文本收尾。收口轮的 request.tools 必须仍含
 /// ExitPlanMode;非 Plan 模式保持清空(收口语义不变)。
+///
+/// v1.x 再修复:收口轮改发**全量工具**(plan 文件可能尚未写,只有
+/// ExitPlanMode 无法满足「先写后交」前置)且工具调用会被执行 —— 本测试
+/// 断言收口轮仍含 ExitPlanMode(其余工具为注册表全集,顺序不敏感)。
 #[tokio::test]
 async fn force_final_answer_keeps_exit_plan_mode_in_plan_mode() {
     let registry = Arc::new(ModelRegistry::new());
@@ -439,10 +443,13 @@ async fn force_final_answer_keeps_exit_plan_mode_in_plan_mode() {
         reqs.len()
     );
     let final_tools = tool_names(&reqs[3]);
-    assert_eq!(
-        final_tools,
-        vec!["ExitPlanMode"],
+    assert!(
+        final_tools.contains(&"ExitPlanMode"),
         "Plan 模式收口轮必须保留 ExitPlanMode(唯一的计划提交出口),got {final_tools:?}"
+    );
+    assert!(
+        final_tools.contains(&"read"),
+        "Plan 模式收口轮发全量工具(plan 可能尚未写,需要 PlanWrite),got {final_tools:?}"
     );
 }
 

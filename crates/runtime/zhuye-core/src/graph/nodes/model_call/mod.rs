@@ -59,25 +59,39 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         state.force_final_answer = true;
         state.hit_max_iterations = true;
         state.iteration = ctx.max_iterations;
+        // v1.x:提醒文案按模式选择 —— Plan 模式的收口动作是 ExitPlanMode
+        // (且本轮保留该工具可执行,见下方 force_final_answer 分支);其余
+        // 模式维持「无工具 + FINAL ANSWER 模板」。Plan 模式仍发全量工具
+        // (plan 文件可能还没写,模型需要 PlanWrite)。
+        let plan_mode = *ctx.cfg.permission_mode.read() == zhuye_protocol::PermissionMode::Plan;
+        let reminder = if plan_mode {
+            "<system-reminder>\nYou have reached the maximum number of tool-use steps \
+             for this task. Finish the planning flow NOW: if the plan file has been \
+             written with PlanWrite, call ExitPlanMode immediately to submit it for \
+             approval; otherwise write a concise plan with PlanWrite first and then \
+             call ExitPlanMode. Do NOT answer with a text summary.\n</system-reminder>"
+                .to_string()
+        } else {
+            format!(
+                "<system-reminder>\nYou have reached the maximum number of \
+                   tool-use steps for this task. You can no longer use any tools. Based \
+                   ONLY on the information you have already gathered, give your final \
+                   answer right now using the template: {}. Do not say you cannot answer \
+                   — provide your best answer.\n</system-reminder>",
+                zhuye_prompt::FINAL_ANSWER_TEMPLATE
+            )
+        };
         state
             .messages
             .messages
             .push(ChatMessage::User(zhuye_llm::UserContent {
-                blocks: vec![zhuye_llm::ContentBlock::Text {
-                    text: format!(
-                        "<system-reminder>\nYou have reached the maximum number of \
-                           tool-use steps for this task. You can no longer use any tools. Based \
-                           ONLY on the information you have already gathered, give your final \
-                           answer right now using the template: {}. Do not say you cannot answer \
-                           — provide your best answer.\n</system-reminder>",
-                        zhuye_prompt::FINAL_ANSWER_TEMPLATE
-                    ),
-                }],
+                blocks: vec![zhuye_llm::ContentBlock::Text { text: reminder }],
             }));
         tracing::info!(
             iteration = state.iteration,
             max_iterations = ctx.max_iterations,
-            "max_iterations reached; forcing one tool-less final-answer call"
+            plan_mode,
+            "max_iterations reached; forcing final flow"
         );
     }
 
@@ -150,18 +164,22 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         }));
     }
     messages.extend(recovery_meta_to_messages(&state.recovery_meta));
+    let plan_mode = *ctx.cfg.permission_mode.read() == zhuye_protocol::PermissionMode::Plan;
     let mut tools: Vec<zhuye_llm::ToolSpec> = if state.force_final_answer {
         // v1.x 修复:Plan 模式下保留 ExitPlanMode。最后一轮清空全部工具会
         // 把唯一的计划提交出口也清掉 —— 调研耗尽迭代预算的 plan 永远无法
         // 经 PlanReady 提交,只能纯文本收尾(违背 plan 收尾指引)。
-        if *ctx.cfg.permission_mode.read() == zhuye_protocol::PermissionMode::Plan {
+        //
+        // v1.x 再修复:plan 文件可能还没写(只有 ExitPlanMode 时模型无法
+        // 满足「先写后交」前置),因此 Plan 模式强制收尾轮发**全量工具**,
+        // 且下方把 force_final_answer 的工具调用路由进 ToolExec —— 此前
+        // 直接 `CheckStop`,ExitPlanMode 调用只进历史永不执行,
+        // 「保留 ExitPlanMode」是死功能。
+        if plan_mode {
             ctx.tools_queue
                 .registry()
                 .list_specs()
                 .into_iter()
-                .filter(|s| {
-                    matches!(s, zhuye_tools::ToolSpec::Function { name, .. } if name == "ExitPlanMode")
-                })
                 .map(|s| match s {
                     zhuye_tools::ToolSpec::Function {
                         name,
@@ -1164,6 +1182,13 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
     }
 
     if state.force_final_answer {
+        // v1.x:Plan 模式下强制收尾轮的工具调用要真执行(ExitPlanMode →
+        // PlanReady → 审批);其余模式维持「调用即终止」(安全阀兜底)。
+        // `iteration` 已被入口安全阀钳在 max_iterations,不会再触发下一轮
+        // 强制收尾的提醒叠加。
+        if plan_mode && !tool_calls.is_empty() {
+            return Some(GraphNode::ToolExec);
+        }
         return Some(GraphNode::CheckStop);
     }
 

@@ -6,7 +6,7 @@ Plan mode 是只读规划阶段。在 Plan mode 下：
 ### 只读边界
 1. 只做调研（read/grep/glob/只读 bash），不修改任何文件——plan 文件除外。
 2. 调研充分后，用 PlanWrite 工具把完整 plan 写入 plan 文件（只接受文件名或相对子路径，工具会自动拼到 workspace 的 `.zhuye/plan/` 下，Plan mode 下免审批）。不要用通用 write 工具写 plan，那样需要自己拼对路径。
-3. plan 文件写好后，调用 ExitPlanMode 请求用户审批——此工具从 plan 文件读取内容，不接受计划内容作为参数。
+3. plan 文件写好后，调用 ExitPlanMode 请求用户审批——此工具从 plan 文件读取内容，不接受计划内容作为参数。**PlanWrite 成功后，本轮必须以调用 ExitPlanMode 结束——不要用文字总结收尾，也不要使用 FINAL ANSWER 模板**（那会让审批流程永远无法启动）。
 不要在未写入 plan 文件的情况下直接调用 ExitPlanMode。纯信息查询任务不需要 plan，直接回答即可。
 
 ### 工作方法：先探索，再提问，最后成稿
@@ -108,7 +108,7 @@ Plan mode 专用写盘工具:把完整 plan markdown 写到 workspace 的 `.zhuy
 
 ## runtime.active-mode
 ### Active Mode
-You are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase first; for preference-type decisions that cannot be discovered from the environment (language / theme / scope / tradeoffs), ask the user with `ask_user_question` (recommended option first, marked "(推荐)") before writing the plan — do not decide for the user. Then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, call `ExitPlanMode` to request user approval — it reads the plan from the file. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.
+You are currently in Plan mode (read-only — `write` / `edit` are hidden from your tool list). Research the codebase first; for preference-type decisions that cannot be discovered from the environment (language / theme / scope / tradeoffs), ask the user with `ask_user_question` (recommended option first, marked "(推荐)") before writing the plan — do not decide for the user. Then use the `PlanWrite` tool to write your complete plan as full Markdown to the plan file (path shown in the per-turn reminder below). Once the plan file is written, you MUST end the turn by calling `ExitPlanMode` to request user approval — it reads the plan from the file. Do not end the turn with a text summary and do NOT use the FINAL ANSWER template after PlanWrite succeeds. Do not call `ExitPlanMode` before writing the plan file. Do not keep researching once you can articulate the plan. Do NOT call `EnterPlanMode` — you are already in Plan mode; calling it again will trigger a redundant confirmation popup and a tool-denied error.
 
 ## runtime.active-mode-ask
 ### Active Mode
@@ -119,6 +119,15 @@ You are repeating the same tool call with identical arguments without making pro
 
 ## runtime.nudge-final
 You are on iteration {{ iteration }}/{{ max_iterations }} and are about to run out of turns. Stop calling tools NOW. Give your final answer immediately using the template: {{ final_answer_template }}. Base it on the information you already have — do not attempt any further tool calls.
+
+## runtime.nudge-final-plan
+You are on iteration {{ iteration }}/{{ max_iterations }} and are about to run out of turns. Stop researching NOW. If you have already written the plan file with PlanWrite, call ExitPlanMode immediately to submit it for approval. If you have not, write a concise plan with PlanWrite first, then call ExitPlanMode. Do NOT answer with the {{ final_answer_template }} template and do NOT end the turn with a text summary.
+
+## runtime.nudge-plan-tail
+Plan mode: do NOT answer with the {{ final_answer_template }} template. Finish by writing the plan with PlanWrite (if not yet written) and then calling ExitPlanMode to request approval.
+
+## runtime.nudge-plan-submit
+The plan file has been written with PlanWrite but ExitPlanMode has NOT been called yet. Call ExitPlanMode NOW to submit the plan for user approval. Do not output any other content.
 
 ## runtime.nudge-web-fetched
 You have fetched {{ count }} web pages so far. Facts collected (URL → excerpt):
