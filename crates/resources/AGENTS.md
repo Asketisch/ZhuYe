@@ -22,7 +22,7 @@
 | `zhuye-fs` | 共享文件原语(原子写等) | 并入本篇 |
 | `zhuye-git` | git 能力族(checkpoint / 探测 / 有界命令) | 并入本篇 |
 | `zhuye-ast` | tree-sitter 代码搜索与重写工具 | 并入本篇 |
-| `zhuye-wasm` | WASM 组件插件宿主(wasmtime 组件模型) | 并入本篇 |
+| `zhuye-wasm` | WASM 组件插件宿主(含工作流节点 world;无文件 / 网络能力) | 并入本篇 |
 
 「并入本篇」= 该 crate 规模不足以独立成篇,它的本地契约留在本篇(见下方通用规则)。
 

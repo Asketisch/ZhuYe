@@ -7950,6 +7950,7 @@ dependencies = [
  "zhuye-mcp",
  "zhuye-memory",
  "zhuye-notes",
+ "zhuye-permissions",
  "zhuye-plugin",
  "zhuye-prompt",
  "zhuye-protocol",
@@ -8886,6 +8887,36 @@ dependencies = [
  "zhuye-hooks",
  "zhuye-protocol",
  "zhuye-tools",
+]
+
+[[package]]
+name = "zhuye-workflow"
+version = "0.1.16"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "zhuye-wasm",
+]
+
+[[package]]
+name = "zhuye-workflow-server"
+version = "0.1.16"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+ "uuid",
+ "zhuye",
+ "zhuye-config",
+ "zhuye-permissions",
+ "zhuye-wasm",
+ "zhuye-workflow",
 ]
 
 [[package]]

@@ -53,7 +53,7 @@ if [ -z "$CUSTOM_ZHUYE_BIN" ] && [ "$NEED_ZHUYE_BIN" -eq 1 ]; then
     cargo build --release -p zhuye-cli --quiet || exit 2
     for s in "${SUITES[@]}"; do
         if [ "$s" = "functional" ] || [ "$s" = "functional-layer" ]; then
-            cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-browser -p zhuye-shell -p zhuye-git-tools --bins --quiet || exit 2
+            cargo build --release -p zhuye-kms -p zhuye-computer-use -p zhuye-browser -p zhuye-shell -p zhuye-git-tools -p zhuye-workflow-server --bins --quiet || exit 2
             cargo build -p zhuye-mcp --quiet || exit 2
             break
         fi

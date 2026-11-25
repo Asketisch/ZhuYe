@@ -88,8 +88,11 @@ capabilities **kept built-in** and why:
 - vendor quota providers (Kimi / Zhipu / Minimax / Zenmux) — in-process
   ModelRegistry machinery re-exported by the SDK facade;
 - the `langfuse_tracker` hook — the plugin hook slots (shell / WASM) cannot
-  carry OTLP/HTTP export; requires extending the plugin hook form first
-  (on the roadmap);
+  carry OTLP/HTTP export, so it is kept built-in; implemented (a builtin
+  `zhuye-hooks` hook that exports SessionStart / Stop to tracing or the
+  Langfuse HTTP endpoint via the `[hooks] langfuse_tracker` section;
+  `zhuye-telemetry` also runs a parallel span-level exporter from the
+  `[langfuse]` section);
 - `zhuye-eval` — a standalone evaluation tool (the `zhuye-eval-score` binary),
   not an agent-runtime capability; not pluginized.
 

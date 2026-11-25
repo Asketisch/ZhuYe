@@ -12,7 +12,7 @@ rustup target list --installed | grep -q wasm32-wasip2 || {
     rustup target add wasm32-wasip2
 }
 
-for proj in zhuye-demo-hook zhuye-demo-tool; do
+for proj in zhuye-demo-hook zhuye-demo-tool zhuye-workflow-echo; do
     echo "── 构建 $proj ──"
     (cd "$DEMO/$proj" && cargo build --release --target wasm32-wasip2)
     mkdir -p "$ROOT/plugins/plugin-demo/bin"

@@ -96,3 +96,5 @@ provider 验证流水线可用 —— **不衡量模型能力**,真实基线必�
 - [README.md](README.md) —— 快速开始、前置依赖与四层分工
 - [SCENARIOS.md](SCENARIOS.md) —— 按用户任务串联的场景与下一批缺口
 - [run_all.sh](run_all.sh) —— 套件入口与子命令定义
+
+- `tests/live/workflow_e2e.sh` 手动演练 TOML 工作流的多任务与多 Agent,支持真实模型和离线自检,不加入 CI 门禁。

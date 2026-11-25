@@ -109,6 +109,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 | 加密密钥存储(CLI 接线 + 损坏字段处理) | C19(secrets 全链路) | — | — | ✅(zhuye-secrets) | — |
 | 文件权限规则并发持久化 | —(库接口无 serve 入口) | — | — | ✅(多实例并发更新) | — |
 | Autopilot 调度(首次到期 / 并发占位 / 发送失败) | — | — | — | ✅(zhuye-stream) | — |
+| 工作流插件(TOML 加载、安装、队列、WASM / Agent、阻塞恢复、审批及取消) | `test_workflow.py` | —(MCP 插件) | — | ✅(zhuye-workflow 队列和 WASM 定向测试) | — |
 | KMS 知识库插件(install → serve --plugin → MCP 读写 → 磁盘落盘) | I12 | —(独立二进制 `zhuye-kms-server`) | — | ✅(zhuye-kms 28 例) | — |
 | Computer Use 插件(headless 降级及无效输入拒绝;真机截屏走 real feature 手动验) | I13、I23 | —(独立二进制 `zhuye-computer-use-server`) | — | ✅(降级 2 例) | — |
 | Browser 插件(headless 降级不 panic;真机快照/点击走 real feature 手动验) | F39 | —(独立二进制 `zhuye-browser-server`) | — | ✅(降级 1 例) | — |
@@ -792,6 +793,8 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 | 另有 cargo test --workspace / clippy / fmt / doc | 既有基线 |
 
 ## 8. 未覆盖项(诚实清单)
+
+- 工作流插件尚未覆盖进程重启恢复和 Agent 自由文本提问;首版不提供这两项能力。
 
 
 

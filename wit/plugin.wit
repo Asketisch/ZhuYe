@@ -46,3 +46,11 @@ world zhuye-tool {
     /// 执行一次工具调用。
     export invoke: func(args: string) -> result<string, string>;
 }
+
+/// 工作流任务节点世界:与工具世界独立,只接收 JSON 数据,不提供宿主能力。
+/// `describe` 返回包含非空 `name` 的 JSON 对象。
+/// `invoke` 接收节点实例 ID、尝试 ID、配置与变量快照,返回节点结果 JSON。
+world zhuye-workflow-node {
+    export describe: func() -> string;
+    export invoke: func(input: string) -> result<string, string>;
+}

@@ -82,7 +82,10 @@
 - 厂商 quota provider(Kimi / Zhipu / Minimax / Zenmux)—— ModelRegistry
   进程内机制,SDK 门面 re-export 依赖;
 - `langfuse_tracker` hook —— 插件 hook 槽(shell / WASM)无法承载
-  OTLP/HTTP 上报,需先扩展插件 hook 形态(列路线图);
+  OTLP/HTTP 上报,故保留内置;已实现(`zhuye-hooks` 内置 hook,
+  SessionStart / Stop 经 `[hooks] langfuse_tracker` 段导出到
+  tracing 或 Langfuse HTTP;`zhuye-telemetry` 另有并行的
+  `[langfuse]` 端 span 级导出器);
 - `zhuye-eval` —— 独立评测工具(`zhuye-eval-score` 二进制),非 agent
   运行时能力,不插件化。
 
@@ -202,6 +205,10 @@ rollout、不进 session_usage、不发 TokenCount、不喂 CacheBreakDetector)�
 - **校验双 hook**(`verification` / `test_runner`)—— 默认关;启用走双路径
   (等价):config `[hooks] enabled` 显式列出,或安装启用 `verify-hooks`
   门控插件(见 [plugins/verify-hooks/](../plugins/verify-hooks/))。
+
+## 串行工作流(需插件)
+
+安装并启用 [workflow 插件](../plugins/workflow/README.md),可用串行队列组合任务、WASM 和 Agent 节点,支持回退、阻塞恢复、取消、清理与 Agent 审批。运行状态仅保存在插件进程内;现有 DAG pipeline 保持独立。
 
 ## 持久化与恢复(默认)
 

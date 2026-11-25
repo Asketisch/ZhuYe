@@ -50,7 +50,12 @@ wasmtime::component::bindgen!({
     world: "zhuye:plugin/zhuye-tool@0.1.0",
 });
 
-// 两个 world 均无 import(纯计算沙箱):linker 无需额外 define。
+wasmtime::component::bindgen!({
+    path: "../../../wit",
+    world: "zhuye:plugin/zhuye-workflow-node@0.1.0",
+});
+
+// 各个 world 均无自定义 import(纯计算沙箱):linker 无需额外 define。
 // 生成类型:zhuye_hook::ZhuyeHookWorld / zhuye_tool::ZhuyeToolWorld
 // (bindgen 按包名分层)。
 
@@ -101,6 +106,14 @@ impl HostState {
             table: wasmtime::component::ResourceTable::new(),
         }
     }
+}
+
+// 新版 WASI 组件导入 exit-with-code;缺少该声明会在实例化时失败。
+// 保留空权限的 WasiCtx,只补齐终止当前组件的函数。
+fn add_wasi_to_linker(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
+    let mut options = wasmtime_wasi::p2::bindings::sync::LinkOptions::default();
+    options.cli_exit_with_code(true);
+    wasmtime_wasi::p2::add_to_linker_with_options_sync(linker, &options)
 }
 
 /// 从文件加载组件并做契约校验(编译期即可发现非 zhuye 世界 / 损坏
@@ -309,7 +322,7 @@ impl zhuye_hooks::Hook for WasmHook {
             // wasi:io/poll 隐式 imports(wasip2 规范)由 wasmtime-wasi
             // 提供(sync 实现);组件导出是同步纯 CPU 函数,不实际调用
             // wasi,import 满足声明即可。
-            wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+            add_wasi_to_linker(&mut linker)?;
             let world = ZhuyeHook::instantiate(&mut store, &component, &linker)?;
             world.call_handle(&mut store, &event_json)
         })
@@ -369,7 +382,7 @@ impl WasmTool {
         // wasi:io/poll@0.2.12 等隐式 imports 由 wasmtime-wasi(p2)提供;
         // p2 实现是 async 注册,实例化走 async 路径。样例/社区组件的
         // 导出是同步函数且不实际调用 wasi —— import 满足声明即可。
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        add_wasi_to_linker(&mut linker)
             .map_err(|e| WasmError::Call(format!("wasi linker: {e}")))?;
         let world = ZhuyeTool::instantiate(&mut store, &component, &linker)
             .map_err(WasmError::Component)?;
@@ -505,7 +518,7 @@ impl zhuye_tools::Tool for WasmTool {
             store.set_epoch_deadline(deadline_ticks);
             let mut linker: Linker<HostState> = Linker::new(engine);
             // wasi:io/poll 隐式 imports(同 hook 路径)。
-            wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+            add_wasi_to_linker(&mut linker)?;
             let world = ZhuyeTool::instantiate(&mut store, &component, &linker)?;
             world.call_invoke(&mut store, &args_json)
         })
@@ -532,6 +545,77 @@ impl zhuye_tools::Tool for WasmTool {
                 }
             }
         }
+    }
+}
+
+/// 工作流组件宿主。每次调用新建隔离实例,不继承文件系统或网络能力。
+#[derive(Clone)]
+pub struct WasmWorkflowNode {
+    component: Component,
+    /// 组件声明的名称,用于校验工作流配置。
+    pub name: String,
+    deadline: Duration,
+}
+
+impl WasmWorkflowNode {
+    /// 加载组件并在有超时保护的实例中读取声明。
+    pub fn from_file(path: &Path) -> Result<Self, WasmError> {
+        let component = load_component(path)?;
+        let engine = shared_engine();
+        let mut store = Store::new(engine, HostState::new());
+        store.set_epoch_deadline((DEFAULT_CALL_DEADLINE.as_millis() as u64 / EPOCH_TICK_MS).max(1));
+        let mut linker: Linker<HostState> = Linker::new(engine);
+        add_wasi_to_linker(&mut linker)
+            .map_err(|e| WasmError::Call(format!("wasi linker: {e}")))?;
+        let world = ZhuyeWorkflowNode::instantiate(&mut store, &component, &linker)
+            .map_err(WasmError::Component)?;
+        let desc = world
+            .call_describe(&mut store)
+            .map_err(|e| WasmError::Call(format!("节点 describe: {e}")))?;
+        let desc: serde_json::Value = serde_json::from_str(&desc)
+            .map_err(|e| WasmError::Json(format!("节点声明非法: {e}")))?;
+        let name = desc
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| WasmError::Json("节点声明缺少 name".into()))?
+            .to_owned();
+        Ok(Self {
+            component,
+            name,
+            deadline: DEFAULT_CALL_DEADLINE,
+        })
+    }
+
+    /// 指定 guest 执行的最长时间。
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    /// 调用组件并返回 JSON 文本,由上层校验具体节点结果。
+    pub async fn invoke(&self, input: String) -> Result<String, WasmError> {
+        let component = self.component.clone();
+        // 按 tick 向上取整,避免非零 deadline 被截成立即超时。
+        let ticks = (self.deadline.as_millis() as u64)
+            .div_ceil(EPOCH_TICK_MS)
+            .max(1);
+        tokio::task::spawn_blocking(move || {
+            let engine = shared_engine();
+            let mut store = Store::new(engine, HostState::new());
+            store.set_epoch_deadline(ticks);
+            let mut linker: Linker<HostState> = Linker::new(engine);
+            add_wasi_to_linker(&mut linker)
+                .map_err(|e| WasmError::Call(format!("wasi linker: {e}")))?;
+            let world = ZhuyeWorkflowNode::instantiate(&mut store, &component, &linker)
+                .map_err(|e| WasmError::Call(format!("节点实例化: {e}")))?;
+            world
+                .call_invoke(&mut store, &input)
+                .map_err(|e| WasmError::Call(format!("节点执行: {e}")))?
+                .map_err(WasmError::Call)
+        })
+        .await
+        .map_err(|e| WasmError::Call(format!("节点任务: {e}")))?
     }
 }
 

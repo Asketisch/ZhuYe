@@ -56,6 +56,7 @@ members = [
     # kms:本地知识库 wiki,plugins/kms 的能力本体(plugins/* 能力核心
     # 不进 SDK facade,与 computer-use/shell/git-tools 同款归位)。
     "crates/integrations/zhuye-kms",
+    "crates/integrations/zhuye-workflow",
 
     # ── runtime ── 运行时与入口
     # 注:zhuye-tui 已拆分至独立仓库 Reflect-TUI(https://cnb.cool/Demon1019/Reflect-CLI),
@@ -65,6 +66,7 @@ members = [
     "crates/runtime/zhuye-cli",
     "crates/runtime/zhuye",
     "crates/runtime/zhuye-py",
+    "crates/runtime/zhuye-workflow-server",
 ]
 
 [workspace.package]

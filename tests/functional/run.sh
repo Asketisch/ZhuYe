@@ -25,7 +25,7 @@ echo "── 能力覆盖层:Python 驱动真二进制(原始 wire)──"
 if require_cmd python3 && python3 -m pytest --version >/dev/null 2>&1; then
     # 这些前置条件缺失时,用例自身允许按需跳过;全量门禁必须明确失败。
     BIN_DIR="$(dirname "$ZHUYE_BIN")"
-    for bin in zhuye-kms-server zhuye-computer-use-server zhuye-browser-server zhuye-shell-server zhuye-git-tools-server zhuye-cp-hook; do
+    for bin in zhuye-kms-server zhuye-computer-use-server zhuye-browser-server zhuye-shell-server zhuye-git-tools-server zhuye-cp-hook zhuye-workflow-server; do
         if [ ! -x "$BIN_DIR/$bin" ]; then
             echo "  [FAIL] 缺少能力测试二进制:$BIN_DIR/$bin" >&2
             exit 1
@@ -37,6 +37,8 @@ if require_cmd python3 && python3 -m pytest --version >/dev/null 2>&1; then
     fi
     for path in "$ROOT/plugins/plugin-demo/bin/zhuye-demo-tool.wasm" \
         "$ROOT/plugins/plugin-demo/bin/zhuye-demo-hook.wasm" \
+        "$ROOT/plugins/plugin-demo/bin/zhuye-workflow-echo.wasm" \
+        "$ROOT/plugins/workflow" \
         "$ROOT/plugins/kms" \
         "$ROOT/plugins/computer-use" "$ROOT/plugins/shell" "$ROOT/plugins/git-tools"; do
         if [ ! -e "$path" ]; then

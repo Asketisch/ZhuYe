@@ -7,7 +7,7 @@
 **不含** `tui` 子命令)。
 
 - Rust stable,edition 2024,MSRV 1.89(安全依赖面要求)
-- 45 crate workspace,按 6 层分组于 `crates/<layer>/<crate>/`
+- 47 crate workspace,按 6 层分组于 `crates/<layer>/<crate>/`
 
 ## AGENTS.md 体系导航
 
@@ -20,8 +20,8 @@
 | 能力原语:模型 / 工具 / hook / 提示词 / 检索 | [crates/abilities/](crates/abilities/AGENTS.md) · [zhuye-llm/](crates/abilities/zhuye-llm/AGENTS.md) · [zhuye-tools/](crates/abilities/zhuye-tools/AGENTS.md) · [zhuye-hooks/](crates/abilities/zhuye-hooks/AGENTS.md) |
 | 资源层:配置 / 权限 / 插件 / 持久化 / 文件 | [crates/resources/](crates/resources/AGENTS.md) · [zhuye-plugin/](crates/resources/zhuye-plugin/AGENTS.md) |
 | 多 agent 编排:子代理 / 讨论 / 任务 / 流水线 / 目标 | [crates/orchestration/](crates/orchestration/AGENTS.md) |
-| 外部集成:MCP / LSP / computer-use / browser / shell / git | [crates/integrations/](crates/integrations/AGENTS.md) |
-| 运行时与入口:StateGraph / headless / CLI / facade / PyO3 | [crates/runtime/](crates/runtime/AGENTS.md) · [zhuye-core/](crates/runtime/zhuye-core/AGENTS.md) · [zhuye-exec/](crates/runtime/zhuye-exec/AGENTS.md) · [zhuye-cli/](crates/runtime/zhuye-cli/AGENTS.md) |
+| 外部集成:MCP / LSP / computer-use / browser / shell / git / workflow | [crates/integrations/](crates/integrations/AGENTS.md) · [zhuye-workflow/](crates/integrations/zhuye-workflow/AGENTS.md) |
+| 运行时与入口:StateGraph / headless / CLI / facade / PyO3 | [crates/runtime/](crates/runtime/AGENTS.md) · [zhuye-core/](crates/runtime/zhuye-core/AGENTS.md) · [zhuye-exec/](crates/runtime/zhuye-exec/AGENTS.md) · [zhuye-cli/](crates/runtime/zhuye-cli/AGENTS.md) · [zhuye-workflow-server/](crates/runtime/zhuye-workflow-server/AGENTS.md) |
 | 构建 · 发布 · 冒烟 · 插件打包脚本 | [scripts/](scripts/AGENTS.md) |
 | 双 SDK:Python / TypeScript | [sdks/](sdks/AGENTS.md) |
 | 测试分层与覆盖矩阵 | [tests/](tests/AGENTS.md) |
@@ -81,8 +81,8 @@ make gc                                   # 清整个 target/ 中 cargo 不 GC �
 | `abilities/` | llm, tools, bm25, hooks, skills, memory, agent-def, prompt, compact, recovery, notes, sanitize, eval | 能力原语:ModelClient trait + providers、Tool trait + 内置工具、BM25 检索、HookEngine、压缩 escalation、评测等 |
 | `resources/` | config, permissions, plugin, rollout, telemetry, sandbox, audit, secrets, ast, fs, git, wasm | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、tree-sitter 代码搜索、审计、加密密钥存储、共享文件原语、git 能力族、WASM 组件插件宿主 |
 | `orchestration/` | subagent, discussion, task, pipeline, goal | 多 agent 编排:子代理工厂(并发在途≤16)、讨论编排、任务/团队/squad、DAG 流水线、目标模式、side-channel(zhuye-core) |
-| `integrations/` | mcp, lsp, integration, stream, computer-use, shell, git-tools, kms | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端(含 cron / autopilot)、Computer Use、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki(后四者是 `plugins/*` 的能力核心,不进 SDK facade) |
-| `runtime/` | core, exec, cli, zhuye, py | AgentThread + StateGraph、headless、CLI 入口、lib facade(百余个 re-exports + Builder)、PyO3 绑定 |
+| `integrations/` | mcp, lsp, integration, stream, computer-use, browser, shell, git-tools, kms, workflow | MCP 客户端(stdio/streamable-http)、LSP、流式会话后端(含 cron / autopilot)、Computer Use、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki、工作流队列(插件能力核心不进 SDK facade) |
+| `runtime/` | core, exec, cli, zhuye, py, zhuye-workflow-server | AgentThread + StateGraph、headless、CLI 入口、lib facade(百余个 re-exports + Builder)、PyO3 绑定、工作流插件运行时 |
 
 ### 核心数据流
 

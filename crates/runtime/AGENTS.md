@@ -14,6 +14,7 @@
 | `zhuye-exec` | headless 单轮与 serve 常驻会话的共享装配层，产出 JSONL 事件流 | [zhuye-exec/AGENTS.md](zhuye-exec/AGENTS.md) |
 | `zhuye-cli` | `zhuye` 二进制的 clap 参数面与子命令分发 | [zhuye-cli/AGENTS.md](zhuye-cli/AGENTS.md) |
 | `zhuye` | 库门面：Builder 入口 + 对外扁平 re-export | 契约见本篇 |
+| `zhuye-workflow-server` | 工作流插件运行时与 MCP 进程 | [zhuye-workflow-server/AGENTS.md](zhuye-workflow-server/AGENTS.md) |
 | `zhuye-py` | PyO3 绑定，把 Rust 侧能力暴露给 Python | 契约见本篇 |
 
 ## 层内依赖约定
@@ -45,3 +46,7 @@
 
 - [docs/architecture.md](../../docs/architecture.md) —— §1 框架边界与入口、§4 一轮执行与状态转移、§5 节点上下文与能力装配
 - [docs/cli.md](../../docs/cli.md) —— `zhuye` 二进制子命令总览
+
+- 工作流插件通过门面的 `with_permission_resolver` 注入与 headless 同序的配置、项目及用户权限规则;Agent 的工具与 hook 审批由插件服务桥接。
+
+- 工作流服务支持内联 JSON 或 TOML 文件定义;相对节点路径以 TOML 文件所在目录为准,配置模型组通过门面注入模型注册表。

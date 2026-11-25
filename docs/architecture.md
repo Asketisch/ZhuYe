@@ -35,7 +35,7 @@
 
 ## 2. Workspace 六层分层
 
-workspace 共 **46 个 crate**,按 6 层分组于 `crates/<layer>/<crate>/`,
+workspace 共 **47 个 crate**,按 6 层分组于 `crates/<layer>/<crate>/`,
 依赖方向**自上而下**(上层依赖下层;`protocol` 是所有层的公共契约,被所有
 层依赖)。完整成员清单以根目录 [Cargo.toml](../Cargo.toml) 的 `members` 段
 为唯一事实源;下表与其逐行对应。
@@ -43,11 +43,11 @@ workspace 共 **46 个 crate**,按 6 层分组于 `crates/<layer>/<crate>/`,
 | 层 | Crate | 职责 |
 |----|-------|------|
 | `protocol/` | `zhuye-protocol` | `Submission` / `Op` / `Event` / `EventMsg` / `Item` 基础类型 + `RolloutRecorder` trait。所有层的公共契约 |
-| `abilities/` | `llm`, `tools`, `bm25`, `hooks`, `skills`, `memory`, `agent-def`, `prompt`, `compact`, `recovery`, `notes`, `sanitize`, `kms`, `eval` | 能力原语:`ModelClient` trait + providers、`Tool` trait + 内置工具、BM25 相关性排序、`HookEngine`、skills 目录、跨会话记忆、Agent 定义、提示词库、压缩 escalation、断点恢复、会话笔记、输出脱敏、密钥管理、评测体系 |
+| `abilities/` | `llm`, `tools`, `bm25`, `hooks`, `skills`, `memory`, `agent-def`, `prompt`, `compact`, `recovery`, `notes`, `sanitize`, `eval` | 能力原语:`ModelClient` trait + providers、`Tool` trait + 内置工具、BM25 相关性排序、`HookEngine`、skills 目录、跨会话记忆、Agent 定义、提示词库、压缩 escalation、断点恢复、会话笔记、输出脱敏、评测体系 |
 | `resources/` | `config`, `permissions`, `plugin`, `rollout`, `telemetry`, `sandbox`, `audit`, `secrets`, `fs`, `git`, `ast`, `wasm` | 配置热重载、权限规则、插件 lifecycle、JSONL 持久化、可观测性遥测、OS 沙箱(macOS Seatbelt / Linux Landlock 与 seccomp)、审计日志、密钥加密存储、共享文件原语(原子写)、git 能力族(checkpoint/branch/指令解析)、tree-sitter AST 搜索、WASM 组件插件宿主 |
 | `orchestration/` | `subagent`, `discussion`, `task`, `pipeline`, `goal` | 多 agent 编排:子代理工厂(并发在途 ≤16)、角色讨论、任务/团队/squad 委派、DAG 流水线、目标模式 |
-| `integrations/` | `mcp`, `lsp`, `integration`, `stream`, `computer-use`, `shell`, `git-tools` | MCP 客户端(stdio / streamable-http)、LSP、外部集成、流式会话后端(含 cron / autopilot / 队列)、Computer Use(截屏/键鼠,`real` feature 门控)、常驻 shell 会话池、git 工作流 MCP server |
-| `runtime/` | `core`, `exec`, `cli`, `zhuye`, `py` | `AgentThread` + `StateGraph`(core)、headless + serve(exec)、CLI 入口(cli)、库门面 + Builder(zhuye)、PyO3 绑定(py) |
+| `integrations/` | `mcp`, `lsp`, `integration`, `stream`, `computer-use`, `browser`, `shell`, `git-tools`, `kms`, `workflow` | MCP 客户端(stdio / streamable-http)、LSP、外部集成、流式会话后端(含 cron / autopilot / 队列)、Computer Use(截屏/键鼠,`real` feature 门控)、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、知识库和工作流队列核心 |
+| `runtime/` | `core`, `exec`, `cli`, `zhuye`, `py`, `zhuye-workflow-server` | `AgentThread` + `StateGraph`(core)、headless + serve(exec)、CLI 入口(cli)、库门面 + Builder(zhuye)、PyO3 绑定(py)、工作流插件运行时和 MCP 服务 |
 
 分层规则:依赖只允许从上往下流动。`protocol` 在最底,任何层都可以依赖它;
 `runtime` 在最顶,聚合所有层对外暴露入口。`orchestration` 与 `integrations`

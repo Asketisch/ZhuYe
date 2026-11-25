@@ -306,3 +306,14 @@ enabled = true`)。
 不会被总时长掐断;mid-stream 可重试错误也会自动重试至 `[routing] max_attempts`
 (默认 10)耗尽。若仍出现,说明连接真的挂死超过 300s(期间零字节)——
 调大该 provider 段的 `timeout_secs`。
+
+## 工作流实模型演练
+
+`workflow_e2e.sh` 加载 TOML 配置,在隔离的 HOME 和工作区启动工作流服务,检查多个任务节点、多个 Agent 节点和清理节点的执行记录。默认样例为 `workflow_e2e.example.toml`,其中的 `__MODEL__` 在临时副本中替换为测试模型;节点参数、指令、上下文选择及超时可在 TOML 中修改。
+
+```bash
+ZHUYE_E2E_MOCK=1 bash tests/live/workflow_e2e.sh  # 离线自检
+ZHUYE_LIVE=1 bash tests/live/workflow_e2e.sh      # 使用 cli_e2e.toml 的真实端点
+```
+
+`ZHUYE_E2E_TOML` 可指定端点配置,`ZHUYE_WORKFLOW_BIN` 可指定服务二进制,`ZHUYE_WORKFLOW_E2E_TIMEOUT` 可设置总超时秒数。`ZHUYE_WORKFLOW_E2E_CONFIG` 可指定自己的工作流 TOML,原文件直接交给服务加载,其中的路径相对于该文件解析;自定义配置需包含至少两个 task 和两个 agent 主节点,且节点应按配置顺序成功执行。自定义 Agent 模型应使用端点配置的 `e2e/模型名`(离线自检使用 `mock`)。服务不自动批准 Agent 工具请求,出现审批时演练失败。真实端点的密钥不要放入工作流 TOML。

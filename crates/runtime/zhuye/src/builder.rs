@@ -74,8 +74,12 @@ impl std::fmt::Debug for TelemetryChoice {
 #[derive(Clone)]
 pub struct ZhuyeBuilder {
     model: String,
+    /// 嵌入方可复用配置构造的模型注册表。
+    model_registry: Option<zhuye_llm::SharedModelRegistry>,
     workspace: PathBuf,
     approvals: bool,
+    /// 嵌入方提供的权限解析器。
+    permission_resolver: Option<Arc<dyn zhuye_permissions::PermissionResolver>>,
     /// v1.x Plan mode:初始 `PermissionMode`。默认 `Auto`(普通执行模式)。
     /// 设为 `true` 后 agent 立即进入 Plan mode(只读);用户/agent 后续
     /// 调 `/exit-plan` 审批 plan 才能切回 `Prompt`。
@@ -141,8 +145,10 @@ impl ZhuyeBuilder {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
+            model_registry: None,
             workspace: PathBuf::from("."),
             approvals: true,
+            permission_resolver: None,
             plan_mode: false,
             cancel: None,
             plugins: None,
@@ -178,6 +184,21 @@ impl ZhuyeBuilder {
     /// `EventMsg::ApprovalRequest` 上阻塞);yolo / headless 执行时设为 `false`。
     pub fn approvals(mut self, on: bool) -> Self {
         self.approvals = on;
+        self
+    }
+
+    /// 注入已装配的模型注册表;未指定时使用环境变量构建。
+    pub fn with_model_registry(mut self, registry: zhuye_llm::SharedModelRegistry) -> Self {
+        self.model_registry = Some(registry);
+        self
+    }
+
+    /// 为 Agent 注入权限解析器;两种构建方式均应用相同规则。
+    pub fn with_permission_resolver(
+        mut self,
+        resolver: Arc<dyn zhuye_permissions::PermissionResolver>,
+    ) -> Self {
+        self.permission_resolver = Some(resolver);
         self
     }
 
@@ -355,7 +376,10 @@ impl ZhuyeBuilder {
     /// 如果想用最小 m4 路径,直接通过
     /// `AgentThread::new + AgentConfig::with_m4(default_m4_deps)` 走底层 API。
     pub fn build(self) -> Result<Zhuye, BuilderError> {
-        let registry = build_registry_from_env(&self.model)?;
+        let registry = match &self.model_registry {
+            Some(registry) => Arc::clone(registry),
+            None => build_registry_from_env(&self.model)?,
+        };
         // v1.x(WP13):app_cfg 提前加载 —— 门控型 bundled 插件工具的注册
         // 门要与 exec 路径同源判定(默认开插件空配置下保持注册)。
         let app_cfg = zhuye_config::load_default();
@@ -387,11 +411,16 @@ impl ZhuyeBuilder {
         if !self.rollout_enabled {
             m4.recorder = None;
         }
+        // 门面令牌与 AgentThread 必须同源,否则取消工作流节点后回合仍在后台运行。
         let mut cfg = AgentConfig::new(self.model.clone(), self.workspace.clone())
+            .with_cancel(cancel.clone())
             .with_approvals(self.approvals)
             .with_context_window_overrides(app_cfg.effective_context_window_overrides(&self.model));
         if self.plan_mode {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
+        }
+        if let Some(resolver) = &self.permission_resolver {
+            cfg = cfg.with_permission_resolver(Arc::clone(resolver));
         }
         cfg = cfg.with_m4(m4);
         validate_prompt_selection(&cfg, self.prompt_selection.as_ref())?;
@@ -484,7 +513,10 @@ impl ZhuyeBuilder {
     /// - config `[mcp_servers]` 不消费(空 manager 兜底,仅供插件的
     ///   mcp_servers 能力落点)。
     pub async fn build_async(self) -> Result<Zhuye, BuilderError> {
-        let registry = build_registry_from_env(&self.model)?;
+        let registry = match &self.model_registry {
+            Some(registry) => Arc::clone(registry),
+            None => build_registry_from_env(&self.model)?,
+        };
         // app_cfg 提前加载 —— 门控型 bundled 插件工具的注册门要与 exec
         // 路径同源判定(默认开插件空配置下保持注册,外部用法零影响)。
         let app_cfg = zhuye_config::load_default();
@@ -554,7 +586,9 @@ impl ZhuyeBuilder {
         ));
         factory.set_parent_skills(skills_for_plugins.clone());
 
+        // 门面令牌与 AgentThread 必须同源,否则取消工作流节点后回合仍在后台运行。
         let mut cfg = AgentConfig::new(self.model.clone(), self.workspace.clone())
+            .with_cancel(cancel.clone())
             .with_approvals(self.approvals)
             .with_context_window_overrides(app_cfg.effective_context_window_overrides(&self.model));
         // 0.5:Plan mode 必须**既设 permission mode,又注册 PlanModeGate**。
@@ -566,6 +600,9 @@ impl ZhuyeBuilder {
         // zhuye-py 的 `plan_mode(true)` 拿到的是一个零强制的 Plan mode。
         if self.plan_mode {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
+        }
+        if let Some(resolver) = &self.permission_resolver {
+            cfg = cfg.with_permission_resolver(Arc::clone(resolver));
         }
         cfg = cfg.with_m4(m4);
         validate_prompt_selection(&cfg, self.prompt_selection.as_ref())?;
@@ -1163,6 +1200,79 @@ mod tests {
         let cfg = agent.thread().config();
         assert_eq!(cfg.current_model(), "mock");
         assert!(cfg.approvals);
+    }
+
+    #[tokio::test]
+    async fn builder_injects_permission_resolver_in_both_build_paths() {
+        let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
+        let store: Arc<dyn zhuye_permissions::PermissionStore> =
+            Arc::new(zhuye_permissions::InMemoryPermissionStore::new());
+        let resolver: Arc<dyn zhuye_permissions::PermissionResolver> =
+            Arc::new(zhuye_permissions::StorePermissionResolver::new(store));
+        let sync_agent = Zhuye::builder("mock")
+            .with_permission_resolver(Arc::clone(&resolver))
+            .build()
+            .unwrap();
+        let async_agent = Zhuye::builder("mock")
+            .with_permission_resolver(Arc::clone(&resolver))
+            .with_plugins(Some(vec![]))
+            .build_async()
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            sync_agent
+                .thread()
+                .config()
+                .permission_resolver
+                .as_ref()
+                .unwrap(),
+            &resolver
+        ));
+        assert!(Arc::ptr_eq(
+            async_agent
+                .thread()
+                .config()
+                .permission_resolver
+                .as_ref()
+                .unwrap(),
+            &resolver
+        ));
+    }
+
+    #[tokio::test]
+    async fn builder_cancellation_reaches_agent_thread_in_both_build_paths() {
+        let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
+        let sync_agent = Zhuye::builder("mock").build().unwrap();
+        let async_agent = Zhuye::builder("mock")
+            .with_plugins(Some(vec![]))
+            .build_async()
+            .await
+            .unwrap();
+        sync_agent.cancel_token().cancel();
+        async_agent.cancel_token().cancel();
+        assert!(sync_agent.thread().cancel_token().is_cancelled());
+        assert!(async_agent.thread().cancel_token().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn builder_accepts_injected_model_registry_in_both_build_paths() {
+        let _g = env_lock().lock().unwrap();
+        let _env = ProviderEnvGuard::clear();
+        let registry = Arc::new(zhuye_llm::ModelRegistry::new());
+        let sync = Zhuye::builder("custom/test")
+            .with_model_registry(Arc::clone(&registry))
+            .build()
+            .unwrap();
+        let async_agent = Zhuye::builder("custom/test")
+            .with_model_registry(Arc::clone(&registry))
+            .with_plugins(Some(vec![]))
+            .build_async()
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(sync.thread().registry(), &registry));
+        assert!(Arc::ptr_eq(async_agent.thread().registry(), &registry));
     }
 
     #[tokio::test]

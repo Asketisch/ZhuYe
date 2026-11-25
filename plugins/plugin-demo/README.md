@@ -46,3 +46,5 @@ zhuye exec "/demo:hello 张三"
   也会被抬升,调用前需要用户批准。
 - `/demo:hello` 命令只是 prompt 模板替换,不注册任何工具、不改变模型
   可见面。
+
+`wasm/rust/zhuye-workflow-echo/` 是工作流任务节点组件示例,不注册为工具。

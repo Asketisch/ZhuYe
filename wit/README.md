@@ -49,3 +49,12 @@ cargo build --release --target wasm32-wasip2   # 独立项目,不进主 workspac
 
 `zhuye plugin new` 脚手架命令当前尚未实现;手工按上面的 target 构建即可,
 完整 WASM 教程见 `docs/plugin-dev-guide.md` 的「WASM 组件」章节。
+
+## 工作流任务节点
+
+`zhuye-workflow-node` world 独立于工具和 hook。`describe` 返回含 `name`
+的 JSON 对象;`invoke` 接收 `node_id`、`node_type`、`attempt_id`、`attempt`、`config`、
+`variables` 与 `outputs` 快照,返回包含 `status`、`output`、`updates`、`action` 的
+JSON 对象。状态与动作取值由工作流节点契约定义。组件默认没有文件系统、
+网络或环境变量,宿主为调用施加超时;Rust 样例位于
+`plugins/plugin-demo/wasm/rust/zhuye-workflow-echo/`。

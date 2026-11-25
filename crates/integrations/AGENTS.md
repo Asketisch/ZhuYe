@@ -1,4 +1,4 @@
-**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki 或安全扫描/通知时读本篇 —— 本层 9 个 crate 均无独立篇,它们的本地契约以本篇为准。
+**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki 或安全扫描/通知时读本篇 —— 本层契约以本篇及各 crate 篇为准。
 
 # crates/integrations/ —— 外部系统接入层
 
@@ -8,7 +8,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ## crate 职责速览表
 
-本层 9 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
+本层各 crate 以下表定位,细则见后续小节。
 
 | crate | 一句话职责 | 本地契约在哪 |
 |---|---|---|
@@ -20,6 +20,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 | `zhuye-browser` | 浏览器控制:CDP 驱动本机浏览器,复用 a11y 寻址与快照绑定 | 浏览器控制 |
 | `zhuye-shell` | 常驻 shell 会话池:启动进程 / 增量读 / 写 stdin / kill | 常驻 shell |
 | `zhuye-git-tools` | git 工作流 MCP server 协议层:分支摘要 / checkpoint 快照 | git 工作流 |
+| `zhuye-workflow` | 工作流插件串行队列及任务、WASM、Agent 节点抽象 | [工作流插件核心](zhuye-workflow/AGENTS.md) |
 | `zhuye-kms` | 本地知识库 wiki(grep 检索 + dream 固化),`plugins/kms` 的能力本体 | KMS 知识库 |
 
 ## 本层本地契约
@@ -123,3 +124,8 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 - [docs/plugins.md](../../docs/plugins.md) —— 插件机制:本层能力本体如何挂载
 - [docs/cli.md](../../docs/cli.md) —— CLI 子命令边界与独立二进制
 - [crates/protocol/zhuye-protocol/src/op.rs](../../crates/protocol/zhuye-protocol/src/op.rs) —— wire 变体的唯一定义处
+
+## 工作流插件核心
+
+- `zhuye-workflow` 是插件侧串行节点调度核心,不替代 DAG pipeline。节点通过统一 trait 接收上下文快照并返回结果;控制句柄负责暂停与取消。
+- 烛夜 Agent 后端与 MCP 控制入口位于 `zhuye-workflow-server`,由 `plugins/workflow` 安装。

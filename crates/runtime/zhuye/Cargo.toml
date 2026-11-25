@@ -21,6 +21,7 @@ zhuye-telemetry  = { workspace = true }
 zhuye-subagent   = { workspace = true }
 zhuye-discussion = { workspace = true }
 zhuye-config     = { workspace = true }
+zhuye-permissions = { workspace = true }
 zhuye-prompt     = { workspace = true }
 zhuye-recovery   = { workspace = true }
 zhuye-notes      = { workspace = true }

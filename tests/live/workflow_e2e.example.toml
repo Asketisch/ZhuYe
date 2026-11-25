@@ -1,0 +1,53 @@
+# 可直接修改节点类型、实例、指令、上下文和超时。
+# 演练脚本会在临时副本中将 __MODEL__ 替换为选定的模型。
+[variables]
+topic = "用一句话说明串行工作流的用途"
+
+[node_types.data]
+kind = "task"
+
+[node_types.analyst]
+kind = "agent"
+model = "__MODEL__"
+workspace = "."
+instructions = "根据输入主题给出简短分析。只做分析，不调用工具。"
+context_keys = ["topic"]
+output_keys = ["prepare"]
+
+[node_types.reviewer]
+kind = "agent"
+model = "__MODEL__"
+workspace = "."
+instructions = "根据分析结果给出简短复核。只做复核，不调用工具。"
+context_keys = ["topic"]
+output_keys = ["analysis", "checkpoint"]
+
+[[nodes]]
+id = "prepare"
+node_type = "data"
+config = { status = "success", output = { prepared = true } }
+
+[[nodes]]
+id = "analysis"
+node_type = "analyst"
+timeout_ms = 180000
+
+[[nodes]]
+id = "checkpoint"
+node_type = "data"
+config = { status = "success", output = { ready_for_review = true } }
+
+[[nodes]]
+id = "review"
+node_type = "reviewer"
+timeout_ms = 180000
+
+[[nodes]]
+id = "finish"
+node_type = "data"
+config = { status = "success", output = { finished = true } }
+
+[[finally_nodes]]
+id = "cleanup"
+node_type = "data"
+config = { status = "success", output = { cleaned = true } }

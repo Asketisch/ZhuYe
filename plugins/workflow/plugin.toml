@@ -1,0 +1,6 @@
+# 工作流插件:先运行 scripts/build_workflow_plugin.sh 构建服务。
+name = "workflow"
+version = "0.1.0"
+description = "串行任务与 Agent 工作流,支持 WASM 节点和交互控制"
+keywords = ["workflow", "wasm", "agent"]
+mcp_servers = "./.mcp.json"

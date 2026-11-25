@@ -27,9 +27,10 @@
 | `build_computer_use_plugin.sh` | 构建 Computer Use 插件二进制 |
 | `build_browser_plugin.sh` | 构建 Browser 插件二进制(CDP;装插件前必跑) |
 | `build_git_tools_plugin.sh` | 构建 Git Tools 插件二进制 |
+| `build_workflow_plugin.sh` | 构建工作流插件 MCP 服务 |
 | `build_kms_plugin.sh` | 构建 KMS 插件二进制(装插件前必跑) |
 | `build_shell_plugin.sh` | 构建 Shell 插件二进制(装插件前必跑) |
-| `build_plugin_demo_wasm.sh` | 构建 plugin-demo 的 Rust WASM 组件样例 |
+| `build_plugin_demo_wasm.sh` | 构建 plugin-demo 的 Rust WASM 组件样例(含工作流节点) |
 
 ### 冒烟与端到端
 
