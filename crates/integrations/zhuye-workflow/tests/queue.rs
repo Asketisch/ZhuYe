@@ -452,6 +452,7 @@ impl zhuye_workflow::AgentBackend for FencedAgent {
 async fn agent只接受完整的json代码围栏() {
     for (reply, valid) in [
         ("```json\n{\"status\":\"success\",\"output\":{}}\n```", true),
+        ("{\"status\":\"ok\",\"output\":{\"ready\":true}}", true),
         (
             "说明\n```json\n{\"status\":\"success\",\"output\":{}}\n```",
             false,
@@ -473,6 +474,10 @@ async fn agent只接受完整的json代码围栏() {
             variables: json!({}),
             outputs: Default::default(),
         };
-        assert_eq!(node.execute(input).await.is_ok(), valid);
+        let result = node.execute(input).await;
+        assert_eq!(result.is_ok(), valid);
+        if reply.contains("\"ok\"") {
+            assert_eq!(result.unwrap().status, zhuye_workflow::Status::Success);
+        }
     }
 }

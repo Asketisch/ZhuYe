@@ -731,7 +731,7 @@ impl Node for AgentNode {
             })
             .collect();
         let prompt = format!(
-            "{}\n\n输入数据(JSON):\n{}\n\n请仅返回工作流节点结果 JSON,必须包含 status 和 output;可提供 updates、action、error。",
+            "{}\n\n输入数据(JSON):\n{}\n\n必须仅返回一个 JSON 对象,不要返回说明文字。格式示例: {{\"status\":\"success\",\"output\":{{\"result\":\"你的结果\"}}}}。status 必须是 success、failed、skipped、blocked、cancelled 之一;成功时使用 success。output 必须存在,updates、action、error 可选。",
             self.instructions,
             serde_json::json!({"variables": context, "outputs": outputs, "config": input.config})
         );
@@ -748,8 +748,14 @@ impl Node for AgentNode {
             .or_else(|| text.strip_prefix("```\n"))
             .and_then(|body| body.strip_suffix("```"))
             .map_or(text, str::trim);
-        let mut result: NodeResult =
+        let mut value: Value =
             serde_json::from_str(text).map_err(|error| format!("Agent 节点结果非法: {error}"))?;
+        // 模型常将成功状态写成 ok;它是明确状态值,可安全归一化为调度器契约。
+        if value.get("status").and_then(Value::as_str) == Some("ok") {
+            value["status"] = Value::String("success".into());
+        }
+        let mut result: NodeResult = serde_json::from_value(value)
+            .map_err(|error| format!("Agent 节点结果非法: {error}"))?;
         result.agent_run_id = Some(reply.run_id);
         Ok(result)
     }

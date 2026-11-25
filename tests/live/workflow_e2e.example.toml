@@ -10,7 +10,7 @@ kind = "task"
 kind = "agent"
 model = "__MODEL__"
 workspace = "."
-instructions = "根据输入主题给出简短分析。只做分析，不调用工具。"
+instructions = "根据输入主题和上游数据写一句简短分析。只做分析，不调用工具。最终只返回 JSON 对象，例如 {\"status\":\"success\",\"output\":{\"analysis\":\"分析内容\"}}。status 必须使用 success、failed、skipped、blocked、cancelled 之一；成功时写 success，不能写 ok。"
 context_keys = ["topic"]
 output_keys = ["prepare"]
 
@@ -18,7 +18,7 @@ output_keys = ["prepare"]
 kind = "agent"
 model = "__MODEL__"
 workspace = "."
-instructions = "根据分析结果给出简短复核。只做复核，不调用工具。"
+instructions = "根据输入主题和上游分析写一句简短复核。只做复核，不调用工具。最终只返回 JSON 对象，例如 {\"status\":\"success\",\"output\":{\"review\":\"复核内容\"}}。status 必须使用 success、failed、skipped、blocked、cancelled 之一；成功时写 success，不能写 ok。"
 context_keys = ["topic"]
 output_keys = ["analysis", "checkpoint"]
 
