@@ -124,10 +124,19 @@ impl Drop for CancelOnDrop {
 impl AgentBackend for ZhuyeAgentBackend {
     async fn run(&self, prompt: String, attempt_id: uuid::Uuid) -> Result<AgentReply, String> {
         let resolver = permissions(&self.workspace).await?;
+        // transcript 重定向:agent 节点是工作流的临时工人(每次执行独立
+        // 烛夜会话),默认 recorder 直写用户会话树(~/.zhuye/sessions/),
+        // 每个节点执行都会留一个「只有 meta、无用户消息」的壳会话,污染
+        // 桌面端会话列表(实测 2026-11:调试一个下午留下 13 个 8 位 ID
+        // 空条目)。重定向到数据目录的 workflow-sessions/,排查时可用
+        // rollout 索引单独读取,不再进用户会话列表;取不到 home 时按
+        // paths 约定回落相对路径(启动不失败,落盘时自行报 IO 错)。
+        let rollout_dir = zhuye_config::paths::data_path_or_relative(&["workflow-sessions"]);
         let mut builder = Zhuye::builder(&self.model)
             .workspace(&self.workspace)
             .approvals(true)
-            .with_permission_resolver(resolver);
+            .with_permission_resolver(resolver)
+            .with_rollout_dir(&rollout_dir);
         let config = zhuye_config::load_default();
         let group = self
             .model
