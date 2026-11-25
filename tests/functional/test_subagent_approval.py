@@ -57,6 +57,10 @@ def test_子代理写入审批经父会话执行(sandbox, serve_session, approve
         sandbox.write_config(
             '\n[active]\nprovider = "openai"\n[openai]\napi_key = "test"\n'
             f'base_url = "http://127.0.0.1:{gateway.server_port}"\n'
+            # 写入强制逐次弹窗用权限规则 action=ask:会话档 prompt(询问档)如今
+            # 对写类是直接拒绝(不弹窗),且子代理不吃父级回合覆盖 —— 规则随
+            # resolver 继承进子代理,是子代理审批链路的正解。
+            '\n[[permissions.rule]]\ntool = "write"\naction = "ask"\n'
             '\n[[subagents]]\nname = "Worker"\nrole = "worker"\n'
             'system_prompt = "执行写入任务"\nallowed_tools = ["write"]\n'
         )
@@ -67,10 +71,6 @@ def test_子代理写入审批经父会话执行(sandbox, serve_session, approve
         }
         target = sandbox.cwd / "child-output.txt"
         with serve_session(env=env) as session:
-            # 默认档(Auto)如今自动批准文件编辑(write);本用例验证的是
-            # 审批链路,先切到 Ask(prompt)模式钉住"每工具询问"语义。
-            # 同一提交队列顺序处理,先于 user_input 生效。
-            session.submit({"type": "set_permission_mode", "mode": "prompt"})
             parent = session.send({"type": "user_input", "items": [
                 {"type": "text", "text": "让 worker 写入文件"}
             ]})

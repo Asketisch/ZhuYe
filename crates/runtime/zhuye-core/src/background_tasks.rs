@@ -537,6 +537,10 @@ mod spawn_command_tests {
                 os_sandbox: Some(true),
                 writable_dirs: Vec::new(),
                 network: Some(allow),
+                // 本用例只测网络开关,`.git` 归属与沙箱网络无关。修复原因:
+                // 字段新增(a6bd50c1)时漏了这条 Linux-only 用例 —— macOS 上
+                // 它被 cfg 排除,编译不到,Linux CI 直接 E0063。
+                git_protection: None,
             };
             let id = spawner.spawn_bash(&cmd, workspace.path(), &policy).unwrap();
             let result = tokio::time::timeout(Duration::from_secs(10), async {
