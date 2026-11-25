@@ -351,6 +351,10 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
                             .unwrap_or_else(|| resolve_plan_markdown(&args, &state.latest_content));
                         // 阻塞等待用户审批。无论批准/Revise 都回 PreLoop,
                         // 下一轮按已翻转的 mode 自然推进。
+                        // v1.x 计划收尾守卫:PlanReady 已派发,check_stop
+                        // 放行(先于可能的 cancel 提前返回置位也无害 ——
+                        // waiter 被 cancel 时 turn 即将中止)。
+                        state.plan_ready_dispatched = true;
                         let choice = dispatch_plan_ready_blocking(
                             gate,
                             subs,
@@ -410,14 +414,19 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         // `ExitPlanMode` → `PlanReady`。best-effort:任何 IO / 路径不匹配都
         // 静默退出,不影响主流程。
         if !r.is_error {
-            maybe_emit_plan_draft_updated(
+            // v1.x 计划收尾守卫:草稿落盘成功置位 —— Plan 模式下
+            // `check_stop` 据此否决纯文本收尾。
+            if maybe_emit_plan_draft_updated(
                 &tool_name,
                 &args,
                 &ctx.cfg.current_workspace(),
                 ctx.event_tx.clone(),
                 ctx.sub_id.clone(),
             )
-            .await;
+            .await
+            {
+                state.plan_draft_written = true;
+            }
         }
         // v1.2 P1:写本地 telemetry —— tool.call.ended span。best-effort。
         if let Some(sink) = ctx.telemetry.as_ref()
@@ -568,7 +577,13 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
     // 主题重复检索无法收敛;② 多步推理跑满迭代却没产出 `FINAL ANSWER:`
     // (GAIA 截断类失败的主因)。已重新启用,原注释「暂禁用」作废。
     let prompt_set = ctx.cfg.resolve_prompt(&ctx.model.read()).set;
-    maybe_inject_progress_nudge_with_set(state, ctx.max_iterations, &prompt_set);
+    // v1.x:Plan 模式下 nudge 的收尾指令指向 ExitPlanMode 而非 FINAL ANSWER。
+    maybe_inject_progress_nudge_with_set(
+        state,
+        ctx.max_iterations,
+        &prompt_set,
+        ctx.cfg.permission_mode(),
+    );
     // 工具执行完毕后回到 PreLoop → ModelCall,让模型基于工具结果继续推理。
     // 此前返回 CheckStop 会让默认 Stop hook(无拒绝)直接终止 turn,
     // 导致 agent 在首次工具调用后即停、无法多步工作(M2 多步回退 bug)。
@@ -815,7 +830,7 @@ fn resolve_plan_markdown(args: &serde_json::Value, latest_content: &[ContentBloc
 /// agent 在 Plan mode 下用 write 工具把完整 plan markdown 写入 plan 文件，
 /// ExitPlanMode 调用时从此处读取而非依赖工具参数。目录不存在或为空时返回
 /// `None`（调用方回退到 args/latest_content）。best-effort：IO 错误静默降级。
-fn read_latest_plan_file(workspace: &std::path::Path) -> Option<String> {
+pub(crate) fn read_latest_plan_file(workspace: &std::path::Path) -> Option<String> {
     let plan_dir = workspace.join(".zhuye/plan");
     let latest = std::fs::read_dir(&plan_dir)
         .ok()?
@@ -894,16 +909,17 @@ fn resolve_plan_draft_path(
 ///   端可据 `draft_id` 辨识是否同一草稿的迭代,做覆盖式更新。
 /// - **空文件不 emit** —— 避免工具调用失败但 is_error=false 的边界场景
 ///   把空 plan 推给 TUI。
+/// 返回是否真的 emit 了草稿事件(`check_stop` 的计划收尾守卫据此置位)。
 async fn maybe_emit_plan_draft_updated(
     tool_name: &str,
     args: &serde_json::Value,
     workspace: &std::path::Path,
     event_tx: mpsc::Sender<Event>,
     sub_id: String,
-) {
+) -> bool {
     let path = match resolve_plan_draft_path(tool_name, args, workspace) {
         Some(p) => p,
-        None => return,
+        None => return false,
     };
     let markdown = match std::fs::read_to_string(&path) {
         Ok(s) => s,
@@ -913,12 +929,12 @@ async fn maybe_emit_plan_draft_updated(
                 error = %e,
                 "plan_draft_updated: failed to read plan file after tool write"
             );
-            return;
+            return false;
         }
     };
     let trimmed = markdown.trim();
     if trimmed.is_empty() {
-        return;
+        return false;
     }
 
     // draft_id 取文件名(不含扩展名),便于 TUI 标识同一草稿的迭代。
@@ -945,6 +961,7 @@ async fn maybe_emit_plan_draft_updated(
             }),
         ))
         .await;
+    true
 }
 
 // ── todo 清单回灌 ────────────────────────────────────────────────────────

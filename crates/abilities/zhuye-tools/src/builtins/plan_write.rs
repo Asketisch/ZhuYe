@@ -152,7 +152,11 @@ impl Tool for PlanWriteTool {
         let written_display = final_path;
         Ok(ToolOutput {
             content: vec![zhuye_protocol::ContentBlock::text(format!(
-                "wrote plan to {} ({} bytes)",
+                // 模型在决定下一步动作前读到的最后一句话 —— 必须指明
+                // 「下一步是 ExitPlanMode」,否则模型倾向用文字总结收尾,
+                // PlanReady 永不派发(实测 session 889c3bd0)。
+                "wrote plan to {} ({} bytes). Next: call ExitPlanMode now to \
+                 request user approval — do not end the turn with a text summary.",
                 written_display.display(),
                 content.len()
             ))],

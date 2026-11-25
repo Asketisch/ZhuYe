@@ -1623,9 +1623,12 @@ pub async fn submission_loop(
                 .await;
             }
             zhuye_protocol::Op::ExitPlanMode => {
-                // Op 路径(`/exit-plan` slash)走的是「无 LLM 工具调用」语境,
-                // 没有 markdown 可用;给一个**确定性安全回退**而不是
-                // 历史占位符,既避免误导用户,也方便回归测试断言。
+                // Op 路径(`/exit-plan` slash / 桌面兜底提交):与工具路径同源
+                // —— 优先读 `.zhuye/plan/` 最新 plan 文件(PlanWrite/write
+                // 的落盘产物),读不到才走**确定性安全回退**。此前恒用占位
+                // 串,兜底路径提交给用户审批的是 placeholder 而非真实计划。
+                let markdown = crate::graph::nodes::read_latest_plan_file(&cfg.current_workspace())
+                    .unwrap_or_else(|| FALLBACK_PLAN_MARKDOWN.to_string());
                 dispatch_plan_ready(
                     &plan_approval_gate,
                     &session_subs,
@@ -1633,7 +1636,7 @@ pub async fn submission_loop(
                     turn_tx.clone(),
                     sub.id.clone(),
                     cfg.clone(),
-                    FALLBACK_PLAN_MARKDOWN.to_string(),
+                    markdown,
                     session_emitted || existing_session,
                 )
                 .await;

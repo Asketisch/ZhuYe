@@ -2,6 +2,7 @@
 
 use zhuye_hooks::{HookEvent, StopReason};
 use zhuye_llm::{ChatMessage, ContentBlock, UserContent};
+use zhuye_protocol::PermissionMode;
 
 use crate::graph::GraphNode;
 use crate::graph::state::AgentState;
@@ -21,8 +22,9 @@ use crate::submission_loop::NodeContext;
 /// 3. 回到 [`GraphNode::PreLoop`] 续跑**本轮** —— 下一轮 `model_call`
 ///    就能基于结果继续推理。
 ///
-/// 顺序上先等子代理、再判 Stop hook:让模型先看到结果再决定是否收尾,
-/// 避免「hook 放行 → 回合结束 → 结果无处可去」。
+/// 顺序上先等子代理、再判计划收尾守卫、再判 Stop hook:让模型先拿到结果、
+/// 再被要求提交计划,最后才轮到 hook 决定是否收尾 —— 避免「hook 放行 →
+/// 回合结束 → 结果无处可去」。
 ///
 /// 等待被取消(回合中断 / 会话关闭)时直接返回 `None`:取消不算自然完成,
 /// `StateGraph::run` 只在回合令牌未触发时才把 `CheckStop` 的 `None` 记成
@@ -56,6 +58,35 @@ pub async fn check_stop(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             inject_subagent_results(state, ctx, completed).await;
             return Some(GraphNode::PreLoop);
         }
+    }
+
+    // v1.x 计划收尾守卫:Plan 模式下 plan 文件已写、PlanReady 未派发时,
+    // 否决「纯文本收尾」并逼模型立即调 ExitPlanMode(上限 2 次,防死循环;
+    // 命中上限说明模型确实无法收口,放行由用户人工接管)。实测 session
+    // 889c3bd0:PlanWrite 成功后模型被 nudge 逼成「FINAL ANSWER: 计划已
+    // 写入…」收尾,PlanReady 永不派发,审批链路死锁。
+    if ctx.cfg.permission_mode() == PermissionMode::Plan
+        && state.plan_draft_written
+        && !state.plan_ready_dispatched
+        && state.plan_stop_guard_attempts < 2
+    {
+        state.plan_stop_guard_attempts = state.plan_stop_guard_attempts.saturating_add(1);
+        tracing::warn!(
+            attempt = state.plan_stop_guard_attempts,
+            "plan stop guard: plan written but ExitPlanMode not called; vetoing text completion"
+        );
+        let set = ctx.cfg.resolve_prompt(&ctx.model.read()).set;
+        let nudge = set.get_or(
+            "runtime.nudge-plan-submit",
+            "The plan file has been written with PlanWrite but ExitPlanMode has NOT been              called yet. Call ExitPlanMode NOW to submit the plan for user approval. Do not \
+             output any other content.",
+        );
+        state.messages.messages.push(ChatMessage::User(UserContent {
+            blocks: vec![ContentBlock::Text {
+                text: format!("<system-reminder>\n{}\n</system-reminder>", nudge),
+            }],
+        }));
+        return Some(GraphNode::PreLoop);
     }
 
     let decision = ctx

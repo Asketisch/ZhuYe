@@ -96,6 +96,16 @@ pub struct AgentState {
     /// 下次再进 `model_call` 入口安全阀时据此**真正终止**。一次性 flag,
     /// 保证不会无限续作。由 `AgentState::default` 每 turn 重置。
     pub force_final_answer: bool,
+    /// v1.x 计划收尾守卫:本 turn 内 PlanWrite(write 到 `.zhuye/plan/`)已
+    /// 成功落盘(由 `tool_exec` 的 `maybe_emit_plan_draft_updated` 成功路径
+    /// 置位)。Plan 模式下 `check_stop` 据此否决「写了 plan 却用纯文本
+    /// 收尾」的 turn(实测 session 889c3bd0)。
+    pub plan_draft_written: bool,
+    /// v1.x 计划收尾守卫:本 turn 内 ExitPlanMode 已派发 PlanReady(由
+    /// `tool_exec` 的 ExitPlanMode 分支置位)。置位后 `check_stop` 放行。
+    pub plan_ready_dispatched: bool,
+    /// v1.x 计划收尾守卫:已否决收尾的次数(上限 2,防死循环)。
+    pub plan_stop_guard_attempts: u32,
     /// M4:本回合 LLM 可见的工具,按 `always_on ∪ active_skills` 过滤。
     /// 由 `pre_loop` 设置、`model_call` 读取。未配置 M4 依赖时为空。
     pub effective_tools: Vec<ToolSpec>,
