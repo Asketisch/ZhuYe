@@ -378,10 +378,16 @@ def test_A1c_规划模式与独立审批策略(serve_session, mock_script, polic
 
 
 def test_A1d_完全访问不绕过规划模式(serve_session, mock_script, sandbox) -> None:
-    """完全访问只改变审批，规划模式仍阻止写操作。"""
-    marker = sandbox.cwd / "plan-write-must-not-exist"
+    """完全访问只放宽 Plan 模式的 bash(调研常需 install/git commit),
+    `write`/`edit` 仍被规划模式挡住 —— 用户已用完全访问表达不再逐项确认,
+    但没有放弃「plan 阶段不落代码改动」的边界。"""
+    marker = sandbox.cwd / "plan-bash-marker"
+    write_target = sandbox.cwd / "plan-write-must-not-exist"
     script = mock_script([
         json.dumps({"type": "tool_call", "name": "bash", "args": {"cmd": f"touch {shlex.quote(str(marker))}"}}),
+        json.dumps({"type": "tool_call", "name": "write", "args": {
+            "path": write_target.name, "content": "不应写入",
+        }}),
         '{"type":"text","text":"已处理"}',
     ])
     with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as session:
@@ -391,9 +397,15 @@ def test_A1d_完全访问不绕过规划模式(serve_session, mock_script, sandb
             "items": [{"type": "text", "text": "检查写入限制"}],
             "thread_settings": {"approval_policy": "full_access"},
         }, timeout=DRAIN_TIMEOUT)
-    tool = first_event(events, "tool_call_end")
-    assert tool is not None and tool["msg"]["is_error"] is True, tool
-    assert not marker.exists()
+    ends = [e["msg"] for e in events if e["msg"]["type"] == "tool_call_end"]
+    assert len(ends) == 2, ends
+    bash_end, write_end = ends
+    assert not bash_end["is_error"], bash_end
+    assert marker.exists(), "full_access 下 Plan 模式 bash 应放行"
+    assert write_end["is_error"], write_end
+    assert not write_target.exists(), "完全访问不应绕过规划模式对写工具的封锁"
+    assert first_event(events, "approval_request") is None, events
+    assert first_event(events, "turn_complete")["msg"]["status"] == "success", events
 
 
 def test_A2_set_effort_静默(serve_session, mock_script) -> None:

@@ -71,7 +71,7 @@ pub fn classify_ask_mode_tool(tool: &str, args: &serde_json::Value) -> AskDecisi
         };
     }
     // 写类工具：询问档硬边界。
-    if ASK_MODE_WRITE_TOOLS.iter().any(|t| *t == tool) {
+    if ASK_MODE_WRITE_TOOLS.contains(&tool) {
         return AskDecision::Deny(
             "询问模式下不能修改文件（仅写操作受限；向用户提问与只读调研不受影响）".into(),
         );

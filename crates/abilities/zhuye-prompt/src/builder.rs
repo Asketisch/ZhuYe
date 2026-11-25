@@ -749,7 +749,10 @@ mod tests {
         append_active_mode_section(&mut s, zhuye_protocol::PermissionMode::Auto);
         assert_eq!(s, original, "Auto mode 不能改 core");
 
-        let mut s = original.clone();
+        // original 此后不再使用:直接 move(第二段无需再 clone —— 上一行
+        // 的 clone 会被 clippy redundant_clone 判冗余,因为新值在改后只被
+        // assert 的 panic 格式化路径读取)。
+        let mut s = original;
         append_active_mode_section(&mut s, zhuye_protocol::PermissionMode::Prompt);
         assert!(
             s.contains("## Active Mode") && s.contains("Ask mode"),
