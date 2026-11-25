@@ -581,7 +581,10 @@ const MODEL_TOOL_TEXT_PREVIEW_BYTES: usize = 8 * 1024;
 const MODEL_TOOL_TEXT_LIMIT_BYTES: usize = 12 * 1024;
 
 /// 限制进入模型的工具文本，图片仍保持独立内容块。
-async fn limit_model_tool_output(
+///
+/// `check_stop` 注入异步子代理结果时复用同一入口 —— 异步结果相当于迟到
+/// 的工具回执，不应绕开这层预算治理。
+pub(super) async fn limit_model_tool_output(
     content: &mut Vec<ContentBlock>,
     workspace: &std::path::Path,
     budget: Option<&zhuye_tools::result_budget::ResultBudget>,

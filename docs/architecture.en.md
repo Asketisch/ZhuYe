@@ -115,7 +115,9 @@ hand-written as an enum + match via `GraphNode::next(has_tool_calls)`; no petgra
 - `ToolExec` → `PreLoop` (tool results feed back into the model,
 continuing multi-step reasoning)
 - `CheckStop` allows → turn ends; Stop hook vetoes → after appending the
-feedback to history, return to `PreLoop` (forced continuation, see `graph/nodes/check_stop.rs:20-43`)
+feedback to history, return to `PreLoop` (forced continuation, see `graph/nodes/check_stop.rs:58-81`)
+- `CheckStop` finds in-flight async sub-agents → suspends until they finish, persists and injects
+their results, then returns to `PreLoop` (same-turn continuation, see `graph/nodes/check_stop.rs:42-55`)
 
 ```
 PreLoop ──▶ ModelCall ──▶ ToolExec ─┐
@@ -135,16 +137,27 @@ Responsibilities of each node:
 | PreLoop | Compaction escalation decisions (upgrading by the level calibrated from the same model report), pre-processing hooks, history assembly, harvesting the steering queue |
 | ModelCall | After resolving the primary model via `RoutingPolicy`, call `ModelClient` (SSE streaming), producing text/thinking deltas and tool calls |
 | ToolExec | Approval gate check → execute tools (built-in / MCP / remote) via `ToolExecutionQueue` → write results back into history; Plan mode switches here |
-| CheckStop | Decides turn end when the model has no new tool calls; dispatches the Stop hook, which may veto and force continuation |
+| CheckStop | Decides turn end when the model has no new tool calls; suspends for in-flight async sub-agents and injects their results first; dispatches the Stop hook, which may veto and force continuation |
 
 When the Stop hook vetoes, `check_stop` judges the veto by the decision leaf's `deny_reason`, appends the
 hook-injected reminder (e.g., failing test output) as a `<system-reminder>` User message into history,
 then returns to `PreLoop` so the model sees the veto reason and continues; `stop_hook_attempts` counts
 them, and the max-iteration safety valve prevents infinite continuation as a backstop.
 
+Suspending / resuming async sub-agents (`call_<role>` with `mode="async"`) also lives in `CheckStop`:
+when the model issues no more tool calls but sub-agents are still in flight, the node suspends until
+they finish, then appends their results (subject to the same context budget as tool results) as a
+trailing user `<system-reminder>`, writes them to the session record, and returns to `PreLoop` to
+continue within the same turn. An async sub-agent **never outlives the turn that dispatched it**: at
+turn end `submission_loop` calls `PendingSubagentRegistry::abandon_turn` to drop entries still
+registered, and their background tasks cancel the sub-agents — interrupting the parent turn cascades,
+exactly as in sync mode.
+
 Errors and cancellation: when `model_call` / `tool_exec` return `None` due to an error or a triggered
 `CancellationToken`, the turn is an **abnormal end** and `completed_normally` is not set; only a natural
-`CheckStop` termination sets it. Cancellation comes from user interruption, timeout, or budget
+`CheckStop` termination **with the turn token still live** sets it (`GraphNode::is_natural_stop` — a
+`CheckStop` cancelled while waiting for async sub-agents also returns `None` and does not count as a
+natural stop). Cancellation comes from user interruption, timeout, or budget
 exhaustion, after which the `TurnHandle` closes.
 
 ### Real consumption points of orchestration, routing, and recovery

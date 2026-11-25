@@ -279,6 +279,16 @@ veto turn completion — slow and unpredictable for embedders.
   history. If truncation falls on tool results, that batch of calls and
   results is padded forward to keep them paired; in-flight delegation
   calls are not passed to the subagent.
+- The `mode` argument of `call_<role>` selects how the subagent is
+  dispatched: the default `sync` blocks the parent turn until the
+  subagent finishes; `async` returns a placeholder receipt at once
+  (`tool_call_end` → `output.metadata` carries `async`, `pending` and
+  `child_id`) while the subagent runs in the background. The turn
+  suspends once the model has nothing else to do; the result is injected
+  as a user `<system-reminder>` and written to the session record, then
+  the turn continues within itself (a single `turn_complete` overall).
+  An async subagent never outlives the turn that dispatched it —
+  interrupting the parent turn cancels its in-flight async subagents too.
 - Text already streamed from the model before `turn_aborted` is
   attempted to be written to the session record, so later turns can
   recover it.

@@ -37,7 +37,9 @@
 - **派发有两种模式**（`call_<role>` 的 `mode` 参数，缺省 `sync` = 旧行为）：
   - `sync`：父回合阻塞等子代理结束，结果作为本次工具调用的回执。
   - `async`：立即返回占位回执，子代理交给后台任务继续跑；结果由引擎在回合收尾前**挂起等待**并注入本轮上下文（见 `crates/runtime/zhuye-core/src/graph/nodes/check_stop.rs`）。
-- `async` 的四条约束：①登记表在 `zhuye_tools::PendingSubagentRegistry`（**每线程一份**，工具侧经 `ToolContext.pending_subagents` 写、引擎侧经 `NodeContext.pending_subagents` 读）；②`SpawnedChild` 必须移交给后台任务 —— 它析构会 cancel 子令牌，丢在工具 future 里等于当场杀掉子代理；③后台任务须带兜底守卫（`PendingCompletionGuard`），否则被中止的子代理会让条目永远停在「在飞」；④登记表缺席（纯库 / 测试）时**降级为同步**，不能给模型一个「已派发但没人回填」的假回执。
+- `async` 的四条约束：①登记表在 `zhuye_tools::PendingSubagentRegistry`（**每线程一份**，工具侧经 `ToolContext.pending_subagents` 写、引擎侧经 `NodeContext.pending_subagents` 读）；②`SpawnedChild` 必须移交给后台任务 —— 它析构会 cancel 子令牌，丢在工具 future 里等于当场杀掉子代理；③后台任务须同时监听条目的放弃句柄与**父回合令牌**（`ToolContext.cancel`，队列注入的就是回合级令牌），任一触发即丢弃 `SpawnedChild`；④登记表缺席（纯库 / 测试）时**降级为同步**，不能给模型一个「已派发但没人回填」的假回执。
+- **异步子代理不跨越派发它的回合**：`zhuye-core` 在回合任务收尾时调 `PendingSubagentRegistry::abandon_turn`（按回合令牌匹配），仍在表的条目被移除并触发放弃句柄。所以「打断父回合 ⇒ 取消在途子代理」在 async 下同样成立 —— 这条级联不是自动的：同步模式靠工具 future 被丢弃，async 的后台任务不随工具 future 析构，去掉 ③ 的监听子代理就会在用户中断后继续跑。
+- **登记表按派发回合隔离**：登记表是**每线程一份**，而同一线程上可能并发跑着多个回合（每条 UserInput 都 spawn 一个回合任务）。引擎侧的等待与取走一律按**派发回合的令牌**筛选（`has_pending_for` / `wait_any_for`），否则 A 回合派发的子代理会被 B 回合等到，结果被注入 B 的上下文。
 
 ## 角色讨论
 

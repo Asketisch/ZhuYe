@@ -224,6 +224,12 @@ hook 会在宿主 cwd 执行 `cargo test` 并否决 turn 完成,对嵌入方既�
 - 调用 `call_<role>` 时可用 `context_tail` 传递父会话末尾消息;
   默认 `0` 不传历史。截断落在工具结果时会向前补齐该批调用和结果,
   正在执行的委派调用不会传给子代理。
+- `call_<role>` 的 `mode` 选择派发方式:缺省 `sync`,父回合阻塞等子代理结束;
+  `async` 立即返回占位回执(`tool_call_end` 的 `output.metadata` 带 `async`、
+  `pending` 与 `child_id`),子代理在后台运行。回合在模型没有后续动作时
+  挂起等待,结果作为 user `<system-reminder>` 注入当前回合并写入会话记录,
+  随后同轮续跑(全程只有一次 `turn_complete`)。异步子代理不跨越派发它的
+  回合 —— 打断父回合同样取消在途的异步子代理。
 - 模型流中已发送的文本在 `turn_aborted` 前尝试写入会话记录,后续回合可恢复。
 - TypeScript `prompt` 的可选本地超时不发送 `interrupt`;服务端已经接收的
   turn 仍可能运行,调用方可按需显式中断。

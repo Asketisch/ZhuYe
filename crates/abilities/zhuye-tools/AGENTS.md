@@ -60,12 +60,13 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 `src/pending_subagent.rs` 的 `PendingSubagentRegistry` 是「异步子代理派发」与
 「回合挂起激活」两侧共用的状态:
 
-- **工具侧**(`ToolContext.pending_subagents`):派发时 `register`,子代理终态时
-  `complete`;
+- **工具侧**(`ToolContext.pending_subagents`):派发时 `register`(带父回合的
+  回合级取消令牌 `owner`,返回放弃句柄),子代理终态时 `complete`;
 - **引擎侧**(`zhuye-core` 的 `NodeContext.pending_subagents`):回合收尾前
-  `wait_any` 挂起等待,拿到结果后注入上下文并续跑本轮。
+  `wait_any` 挂起等待,拿到结果后注入上下文并续跑本轮;回合结束时
+  `abandon_turn` 放弃本回合仍登记在表的条目。
 
-三条不变式:
+四条不变式:
 
 1. **下沉到本 crate 是依赖方向的必然**:依赖是 `zhuye-subagent → zhuye-core →
    zhuye-tools`,`zhuye-core` 不能反向依赖 `zhuye-subagent`。登记表必须能被
@@ -73,10 +74,22 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 2. **每线程一份**:基座 `ToolContext` 在 `AgentThread::new` 里按 `AgentConfig`
    构造,`AgentConfig::new` 为每个线程新建一张表 —— 嵌套场景下子代理用自己
    的表,孙代理的完成不会误唤醒父回合。
-3. **终态首个为准 + 必须有兜底**:`complete` 幂等(先到者胜);`PendingCompletionGuard`
-   在析构时补写「已放弃」终态 —— 没有它,一个被中止的异步子代理会让条目永远
-   停在「在飞」,此后每个回合的 `check_stop` 都为它挂起等待(一次中止拖垮
-   整个会话)。
+   **同线程上可能并发跑着多个回合**(`submission_loop` 每条 UserInput 都 spawn
+   一个回合任务),因此表内每条登记都带**派发回合的令牌**(`owner`):等待与取走
+   一律按它筛选(`has_pending_for` / `wait_any_for` / `take_completed_for`),
+   跨回合无差别版本(`has_pending` / `wait_any` / `take_completed`)只供单测与
+   诊断用。否则 A 回合的子代理会被 B 回合等到,并把结果注入 B 的上下文 ——
+   B 的模型会看到一份自己没派发过的子代理结果。
+3. **异步子代理不跨越派发它的回合**:后台任务必须同时监听条目的放弃句柄与
+   父回合令牌(任一触发即丢弃 `SpawnedChild` = 取消子代理)。同步模式下
+   「打断父回合 ⇒ 取消在途子代理」是工具 future 被丢弃的副产品,异步的后台
+   任务不随工具 future 析构,**不显式接线就不会级联**。`abandon_turn` 按
+   `owner` 令牌匹配(同一线程上可能叠着别的回合的条目,不能清空整表)。
+4. **终态首个为准,迟到 / 未登记的终态丢弃**:`complete` 幂等(先到者胜);
+   条目已被 `take_completed` 取走或被放弃后再写入一律忽略、不重建条目 ——
+   否则兜底守卫的补写会让下一回合凭空收到一条「子代理执行失败」。
+   `PendingCompletionGuard` 只兜**后台任务意外中止**(runtime 掉线、panic):
+   条目不能永远停在「在飞」,否则此后每个回合的 `check_stop` 都为它挂起。
 
 ## v1.x 新增能力
 
