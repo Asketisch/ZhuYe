@@ -8,8 +8,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from test_stream_failure import _successful_frames
 from wire import first_event
+
+# 同目录的协议面用例模块 —— 用相对导入,因为本目录已是 package
+# (有 __init__.py),绝对导入在 pytest prepend 模式下解析不到。
+from .test_stream_failure import _successful_frames
 
 
 def _invalid_call(provider: str) -> bytes:

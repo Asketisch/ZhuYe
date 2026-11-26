@@ -3,6 +3,12 @@
 共享设施在 `wire.py`(唯一命名模块)—— 不用 `from conftest import ...` 的写法:
 两个测试层各有一个 conftest.py,同名导入在一次性收集整个 tests/ 时会按
 sys.path 顺序解析到错误的那一份。
+
+用例按被测能力分入六个子目录(protocol / tools / orchestration /
+persistence / cli / runtime)。子目录里的用例 `from wire import ...` 靠
+下面这行显式钉住的 sys.path 解析 —— pytest 默认的 prepend 模式只把
+「用例文件所在目录」插进 sys.path,子目录里的用例就找不到上一层的
+wire.py 了。
 """
 
 from __future__ import annotations
@@ -16,10 +22,15 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 
 import pytest
 
-from wire import DRAIN_TIMEOUT, ZHUYE_BIN, Sandbox, ServeSession
+# 把本目录(共享设施 wire.py 所在处)钉进 sys.path,让各能力子目录里的
+# 用例都能 `from wire import ...`。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from wire import DRAIN_TIMEOUT, ZHUYE_BIN, Sandbox, ServeSession  # noqa: E402
 
 
 @pytest.hookimpl(hookwrapper=True)
