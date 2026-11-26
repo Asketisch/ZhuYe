@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use rmcp::model::{ContentBlock as McpContent, GetPromptRequestParams, Role};
 use zhuye_tools::{Tool, ToolContext, ToolError, ToolOutput};
 
-use crate::manager::McpConnectionManager;
+use crate::client::manager::McpConnectionManager;
 
 /// 列出所有已连接 MCP server 暴露的 prompts(名称 + 描述 + 参数签名)。
 ///

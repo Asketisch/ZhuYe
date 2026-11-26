@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use rmcp::model::ResourceContents;
 use zhuye_tools::{Tool, ToolContext, ToolError, ToolOutput};
 
-use crate::manager::McpConnectionManager;
+use crate::client::manager::McpConnectionManager;
 
 /// 列出所有已连接 MCP server 暴露的资源。
 ///

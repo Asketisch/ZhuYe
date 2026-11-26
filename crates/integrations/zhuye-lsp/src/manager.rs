@@ -1,6 +1,6 @@
 //! LSP 连接生命周期管理:`start_server` / `reload` / `shutdown`。
 //!
-//! 镜像 `zhuye_mcp::manager::McpConnectionManager` 的结构,但去掉了
+//! 镜像 `zhuye_mcp::McpConnectionManager` 的结构,但去掉了
 //! HTTP 路径(LSP 几乎都走 stdio)。
 //!
 //! ## 启动流程

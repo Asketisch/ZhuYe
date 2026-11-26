@@ -24,9 +24,9 @@ use tokio_util::sync::CancellationToken;
 use zhuye_protocol::{McpElicitationEvent, McpElicitationResponse};
 
 use crate::McpError;
+use crate::client::tool::{McpToolDescriptor, tool_descriptor_from_rmcp};
+use crate::client::transport;
 use crate::config::{McpServerConfig, McpTransport};
-use crate::tool::{McpToolDescriptor, tool_descriptor_from_rmcp};
-use crate::transport;
 
 /// 单个 MCP server 已建立连接后的运行时内部状态。
 ///

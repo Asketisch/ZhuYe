@@ -35,32 +35,33 @@
 
 #![allow(clippy::module_name_repetitions)] // 多个模块都暴露 *Config/*Error 等命名
 
+pub mod catalog;
+/// MCP 客户端侧（连接生命周期 / transport / tool 适配器）。
+pub mod client;
 pub mod config;
-pub mod content;
-pub mod manager;
-/// F29:MCP OAuth / elicitation / sampling / 资源订阅协议层。
-pub mod oauth;
-pub mod prompts;
-pub mod protocol_version;
-pub mod registry;
-pub mod resources;
-/// F30:自暴露 MCP server(工具清单 + 安全边界 + server card)。
-pub mod server_mode;
-pub mod tool;
-pub mod transport;
+/// MCP 协议基础形状（内容块转换 / 协议版本）。
+pub mod protocol;
+/// MCP 协议完整性扩展（F29 OAuth / elicitation / sampling，F30 自暴露 server）。
+pub mod protocol_ext;
+/// 暴露为 agent 工具的 MCP 原语（prompts / resources）。
+pub mod tools;
 
 // 公开 API re-export
-pub use config::{McpOAuthConfig, McpServerConfig, McpTransport};
-pub use content::convert_mcp_content;
-pub use manager::{
+pub use catalog::registry::{McpRegistryEntry, curated_catalog, find_entry, install_hint};
+pub use client::manager::{
     McpConnectionManager, McpLifecycleEvent, McpServerHandle, McpServerStatus, list_plugin_servers,
     scoped_plugin_name,
 };
-pub use prompts::{GetMcpPromptTool, ListMcpPromptsTool};
-pub use protocol_version::PROTOCOL_VERSION;
-pub use registry::{McpRegistryEntry, curated_catalog, find_entry, install_hint};
-pub use resources::{ListMcpResourcesTool, ReadMcpResourceTool};
-pub use tool::{McpToolAdapter, McpToolDescriptor};
+pub use client::tool::{McpToolAdapter, McpToolDescriptor};
+pub use config::{McpOAuthConfig, McpServerConfig, McpTransport};
+pub use protocol::content::convert_mcp_content;
+pub use protocol::version::PROTOCOL_VERSION;
+pub use tools::prompts::{GetMcpPromptTool, ListMcpPromptsTool};
+pub use tools::resources::{ListMcpResourcesTool, ReadMcpResourceTool};
+
+/// transport 模块的旧路径别名 —— 保持 `zhuye_mcp::transport::build_stdio`
+/// 等既有调用点不变（实现已下沉到 [`client::transport`]）。
+pub use client::transport;
 
 /// MCP 集成错误类型。
 ///

@@ -25,8 +25,8 @@ use zhuye_protocol::{
 };
 use zhuye_tools::{Tool, ToolContext};
 
-use crate::content::convert_mcp_content_checked;
-use crate::manager::McpClientInner;
+use crate::client::manager::McpClientInner;
+use crate::protocol::content::convert_mcp_content_checked;
 
 /// MCP server 暴露的单个 tool 描述符,由 `list_all_tools` 缓存。
 #[derive(Debug, Clone)]

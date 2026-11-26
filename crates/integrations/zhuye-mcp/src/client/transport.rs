@@ -37,9 +37,9 @@ use zhuye_protocol::{
 };
 
 use crate::McpError;
+use crate::client::manager::McpLifecycleEvent;
+use crate::client::tool::{McpToolDescriptor, tool_descriptor_from_rmcp};
 use crate::config::McpTransport;
-use crate::manager::McpLifecycleEvent;
-use crate::tool::{McpToolDescriptor, tool_descriptor_from_rmcp};
 
 /// 把 rmcp 的 server→client 请求桥到宿主事件通道。
 ///
@@ -50,7 +50,7 @@ struct HostClientHandler {
     lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
     /// 各 server 当前生效的工具快照(与 manager 共享):`(版本号, 描述符)`。
     /// 运行期刷新时据此算出「哪些工具消失了」。
-    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::client::manager::ToolSnapshot>>>,
 }
 
 #[allow(deprecated)]
@@ -294,7 +294,7 @@ pub async fn build(
     url: Option<&str>,
     headers: &HashMap<String, String>,
     lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
-    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::client::manager::ToolSnapshot>>>,
     oauth: Option<crate::config::McpOAuthConfig>,
 ) -> Result<McpTransportHandle, McpError> {
     match transport {
@@ -350,7 +350,7 @@ pub async fn build_stdio(
     args: &[String],
     env: &HashMap<String, String>,
     lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
-    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::client::manager::ToolSnapshot>>>,
 ) -> Result<McpTransportHandle, McpError> {
     let cmd_str =
         command.ok_or_else(|| McpError::ConfigInvalid("stdio requires `command`".to_string()))?;
@@ -402,7 +402,7 @@ pub async fn build_http(
     url: Option<&str>,
     headers: &HashMap<String, String>,
     lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
-    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::client::manager::ToolSnapshot>>>,
     oauth: Option<crate::config::McpOAuthConfig>,
 ) -> Result<McpTransportHandle, McpError> {
     let url_str = url.ok_or_else(|| McpError::ConfigInvalid("http requires `url`".to_string()))?;
@@ -431,7 +431,7 @@ pub async fn build_http(
     // 「需要授权」上报(见下方握手错误分支),避免无谓的预取请求。
     let mut token_error: Option<String> = None;
     if let Some(oauth) = oauth.as_ref() {
-        match crate::oauth::resolve_token(&reqwest_client, oauth, url_str).await {
+        match crate::protocol_ext::oauth::resolve_token(&reqwest_client, oauth, url_str).await {
             Ok(Some(token)) => cfg = cfg.auth_header(token),
             Ok(None) => {}
             Err(error) => {
@@ -496,7 +496,7 @@ pub async fn build_sse(
     url: Option<&str>,
     headers: &HashMap<String, String>,
     lifecycle_tx: mpsc::Sender<McpLifecycleEvent>,
-    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::manager::ToolSnapshot>>>,
+    tool_snapshots: Arc<tokio::sync::RwLock<HashMap<String, crate::client::manager::ToolSnapshot>>>,
     oauth: Option<crate::config::McpOAuthConfig>,
 ) -> Result<McpTransportHandle, McpError> {
     tracing::debug!("mcp transport=sse: delegating to streamable-http SSE client");
