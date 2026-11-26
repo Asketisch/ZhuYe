@@ -12,14 +12,12 @@
 //! `HashMap<name, CredentialPool>` 池化结构,旧 `register` / `get` /
 //! `resolve` / `list` API 保留(部分 `#[deprecated]`)。
 
-/// F31:OAuth 登录(device flow)+ 账号池(会话亲和 + 配额排名)。
-pub mod accounts;
+/// 计费与用量记账（账号池 / 配额 / 成本账本 / 凭证冷却）。
+pub mod billing;
 /// v1.x:prompt cache 保温(cache warming)决策 —— 纯函数,零 I/O。
 pub mod cache_warming;
 pub mod capabilities;
 pub mod client;
-pub mod cooldown;
-pub mod credential;
 pub mod error;
 pub mod event;
 pub mod model_catalog;
@@ -28,7 +26,6 @@ pub mod models_dev;
 pub mod output_budget;
 pub mod policy;
 pub mod providers;
-pub mod quota;
 pub mod reasoning_effort;
 pub mod registry;
 pub mod request;
@@ -36,9 +33,12 @@ pub mod request;
 pub mod routing;
 /// v1.x:strict schema 折叠(不支持约束写进 description,双保险)。
 pub mod schema_fold;
-/// F44/F55:USD 预算账本(reservation 语义)+ 成本归因。
-pub mod spend;
 
+pub use billing::accounts;
+pub use billing::cooldown;
+pub use billing::credential;
+pub use billing::quota;
+pub use billing::spend;
 pub use cache_warming::{
     CacheObservation, CacheWarmingDecision, CacheWarmingSettings, METADATA_WARM_REPLAY,
     METADATA_WARM_REPLAY_VALUE, SkipReason, WarmingAction, WarmingPhase, effective_ttl_secs,
