@@ -91,7 +91,7 @@ impl ReflectConfig {
     ) -> Result<(), ConfigError> {
         // 模型组池即将重建(可能换了 base_url / 凭据)→ 旧的模型清单缓存
         // 必须失效,否则新端点的清单会被旧端点的条目顶掉(TTL 内)。
-        crate::discovery::clear_catalog_cache();
+        crate::model_discovery::clear_catalog_cache();
         // 模型组逐条注册,池名 = 组 id。非法 id(空 / 含 '/' / 保留名)
         // 与组间重复 id 都跳过并 warn,不让一个写错的组阻断其余配置
         // (坏值宽松吞掉的既有口径)。

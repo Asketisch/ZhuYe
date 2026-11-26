@@ -40,10 +40,10 @@
 
 pub mod analytics;
 pub mod builder;
-pub mod discovery;
 pub mod error;
 pub mod load;
 pub mod migration;
+pub mod model_discovery;
 pub mod paths;
 pub mod schema;
 pub mod watch;
@@ -104,14 +104,14 @@ pub use analytics::{
     status_line as analytics_status_line,
 };
 pub use builder::{LspServerConfigShape, McpServerConfigShape};
-pub use discovery::{
-    DEFAULT_CATALOG_CACHE_TTL_SECS, DEFAULT_DISCOVERY_TIMEOUT_SECS, DiscoveredCatalog,
-    fetch_catalog, is_dynamic_model, pick_free_model, resolve_dynamic_model, resolve_model_spec,
-};
 pub use error::ConfigError;
 pub use load::{
     default_config_path, load_default, load_from_file, load_from_file_with_migration,
     load_from_str, load_from_str_with_migration,
+};
+pub use model_discovery::{
+    DEFAULT_CATALOG_CACHE_TTL_SECS, DEFAULT_DISCOVERY_TIMEOUT_SECS, DiscoveredCatalog,
+    fetch_catalog, is_dynamic_model, pick_free_model, resolve_dynamic_model, resolve_model_spec,
 };
 pub use paths::{
     data_dir, data_path, data_path_or_relative, default_skill_dirs, project_agents_skills_dir,
