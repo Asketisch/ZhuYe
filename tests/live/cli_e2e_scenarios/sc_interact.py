@@ -176,9 +176,15 @@ def _run_ask_user(cx: lib.Ctx) -> None:
                   "(不要直接给答案),并等待我的回答。", timeout=cx.timeout(),
                   respond=[answer, answer_text])
 
-    if not questions and not inputs:
+    tool_names = list(turn.tool_names)
+    asked = {"ask_user_question", "ask_user"} & set(tool_names)
+    if not asked:
         # 真模型可能不理会提示、直接给答案 —— 协议面无异常,只是没进提问
         # 路径;确定性口径由 mock 自检覆盖。
+        # 判定看「工具被调用」而非「事件到达」:ask_user_question 与 ask_user
+        # 的事件只在工具真被调用后才发出,用事件判断会把「只调了其中一
+        # 个」误判成模型不配合(与 approval / subagent / goal 场景口径
+        # 不一致 —— 那几个场景一律看 turn.tool_names)。
         lib.skip_all(cx, ["收到 ask_user_question 事件",
                           "问题结构含 header/question/options",
                           "收到 ask_user_input 事件(自由文本提问)",
@@ -192,8 +198,12 @@ def _run_ask_user(cx: lib.Ctx) -> None:
         cx.checks.add("问题结构含 header/question/options",
                       bool(q) and "header" in q[0] and "question" in q[0] and "options" in q[0],
                       f"questions={json.dumps(q, ensure_ascii=False)[:200]}")
-    cx.checks.add("收到 ask_user_input 事件(自由文本提问)", bool(inputs),
-                  f"输入请求数={len(inputs)}")
+    # 自由文本提问只在模型调了 ask_user 时才有对应事件 —— 提示词只要求
+    # 调 ask_user_question(选择题),故按工具是否被调用来判,而不是一律
+    # 要求事件到达。
+    if "ask_user" in tool_names:
+        cx.checks.add("收到 ask_user_input 事件(自由文本提问)", bool(inputs),
+                      f"输入请求数={len(inputs)}")
     # 只关心提问工具自身是否被判错(模型可能顺带调别的工具)。
     names = {lib._msg(e).get("call_id"): lib._msg(e).get("tool_name")
              for e in turn.events if lib.etype(e) == "tool_call_begin"}
