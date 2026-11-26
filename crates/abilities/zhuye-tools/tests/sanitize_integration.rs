@@ -774,7 +774,7 @@ async fn pii_off_is_noop() {
 /// 纯读命令 → `action_permission` 返回 Auto(不弹审批)。
 #[test]
 fn readonly_commands_auto_allowed() {
-    let bash = zhuye_tools::builtins::bash::BashTool::new();
+    let bash = zhuye_tools::builtins::BashTool::new();
     for cmd in [
         "git status",
         "git config --get user.name",
@@ -794,7 +794,7 @@ fn readonly_commands_auto_allowed() {
 /// 写命令 / 不透明命令 → 仍需审批(Prompt)。
 #[test]
 fn write_and_opaque_commands_require_approval() {
-    let bash = zhuye_tools::builtins::bash::BashTool::new();
+    let bash = zhuye_tools::builtins::BashTool::new();
     for cmd in [
         "git commit -m x",
         "git config user.name Alice",
@@ -887,7 +887,7 @@ fn deny_all_is_visible_to_queue_before_readonly_fastpath() {
 /// 是纯读,但重定向使其成为写操作。此前会被 readonly fastpath 误放行。
 #[test]
 fn redirect_to_file_requires_approval() {
-    let bash = zhuye_tools::builtins::bash::BashTool::new();
+    let bash = zhuye_tools::builtins::BashTool::new();
     for cmd in [
         "echo x > /tmp/f",
         "echo x >> /tmp/f",

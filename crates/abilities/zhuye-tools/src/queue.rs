@@ -23,7 +23,7 @@ use zhuye_protocol::{
 };
 
 use crate::approval::ApprovalGate;
-use crate::builtins::bash::{BashCommandClass, classify_command};
+use crate::builtins::exec::bash::{BashCommandClass, classify_command};
 use crate::registry::ToolRegistry;
 use crate::sanitize::{Sanitizer, sanitize_output, sanitize_output_pii, sanitize_text};
 use crate::tool::ToolContext;
@@ -353,21 +353,21 @@ impl ToolExecutionQueue {
         // 防止禁用插件后猜名调用或嵌套转发绕过目标工具的审批。
         let sources = if calls
             .iter()
-            .any(|call| call.name == crate::builtins::deferred_call::DEFERRED_CALL_TOOL_NAME)
+            .any(|call| call.name == crate::builtins::meta::deferred_call::DEFERRED_CALL_TOOL_NAME)
         {
             self.registry.list_with_source()
         } else {
             Vec::new()
         };
         let defer_registered = sources.iter().any(|(name, source)| {
-            name == crate::builtins::deferred_call::DEFERRED_CALL_TOOL_NAME
+            name == crate::builtins::meta::deferred_call::DEFERRED_CALL_TOOL_NAME
                 && matches!(source, crate::registry::ToolSource::Builtin)
         });
         let mut calls: Vec<ToolCallRequest> = calls
             .into_iter()
             .map(|mut c| {
                 if !defer_registered
-                    || c.name != crate::builtins::deferred_call::DEFERRED_CALL_TOOL_NAME
+                    || c.name != crate::builtins::meta::deferred_call::DEFERRED_CALL_TOOL_NAME
                 {
                     return c;
                 }

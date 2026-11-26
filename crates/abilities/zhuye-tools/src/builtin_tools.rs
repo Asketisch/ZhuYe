@@ -156,9 +156,9 @@ pub fn register_builtin_tools_with_gates(
     // 实现;本工具是模型侧的调用入口(queue 在派发前展开成真实调用,
     // 审批 / hook / 权限 floor 全部按真实工具走)。
     if gates.tool_defer {
-        tools.register(Arc::new(builtins::deferred_call::DeferredCallTool::new(
-            tools.clone(),
-        )));
+        tools.register(Arc::new(
+            builtins::meta::deferred_call::DeferredCallTool::new(tools.clone()),
+        ));
     }
 }
 

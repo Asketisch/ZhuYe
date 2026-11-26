@@ -40,7 +40,7 @@ pub use builtin_tools::{
     BUILTIN_TOOL_COUNT, BundledToolGates, UNGATED_BUILTIN_TOOL_COUNT, register_builtin_tools,
     register_builtin_tools_with_gates,
 };
-pub use builtins::bash::{BashCommandClass, classify_command};
+pub use builtins::exec::bash::{BashCommandClass, classify_command};
 pub use checkpoint::checkpoint_tool::{CheckpointTool, RewindTool};
 pub use checkpoint::worktree::{
     SessionWorktreeState, WorktreeCoordinator, create_worktree, default_worktree_path,

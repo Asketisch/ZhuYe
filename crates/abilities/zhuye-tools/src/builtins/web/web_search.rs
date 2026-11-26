@@ -15,7 +15,7 @@
 //! v1 仅解析 `web.results`,忽略 `news` / `videos` / `faq` 等扩展段(留作 v1.1)。
 //!
 //! 安全要点(review 2026-06-30 加固):
-//! - 结果文本里的 URL 经 [`crate::builtins::url_safety::sanitize_url_for_metadata`]
+//! - 结果文本里的 URL 经 [`crate::builtins::web::url_safety::sanitize_url_for_metadata`]
 //!   消毒:query / fragment / userinfo 一律剥除,避免 Brave 搜索结果里偶发
 //!   带 `?token=…` 的内网文档站链接未经审批直注 LLM context。`web_search`
 //!   是 `Auto` 权限(`web_fetch` 是 `Prompt`),没有 `ApprovalGate` 兜底,
@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use url::Url;
 
-use crate::builtins::url_safety::sanitize_url_for_metadata;
+use crate::builtins::web::url_safety::sanitize_url_for_metadata;
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 const BRAVE_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";

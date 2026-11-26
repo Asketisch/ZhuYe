@@ -33,7 +33,7 @@ use reqwest::redirect::Policy;
 use serde_json::Value;
 use url::{Host, Url};
 
-use crate::builtins::url_safety::*;
+use crate::builtins::web::url_safety::*;
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// 单次响应最大读取字节数(5 MiB)—— 防止恶意/巨型页面吃光内存。
@@ -620,7 +620,7 @@ mod tests {
     }
 
     // ── 纯函数白盒测试(is_blocked_host / sanitize_url_for_metadata) ──
-    // 注:这些函数已下沉到 `crate::builtins::url_safety`,其自有测试模块
+    // 注:这些函数已下沉到 `crate::builtins::web::url_safety`,其自有测试模块
     // 覆盖;本模块只保留走 `execute()` 的集成路径测试。
 
     // ── 真实网络测试(`#[ignore]`,需 --include-ignored 跑)────────────
