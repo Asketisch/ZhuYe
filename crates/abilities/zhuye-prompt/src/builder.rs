@@ -295,6 +295,9 @@ impl LayeredPrompt {
         if !out.is_empty() {
             out.push('\n');
         }
+        // 产品名曾被模型误写为同音字；在共享层注入准确名称，覆盖不同模型方案。
+        out.push_str(crate::copy("system.product-identity"));
+        out.push_str("\n\n");
         if let Some(guidance) = plan_guidance {
             out.push_str(PLAN_MODE_HEADER);
             out.push('\n');
@@ -651,6 +654,14 @@ mod tests {
         assert!(out.contains("you are a reviewer"));
         assert!(out.contains(MEMORY_HEADER));
         assert!(out.contains("- foo"));
+    }
+
+    #[test]
+    fn compose_core_includes_product_identity_without_plan_mode() {
+        let out = LayeredPrompt::compose_core_with_guidance("自定义角色", "", None);
+        assert!(out.contains("自定义角色"));
+        assert!(out.contains("官方中文名称是「烛夜」"));
+        assert!(out.contains("宿主或会话定义了具体的代理角色和名称"));
     }
 
     // ── Plan Mode 段可关闭 ──────────────────────────────────────────

@@ -2,7 +2,11 @@
   <b>中文</b> · <a href="README.en.md">English</a>
 </p>
 
+<p align="center"><img src="res/logo.png" alt="烛夜官方 logo" width="180"></p>
+
 # 烛夜 ZhuYe
+
+本产品的官方中文名称是**烛夜**,英文写作 **ZhuYe**;上图是唯一官方 logo。
 
 烛夜是一个 AI agent 运行时框架,用 Rust 编写。你把它嵌进自己的产品,agent 就在你的产品里跑起来:读代码、改文件、调工具、调模型、开子代理。
 

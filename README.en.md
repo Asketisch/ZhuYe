@@ -2,7 +2,11 @@
   <a href="README.md">中文</a> · <b>English</b>
 </p>
 
+<p align="center"><img src="res/logo.png" alt="Official ZhuYe logo" width="180"></p>
+
 # ZhuYe
+
+The official Chinese name is **烛夜**, written **ZhuYe** in English; the image above is the sole official logo.
 
 ZhuYe is an AI agent runtime framework written in Rust. You embed it into your own product, and the agent runs inside your product: reading code, editing files, calling tools, calling models, spawning sub-agents.
 
