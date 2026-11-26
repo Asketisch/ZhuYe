@@ -14,7 +14,7 @@
 //!   附属 scripts/references)。这里「整目录」就是 skill 的完整单元 ——
 //!   与官方 skills CLI 的安装语义一致;安全边界换到提取器:防路径穿越
 //!   (zip-slip)、跳过符号链接、跳过 `metadata.json`,并在落盘前过
-//!   [`crate::supply_chain::scan_skill`] 安装前扫描(block 级发现即拒装)。
+//!   [`crate::market::supply_chain::scan_skill`] 安装前扫描(block 级发现即拒装)。
 //!
 //! 来源约束:仅接受 `owner/repo[/slug]`、`https://github.com/owner/repo`
 //! 或 `https://skills.sh/owner/repo/slug` 形态(防 `file://` / 本地路径
@@ -22,7 +22,7 @@
 //! application/vnd.github.raw` 直取原文),目录生态形态走 codeload
 //! tarball(匿名可用,不受 contents API 60 次/小时限额约束)。
 //!
-//! 市场发现(搜索/排行榜)由 [`crate::directory`](skills.sh sitemap 索引)
+//! 市场发现(搜索/排行榜)由 [`crate::market::directory`](skills.sh sitemap 索引)
 //! 承担;插件市场发现另见 zhuye-plugin `marketplace discover`。
 
 use std::path::{Path, PathBuf};
@@ -217,7 +217,7 @@ pub fn normalize_market_source(source: &str) -> Result<MarketSource, SkillError>
 /// 与 [`install_from_github`](单仓形态)的差异:支持 `owner/repo/slug`
 /// 三段式定位仓库内子目录(`skills/<slug>/` 布局),并**整目录提取**
 /// (SKILL.md + scripts / references 附属文件)。tarball 经
-/// `codeload.github.com` 拉取(匿名可用),落盘前过 [`crate::supply_chain::scan_skill`]
+/// `codeload.github.com` 拉取(匿名可用),落盘前过 [`crate::market::supply_chain::scan_skill`]
 /// 安装前扫描(block 级发现即拒装)。返回安装后的技能目录路径。
 pub async fn install_skill_from_market(
     source: &str,
@@ -250,7 +250,7 @@ pub async fn install_skill_from_market(
     validate_skill_dir_name(&name)?;
 
     // 安装前供应链扫描:block 即拒装,warn 记日志放行(与 TUI 同口径)。
-    let report = crate::supply_chain::scan_skill(&meta.body, &meta.tools);
+    let report = crate::market::supply_chain::scan_skill(&meta.body, &meta.tools);
     if report.is_blocked() {
         return Err(SkillError::Fetch(format!(
             "安装前安全扫描阻断({}):{}",

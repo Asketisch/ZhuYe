@@ -2,13 +2,15 @@
 //!
 //! 四件事:
 //!
-//! 1. **锁文件统一**([`SkillLockfile`])—— 与 F27 的 lock 合并成单一入口;
-//! 2. **从 CLI 帮助自动生成技能**([`skill_from_cli_help`])—— 把 `--help`
+//! 1. **从 CLI 帮助自动生成技能**([`skill_from_cli_help`])—— 把 `--help`
 //!    输出转成技能正文,新工具零成本接入;
-//! 3. **技能输出合同**([`OutputContract`])—— 技能声明"必须产出什么",
+//! 2. **技能输出合同**([`OutputContract`])—— 技能声明"必须产出什么",
 //!    由 VerificationHook 校验 marker;
-//! 4. **价值度量**([`SkillMetrics`])—— 哪些技能真的有用、哪些在拖后腿
+//! 3. **价值度量**([`SkillMetrics`])—— 哪些技能真的有用、哪些在拖后腿
 //!    (否则技能库只会越堆越胖)。
+//!
+//! 锁文件不在本模块:F58 与 F27 曾各实现一套结构相同的锁(见下方
+//! [`SkillLockfile`]),现已合并为 F27 的单一实现 [`SkillsLock`]。
 //!
 //! ## 为什么需要「输出合同」
 //!
@@ -25,76 +27,20 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// 技能锁条目。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillLockEntry {
-    pub name: String,
-    /// 内容 sha256。
-    pub sha256: String,
-    /// 来源。
-    pub source: String,
-    /// 钉扎版本 / commit。
-    #[serde(default)]
-    pub pinned: Option<String>,
-}
+/// 技能锁条目（F58 的命名，语义等同 F27 的 [`LockedSkill`]）。
+///
+/// 修复原因:F58（longtail）与 F27（supply_chain）各自实现了一套结构
+/// 相同的锁文件（`SkillLockfile`/`SkillLockEntry` 与 `SkillsLock`/
+/// `LockedSkill`），字段与 serde 格式完全一致，只是 `verify_frozen`
+/// 的返回类型不同（`Vec<String>` vs `Vec<LockMismatch>`）。两套实现
+/// 长期并存会让「锁文件」这个概念有两个入口 —— 正是 F58 模块文档里
+/// 「与 F27 的 lock 合并成单一入口」那条自述要做却没做的事。
+/// 现以类型别名收敛到 F27 的单一实现，`SkillLockfile` / `SkillLockEntry`
+/// 两个旧名保留为别名，既有调用方无需改动。
+pub type SkillLockEntry = crate::market::supply_chain::LockedSkill;
 
-/// 统一的技能锁文件。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillLockfile {
-    pub version: u32,
-    pub skills: BTreeMap<String, SkillLockEntry>,
-}
-
-impl SkillLockfile {
-    pub fn new() -> SkillLockfile {
-        SkillLockfile {
-            version: 1,
-            skills: BTreeMap::new(),
-        }
-    }
-
-    /// 插入/更新。
-    pub fn upsert(&mut self, entry: SkillLockEntry) {
-        self.skills.insert(entry.name.clone(), entry);
-    }
-
-    pub fn get(&self, name: &str) -> Option<&SkillLockEntry> {
-        self.skills.get(name)
-    }
-
-    pub fn remove(&mut self, name: &str) -> bool {
-        self.skills.remove(name).is_some()
-    }
-
-    pub fn len(&self) -> usize {
-        self.skills.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.skills.is_empty()
-    }
-
-    /// frozen 校验(与 F27 同语义)。
-    pub fn verify_frozen(&self, installed: &BTreeMap<String, String>) -> Vec<String> {
-        let mut out = Vec::new();
-        for (name, entry) in &self.skills {
-            match installed.get(name) {
-                Some(actual) if actual == &entry.sha256 => {}
-                _ => out.push(name.clone()),
-            }
-        }
-        out.sort();
-        out
-    }
-
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
-    }
-
-    pub fn from_json(s: &str) -> Result<SkillLockfile, String> {
-        serde_json::from_str(s).map_err(|e| format!("parse skills lockfile: {e}"))
-    }
-}
+/// 统一的技能锁文件（F58 的命名，语义等同 F27 的 [`SkillsLock`]）。
+pub type SkillLockfile = crate::market::supply_chain::SkillsLock;
 
 /// 从 CLI `--help` 输出生成技能。
 ///
@@ -369,7 +315,7 @@ mod tests {
     #[test]
     fn lockfile_upsert_and_get() {
         let mut lock = SkillLockfile::new();
-        lock.upsert(SkillLockEntry {
+        lock.record(SkillLockEntry {
             name: "s".into(),
             sha256: "h".into(),
             source: "o/r".into(),
@@ -384,13 +330,13 @@ mod tests {
     #[test]
     fn lockfile_frozen_verify() {
         let mut lock = SkillLockfile::new();
-        lock.upsert(SkillLockEntry {
+        lock.record(SkillLockEntry {
             name: "a".into(),
             sha256: "aaa".into(),
             source: "o".into(),
             pinned: None,
         });
-        lock.upsert(SkillLockEntry {
+        lock.record(SkillLockEntry {
             name: "b".into(),
             sha256: "bbb".into(),
             source: "o".into(),
@@ -400,13 +346,14 @@ mod tests {
         installed.insert("a".to_string(), "aaa".to_string());
         installed.insert("b".to_string(), "wrong".to_string());
         let bad = lock.verify_frozen(&installed);
-        assert_eq!(bad, vec!["b"]);
+        let names: Vec<&str> = bad.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["b"]);
     }
 
     #[test]
     fn lockfile_json_roundtrip() {
         let mut lock = SkillLockfile::new();
-        lock.upsert(SkillLockEntry {
+        lock.record(SkillLockEntry {
             name: "s".into(),
             sha256: "h".into(),
             source: "o".into(),
