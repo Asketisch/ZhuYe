@@ -1,8 +1,10 @@
 //! 固定目录句柄后列举和读取 Windows 知识库。
 
-use super::*;
+use super::page::{PinnedDir, pin_child, pin_root, read_file_at};
+use crate::{
+    KmsError, Page, SearchResult, WikiInfo, extract_description, extract_tags, extract_title,
+};
 use std::os::windows::fs::MetadataExt;
-use windows_page::{PinnedDir, pin_child, pin_root, read_file_at};
 
 fn names(dir: &PinnedDir) -> std::io::Result<Vec<String>> {
     let mut names = Vec::new();
@@ -75,7 +77,7 @@ fn count_pages(dir: &PinnedDir) -> std::io::Result<usize> {
     Ok(count)
 }
 
-pub(super) fn list_pages(root_path: &std::path::Path, name: &str) -> Result<Vec<Page>, KmsError> {
+pub(crate) fn list_pages(root_path: &std::path::Path, name: &str) -> Result<Vec<Page>, KmsError> {
     let root = pin_root(root_path)?;
     let wiki = pin_child(&root, name).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -93,7 +95,7 @@ pub(super) fn list_pages(root_path: &std::path::Path, name: &str) -> Result<Vec<
     }
 }
 
-pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, KmsError> {
+pub(crate) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, KmsError> {
     let root = pin_root(root_path)?;
     let entries = names(&root)?;
     let mut result = Vec::new();
@@ -116,7 +118,7 @@ pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, K
             Some(pages) => count_pages(&pages)?,
             None => 0,
         };
-        let modified_at_ms = windows_page::pinned_modified(&wiki);
+        let modified_at_ms = page::pinned_modified(&wiki);
         result.push(WikiInfo {
             path: root_path.join(&name),
             name,
@@ -128,7 +130,7 @@ pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, K
     Ok(result)
 }
 
-pub(super) fn search(
+pub(crate) fn search(
     root_path: &std::path::Path,
     query: &str,
 ) -> Result<Vec<SearchResult>, KmsError> {

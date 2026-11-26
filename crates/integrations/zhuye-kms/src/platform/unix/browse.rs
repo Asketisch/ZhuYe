@@ -1,6 +1,9 @@
 //! 使用已打开的目录句柄列举并读取知识库。
 
-use super::*;
+use super::page;
+use crate::{
+    KmsError, Page, SearchResult, WikiInfo, extract_description, extract_tags, extract_title,
+};
 use rustix::fd::OwnedFd;
 use rustix::fs::Dir;
 
@@ -37,7 +40,7 @@ fn pages_from_dir(pages: &OwnedFd, wiki: &str) -> std::io::Result<Vec<Page>> {
         if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
             continue;
         }
-        let (content, modified_at_ms) = match unix_page::read_file_at(pages, &filename) {
+        let (content, modified_at_ms) = match page::read_file_at(pages, &filename) {
             Ok(page) => page,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -73,9 +76,9 @@ fn count_pages(pages: &OwnedFd) -> std::io::Result<usize> {
     Ok(count)
 }
 
-pub(super) fn list_pages(root: &std::path::Path, wiki: &str) -> Result<Vec<Page>, KmsError> {
-    let root = unix_page::open_root(root)?;
-    let wiki_dir = unix_page::open_dir(&root, wiki).map_err(|error| {
+pub(crate) fn list_pages(root: &std::path::Path, wiki: &str) -> Result<Vec<Page>, KmsError> {
+    let root = page::open_root(root)?;
+    let wiki_dir = page::open_dir(&root, wiki).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             KmsError::WikiNotFound {
                 name: wiki.to_string(),
@@ -84,19 +87,19 @@ pub(super) fn list_pages(root: &std::path::Path, wiki: &str) -> Result<Vec<Page>
             error.into()
         }
     })?;
-    match unix_page::open_dir(&wiki_dir, "pages") {
+    match page::open_dir(&wiki_dir, "pages") {
         Ok(pages) => Ok(pages_from_dir(&pages, wiki)?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.into()),
     }
 }
 
-pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, KmsError> {
-    let root = unix_page::open_root(root_path)?;
+pub(crate) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, KmsError> {
+    let root = page::open_root(root_path)?;
     let entries = names(&root)?;
     let mut result = Vec::new();
     for name in entries {
-        let wiki = match unix_page::open_dir(&root, &name) {
+        let wiki = match page::open_dir(&root, &name) {
             Ok(wiki) => wiki,
             Err(error) if matches!(error.raw_os_error(), Some(code) if code == rustix::io::Errno::NOENT.raw_os_error() || code == rustix::io::Errno::NOTDIR.raw_os_error() || code == rustix::io::Errno::LOOP.raw_os_error()) =>
             {
@@ -104,7 +107,7 @@ pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, K
             }
             Err(error) => return Err(error.into()),
         };
-        let description = match unix_page::read_file_at(&wiki, "index.md") {
+        let description = match page::read_file_at(&wiki, "index.md") {
             Ok((content, _)) => extract_description(&content),
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound
@@ -114,7 +117,7 @@ pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, K
             }
             Err(error) => return Err(error.into()),
         };
-        let page_count = match unix_page::open_dir(&wiki, "pages") {
+        let page_count = match page::open_dir(&wiki, "pages") {
             Ok(pages) => count_pages(&pages)?,
             Err(error) if matches!(error.raw_os_error(), Some(code) if code == rustix::io::Errno::NOENT.raw_os_error() || code == rustix::io::Errno::NOTDIR.raw_os_error() || code == rustix::io::Errno::LOOP.raw_os_error()) => {
                 0
@@ -124,7 +127,7 @@ pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, K
         let modified_at_ms = rustix::io::dup(&wiki)
             .ok()
             .map(std::fs::File::from)
-            .map_or(0, |file| unix_page::modified_ms(&file));
+            .map_or(0, |file| page::modified_ms(&file));
         result.push(WikiInfo {
             path: root_path.join(&name),
             name,
@@ -136,15 +139,15 @@ pub(super) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, K
     Ok(result)
 }
 
-pub(super) fn search(
+pub(crate) fn search(
     root_path: &std::path::Path,
     query: &str,
 ) -> Result<Vec<SearchResult>, KmsError> {
-    let root = unix_page::open_root(root_path)?;
+    let root = page::open_root(root_path)?;
     let entries = names(&root)?;
     let mut result = Vec::new();
     for name in entries {
-        let wiki = match unix_page::open_dir(&root, &name) {
+        let wiki = match page::open_dir(&root, &name) {
             Ok(wiki) => wiki,
             Err(error) if matches!(error.raw_os_error(), Some(code) if code == rustix::io::Errno::NOENT.raw_os_error() || code == rustix::io::Errno::NOTDIR.raw_os_error() || code == rustix::io::Errno::LOOP.raw_os_error()) =>
             {
@@ -152,7 +155,7 @@ pub(super) fn search(
             }
             Err(error) => return Err(error.into()),
         };
-        let pages = match unix_page::open_dir(&wiki, "pages") {
+        let pages = match page::open_dir(&wiki, "pages") {
             Ok(pages) => pages,
             Err(error) if matches!(error.raw_os_error(), Some(code) if code == rustix::io::Errno::NOENT.raw_os_error() || code == rustix::io::Errno::NOTDIR.raw_os_error() || code == rustix::io::Errno::LOOP.raw_os_error()) =>
             {
@@ -193,9 +196,9 @@ mod tests {
         std::fs::create_dir_all(root.path().join("wiki/pages")).unwrap();
         std::fs::write(root.path().join("wiki/pages/inside.md"), "inside").unwrap();
         std::fs::write(outside.path().join("secret.md"), "outside").unwrap();
-        let root_fd = unix_page::open_root(root.path()).unwrap();
-        let wiki_fd = unix_page::open_dir(&root_fd, "wiki").unwrap();
-        let pages_fd = unix_page::open_dir(&wiki_fd, "pages").unwrap();
+        let root_fd = page::open_root(root.path()).unwrap();
+        let wiki_fd = page::open_dir(&root_fd, "wiki").unwrap();
+        let pages_fd = page::open_dir(&wiki_fd, "pages").unwrap();
         std::fs::rename(
             root.path().join("wiki/pages"),
             root.path().join("wiki/old-pages"),

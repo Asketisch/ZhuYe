@@ -36,13 +36,13 @@ fn pin_directory(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-pub(super) struct PinnedDir {
-    pub(super) path: PathBuf,
+pub(crate) struct PinnedDir {
+    pub(crate) path: PathBuf,
     // 保存所有句柄，使父目录在文件操作结束前不能被重命名或替换。
     _directories: Vec<File>,
 }
 
-pub(super) fn pin_root(root: &Path) -> io::Result<PinnedDir> {
+pub(crate) fn pin_root(root: &Path) -> io::Result<PinnedDir> {
     let root = std::fs::canonicalize(root)?;
     let mut directories = Vec::new();
     for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
@@ -54,7 +54,7 @@ pub(super) fn pin_root(root: &Path) -> io::Result<PinnedDir> {
     })
 }
 
-pub(super) fn pin_child(parent: &PinnedDir, name: &str) -> io::Result<PinnedDir> {
+pub(crate) fn pin_child(parent: &PinnedDir, name: &str) -> io::Result<PinnedDir> {
     let path = parent.path.join(name);
     let child = pin_directory(&path)?;
     let mut directories = parent
@@ -69,7 +69,7 @@ pub(super) fn pin_child(parent: &PinnedDir, name: &str) -> io::Result<PinnedDir>
     })
 }
 
-pub(super) fn pinned_modified(dir: &PinnedDir) -> u64 {
+pub(crate) fn pinned_modified(dir: &PinnedDir) -> u64 {
     dir._directories.last().map_or(0, modified_ms)
 }
 
@@ -87,7 +87,7 @@ fn pin_pages(root: &Path, wiki: &str, create: bool) -> io::Result<PinnedDir> {
     pin_child(&wiki, "pages")
 }
 
-pub(super) fn modified_ms(file: &File) -> u64 {
+pub(crate) fn modified_ms(file: &File) -> u64 {
     file.metadata()
         .ok()
         .and_then(|m| m.modified().ok())
@@ -96,7 +96,7 @@ pub(super) fn modified_ms(file: &File) -> u64 {
         .unwrap_or(0)
 }
 
-pub(super) fn open_file(dir: &PinnedDir, name: &str) -> io::Result<File> {
+pub(crate) fn open_file(dir: &PinnedDir, name: &str) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .share_mode(SHARE_READ_WRITE)
@@ -112,14 +112,14 @@ pub(super) fn open_file(dir: &PinnedDir, name: &str) -> io::Result<File> {
     Ok(file)
 }
 
-pub(super) fn read_file_at(dir: &PinnedDir, name: &str) -> io::Result<(String, u64)> {
+pub(crate) fn read_file_at(dir: &PinnedDir, name: &str) -> io::Result<(String, u64)> {
     let mut file = open_file(dir, name)?;
     let mut content = String::new();
     file.read_to_string(&mut content)?;
     Ok((content, modified_ms(&file)))
 }
 
-pub(super) fn write_new_file(dir: &PinnedDir, name: &str, content: &[u8]) -> io::Result<()> {
+pub(crate) fn write_new_file(dir: &PinnedDir, name: &str, content: &[u8]) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -130,12 +130,12 @@ pub(super) fn write_new_file(dir: &PinnedDir, name: &str, content: &[u8]) -> io:
     file.write_all(content)
 }
 
-pub(super) fn read(root: &Path, wiki: &str, page: &str) -> io::Result<(String, u64)> {
+pub(crate) fn read(root: &Path, wiki: &str, page: &str) -> io::Result<(String, u64)> {
     let pages = pin_pages(root, wiki, false)?;
     read_file_at(&pages, &format!("{page}.md"))
 }
 
-pub(super) fn write(
+pub(crate) fn write(
     root: &Path,
     wiki: &str,
     page: &str,

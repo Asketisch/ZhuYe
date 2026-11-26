@@ -7,13 +7,13 @@ use std::path::Path;
 use rustix::fd::OwnedFd;
 use rustix::fs::{self, AtFlags, Dir, Mode, OFlags};
 
-use super::unix_page;
+use super::page;
 
-pub(super) fn create(root_path: &Path, name: &str, index: &[u8]) -> io::Result<u64> {
+pub(crate) fn create(root_path: &Path, name: &str, index: &[u8]) -> io::Result<u64> {
     std::fs::create_dir_all(root_path)?;
-    let root = unix_page::open_root(root_path)?;
+    let root = page::open_root(root_path)?;
     fs::mkdirat(&root, name, Mode::from_raw_mode(0o777))?;
-    let wiki = unix_page::open_dir(&root, name)?;
+    let wiki = page::open_dir(&root, name)?;
     initialize_wiki(&wiki, index)
 }
 
@@ -23,13 +23,13 @@ fn initialize_wiki(wiki: &OwnedFd, index: &[u8]) -> io::Result<u64> {
         Err(error) => return Err(error.into()),
     }
     // 已存在的 pages 可能被并发替换，打开时验证它是实际目录。
-    unix_page::open_dir(wiki, "pages")?;
+    page::open_dir(wiki, "pages")?;
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let fd = fs::openat(wiki, "index.md", flags, Mode::from_raw_mode(0o666))?;
     let mut file = File::from(fd);
     file.write_all(index)?;
     let wiki_file = File::from(rustix::io::dup(wiki)?);
-    Ok(unix_page::modified_ms(&wiki_file))
+    Ok(page::modified_ms(&wiki_file))
 }
 
 fn remove_contents(dir: &OwnedFd) -> io::Result<()> {
@@ -61,9 +61,9 @@ fn remove_contents(dir: &OwnedFd) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn delete(root_path: &Path, name: &str) -> io::Result<()> {
-    let root = unix_page::open_root(root_path)?;
-    let wiki = unix_page::open_dir(&root, name)?;
+pub(crate) fn delete(root_path: &Path, name: &str) -> io::Result<()> {
+    let root = page::open_root(root_path)?;
+    let wiki = page::open_dir(&root, name)?;
     remove_contents(&wiki)?;
     fs::unlinkat(&root, name, AtFlags::REMOVEDIR)?;
     Ok(())
@@ -81,8 +81,8 @@ mod tests {
         std::fs::create_dir_all(root.path().join("wiki/pages")).unwrap();
         std::fs::write(root.path().join("wiki/pages/own.md"), "inside").unwrap();
         std::fs::write(outside.path().join("secret.md"), "outside").unwrap();
-        let root_fd = unix_page::open_root(root.path()).unwrap();
-        let wiki_fd = unix_page::open_dir(&root_fd, "wiki").unwrap();
+        let root_fd = page::open_root(root.path()).unwrap();
+        let wiki_fd = page::open_dir(&root_fd, "wiki").unwrap();
         std::fs::rename(
             root.path().join("wiki/pages"),
             root.path().join("wiki/old-pages"),
@@ -102,8 +102,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("wiki")).unwrap();
-        let root_fd = unix_page::open_root(root.path()).unwrap();
-        let wiki_fd = unix_page::open_dir(&root_fd, "wiki").unwrap();
+        let root_fd = page::open_root(root.path()).unwrap();
+        let wiki_fd = page::open_dir(&root_fd, "wiki").unwrap();
         std::fs::rename(root.path().join("wiki"), root.path().join("original")).unwrap();
         symlink(outside.path(), root.path().join("wiki")).unwrap();
         initialize_wiki(&wiki_fd, b"inside").unwrap();

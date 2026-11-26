@@ -7,11 +7,11 @@ impl KnowledgeManager {
     pub fn list_wikis(&self) -> Result<Vec<WikiInfo>, KmsError> {
         #[cfg(unix)]
         {
-            unix_browse::list_wikis(&self.root)
+            platform::unix::browse::list_wikis(&self.root)
         }
         #[cfg(windows)]
         {
-            windows_browse::list_wikis(&self.root)
+            platform::windows::browse::list_wikis(&self.root)
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -71,11 +71,11 @@ impl KnowledgeManager {
     pub fn search(&self, query: &str) -> Result<Vec<SearchResult>, KmsError> {
         #[cfg(unix)]
         {
-            unix_browse::search(&self.root, query)
+            platform::unix::browse::search(&self.root, query)
         }
         #[cfg(windows)]
         {
-            windows_browse::search(&self.root, query)
+            platform::windows::browse::search(&self.root, query)
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -157,11 +157,11 @@ impl KnowledgeManager {
         reject_links(&self.root, &std::path::Path::new(wiki).join("pages"))?;
         #[cfg(unix)]
         {
-            unix_browse::list_pages(&self.root, wiki)
+            platform::unix::browse::list_pages(&self.root, wiki)
         }
         #[cfg(windows)]
         {
-            windows_browse::list_pages(&self.root, wiki)
+            platform::windows::browse::list_pages(&self.root, wiki)
         }
         #[cfg(not(any(unix, windows)))]
         {

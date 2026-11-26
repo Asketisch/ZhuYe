@@ -1,10 +1,10 @@
 //! 固定 KMS 根目录后创建或删除知识库。
 
-use super::windows_page::{pin_child, pin_root, pinned_modified, write_new_file};
+use super::page::{pin_child, pin_root, pinned_modified, write_new_file};
 use std::io;
 use std::path::Path;
 
-pub(super) fn create(root_path: &Path, name: &str, index: &[u8]) -> io::Result<u64> {
+pub(crate) fn create(root_path: &Path, name: &str, index: &[u8]) -> io::Result<u64> {
     std::fs::create_dir_all(root_path)?;
     let root = pin_root(root_path)?;
     let path = root.path.join(name);
@@ -20,7 +20,7 @@ pub(super) fn create(root_path: &Path, name: &str, index: &[u8]) -> io::Result<u
     Ok(pinned_modified(&wiki))
 }
 
-pub(super) fn delete(root_path: &Path, name: &str) -> io::Result<()> {
+pub(crate) fn delete(root_path: &Path, name: &str) -> io::Result<()> {
     let root = pin_root(root_path)?;
     // Windows 标准库的递归删除不跟随符号链接，并通过句柄遍历子项。
     // 根目录保持固定；不固定待删除目录自身，否则会阻止其被删除。

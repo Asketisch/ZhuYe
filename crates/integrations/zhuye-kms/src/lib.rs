@@ -10,18 +10,7 @@ mod browse;
 mod dream;
 mod helpers;
 mod path_guard;
-#[cfg(unix)]
-mod unix_admin;
-#[cfg(unix)]
-mod unix_browse;
-#[cfg(unix)]
-mod unix_page;
-#[cfg(windows)]
-mod windows_admin;
-#[cfg(windows)]
-mod windows_browse;
-#[cfg(windows)]
-mod windows_page;
+mod platform;
 #[cfg(not(any(unix, windows)))]
 use helpers::count_md_files;
 #[cfg(not(any(unix, windows)))]
@@ -204,27 +193,31 @@ impl KnowledgeManager {
         }
         index_content.push_str("---\n");
         #[cfg(unix)]
-        let modified_at_ms = unix_admin::create(&self.root, name, index_content.as_bytes())
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    KmsError::WikiAlreadyExists {
-                        name: name.to_string(),
+        let modified_at_ms =
+            platform::unix::admin::create(&self.root, name, index_content.as_bytes()).map_err(
+                |error| {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        KmsError::WikiAlreadyExists {
+                            name: name.to_string(),
+                        }
+                    } else {
+                        error.into()
                     }
-                } else {
-                    error.into()
-                }
-            })?;
+                },
+            )?;
         #[cfg(windows)]
-        let modified_at_ms = windows_admin::create(&self.root, name, index_content.as_bytes())
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    KmsError::WikiAlreadyExists {
-                        name: name.to_string(),
+        let modified_at_ms =
+            platform::windows::admin::create(&self.root, name, index_content.as_bytes()).map_err(
+                |error| {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        KmsError::WikiAlreadyExists {
+                            name: name.to_string(),
+                        }
+                    } else {
+                        error.into()
                     }
-                } else {
-                    error.into()
-                }
-            })?;
+                },
+            )?;
         #[cfg(not(any(unix, windows)))]
         let modified_at_ms = {
             std::fs::create_dir_all(&self.root)?;
@@ -257,7 +250,7 @@ impl KnowledgeManager {
         reject_links(&self.root, std::path::Path::new(name))?;
         #[cfg(unix)]
         {
-            unix_admin::delete(&self.root, name).map_err(|error| {
+            platform::unix::admin::delete(&self.root, name).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     KmsError::WikiNotFound {
                         name: name.to_string(),
@@ -269,7 +262,7 @@ impl KnowledgeManager {
         }
         #[cfg(windows)]
         {
-            windows_admin::delete(&self.root, name).map_err(|error| {
+            platform::windows::admin::delete(&self.root, name).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     KmsError::WikiNotFound {
                         name: name.to_string(),
@@ -394,11 +387,21 @@ impl KnowledgeManager {
         };
 
         #[cfg(unix)]
-        let modified_at_ms =
-            unix_page::write(&self.root, wiki, page, full_content.as_bytes(), create_only)?;
+        let modified_at_ms = platform::unix::page::write(
+            &self.root,
+            wiki,
+            page,
+            full_content.as_bytes(),
+            create_only,
+        )?;
         #[cfg(windows)]
-        let modified_at_ms =
-            windows_page::write(&self.root, wiki, page, full_content.as_bytes(), create_only)?;
+        let modified_at_ms = platform::windows::page::write(
+            &self.root,
+            wiki,
+            page,
+            full_content.as_bytes(),
+            create_only,
+        )?;
         #[cfg(not(any(unix, windows)))]
         let modified_at_ms = {
             let page_path = self.page_path(wiki, page);
@@ -443,8 +446,8 @@ impl KnowledgeManager {
                 .join(format!("{page}.md")),
         )?;
         #[cfg(unix)]
-        let (content, modified_at_ms) =
-            unix_page::read(&self.root, wiki, page).map_err(|error| {
+        let (content, modified_at_ms) = platform::unix::page::read(&self.root, wiki, page)
+            .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     KmsError::PageNotFound {
                         wiki: wiki.to_string(),
@@ -455,8 +458,8 @@ impl KnowledgeManager {
                 }
             })?;
         #[cfg(windows)]
-        let (content, modified_at_ms) =
-            windows_page::read(&self.root, wiki, page).map_err(|error| {
+        let (content, modified_at_ms) = platform::windows::page::read(&self.root, wiki, page)
+            .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     KmsError::PageNotFound {
                         wiki: wiki.to_string(),

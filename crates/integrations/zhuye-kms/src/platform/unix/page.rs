@@ -6,12 +6,12 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-pub(super) fn open_root(root: &Path) -> io::Result<OwnedFd> {
+pub(crate) fn open_root(root: &Path) -> io::Result<OwnedFd> {
     let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
     Ok(fs::open(root, dir_flags, Mode::empty())?)
 }
 
-pub(super) fn open_dir(parent: &OwnedFd, name: &str) -> io::Result<OwnedFd> {
+pub(crate) fn open_dir(parent: &OwnedFd, name: &str) -> io::Result<OwnedFd> {
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
     Ok(fs::openat(parent, name, flags, Mode::empty())?)
 }
@@ -28,7 +28,7 @@ fn open_pages(root: &Path, wiki: &str, create: bool) -> io::Result<OwnedFd> {
     open_dir(&wiki, "pages")
 }
 
-pub(super) fn modified_ms(file: &File) -> u64 {
+pub(crate) fn modified_ms(file: &File) -> u64 {
     file.metadata()
         .ok()
         .and_then(|m| m.modified().ok())
@@ -36,7 +36,7 @@ pub(super) fn modified_ms(file: &File) -> u64 {
         .map_or(0, |duration| duration.as_millis() as u64)
 }
 
-pub(super) fn read_file_at(parent: &OwnedFd, name: &str) -> io::Result<(String, u64)> {
+pub(crate) fn read_file_at(parent: &OwnedFd, name: &str) -> io::Result<(String, u64)> {
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
     let fd = fs::openat(parent, name, flags, Mode::empty())?;
     let mut file = File::from(fd);
@@ -51,7 +51,7 @@ pub(super) fn read_file_at(parent: &OwnedFd, name: &str) -> io::Result<(String, 
     Ok((content, modified_ms(&file)))
 }
 
-pub(super) fn read(root: &Path, wiki: &str, page: &str) -> io::Result<(String, u64)> {
+pub(crate) fn read(root: &Path, wiki: &str, page: &str) -> io::Result<(String, u64)> {
     let pages = open_pages(root, wiki, false)?;
     read_file_at(&pages, &format!("{page}.md"))
 }
@@ -251,7 +251,7 @@ fn write_to_dir(
     result
 }
 
-pub(super) fn write(
+pub(crate) fn write(
     root: &Path,
     wiki: &str,
     page: &str,
