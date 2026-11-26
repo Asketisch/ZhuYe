@@ -31,10 +31,10 @@ use project::reconcile_on_open;
 use retrieve::{CANDIDATE_CAP, pack_and_render, search_scope};
 use schema::{init, revision as read_revision};
 
-use crate::consolidate::ConsolidateStats;
 use crate::edit::{EntryWriteOptions, MemoryEntry};
+use crate::lifecycle::consolidate::ConsolidateStats;
 use crate::model::{MemoryError, MemoryScope};
-use crate::scope::resolve_path_with_data_dir;
+use crate::storage::scope::resolve_path_with_data_dir;
 use crate::store::{FileMemoryStore, MemoryStore};
 
 /// namespace 连接表:(scope, agent) → 已初始化(含首次导入对账)
@@ -270,7 +270,7 @@ impl MemoryStore for SqliteMemoryStore {
                     if body.trim().is_empty() {
                         continue;
                     }
-                    for sec in crate::retrieval::split_sections(*scope, &body) {
+                    for sec in crate::retrieval::sections::split_sections(*scope, &body) {
                         let combined = format!("{} {}", sec.title, sec.body);
                         let doc_terms = zhuye_bm25::tokenize(&combined);
                         let doc_set: std::collections::HashSet<&String> =
@@ -327,7 +327,7 @@ impl MemoryStore for SqliteMemoryStore {
     }
 }
 
-impl crate::editor::MemoryEditor for SqliteMemoryStore {
+impl crate::storage::editor::MemoryEditor for SqliteMemoryStore {
     fn list_entries(
         &self,
         scope: MemoryScope,
@@ -499,7 +499,7 @@ fn map_unique_violation(e: MemoryError) -> MemoryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::MemoryEditor;
+    use crate::storage::editor::MemoryEditor;
 
     fn store(dir: &std::path::Path) -> SqliteMemoryStore {
         SqliteMemoryStore::open(dir.to_path_buf(), dir.to_path_buf())

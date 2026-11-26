@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::model::MemoryScope;
-use crate::scope::MAX_MEMORY_INJECT_CHARS;
+use crate::storage::scope::MAX_MEMORY_INJECT_CHARS;
 use crate::store::MemoryStore;
 
 /// 一个记忆条目:`## 标题` + 正文(或无标题整文件)。

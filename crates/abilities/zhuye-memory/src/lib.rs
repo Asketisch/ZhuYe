@@ -15,51 +15,46 @@
 //! [`MAX_MEMORY_INJECT_CHARS`](8000,与 Zhuye 一致)。
 
 pub mod backend;
-pub mod consolidate;
 pub mod edit;
-pub mod editor;
-/// F18:技能自进化(候选队列 + review 门 + 错误-解法缓存 + 备份)。
-pub mod evolution;
-/// F16:BM25 + 向量 RRF 混合检索(无 embedding 时自动降级)。
-pub mod hybrid;
-/// F17:记忆自动抽取 + 分层生命周期(衰减/驱逐/注入预算)。
+/// 记忆的认知面（画像 / 长尾 / 多文件知识组织）。
+pub mod insight;
+/// 记忆生命周期（抽取 / 整理 / 自进化）。
 pub mod lifecycle;
-/// F59:记忆长尾(时态边 + 证据接地 + 命名槽 + MemFS 导出)。
-pub mod longtail;
 pub mod model;
-/// F19:用户画像(偏好学习 + 审批门)+ Persona/SOUL 注入。
-pub mod persona;
+/// 记忆检索（分节切分 / 混合召回）。
 pub mod retrieval;
-pub mod scope;
 pub mod sqlite;
+/// 记忆的写侧端口与落盘位置。
+pub mod storage;
 pub mod store;
-pub mod topics;
 
 pub use backend::{MemoryBackend, MemoryStack, backend_from_env, bootstrap_stack};
-pub use consolidate::{ConsolidateStats, Consolidator, consolidate_document};
 pub use edit::{EntryWriteOptions, MemoryEntry, WHOLE_DOCUMENT_KEY, migrate_legacy_agent_dir};
-pub use editor::MemoryEditor;
-pub use evolution::{
-    CachedSolution, CandidateQueue, CandidateStatus, ErrorSolutionCache, EvolutionError,
-    SkillCandidate, SkillWriteBackup, prepare_write, restore_from_backup,
-};
-pub use hybrid::{
-    HybridHit, HybridRetriever, InMemoryVectorIndex, RetrievalSource, cosine_similarity, fuse_rrf,
-};
-pub use lifecycle::{
-    CandidateFact, ConsolidateOutcome, LayerPolicy, MemoryFact, MemoryLayer, consolidate,
-    extract_candidates, injection_budget,
-};
-pub use longtail::{
+pub use insight::longtail::{
     EdgeKind, Evidence, EvidenceSource, GroundedFact, LongTailStore, NamedSlot, SlotField,
     TemporalEdge,
 };
-pub use model::{MemoryError, MemoryScope};
-pub use persona::{
+pub use insight::persona::{
     Persona, Preference, PreferenceStatus, PreferenceStore, compose_prompt_sections,
 };
-pub use retrieval::{MemorySection, retrieve_relevant, retrieve_relevant_arc, split_sections};
-pub use scope::{MAX_MEMORY_INJECT_CHARS, resolve_path};
+pub use insight::topics::validate_topic_name;
+pub use lifecycle::consolidate::{ConsolidateStats, Consolidator, consolidate_document};
+pub use lifecycle::evolution::{
+    CachedSolution, CandidateQueue, CandidateStatus, ErrorSolutionCache, EvolutionError,
+    SkillCandidate, SkillWriteBackup, prepare_write, restore_from_backup,
+};
+pub use lifecycle::extract::{
+    CandidateFact, ConsolidateOutcome, LayerPolicy, MemoryFact, MemoryLayer, consolidate,
+    extract_candidates, injection_budget,
+};
+pub use model::{MemoryError, MemoryScope};
+pub use retrieval::hybrid::{
+    HybridHit, HybridRetriever, InMemoryVectorIndex, RetrievalSource, cosine_similarity, fuse_rrf,
+};
+pub use retrieval::sections::{
+    MemorySection, retrieve_relevant, retrieve_relevant_arc, split_sections,
+};
 pub use sqlite::{ChangeAction, ChangeReport, EntryKind, MemoryChange, SqliteMemoryStore};
+pub use storage::editor::MemoryEditor;
+pub use storage::scope::{MAX_MEMORY_INJECT_CHARS, resolve_path};
 pub use store::{FileMemoryStore, InMemoryStore, MemoryStore, truncate_for_injection};
-pub use topics::validate_topic_name;

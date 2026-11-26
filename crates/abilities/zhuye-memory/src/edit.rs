@@ -14,7 +14,7 @@
 //! <value>             ← 正文(下一个 `## ` 之前)
 //! ```
 //!
-//! - 解析走 [`crate::retrieval::split_sections`](与检索注入同一函数);
+//! - 解析走 [`crate::retrieval::sections::split_sections`](与检索注入同一函数);
 //! - 无法安全拆分的文件(空标题 / 重复标题 / 畸形标题)整体视为单条目,
 //!   key 为 [`WHOLE_DOCUMENT_KEY`],只能整份替换;
 //! - 写入走 `zhuye_fs::write_atomic`(symlink 穿透 / 权限不放大 /
@@ -33,7 +33,7 @@
 use std::path::Path;
 
 use crate::model::{MemoryError, MemoryScope};
-use crate::retrieval::split_sections;
+use crate::retrieval::sections::split_sections;
 use crate::store::FileMemoryStore;
 
 /// 整份文档条目的保留 key(无法安全拆分的文件)。
@@ -252,8 +252,8 @@ pub fn migrate_legacy_agent_dir(workspace: &Path, home: &Path, from_agent: &str,
     }
     for scope in [MemoryScope::Project, MemoryScope::User] {
         let (Ok(legacy), Ok(target)) = (
-            crate::scope::resolve_path(scope, workspace, home, from_agent),
-            crate::scope::resolve_path(scope, workspace, home, to_agent),
+            crate::storage::scope::resolve_path(scope, workspace, home, from_agent),
+            crate::storage::scope::resolve_path(scope, workspace, home, to_agent),
         ) else {
             continue;
         };

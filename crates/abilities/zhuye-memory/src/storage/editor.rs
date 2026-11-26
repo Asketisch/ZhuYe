@@ -3,8 +3,8 @@
 //! SQLite 条目版本库(`SqliteMemoryStore` 新路径)—— 所有既有写入
 //! 口收敛到同一接口(plan §2:唯一权威写入链)。
 
-use crate::consolidate::ConsolidateStats;
 use crate::edit::{EntryWriteOptions, MemoryEntry};
+use crate::lifecycle::consolidate::ConsolidateStats;
 use crate::model::{MemoryError, MemoryScope};
 use crate::store::FileMemoryStore;
 

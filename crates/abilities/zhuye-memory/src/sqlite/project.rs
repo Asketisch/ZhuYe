@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use super::change::{ChangeAction, MemoryChange, active_by_title, apply_changes, content_hash};
 use super::schema::{meta_get, meta_set, sql_err};
 use crate::model::{MemoryError, MemoryScope};
-use crate::retrieval::split_sections;
+use crate::retrieval::sections::split_sections;
 
 /// 导入统计(工具输出 / 日志用)。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

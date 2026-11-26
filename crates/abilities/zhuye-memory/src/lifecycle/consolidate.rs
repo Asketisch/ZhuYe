@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use crate::model::{MemoryError, MemoryScope};
-use crate::retrieval::split_sections;
+use crate::retrieval::sections::split_sections;
 use crate::store::FileMemoryStore;
 
 /// v1.11 基建#8:后台整理句柄 —— bootstrap 持有具体 `FileMemoryStore`

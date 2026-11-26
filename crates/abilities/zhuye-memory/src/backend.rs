@@ -2,7 +2,7 @@
 //!
 //! 渐进启用口径(plan §12):新模式经 `ZHUYE_MEMORY_BACKEND=sqlite`
 //! 显式开启,默认保持 Markdown 旧行为 —— 两条路径共享同一组接口
-//! (`MemoryStore::retrieve` 检索路由 + [`crate::editor::MemoryEditor`]
+//! (`MemoryStore::retrieve` 检索路由 + [`crate::storage::editor::MemoryEditor`]
 //! 条目编辑),宿主只换装配,不换调用点。
 
 use std::path::Path;
@@ -94,7 +94,7 @@ pub fn is_sqlite_backend(stack: &MemoryStack) -> bool {
 impl MemoryStack {
     /// 条目编辑器:新模式路由到 SQLite 变更端口,旧模式退化为文件
     /// store —— `MemoryTool` 等写侧经此获得唯一权威写入链。
-    pub fn editor(&self) -> Arc<dyn crate::editor::MemoryEditor> {
+    pub fn editor(&self) -> Arc<dyn crate::storage::editor::MemoryEditor> {
         match &self.sqlite {
             Some(sqlite) => sqlite.clone(),
             None => self.file.clone(),

@@ -2,7 +2,7 @@
 //! 适配框架 API:scope 枚举 + `EntryWriteOptions` + `MemoryError`)。
 
 use super::*;
-use crate::scope::resolve_path;
+use crate::storage::scope::resolve_path;
 use tempfile::TempDir;
 
 fn store_in(dir: &TempDir) -> FileMemoryStore {

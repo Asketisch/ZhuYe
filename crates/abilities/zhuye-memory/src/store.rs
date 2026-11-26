@@ -12,7 +12,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::model::{MemoryError, MemoryScope};
-use crate::scope::{MAX_MEMORY_INJECT_CHARS, resolve_path_with_data_dir};
+use crate::storage::scope::{MAX_MEMORY_INJECT_CHARS, resolve_path_with_data_dir};
 
 /// 抽象 memory store。实现可持久化到磁盘、内存或两者。
 /// 线程安全(`Send + Sync`)。
@@ -95,7 +95,7 @@ pub trait MemoryStore: Send + Sync {
         query: &str,
         budget: usize,
     ) -> Result<String, MemoryError> {
-        crate::retrieval::retrieve_relevant(self, scopes, agent_type, query, budget)
+        crate::retrieval::sections::retrieve_relevant(self, scopes, agent_type, query, budget)
     }
 
     /// v1.11 M5a:库 revision(单调写入代次;缓存键与乐观并发基准)。
