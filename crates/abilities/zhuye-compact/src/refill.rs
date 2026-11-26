@@ -64,7 +64,19 @@ impl RapidRefillGuard {
         }
     }
 
-    /// 压缩**实际发生**后登记步号(Noop 不算)。这是窗口计时的锚点。
+    /// 登记一次「refill 事件」的步号 —— 窗口计时的锚点。
+    ///
+    /// 调用时机:压缩**实际发生**后(Noop 不算),以及守卫判定 `Skip`
+    /// (跳过本轮压缩)时。
+    ///
+    /// 修复原因:此前只有「压缩实际发生」才推进锚点,Skip 分支恰恰
+    /// **跳过了**压缩 → 锚点不推进 → 窗口以首次压缩的步号起算。跳过的
+    /// 轮次消耗掉的模型步数照样计入窗口,于是「跳过压缩」反而让熔断窗口
+    /// 提前过期:窗口外 → 连续计数清零 → 又放行压缩 → 又跳过 —— 死循环
+    /// 得以反复喘息,熔断永远攒不满连续次数。
+    ///
+    /// 「跳过压缩」本身就是一次 refill 事件(上下文又被填满了),窗口
+    /// 应当从这一轮重新起算。
     pub fn on_compacted(&mut self, step: u64) {
         self.last_compact_step = Some(step);
         // 窗口锚点前移本身不代表 refill 结束:consecutive 只在窗口外
@@ -113,6 +125,24 @@ mod tests {
         // 再次进入窗口从 1 重新起算,不继承旧计数。
         g.on_compacted(14);
         assert_eq!(g.pre_check(15, W, M), RefillDecision::Skip);
+    }
+
+    /// 回归:Skip(跳过本轮压缩)也必须推进窗口锚点。
+    ///
+    /// 修复原因:此前只有「压缩实际发生」才推进锚点,Skip 跳过了压缩 →
+    /// 锚点不前进 → 跳过的轮次消耗的模型步数照样计入窗口 → 窗口提前
+    /// 过期 → 连续计数清零 → 又放行压缩 → 又跳过,熔断永远攒不满次数。
+    #[test]
+    fn skip也推进窗口锚点() {
+        let mut g = RapidRefillGuard::new();
+        g.on_compacted(10);
+        // 步 11 在窗口内 → Skip;调用方按新语义登记锚点。
+        assert_eq!(g.pre_check(11, W, M), RefillDecision::Skip);
+        g.on_compacted(11);
+        // 锚点已前移到 11:步 14 距 11 差 3,仍在窗口内 → 继续 Skip,
+        // 而不是像「锚点不前进」那样因距 10 差 4 而落到窗口外被清零。
+        assert_eq!(g.pre_check(14, W, M), RefillDecision::Skip);
+        assert_eq!(g.consecutive(), 2);
     }
 
     #[test]

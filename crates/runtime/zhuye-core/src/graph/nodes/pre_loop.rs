@@ -178,16 +178,30 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                 });
                 return None;
             }
-            zhuye_compact::RefillDecision::Skip => Some(format!(
-                "<system-reminder>\n上下文刚压缩过又在很短的几步内再次逼近阈值\
-                 (rapid refill,连续第 {} 次)。为避免无限压缩循环,本次已跳过\
-                 自动压缩。请立即收敛:减少产出规模、不要再次读取大文件、\
-                 尽快完成任务并给出最终答复。\n</system-reminder>",
-                {
-                    let g = ctx.cfg.compact_refill.lock();
-                    g.consecutive()
-                }
-            )),
+            zhuye_compact::RefillDecision::Skip => {
+                // Skip 也推进窗口锚点。
+                //
+                // 修复原因:锚点只在「压缩实际发生」时登记,而 Skip 分支
+                // 恰恰**跳过了**压缩 → 锚点不推进 → 窗口以首次压缩的步号
+                // 为起点计时。跳过的轮次消耗掉的模型步数照样计入窗口,
+                // 于是「跳过压缩」反而让熔断窗口提前过期:窗口外 → 连续
+                // 计数清零 → 又放行压缩 → 又跳过 —— 死循环得以反复喘息,
+                // 熔断永远攒不满连续次数。
+                //
+                // 「跳过压缩」本身就是一次 refill 事件(上下文又被填满了),
+                // 窗口应当从这一轮重新起算。
+                ctx.cfg.compact_refill.lock().on_compacted(step_no);
+                Some(format!(
+                    "<system-reminder>\n上下文刚压缩过又在很短的几步内再次逼近阈值\
+                     (rapid refill,连续第 {} 次)。为避免无限压缩循环,本次已跳过\
+                     自动压缩。请立即收敛:减少产出规模、不要再次读取大文件、\
+                     尽快完成任务并给出最终答复。\n</system-reminder>",
+                    {
+                        let g = ctx.cfg.compact_refill.lock();
+                        g.consecutive()
+                    }
+                ))
+            }
             zhuye_compact::RefillDecision::Abort => {
                 // 连续 refill 达上限:放弃压缩并收口当前 turn(与
                 // model_call 的 GiveUp 同路径 —— deferred_error 由
@@ -249,7 +263,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // 的事实),供下方落盘 MemoryAccess 审计。
     // 消息列表按借用传入;压缩判定每迭代执行且绝大多数走 Noop ——
     // None 表示未压缩,保持原列表不回写,不为「借一下」深拷贝整个会话。
-    let (compacted, evt, memory_write, below_trigger) =
+    let (compacted, evt, memory_write, below_trigger, refill_armed) =
         if compact_denied || refill_skip_reminder.is_some() {
             if refill_skip_reminder.is_some() {
                 tracing::info!(
@@ -269,6 +283,7 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                 },
                 None,
                 false,
+                false,
             )
         } else {
             match compactor
@@ -277,12 +292,13 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                     state.compaction_summary.as_deref(),
                     llm_reported,
                     compact_focus.as_deref(),
+                    force_compact,
                 )
                 .await
             {
                 zhuye_compact::CompactionOutcome::Noop { event, reason } => {
                     tracing::debug!(reason, "上下文压缩未发生");
-                    (None, event, None, false)
+                    (None, event, None, false, false)
                 }
                 zhuye_compact::CompactionOutcome::Applied {
                     messages,
@@ -292,15 +308,23 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
                     pruned,
                     truncated,
                     below_trigger,
+                    refill_armed,
                 } => {
                     tracing::info!(
                         micro_changed,
                         pruned,
                         truncated,
                         below_trigger,
+                        refill_armed,
                         "上下文压缩阶段结果"
                     );
-                    (Some(messages), event, memory_write, below_trigger)
+                    (
+                        Some(messages),
+                        event,
+                        memory_write,
+                        below_trigger,
+                        refill_armed,
+                    )
                 }
             }
         };
@@ -345,16 +369,29 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     // 压缩器仅在消息确实改动时返回 Some；只截断但未删除消息也要计入。
     state.compact_triggered = compacted.is_some();
     if state.compact_triggered {
-        // 只有校准水位真正低于阈值才给快速回填守卫上膛。
-        // 仍超阈的有效裁剪照常回写、发事件和记快照，但不能挡住下一次更强压缩。
+        // 守卫上膛的判据是「**这次压缩让水位实质下降了吗**」
+        // (`refill_armed`),而不是「水位降到阈值以下」(below_trigger)。
+        //
+        // 修复原因:此前用 `below_trigger` 当上膛条件,把 rapid-refill
+        // 熔断守卫**最需要的那一类**排除在外 —— rapid-refill 的形态恰恰
+        // 是「压缩裁掉了东西、但填得比裁的快,水位没降」,于是锚点永远
+        // 不登记 → `in_window` 恒假 → 连续计数每轮清零 → 熔断永不触发,
+        // 死循环照旧烧钱。
+        //
+        // 两个判据问的问题不同,不可混用:
+        // - `below_trigger`:「压得够不够狠」(防弱压缩被当成成功);
+        // - `refill_armed`:「压了有没有用」(水位没降 = 压了等于没压,
+        //   该熔断;水位降了 = 该来更强的一轮压缩,不该上膛)。
+        //
         // 手动压缩在进入压缩器前已经绕过预检。
-        if below_trigger {
+        if refill_armed {
             ctx.cfg.compact_refill.lock().on_compacted(step_no);
         } else {
             tracing::info!(
                 step = step_no,
                 threshold = compactor.trigger_tokens(),
-                "压缩后的校准水位仍不低于触发阈值，不登记快速回填锚点"
+                below_trigger,
+                "压缩后水位实质下降，不登记快速回填锚点"
             );
         }
         // 在 `evt` 被移入 wire event 之前捕获我们需要的字段。

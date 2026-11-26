@@ -40,6 +40,14 @@ pub struct SmartPruneConfig {
     pub max_tool_result_lines: usize,
     /// 同一次模型上报对本地估算的缩放；1 表示不缩放。
     pub calibration_scale: f64,
+    /// 强制执行(`Op::Compact` 的 force 语义):无视阈值判定。
+    ///
+    /// 修复原因:此前本阶段用自己的本地估算与 `trigger_tokens` 再判一次
+    /// 阈值,导致 force 路径(`before_tokens` 被抬到 `u32::MAX`)在「本地
+    /// 估算低于阈值」时被当成「无需压缩」而整段跳过 —— 手动强制压缩
+    /// 静默失效。force 的语义是「无视阈值必然执行」,必须穿透到阶段
+    /// 内部,否则外层的 `before_tokens = u32::MAX` 只是空转。
+    pub force: bool,
 }
 
 impl Default for SmartPruneConfig {
@@ -53,6 +61,7 @@ impl Default for SmartPruneConfig {
             max_assistant_chars: MAX_ASSISTANT_CHARS,
             max_tool_result_lines: MAX_TOOL_RESULT_LINES,
             calibration_scale: 1.0,
+            force: false,
         }
     }
 }
@@ -73,7 +82,9 @@ pub fn smart_prune(
     cfg: &SmartPruneConfig,
 ) -> (Vec<ChatMessage>, CompactReport) {
     let before = crate::tokens::estimate_messages(&messages);
-    if crate::tokens::scaled_tokens(before, cfg.calibration_scale) < cfg.trigger_tokens {
+    if !cfg.force
+        && crate::tokens::scaled_tokens(before, cfg.calibration_scale) < cfg.trigger_tokens
+    {
         return (
             messages,
             CompactReport {
@@ -359,7 +370,16 @@ fn keep_head_tail_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let half = n.max(10);
     if lines.len() <= half * 2 {
-        return s.to_string();
+        // 行数不足以体现「头尾」结构时,按字符预算截断。
+        //
+        // 修复原因:此前此分支直接原样返回,于是**单行超长内容**(minified
+        // JS、单行 JSON、base64、压缩后的源码等常见形态)完全绕过了
+        // `MAX_TOOL_RESULT_CHARS` 字符预算 —— read 一个超长单行文件,
+        // 工具结果可以无限膨胀,占满整个上下文窗口。其后果是压缩器判定
+        // `nothing_prunable` → 策略 Noop → rapid-refill 守卫拿不到
+        // 「压缩发生过」的锚点 → 熔断永不触发(死循环而非熔断收口)。
+        // 修复后:单行内容按字符截断,多行内容才走头尾保留。
+        return truncate_chars(s, MAX_TOOL_RESULT_CHARS);
     }
     let head: Vec<&str> = lines[..half].to_vec();
     let tail: Vec<&str> = lines[lines.len() - half..].to_vec();
@@ -466,6 +486,41 @@ mod tests {
         assert!(out.contains(MIDDLE_MARKER));
         assert!(out.contains("line 0"));
         assert!(out.contains("line 199"));
+    }
+
+    /// 回归:单行超长内容此前**完全绕过**字符预算(原样返回),让压缩器
+    /// 判定 nothing_prunable → 策略 Noop → rapid-refill 守卫拿不到锚点
+    /// → 熔断永不触发。单行内容必须按字符截断。
+    #[test]
+    fn read_like_single_long_line_is_truncated() {
+        let content: String = "x".repeat(1000);
+        let out = truncate_tool_result(
+            "tool:read:0",
+            &content,
+            100,
+            50,
+            &std::collections::HashMap::new(),
+        );
+        assert!(
+            out.chars().count() < 400,
+            "单行内容必须被截断,实际 {} 字符",
+            out.chars().count()
+        );
+        assert!(out.contains("[... truncated ...]"), "{out}");
+    }
+
+    /// 回归:行数不足以体现头尾结构但整体不长时,不该被无谓截断。
+    #[test]
+    fn read_like_short_multiline_unchanged() {
+        let content = "a\nb\nc\n";
+        let out = truncate_tool_result(
+            "tool:read:0",
+            &content,
+            100,
+            50,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(out, content);
     }
 
     #[test]

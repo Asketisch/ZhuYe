@@ -69,6 +69,12 @@ pub struct MicrocompactConfig {
     pub trigger_ratio: f32,
     /// 同一次模型上报对本地估算的缩放；1 表示不缩放。
     pub calibration_scale: f64,
+    /// 强制执行(`Op::Compact` 的 force 语义):无视阈值判定。
+    ///
+    /// 修复原因:同 `SmartPruneConfig::force` —— 此前本阶段用自己的本地
+    /// 估算再判一次阈值,把 force 路径(`before_tokens` 抬到 `u32::MAX`)
+    /// 在「本地估算低于阈值」时整段跳过,手动强制压缩静默失效。
+    pub force: bool,
 }
 
 impl Default for MicrocompactConfig {
@@ -78,6 +84,7 @@ impl Default for MicrocompactConfig {
             keep_recent: KEEP_RECENT_DEFAULT,
             trigger_ratio: MICROCOMPACT_TRIGGER_RATIO,
             calibration_scale: 1.0,
+            force: false,
         }
     }
 }
@@ -85,14 +92,14 @@ impl Default for MicrocompactConfig {
 /// 执行 microcompact。返回新的消息列表与报告。
 ///
 /// 若 `crate::estimate_messages(&messages) * ratio < trigger_tokens`,
-/// 输入原样返回(`was_compacted = false`)。
+/// 输入原样返回(`was_compacted = false`)。`cfg.force` 为真时无视该判定。
 pub fn microcompact(
     messages: Vec<ChatMessage>,
     cfg: &MicrocompactConfig,
 ) -> (Vec<ChatMessage>, CompactReport) {
     let before = crate::tokens::estimate_messages(&messages);
     let threshold = ((cfg.trigger_tokens as f32) * cfg.trigger_ratio) as u32;
-    if crate::tokens::scaled_tokens(before, cfg.calibration_scale) < threshold {
+    if !cfg.force && crate::tokens::scaled_tokens(before, cfg.calibration_scale) < threshold {
         return (
             messages,
             CompactReport {

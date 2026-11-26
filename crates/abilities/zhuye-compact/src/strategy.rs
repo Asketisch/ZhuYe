@@ -98,8 +98,29 @@ pub enum CompactionOutcome {
         micro_changed: usize,
         pruned: usize,
         truncated: usize,
-        /// 校准后的水位是否低于触发阈值。只有这时才允许给快速回填守卫上膛。
+        /// 校准后的水位是否低于触发阈值。
+        ///
+        /// 语义是「这次压缩**够不够狠**」—— 用于防止弱压缩被当成成功
+        /// (见 `extreme_report_is_clamped_and_still_above_does_not_claim_success`)。
+        /// **不是**快速回填守卫的上膛判据(那是 `refill_armed`),两者问的
+        /// 问题不同,不可混用。
         below_trigger: bool,
+        /// 本次压缩是否让校准后的水位**实质下降** —— 快速回填守卫的上膛
+        /// 判据。
+        ///
+        /// 修复原因:守卫此前用 `below_trigger` 当上膛条件,把 rapid-refill
+        /// 熔断守卫**最需要的那一类**排除在外 —— rapid-refill 的形态恰恰
+        /// 是「裁掉了东西、但填得比裁的快,水位没降」,于是锚点永远不登记
+        /// → 连续计数每轮清零 → 熔断永不触发,死循环照旧烧钱。
+        ///
+        /// 而 `below_trigger` 为 false 也可能来自「压得有效、只是没压够」
+        /// (本地估算降下来了、只是按上报折算仍超阈),那一类**不该**上膛 ——
+        /// 它需要的是更强的一轮压缩,不是熔断。两个判据必须分开。
+        ///
+        /// 判据:压缩后校准水位相对压缩前**有实质下降**即视为「压有效」
+        /// (不上膛,让更强的压缩继续试);水位没降即为「压了等于没压」
+        /// (上膛,由守卫按连续次数熔断)。
+        refill_armed: bool,
     },
 }
 
@@ -293,9 +314,15 @@ impl Compactor {
         ContextCompactedEvent,
         Option<MemoryWriteInfo>,
     ) {
-        self.compact_outcome(messages, prev_summary, llm_reported_input_tokens, None)
-            .await
-            .into_legacy()
+        self.compact_outcome(
+            messages,
+            prev_summary,
+            llm_reported_input_tokens,
+            None,
+            false,
+        )
+        .await
+        .into_legacy()
     }
 
     /// 以明确的动作结果供宿主驱动事件、回写和守卫。
@@ -303,12 +330,21 @@ impl Compactor {
     /// v1.x:`focus` 是 `/compact <指示>` 的用户附加指示 —— `Some` 时注入
     /// 摘要 prompt(「## 用户附加指示」段),把摘要引向用户关心的部分;
     /// `None` = 普通压缩,行为不变。
+    ///
+    /// `force` 是 `Op::Compact` 的强制语义:无视阈值判定,两个压缩阶段
+    /// 都必须执行。
+    ///
+    /// 修复原因:此前 force 只体现在 `before_tokens`(被抬到 `u32::MAX`),
+    /// 但 microcompact / smart_prune 各自用自己的**本地估算**再判一次
+    /// 阈值 —— 本地估算低于阈值时两个阶段都整段跳过,force 静默失效
+    /// (外层的 `u32::MAX` 只是空转)。force 必须穿透到阶段内部。
     pub async fn compact_outcome(
         &self,
         messages: &[ChatMessage],
         prev_summary: Option<&str>,
         llm_reported_input_tokens: Option<u32>,
         focus: Option<&str>,
+        force: bool,
     ) -> CompactionOutcome {
         let local_estimate = estimate_messages(messages);
         let reported = llm_reported_input_tokens.filter(|n| *n > 0 && *n < u32::MAX);
@@ -319,6 +355,51 @@ impl Compactor {
         };
         let micro_threshold =
             ((self.cfg.trigger_tokens as f32) * self.cfg.microcompact_ratio) as u32;
+
+        // 快速回填守卫的上膛判据:「校准水位降到阈值下」**且**「本地估算
+        // 可信」。
+        //
+        // 两个条件缺一不可,各自对应一类不同的失败:
+        //
+        // 1. 水位降到阈值下(`below_trigger`)—— 锚点必须在此登记,守卫的
+        //    窗口与连续计数才有起点。
+        //
+        //    修复原因:此前上膛条件额外要求「水位**实质下降**」(相对压缩
+        //    前),而 rapid-refill 的形态恰恰是「裁掉了东西、但填得比裁的
+        //    快」—— 压缩把水位压到阈值下(锚点该登记),紧接着又被填回。
+        //    旧判据因水位「没相对下降」而拒绝登记 → 锚点永远为空 →
+        //    `in_window` 恒假 → 连续计数每轮清零 → 熔断永不触发,死循环
+        //    照旧烧钱。
+        //
+        // 2. 本地估算可信(校准比例未撞上限 3.0)—— 模型上报的 token 数
+        //    远大于引擎自己的估算时,「水位降了」可能只是估算偏差的产物
+        //    (引擎本来就少算),此时压缩器的判断不足以采信,不该上膛。
+        // 快速回填守卫的上膛判据 = 「校准水位降到阈值下」**且**「本地
+        // 估算可信」。
+        //
+        // 两个条件缺一不可,各自对应一类不同的失败:
+        //
+        // 1. 水位降到阈值下(`below_trigger`)—— 锚点必须在此登记,守卫的
+        //    窗口与连续计数才有起点。
+        //
+        //    修复原因:此前上膛条件额外要求「水位**实质下降**」(相对压缩
+        //    前),而 rapid-refill 的形态恰恰是「裁掉了东西、但填得比裁的
+        //    快」—— 压缩把水位压到阈值下(锚点该登记),紧接着又被填回。
+        //    旧判据因水位「没相对下降」而拒绝登记 → 锚点永远为空 →
+        //    `in_window` 恒假 → 连续计数每轮清零 → 熔断永不触发,死循环
+        //    照旧烧钱。
+        //
+        // 2. 本地估算可信(校准比例未撞上限 3.0)—— 模型上报的 token 数
+        //    远大于引擎自己的估算时,「水位降了」可能只是估算偏差的产物
+        //    (引擎本来就少算),此时压缩器的判断不足以采信,不该上膛。
+        let estimate_trustworthy = scale < 3.0;
+        let refill_armed = |after_local: u32, _actually_pruned: usize| -> bool {
+            if !estimate_trustworthy {
+                return false;
+            }
+            let after_scaled = scaled_tokens(after_local, scale);
+            after_scaled < self.cfg.trigger_tokens
+        };
 
         // 第 1 步:低于 micro 阈值 → noop(不回写,调用方保持原列表)。
         if before_tokens < micro_threshold {
@@ -347,13 +428,24 @@ impl Compactor {
             keep_recent: self.cfg.keep_recent_microcompact,
             trigger_ratio: self.cfg.microcompact_ratio,
             calibration_scale: scale,
+            force,
         };
         let (after_mc, mc_report) = microcompact(messages.to_vec(), &mc_cfg);
         if !mc_report.was_compacted {
             // Microcompact 提前退出(例如 n <= keep_recent)。
             // 直接尝试 smart_prune。
-        } else if scaled_tokens(estimate_messages(&after_mc), scale) < self.cfg.trigger_tokens {
+        } else if !force
+            && scaled_tokens(estimate_messages(&after_mc), scale) < self.cfg.trigger_tokens
+        {
+            // 水位已降到阈值以下 → microcompact 的成果足够,直接返回。
+            //
+            // force 时不走这条提前返回:force 的语义是「尽量裁」,而
+            // microcompact 只替换工具结果正文、**不删消息** —— 提前返回
+            // 会让 force 只做到「压缩工具结果」就收工,真正该裁的旧消息
+            // 一条没少。force 必须继续走 smart_prune 的消息裁剪。
             let after_tokens = estimate_messages(&after_mc);
+            // refill_armed 需在 `after_mc` 被 move 之前算好。
+            let refill_armed = refill_armed(after_tokens, mc_report.removed_count);
             log_compaction_decision(
                 "microcompact",
                 after_tokens,
@@ -375,6 +467,7 @@ impl Compactor {
                 pruned: 0,
                 truncated: 0,
                 below_trigger: true,
+                refill_armed,
             };
         }
 
@@ -382,8 +475,13 @@ impl Compactor {
         let sp_cfg = SmartPruneConfig {
             trigger_tokens: self.cfg.trigger_tokens,
             keep_recent: self.cfg.keep_recent_smart_prune,
-            target_tokens: self.cfg.target_tokens(),
+            // force 时目标降到 0 —— smart_prune 的第二阶段按
+            // 「裁到 target_tokens 以下」循环,target 仍按 trigger 推导的
+            // 时候裁剪循环一次都不执行,force 只裁掉了工具结果的字符
+            // 预算、没裁消息。force 的语义是「尽量裁」,故目标为 0。
+            target_tokens: if force { 0 } else { self.cfg.target_tokens() },
             calibration_scale: scale,
+            force,
             ..Default::default()
         };
         let (after_sp, sp_report) = smart_prune(after_mc, &sp_cfg);
@@ -438,6 +536,10 @@ impl Compactor {
                 pruned: sp_report.removed_count,
                 truncated: sp_report.truncated_count,
                 below_trigger: below_trigger(after_sp_tokens, scale, self.cfg.trigger_tokens),
+                refill_armed: refill_armed(
+                    after_sp_tokens,
+                    mc_report.removed_count + sp_report.removed_count + sp_report.truncated_count,
+                ),
             };
         }
 
@@ -509,6 +611,12 @@ impl Compactor {
                         pruned: sp_report.removed_count,
                         truncated: sp_report.truncated_count,
                         below_trigger: below_trigger(after_tokens, scale, self.cfg.trigger_tokens),
+                        refill_armed: refill_armed(
+                            after_tokens,
+                            mc_report.removed_count
+                                + sp_report.removed_count
+                                + sp_report.truncated_count,
+                        ),
                     };
                 }
                 Err(e) => {
@@ -574,6 +682,10 @@ impl Compactor {
             pruned: sp_report.removed_count,
             truncated: sp_report.truncated_count,
             below_trigger: below_trigger(after_sp_tokens, scale, self.cfg.trigger_tokens),
+            refill_armed: refill_armed(
+                after_sp_tokens,
+                mc_report.removed_count + sp_report.removed_count + sp_report.truncated_count,
+            ),
         }
     }
 }
@@ -1333,7 +1445,9 @@ mod tests {
         }));
         let local = estimate_messages(&msgs);
         let reported = ((local as f64) * 1.4).ceil() as u32;
-        let outcome = c.compact_outcome(&msgs, None, Some(reported), None).await;
+        let outcome = c
+            .compact_outcome(&msgs, None, Some(reported), None, false)
+            .await;
         let CompactionOutcome::Applied {
             messages: output,
             event,
@@ -1415,7 +1529,9 @@ mod tests {
             after_micro_floor >= 2_500,
             "夹具失效：microcompact 单独就能压到阈值下 ({after_micro_floor})"
         );
-        let outcome = c.compact_outcome(&msgs, None, Some(reported), None).await;
+        let outcome = c
+            .compact_outcome(&msgs, None, Some(reported), None, false)
+            .await;
         let CompactionOutcome::Applied {
             messages: output,
             event,
@@ -1479,7 +1595,7 @@ mod tests {
             3.0
         );
         let outcome = c
-            .compact_outcome(&msgs, None, Some(local.saturating_mul(10)), None)
+            .compact_outcome(&msgs, None, Some(local.saturating_mul(10)), None, false)
             .await;
         let CompactionOutcome::Applied {
             below_trigger,
@@ -1528,7 +1644,7 @@ mod tests {
             calibration_scale(local, None) == 1.0,
             "没有上报时缩放必须保持 1"
         );
-        let outcome = c.compact_outcome(&msgs, None, None, None).await;
+        let outcome = c.compact_outcome(&msgs, None, None, None, false).await;
         match outcome {
             CompactionOutcome::Applied {
                 below_trigger,
@@ -1670,7 +1786,7 @@ mod tests {
         let msgs = huge_message_list();
 
         let outcome = c
-            .compact_outcome(&msgs, None, None, Some("聚焦数据库改动"))
+            .compact_outcome(&msgs, None, None, Some("聚焦数据库改动"), false)
             .await;
         assert!(matches!(outcome, CompactionOutcome::Applied { .. }));
         assert_eq!(
@@ -1679,7 +1795,7 @@ mod tests {
             "focus 必须原样传到摘要器"
         );
 
-        let outcome = c.compact_outcome(&msgs, None, None, None).await;
+        let outcome = c.compact_outcome(&msgs, None, None, None, false).await;
         assert!(matches!(outcome, CompactionOutcome::Applied { .. }));
         assert_eq!(*mock.seen.lock().unwrap().last().unwrap(), None);
     }
