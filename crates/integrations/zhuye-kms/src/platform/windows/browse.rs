@@ -1,6 +1,6 @@
 //! 固定目录句柄后列举和读取 Windows 知识库。
 
-use super::page::{PinnedDir, pin_child, pin_root, read_file_at};
+use super::page::{PinnedDir, pin_child, pin_root, pinned_modified, read_file_at};
 use crate::{
     KmsError, Page, SearchResult, WikiInfo, extract_description, extract_tags, extract_title,
 };
@@ -118,7 +118,7 @@ pub(crate) fn list_wikis(root_path: &std::path::Path) -> Result<Vec<WikiInfo>, K
             Some(pages) => count_pages(&pages)?,
             None => 0,
         };
-        let modified_at_ms = page::pinned_modified(&wiki);
+        let modified_at_ms = pinned_modified(&wiki);
         result.push(WikiInfo {
             path: root_path.join(&name),
             name,
