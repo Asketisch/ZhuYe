@@ -1016,12 +1016,16 @@ impl SpawnedChild {
                     zhuye_protocol::EventMsg::AgentMessageDelta(d) => {
                         text_buf.push_str(&d.delta);
                     }
+                    // InteractionResolved 与提问/审批请求配对转发(同步 drain
+                    // 路径与上方 async 进度回调同口径):子代理挂起交互了结
+                    // 后,父会话侧才能按 request_id 清理本地挂起态。
                     zhuye_protocol::EventMsg::ToolCallBegin(_)
                     | zhuye_protocol::EventMsg::ToolCallEnd(_)
                     | zhuye_protocol::EventMsg::ApprovalRequest(_)
                     | zhuye_protocol::EventMsg::AskUserQuestion(_)
                     | zhuye_protocol::EventMsg::AskUserInput(_)
-                    | zhuye_protocol::EventMsg::PermissionBubble(_) => {
+                    | zhuye_protocol::EventMsg::PermissionBubble(_)
+                    | zhuye_protocol::EventMsg::InteractionResolved(_) => {
                         cb(&ev);
                     }
                     _ => {}
