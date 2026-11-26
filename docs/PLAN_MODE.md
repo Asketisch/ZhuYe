@@ -3,7 +3,7 @@
 <p align="center">  <b>中文</b> · <a href="PLAN_MODE.en.md">English</a>  </p>
 
 > 本文描述烛夜的 Plan mode(计划模式)协议与实现契约。
-> 相关源码:`zhuye-tools/src/builtins/enter_plan_mode.rs` /
+> 相关源码:`zhuye-tools/src/builtins/plan/enter_plan_mode.rs` /
 > `exit_plan_mode.rs` / `plan_write.rs`,
 > `zhuye-hooks/src/builtins/plan_mode_gate.rs`,
 > `zhuye-protocol/src/event_msg/plan.rs`,

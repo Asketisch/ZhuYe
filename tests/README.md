@@ -55,28 +55,28 @@ git 和 jq。入口默认通过 Cargo 更新二进制;功能层还会构建导�
 |------|------|
 | `lib.sh` | 公共助手:隔离环境、mock provider、断言、用例统计 |
 | `functional/conftest.py` | 能力覆盖层设施:原始 wire 会话(起 serve / 逐行收发 JSONL)、CLI 调用、rollout 读取 |
-| `functional/test_serve.py` | 协议面:基础通信 / 并发路由 / 会话状态 Op 面(含 shutdown、plan revise、inline question_answer、local_image) |
-| `functional/test_tools.py` | 工具面:内置工具 / 远程工具 / 审批链路(approve + deny)/ 后台任务回流 / exec 全工具驱动(T30–T38)/ prompt guard 运行时拦截(T39) |
-| `functional/test_recovery.py` | 重连恢复(`--resume` / `-c` / `-r` / 崩溃 / EOF)+ 容错(坏行 / 撞名 / 超时) |
-| `functional/test_persistence.py` | 持久化面:rollout 记录集 / 权限模式轨迹 / rewind 截断 / 会话索引 / cron 触发 / autopilot 调度 |
-| `functional/test_orchestration.py` | 编排面:子代理 / 讨论 / 任务团队 / 流水线 / goal 模式 / 集成链路(O11–O16) |
-| `functional/test_scenarios.py` | 并行工具、限流切换、审批修改与中断续跑组合场景 |
-| `functional/test_long_session.py` | 长会话摘要压缩、重启恢复和增量更新 |
-| `functional/test_multiagent_scenarios.py` | 父回合及子代理定向中断和后续对话 |
-| `functional/test_subagent_failure.py` | 子代理失败传播、恢复及临时故障 |
-| `functional/test_subagent_context.py` | 子代理上下文隔离、截取和工具配对 |
-| `functional/test_nested_subagents.py` | 多级委派结果、状态与定向取消 |
-| `functional/test_parallel_subagents.py` | 并行同角色子代理混合成功与失败 |
-| `functional/test_subagent_approval.py` | 子代理写入审批的批准、拒绝与副作用 |
-| `functional/test_subagent_human_input.py` | 子代理自由文本和结构化人工提问 |
-| `functional/test_subagent_permissions.py` | 子代理继承父级权限、拒绝规则与文件系统边界 |
-| `functional/test_model_cancellation.py` | 模型连接与流式输出中断、部分文本恢复 |
-| `functional/test_responses_scenarios.py` | Responses 并行工具、截断、错误和凭证切换 |
-| `functional/test_anthropic_errors.py` | Anthropic 流内错误、断流和凭证切换 |
-| `functional/test_anthropic_tools.py` | Anthropic 并行工具交错分片 |
-| `functional/test_stream_failure.py` | 三种 provider 的断流、部分回复落盘和恢复 |
-| `functional/test_invalid_tool_arguments.py` | 损坏的工具参数、宿主副作用及同批有效调用 |
-| `functional/test_cli.py` | CLI 能力面(行为断言;参数矩阵仍在 bash) |
+| `functional/protocol/test_serve.py` | 协议面:基础通信 / 并发路由 / 会话状态 Op 面(含 shutdown、plan revise、inline question_answer、local_image) |
+| `functional/tools/test_tools.py` | 工具面:内置工具 / 远程工具 / 审批链路(approve + deny)/ 后台任务回流 / exec 全工具驱动(T30–T38)/ prompt guard 运行时拦截(T39) |
+| `functional/persistence/test_recovery.py` | 重连恢复(`--resume` / `-c` / `-r` / 崩溃 / EOF)+ 容错(坏行 / 撞名 / 超时) |
+| `functional/persistence/test_persistence.py` | 持久化面:rollout 记录集 / 权限模式轨迹 / rewind 截断 / 会话索引 / cron 触发 / autopilot 调度 |
+| `functional/orchestration/test_orchestration.py` | 编排面:子代理 / 讨论 / 任务团队 / 流水线 / goal 模式 / 集成链路(O11–O16) |
+| `functional/protocol/test_scenarios.py` | 并行工具、限流切换、审批修改与中断续跑组合场景 |
+| `functional/persistence/test_long_session.py` | 长会话摘要压缩、重启恢复和增量更新 |
+| `functional/orchestration/test_multiagent_scenarios.py` | 父回合及子代理定向中断和后续对话 |
+| `functional/orchestration/test_subagent_failure.py` | 子代理失败传播、恢复及临时故障 |
+| `functional/orchestration/test_subagent_context.py` | 子代理上下文隔离、截取和工具配对 |
+| `functional/orchestration/test_nested_subagents.py` | 多级委派结果、状态与定向取消 |
+| `functional/orchestration/test_parallel_subagents.py` | 并行同角色子代理混合成功与失败 |
+| `functional/orchestration/test_subagent_approval.py` | 子代理写入审批的批准、拒绝与副作用 |
+| `functional/orchestration/test_subagent_human_input.py` | 子代理自由文本和结构化人工提问 |
+| `functional/orchestration/test_subagent_permissions.py` | 子代理继承父级权限、拒绝规则与文件系统边界 |
+| `functional/protocol/test_model_cancellation.py` | 模型连接与流式输出中断、部分文本恢复 |
+| `functional/protocol/test_responses_scenarios.py` | Responses 并行工具、截断、错误和凭证切换 |
+| `functional/protocol/test_anthropic_errors.py` | Anthropic 流内错误、断流和凭证切换 |
+| `functional/protocol/test_anthropic_tools.py` | Anthropic 并行工具交错分片 |
+| `functional/protocol/test_stream_failure.py` | 三种 provider 的断流、部分回复落盘和恢复 |
+| `functional/protocol/test_invalid_tool_arguments.py` | 损坏的工具参数、宿主副作用及同批有效调用 |
+| `functional/cli/test_cli.py` | CLI 能力面(行为断言;参数矩阵仍在 bash) |
 | `functional/run.sh` | 能力覆盖层入口 |
 | `rust/run.sh` | Rust 套件入口(依次调下面五个;`ZHUYE_SKIP_WORKSPACE=1` 跳过第 1 步) |
 | `rust/workspace_tests.sh` | `cargo test --workspace` + clippy `-D warnings` + fmt + doc |
@@ -113,7 +113,7 @@ git 和 jq。入口默认通过 Cargo 更新二进制;功能层还会构建导�
   终态事件,SDK 的 `submit()` 迭代器此前会永久挂起。serve 在每条
   submission 的 per-turn 通道排空后发 `submission_closed`(携带该
   submission 的 id),两个 SDK 把它与 turn 终态同等视为迭代器末尾。
-  `tests/functional/test_serve.py` 与两个 SDK 绑定层都断言这条不变量。
+  `tests/functional/protocol/test_serve.py` 与两个 SDK 绑定层都断言这条不变量。
 - **权限模式事件路由**:`permission_mode_changed` 是**全局事件**
   (`id=""`),不进按 submission id 路由的迭代器;能力覆盖层用
   `global_events()` 收集,SDK 侧因无公开读取口只能读私有队列

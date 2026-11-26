@@ -40,6 +40,6 @@ zhuye plugin enable web-search@inline
 
 ## Future work
 
-The multi-backend failover chain in `zhuye-tools/src/web_guard.rs`
+The multi-backend failover chain in `zhuye-tools/src/guards/web_guard.rs`
 (keyless DuckDuckGo / SearXNG / Brave / Tavily / custom) is pre-wired and
 will migrate into this plugin as its capability evolves.

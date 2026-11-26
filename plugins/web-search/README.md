@@ -37,6 +37,6 @@ zhuye plugin enable web-search@inline
 
 ## 后续演进
 
-`zhuye-tools/src/web_guard.rs` 的多后端 failover 链
+`zhuye-tools/src/guards/web_guard.rs` 的多后端 failover 链
 (DuckDuckGo 免 key / SearXNG / Brave / Tavily / Custom)已预铺设,
 后续作为本插件的能力演进项迁入(多后端聚合 / 免 key 降级)。

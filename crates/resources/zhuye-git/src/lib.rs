@@ -3,7 +3,7 @@
 //!
 //! 收编两份客户端各自演化的 git 实现:
 //!
-//! - **checkpoint**:框架原有 `zhuye-tools/src/checkpoint.rs`(原语)与
+//! - **checkpoint**:框架原有 `zhuye-tools/src/checkpoint/snapshot.rs`(原语)与
 //!   Reflect-TUI `git_checkpoint.rs`(tag 枚举 + 安全快照 + sha 校验)
 //!   是**双实现**。合并后以 TUI 版为基(它修掉了框架版的洞:`rewind`
 //!   先 `reset --hard` 再列,安全快照提交脱离分支历史后**列不出也回退

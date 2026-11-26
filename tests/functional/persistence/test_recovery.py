@@ -298,7 +298,7 @@ def test_X3_工具名撞内置被拒(serve_session, mock_script) -> None:
 def test_X4_远程工具超时_以错误输出收尾(serve_session, mock_script) -> None:
     """不回执 → 超时后工具以错误输出收尾(is_error + `timed out`),turn 不挂死。
 
-    依据:crates/abilities/zhuye-tools/src/remote.rs:96-103。
+    依据:crates/abilities/zhuye-tools/src/execution/remote.rs:96-103。
     """
     require_binary()
     script = mock_script(

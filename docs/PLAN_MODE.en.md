@@ -4,7 +4,7 @@
 
 > This document describes the Plan mode protocol and implementation
 > contract of ZhuYe. Related source:
-> `zhuye-tools/src/builtins/enter_plan_mode.rs` /
+> `zhuye-tools/src/builtins/plan/enter_plan_mode.rs` /
 > `exit_plan_mode.rs` / `plan_write.rs`,
 > `zhuye-hooks/src/builtins/plan_mode_gate.rs`,
 > `zhuye-protocol/src/event_msg/plan.rs`,

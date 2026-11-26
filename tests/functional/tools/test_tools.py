@@ -221,7 +221,7 @@ def test_T2_模型调未注册工具_错误输出(serve_session, mock_script) ->
 def test_T3_远程工具往返(serve_session, mock_script) -> None:
     """register_tools → 模型调用 → `tool_execution_request`(全局)→ 回执 → tool_call_end。
 
-    依据:crates/abilities/zhuye-tools/src/remote.rs:66-110;
+    依据:crates/abilities/zhuye-tools/src/execution/remote.rs:66-110;
     sdks/PROTOCOL.md §5(远程工具执行流)。
 
     注意 call_id 的两套语义:`tool_execution_request.call_id` 是桥生成的

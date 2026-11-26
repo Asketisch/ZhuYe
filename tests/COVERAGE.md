@@ -36,7 +36,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 |---|---|---|---|---|---|
 | 基础通信(握手/单轮/多轮/事件流/终态/工具参数增量/整段消息) | D1–D5、D9–D10、D13 | cli_core | K1–K2、K5 | ✅(build/build_async 对齐断言) | L1–L4 |
 | EventMsg 全变体线格式 | —(逐场景事件断言见能力层) | — | 双 SDK 共用最小及可选字段样本,验证透传和未知字段 | ✅(`tests/contracts/events.json` 55 变体 + 完整字段样本 + serde roundtrip) | — |
-| Prompt cache 保温(排程/重放/观测门控/零污染/脚本行不消耗) | `tests/functional/test_cache_warming.py`(默认关闭零行为、scheduled/executed 字段级、`no_cache_hits` 决策跳过、rollout 零新增、第二轮脚本行不被偷) | — | 双 SDK `CacheWarming` 类型 + README 事件表 | ✅(zhuye-llm `evaluate` 表驱动 + mock `warm_replay` 旁路;zhuye-core 调度器 8 条:重放形状/取消/代际 stale/关闭 no-op/scheduled 事件/不可重放/事件字段/父令牌级联) | — |
+| Prompt cache 保温(排程/重放/观测门控/零污染/脚本行不消耗) | `tests/functional/runtime/test_cache_warming.py`(默认关闭零行为、scheduled/executed 字段级、`no_cache_hits` 决策跳过、rollout 零新增、第二轮脚本行不被偷) | — | 双 SDK `CacheWarming` 类型 + README 事件表 | ✅(zhuye-llm `evaluate` 表驱动 + mock `warm_replay` 旁路;zhuye-core 调度器 8 条:重放形状/取消/代际 stale/关闭 no-op/scheduled 事件/不可重放/事件字段/父令牌级联) | — |
 | 流锚点恢复(可重试流错误 + 可见增量 → 丢弃留痕 + 4 恢复事件 + 瞬态分类) | mock 流错误场景隐含覆盖(v1.10 重试);wire 层 `tests/sse_timeline.rs`(时间线吐帧 / 中途断流 TCP) | — | `StreamRecovery` 类型 + README 事件表 | ✅(`stream.rs` recovery_tests:事件序 / discarded 字符数 / 瞬态分类;协议 serde roundtrip) | — |
 | 压缩 rapid-refill 熔断(窗口 3 步 / 连续 3 次 → `compact_rapid_refill`) | — | — | — | ✅(`zhuye-compact/src/refill.rs` 表驱动 5 条:窗口/升级/清零/同步号) | — |
 | 空/可疑模型结果防护(0 输出 + input>0 → `suspicious_empty_model_result`) | — | — | — | ✅(守卫条件单测随 core lib) | — |
@@ -641,7 +641,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 - 多工具调用和中断恢复:真实 serve 经本机 SSE 模型网关并发调用远程
   工具,逆序回执后验证 rollout 的调用、结果以及重启后的模型请求;
   回合中断会取消远程等待并清理旧回执,独立回合不受影响,终态前会
-  持久化已产生的调用与结果。对应 `functional/test_scenarios.py`。
+  持久化已产生的调用与结果。对应 `functional/protocol/test_scenarios.py`。
 - SDK 并发与断线:TS 在写入前注册 submission 监听,并在 EOF 唤醒所有
   全局等待者;Python submission 迭代器在 EOF 后重复读取持续返回结束。
   受控流测试覆盖快速响应和多个等待者,双 SDK 的 K15 使用真二进制
@@ -728,53 +728,52 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 
 | 文件 | 规模 |
 |---|---|
-| `functional/test_serve.py` | 39 条(D、S、A 组) |
-| `functional/test_tools.py` | 30 条(T 组) |
-| `functional/test_prompt_guard_default.py` | 12 条(F01 组:prompt_guard 默认开启 / 注入语料回归 / 工具定义扫描 / guard_stats 查询) |
-| `functional/test_skills.py` | 4 条(SK1–SK4) |
-| `functional/test_recovery.py` | 12 条(R6 + X6) |
-| `functional/test_persistence.py` | 19 条(P 组) |
-| `functional/test_import.py` | 31 条(I 组) |
-| `functional/test_orchestration.py` | 10 条(O 组) |
-| `functional/test_cli.py` | 13 条(C 组) |
-| `functional/test_bugfixes.py` | 20 条(缺陷修复回归) |
-| `functional/test_agents_md.py` | 4 条(v1.11 基建#9:AGENTS.md 默认读取) |
-| `functional/test_full_auto.py` | 5 条(v1.11 基建#11:显式完全托管模式) |
-| `functional/test_goal_queue.py` | 2 条(v1.11 基建#6:队列多 goal) |
-| `functional/test_memory_v11.py` | 8 条(v1.11 基建#8:deepagents 式记忆 + M5a SQLite 后端) |
-| `functional/test_plugin_discover.py` | 2 条(v1.11 基建#13:GitHub topic 插件发现;网络用例 ZHUYE_FUNCTIONAL_NETWORK=1 才跑) |
-| `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:复杂度分级路由) |
-| `functional/test_v110.py` | 12 条(V 组) |
-| `functional/test_scenarios.py` | 7 条(并行工具及恢复、限流切换、修改审批、中断及迟到回执) |
-| `functional/test_long_session.py` | 2 条(摘要压缩、正常关闭或崩溃后增量恢复) |
-| `functional/test_crash_recovery_history.py` | 3 条(工具在途、工具结束及 rewind 后崩溃恢复) |
-| `functional/test_approval_sequences.py` | 3 条(固定种子的审批和中断交错) |
-| `functional/test_multiagent_scenarios.py` | 4 条(响应头前或部分回复后中断、定向取消及后续回合) |
-| `functional/test_subagent_failure.py` | 3 条(失败传播、部分回复与重启恢复、临时故障恢复) |
-| `functional/test_subagent_context.py` | 4 条(默认隔离、尾部截取、工具配对与长历史) |
-| `functional/test_nested_subagents.py` | 5 条(多级成功/失败、三种定向取消路径) |
-| `functional/test_parallel_subagents.py` | 1 条(并行同角色子代理混合成功/失败) |
-| `functional/test_async_subagent.py` | 3 条(异步派发占位回执、等待期并行推进、回合挂起后同轮激活续跑;结果写入会话记录并在后续回合保留;中断挂起中的父回合级联取消子代理且不波及后续回合) |
-| `functional/test_subagent_approval.py` | 2 条(子代理写入审批的批准与拒绝) |
-| `functional/test_subagent_human_input.py` | 2 条(子代理文本和结构化人工输入) |
-| `functional/test_subagent_permissions.py` | 1 条(父级写入拒绝规则继承) |
-| `functional/test_subagent_permissions.py` | 1 条(允许写入仍受工作区边界) |
-| `functional/test_model_cancellation.py` | 2 条(等待响应头及流式输出时中断) |
-| `functional/test_responses_scenarios.py` | 7 条(并行分片、恢复、错误、续写与凭证/配额切换) |
-| `functional/test_anthropic_errors.py` | 3 条(流内过载、限流和提前断流) |
-| `functional/test_anthropic_tools.py` | 1 条(并行工具交错分片与恢复) |
-| `functional/test_stream_failure.py` | 22 条(三种 provider 的断流、截断、流内错误、重试预算耗尽与恢复) |
-| `functional/test_invalid_tool_arguments.py` | 3 条(损坏 JSON 不执行宿主工具,同批有效工具继续) |
+| `functional/protocol/test_serve.py` | 39 条(D、S、A 组) |
+| `functional/tools/test_tools.py` | 30 条(T 组) |
+| `functional/tools/test_prompt_guard_default.py` | 12 条(F01 组:prompt_guard 默认开启 / 注入语料回归 / 工具定义扫描 / guard_stats 查询) |
+| `functional/runtime/test_skills.py` | 4 条(SK1–SK4) |
+| `functional/persistence/test_recovery.py` | 12 条(R6 + X6) |
+| `functional/persistence/test_persistence.py` | 19 条(P 组) |
+| `functional/orchestration/test_orchestration.py` | 10 条(O 组) |
+| `functional/cli/test_cli.py` | 13 条(C 组) |
+| `functional/runtime/test_bugfixes.py` | 20 条(缺陷修复回归) |
+| `functional/cli/test_agents_md.py` | 4 条(v1.11 基建#9:AGENTS.md 默认读取) |
+| `functional/runtime/test_full_auto.py` | 5 条(v1.11 基建#11:显式完全托管模式) |
+| `functional/orchestration/test_goal_queue.py` | 2 条(v1.11 基建#6:队列多 goal) |
+| `functional/persistence/test_memory_v11.py` | 8 条(v1.11 基建#8:deepagents 式记忆 + M5a SQLite 后端) |
+| `functional/runtime/test_plugin_discover.py` | 2 条(v1.11 基建#13:GitHub topic 插件发现;网络用例 ZHUYE_FUNCTIONAL_NETWORK=1 才跑) |
+| `functional/runtime/test_complexity_routing.py` | 2 条(v1.11 桌面#3:复杂度分级路由) |
+| `functional/runtime/test_v110.py` | 12 条(V 组) |
+| `functional/protocol/test_scenarios.py` | 7 条(并行工具及恢复、限流切换、修改审批、中断及迟到回执) |
+| `functional/persistence/test_long_session.py` | 2 条(摘要压缩、正常关闭或崩溃后增量恢复) |
+| `functional/persistence/test_crash_recovery_history.py` | 3 条(工具在途、工具结束及 rewind 后崩溃恢复) |
+| `functional/runtime/test_approval_sequences.py` | 3 条(固定种子的审批和中断交错) |
+| `functional/orchestration/test_multiagent_scenarios.py` | 4 条(响应头前或部分回复后中断、定向取消及后续回合) |
+| `functional/orchestration/test_subagent_failure.py` | 3 条(失败传播、部分回复与重启恢复、临时故障恢复) |
+| `functional/orchestration/test_subagent_context.py` | 4 条(默认隔离、尾部截取、工具配对与长历史) |
+| `functional/orchestration/test_nested_subagents.py` | 5 条(多级成功/失败、三种定向取消路径) |
+| `functional/orchestration/test_parallel_subagents.py` | 1 条(并行同角色子代理混合成功/失败) |
+| `functional/orchestration/test_async_subagent.py` | 3 条(异步派发占位回执、等待期并行推进、回合挂起后同轮激活续跑;结果写入会话记录并在后续回合保留;中断挂起中的父回合级联取消子代理且不波及后续回合) |
+| `functional/orchestration/test_subagent_approval.py` | 2 条(子代理写入审批的批准与拒绝) |
+| `functional/orchestration/test_subagent_human_input.py` | 2 条(子代理文本和结构化人工输入) |
+| `functional/orchestration/test_subagent_permissions.py` | 1 条(父级写入拒绝规则继承) |
+| `functional/orchestration/test_subagent_permissions.py` | 1 条(允许写入仍受工作区边界) |
+| `functional/protocol/test_model_cancellation.py` | 2 条(等待响应头及流式输出时中断) |
+| `functional/protocol/test_responses_scenarios.py` | 7 条(并行分片、恢复、错误、续写与凭证/配额切换) |
+| `functional/protocol/test_anthropic_errors.py` | 3 条(流内过载、限流和提前断流) |
+| `functional/protocol/test_anthropic_tools.py` | 1 条(并行工具交错分片与恢复) |
+| `functional/protocol/test_stream_failure.py` | 22 条(三种 provider 的断流、截断、流内错误、重试预算耗尽与恢复) |
+| `functional/protocol/test_invalid_tool_arguments.py` | 3 条(损坏 JSON 不执行宿主工具,同批有效工具继续) |
 | `functional/test_runner.py` | 7 条(测试入口自检) |
-| `functional/test_wire_harness.py` | 8 条(隔离、会话日志、非法输出、提前断线和终态缓冲自检) |
-| `functional/test_agents_md.py` | 4 条(v1.11 基建#9:默认注入 / 用户级+项目级顺序 / 显式关闭 / 无文件不注入) |
-| `functional/test_full_auto.py` | 5 条(v1.11 基建#11:启动通告 / yolo 别名 / bubble 自动批准 / 默认不通告 / plan 互斥) |
-| `functional/test_goal_queue.py` | 2 条(v1.11 基建#6:单 goal 字段级全链 / 多 goal 严格串行) |
-| `functional/test_memory_v11.py` | 8 条(v1.11 基建#8:topic 全链路 / consolidate / 跨会话召回 / 零相关 / 后台节流;M5a:sqlite 中文检索与投影 / 删除不复活 / 笔记归属召回) |
-| `functional/test_plugin_discover.py` | 2 条(v1.11 基建#13:参数面 / 真网络条件跳) |
-| `functional/test_complexity_routing.py` | 2 条(v1.11 桌面#3:档位命中映射 / 回退 primary) |
-| `functional/test_dump_config.py` | 2 条(v1.11 F6:结构与脱敏 / 生效配置反映;env 隔离见用例内注释) |
-| `functional/test_spill_readback.py` | 2 条(v1.11 F5:大输出溢出落盘 workspace / read 工具读回) |
+| `functional/runtime/test_wire_harness.py` | 8 条(隔离、会话日志、非法输出、提前断线和终态缓冲自检) |
+| `functional/cli/test_agents_md.py` | 4 条(v1.11 基建#9:默认注入 / 用户级+项目级顺序 / 显式关闭 / 无文件不注入) |
+| `functional/runtime/test_full_auto.py` | 5 条(v1.11 基建#11:启动通告 / yolo 别名 / bubble 自动批准 / 默认不通告 / plan 互斥) |
+| `functional/orchestration/test_goal_queue.py` | 2 条(v1.11 基建#6:单 goal 字段级全链 / 多 goal 严格串行) |
+| `functional/persistence/test_memory_v11.py` | 8 条(v1.11 基建#8:topic 全链路 / consolidate / 跨会话召回 / 零相关 / 后台节流;M5a:sqlite 中文检索与投影 / 删除不复活 / 笔记归属召回) |
+| `functional/runtime/test_plugin_discover.py` | 2 条(v1.11 基建#13:参数面 / 真网络条件跳) |
+| `functional/runtime/test_complexity_routing.py` | 2 条(v1.11 桌面#3:档位命中映射 / 回退 primary) |
+| `functional/cli/test_dump_config.py` | 2 条(v1.11 F6:结构与脱敏 / 生效配置反映;env 隔离见用例内注释) |
+| `functional/tools/test_spill_readback.py` | 2 条(v1.11 F5:大输出溢出落盘 workspace / read 工具读回) |
 | **能力覆盖层合计** | **401 条**(pytest `--collect-only` 实测,含设施自检;含早期未逐文件登记的漂移) |
 | `live/test_live_basic.py` | 4 条(L1–L4) |
 | `live/test_live_tools.py` | 3 条(T1–T3) |
@@ -796,6 +795,9 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 
 
 - **TUI 交互面**(modal / 按键 / 渲染):本仓库已不含 TUI 子命令,无对象。
+- **集成入口 I 组用例**(原 `test_import.py`,31 条):随外部 harness 导入
+  能力一并下线(commit 634bb8e),文件已删除;集成入口现由
+  `runtime/test_v110.py` V12 与各集成冒烟覆盖,原 31 条断言不再存在。
 - **外部 LLM provider 的实际行为**:本机 HTTP 网关已覆盖 OpenAI 兼容
   SSE 分片和 HTTP 429 凭证切换,但不能替代外部 provider 的真实限流、
   断流、延迟和模型工具选择;可选实模型层提供补充。
