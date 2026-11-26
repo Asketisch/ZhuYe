@@ -476,9 +476,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zhuye_ckpttool_{}_{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        crate::worktree::run_git(&dir, &["init"]).unwrap();
-        crate::worktree::run_git(&dir, &["config", "user.email", "t@t.t"]).unwrap();
-        crate::worktree::run_git(&dir, &["config", "user.name", "T"]).unwrap();
+        crate::checkpoint::worktree::run_git(&dir, &["init"]).unwrap();
+        crate::checkpoint::worktree::run_git(&dir, &["config", "user.email", "t@t.t"]).unwrap();
+        crate::checkpoint::worktree::run_git(&dir, &["config", "user.name", "T"]).unwrap();
         let mut ctx = ToolContext::default();
         ctx.session_id = ThreadId::new();
         ctx.set_workspace(dir.clone());

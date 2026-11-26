@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use zhuye_protocol::PermissionMode;
 
+use crate::checkpoint::worktree::{detach_worktree, git_root, worktree_dirty};
 use crate::tool::{Tool, ToolContext, ToolError};
-use crate::worktree::{detach_worktree, git_root, worktree_dirty};
 
 pub struct ExitWorktreeTool;
 
@@ -88,17 +88,19 @@ impl Tool for ExitWorktreeTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worktree::{SessionWorktreeState, create_worktree, default_worktree_path};
+    use crate::checkpoint::worktree::{
+        SessionWorktreeState, create_worktree, default_worktree_path,
+    };
     use std::fs;
     use std::process::Command as StdCommand;
 
     fn init_repo(dir: &std::path::Path) {
-        crate::worktree::run_git(dir, &["init"]).unwrap();
-        crate::worktree::run_git(dir, &["config", "user.email", "t@e.com"]).unwrap();
-        crate::worktree::run_git(dir, &["config", "user.name", "t"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["init"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["config", "user.email", "t@e.com"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["config", "user.name", "t"]).unwrap();
         fs::write(dir.join("a.txt"), "x").unwrap();
-        crate::worktree::run_git(dir, &["add", "a.txt"]).unwrap();
-        crate::worktree::run_git(dir, &["commit", "-m", "init"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["add", "a.txt"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["commit", "-m", "init"]).unwrap();
     }
 
     #[tokio::test]
@@ -106,7 +108,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zhuye_exit_wt_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
-        let root = crate::worktree::git_root(&dir).unwrap();
+        let root = crate::checkpoint::worktree::git_root(&dir).unwrap();
         let branch = "zhuye/exit-test";
         let wt_path = default_worktree_path(&root, branch);
         create_worktree(&root, branch, &wt_path, None).unwrap();

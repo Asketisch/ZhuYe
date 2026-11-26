@@ -2,9 +2,6 @@
 //! 按并发安全性切分的 `ToolExecutionQueue`。
 
 pub mod approval;
-/// F22:工具参数自动修复 + Sequential Thinking + 类型化返回。
-pub mod arg_repair;
-pub mod human_input;
 // 0.3:bash 命令参数别名解析下沉到 zhuye-protocol(与 ToolError 同一
 // 理由:zhuye-tools → zhuye-hooks 是单向依赖,而该规范化函数被两边
 // 共用的安全判定点需要)。此处 re-export 保持
@@ -16,30 +13,20 @@ pub use zhuye_protocol::bash_command;
 pub use zhuye_bm25 as bm25;
 pub mod builtin_tools;
 pub mod builtins;
+/// git 能力族(快照 / 回退 / worktree)。
 pub mod checkpoint;
-pub mod checkpoint_tool;
-/// 子进程组生命周期管理，供前台与后台命令共用。
-pub mod child_process;
-/// F21:Code Mode 批量工具调用计划(受限计划,非任意代码执行)。
-pub mod code_mode;
-pub mod loop_guard;
-/// F37:Office 文档格式识别 + 提取计划 + 结构化内容。
-pub mod office;
-/// 在飞异步子代理委派登记表(异步派发 + 回合挂起激活的共享状态)。
-pub mod pending_subagent;
-pub mod plan_approval;
+/// 执行形态(批量调用 / 进程组 / 跨进程工具 / 文档读取)。
+pub mod execution;
+/// 守卫与预算(参数修复 / 循环守卫 / 输出预算 / 网络加固)。
+pub mod guards;
+/// 挂起交互(人工输入 / plan 审批 / 异步子代理登记表)。
+pub mod interaction;
 pub mod queue;
 pub mod registry;
-pub mod remote;
-/// v1.x:工具结果预算 —— 超长输出落盘 + 信封替换(三层预算)。
-pub mod result_budget;
 pub mod sandbox;
 pub mod sanitize;
 pub mod spec;
 pub mod tool;
-/// F38:搜索后端 failover + SSRF 加固 + 代理配置 + URL 参数脱敏。
-pub mod web_guard;
-pub mod worktree;
 
 pub use approval::{
     ApprovalContext, ApprovalGate, ApprovalWaiters, AskUserInputWaiters, AskUserQuestionWaiters,
@@ -54,29 +41,39 @@ pub use builtin_tools::{
     register_builtin_tools_with_gates,
 };
 pub use builtins::bash::{BashCommandClass, classify_command};
-pub use checkpoint_tool::{CheckpointTool, RewindTool};
-pub use loop_guard::{GuardDecision, LoopGuard, LoopGuardConfig};
-pub use pending_subagent::{
+pub use checkpoint::checkpoint_tool::{CheckpointTool, RewindTool};
+pub use checkpoint::worktree::{
+    SessionWorktreeState, WorktreeCoordinator, create_worktree, default_worktree_path,
+    detach_worktree, git_head_ref, git_root, remove_worktree, run_git, sanitize_branch_name,
+    worktree_dirty,
+};
+pub use execution::remote::{RemoteBridge, RemoteTool};
+pub use guards::loop_guard::{GuardDecision, LoopGuard, LoopGuardConfig};
+pub use interaction::human_input::HumanInputStore;
+pub use interaction::pending_subagent::{
     PendingCompletionGuard, PendingSubagentRegistry, PendingSubagentResult,
 };
-pub use plan_approval::{PlanApprovalGate, PlanApprovalWaiters, complete_plan_approval};
+pub use interaction::plan_approval::{
+    PlanApprovalGate, PlanApprovalWaiters, complete_plan_approval,
+};
 pub use queue::{ToolCallRequest, ToolExecutionQueue, ToolResult};
 pub use registry::{ToolRegistry, ToolSource};
-pub use remote::{RemoteBridge, RemoteTool};
 pub use sanitize::{SanitizeConfig, SanitizeError, Sanitizer, sanitize_text};
 pub use spec::ToolSpec;
 pub use tool::{
     BackgroundBashSandbox, BackgroundTaskInfo, TaskSpawner, Tool, ToolContext, ToolEventForwarder,
 };
-pub use worktree::{
-    SessionWorktreeState, WorktreeCoordinator, create_worktree, default_worktree_path,
-    detach_worktree, git_head_ref, git_root, remove_worktree, run_git, sanitize_branch_name,
-    worktree_dirty,
-};
 // 从 protocol 重新导出,让下游用户能用
 // `zhuye_tools::ToolError` / `zhuye_tools::ToolOutput`,
 // 无需直接依赖 `zhuye-protocol`。
 pub use zhuye_protocol::{ToolError, ToolOutput};
+
+/// 下列模块的旧路径别名 —— 实现已下沉到对应子目录,但 crate 外有深路径
+/// 引用（如 `zhuye_tools::result_budget::ResultBudget`），保留别名以免破坏
+/// 既有调用点。
+pub use execution::child_process;
+pub use execution::remote;
+pub use guards::result_budget;
 
 /// v1.x 功能 6:`AgentDefinition.readonly = true` 时从可见工具集中排除的
 /// 变更类工具名。这些工具会修改文件系统 / 执行任意命令,只读 agent 不应拥有。
@@ -94,4 +91,3 @@ pub const READONLY_DENYLIST: &[&str] = &[
     "NotebookEdit",
     "notebook_edit",
 ];
-pub use human_input::HumanInputStore;

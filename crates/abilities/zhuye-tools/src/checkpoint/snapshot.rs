@@ -6,7 +6,7 @@
 //! `checkpoint` — v1.2 P0-3 git 快照与回退助手。
 //!
 //! 给 `CheckpointTool` / `RewindTool` 提供 git 操作原语,复用
-//! [`crate::worktree::run_git`]。设计取舍(见 gap doc P0-3):
+//! [`crate::checkpoint::worktree::run_git`]。设计取舍(见 gap doc P0-3):
 //! - **只回退工作区文件**(git tree),**不截断会话历史**。会话 JSONL
 //!   append-only,rewind 只追加 `Rewind` marker(见
 //!   `zhuye_rollout::index::write_rewind_record`)。

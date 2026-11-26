@@ -174,13 +174,16 @@ pub struct ToolExecutionQueue {
     /// 未接线)= 历史 no-op 行为;exec/bootstrap 按 `[tool_results]` 配置
     /// 构造注入。应用点:成功输出的 sanitizer 之后、PostToolUse hook
     /// 之前(hook 与模型看到同一份预算后输出)。
-    result_budget: Option<Arc<crate::result_budget::ResultBudget>>,
+    result_budget: Option<Arc<crate::guards::result_budget::ResultBudget>>,
 }
 
 impl ToolExecutionQueue {
     /// v1.x:注入工具结果预算(超长输出落盘 + 信封替换)。`None`/未调用
     /// = 历史 no-op 行为(向后兼容;core 测试与旧嵌入方零变化)。
-    pub fn with_result_budget(mut self, budget: Arc<crate::result_budget::ResultBudget>) -> Self {
+    pub fn with_result_budget(
+        mut self,
+        budget: Arc<crate::guards::result_budget::ResultBudget>,
+    ) -> Self {
         self.result_budget = Some(budget);
         self
     }
@@ -586,8 +589,8 @@ impl ToolExecutionQueue {
         // 往返重试,修好比报错便宜。修复记录进 metadata 供诊断。
         {
             let schema = tool.parameters_schema();
-            let repaired = crate::arg_repair::repair_args(&effective_args, &schema);
-            let with_defaults = crate::arg_repair::apply_defaults(&repaired.args, &schema);
+            let repaired = crate::guards::arg_repair::repair_args(&effective_args, &schema);
+            let with_defaults = crate::guards::arg_repair::apply_defaults(&repaired.args, &schema);
             let mut notes = repaired.notes;
             notes.extend(with_defaults.notes);
             if !notes.is_empty() {
@@ -828,7 +831,8 @@ impl ToolExecutionQueue {
         let loop_guard_arc = ctx.loop_guard.clone();
         let mut loop_advisory: Option<String> = None;
         if let Some(guard_arc) = &loop_guard_arc {
-            let args_hash = crate::loop_guard::LoopGuard::canonical_args_hash(&effective_args);
+            let args_hash =
+                crate::guards::loop_guard::LoopGuard::canonical_args_hash(&effective_args);
             let decision = {
                 let mut g = guard_arc.lock().expect("loop guard poisoned");
                 let preview = {
@@ -847,7 +851,7 @@ impl ToolExecutionQueue {
                 g.observe_hashed(&call.name, &args_hash, Some(&preview))
             };
             match decision {
-                crate::loop_guard::GuardDecision::Block { message } => {
+                crate::guards::loop_guard::GuardDecision::Block { message } => {
                     return ToolResult {
                         call_id: call.id,
                         content: vec![ContentBlock::text(message)],
@@ -856,10 +860,10 @@ impl ToolExecutionQueue {
                         metadata: serde_json::json!({"loop_guard": "blocked"}),
                     };
                 }
-                crate::loop_guard::GuardDecision::Advise { message } => {
+                crate::guards::loop_guard::GuardDecision::Advise { message } => {
                     loop_advisory = Some(message);
                 }
-                crate::loop_guard::GuardDecision::Proceed => {}
+                crate::guards::loop_guard::GuardDecision::Proceed => {}
             }
         }
 
@@ -876,8 +880,9 @@ impl ToolExecutionQueue {
         macro_rules! lg_record {
             ($text:expr) => {
                 if let Some(guard_arc) = &loop_guard_arc {
-                    let args_hash = crate::loop_guard::LoopGuard::canonical_args_hash(&lg_args);
-                    let rh = crate::loop_guard::LoopGuard::result_hash(&$text);
+                    let args_hash =
+                        crate::guards::loop_guard::LoopGuard::canonical_args_hash(&lg_args);
+                    let rh = crate::guards::loop_guard::LoopGuard::result_hash(&$text);
                     guard_arc
                         .lock()
                         .expect("loop guard poisoned")
@@ -1022,7 +1027,7 @@ impl ToolExecutionQueue {
                 // PostToolUse hook 之前应用 —— hook 与模型看到同一份
                 // 预算后输出。未接线(None)= 历史 no-op。
                 if let Some(budget) = self.result_budget.as_ref() {
-                    crate::result_budget::apply(&mut output, &call.name, &call.id, budget);
+                    crate::guards::result_budget::apply(&mut output, &call.name, &call.id, budget);
                 }
                 // v1.9 C1/C2:登记成功输出指纹(进度证据)。
                 let success_text = output
@@ -1845,7 +1850,7 @@ mod loop_guard_queue_tests {
 
     fn queue_with_guard() -> (
         ToolExecutionQueue,
-        Arc<std::sync::Mutex<crate::loop_guard::LoopGuard>>,
+        Arc<std::sync::Mutex<crate::guards::loop_guard::LoopGuard>>,
     ) {
         let registry = ToolRegistry::new();
         registry.register(Arc::new(EchoTool));
@@ -1853,7 +1858,7 @@ mod loop_guard_queue_tests {
         let queue =
             ToolExecutionQueue::new(Arc::new(registry), Arc::new(HookEngine::new()), ctx, 4);
         let guard = Arc::new(std::sync::Mutex::new(
-            crate::loop_guard::LoopGuard::with_defaults(),
+            crate::guards::loop_guard::LoopGuard::with_defaults(),
         ));
         let mut queue = queue;
         queue.base_ctx.loop_guard = Some(guard.clone());
@@ -1941,7 +1946,7 @@ mod loop_guard_queue_tests {
             let mut guard = g.lock().unwrap();
             let d = guard.observe("echo_guarded", &args);
             assert!(
-                !matches!(d, crate::loop_guard::GuardDecision::Block { .. }),
+                !matches!(d, crate::guards::loop_guard::GuardDecision::Block { .. }),
                 "有进展重复不得 Block"
             );
             guard.record_result("echo_guarded", &args, &format!("h{i}"));
@@ -1992,7 +1997,7 @@ mod loop_guard_queue_tests {
             let decision = guard.observe("echo_guarded", &args);
             assert!(!matches!(
                 decision,
-                crate::loop_guard::GuardDecision::Block { .. }
+                crate::guards::loop_guard::GuardDecision::Block { .. }
             ));
             guard.record_result("echo_guarded", &args, hash);
         }

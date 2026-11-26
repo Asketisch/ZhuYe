@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use zhuye_protocol::PermissionMode;
 
-use crate::tool::{Tool, ToolContext, ToolError};
-use crate::worktree::{
+use crate::checkpoint::worktree::{
     SessionWorktreeState, create_worktree, default_worktree_path, git_root, sanitize_branch_name,
 };
+use crate::tool::{Tool, ToolContext, ToolError};
 
 pub struct EnterWorktreeTool;
 
@@ -114,17 +114,17 @@ impl Tool for EnterWorktreeTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worktree::git_head_ref;
+    use crate::checkpoint::worktree::git_head_ref;
     use std::fs;
     use std::process::Command as StdCommand;
 
     fn init_repo(dir: &std::path::Path) {
-        crate::worktree::run_git(dir, &["init"]).unwrap();
-        crate::worktree::run_git(dir, &["config", "user.email", "t@e.com"]).unwrap();
-        crate::worktree::run_git(dir, &["config", "user.name", "t"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["init"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["config", "user.email", "t@e.com"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["config", "user.name", "t"]).unwrap();
         fs::write(dir.join("a.txt"), "x").unwrap();
-        crate::worktree::run_git(dir, &["add", "a.txt"]).unwrap();
-        crate::worktree::run_git(dir, &["commit", "-m", "init"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["add", "a.txt"]).unwrap();
+        crate::checkpoint::worktree::run_git(dir, &["commit", "-m", "init"]).unwrap();
     }
 
     #[tokio::test]
@@ -147,8 +147,8 @@ mod tests {
         assert!(ctx.worktree_state().is_some());
         // 清理
         if let Some(state) = ctx.worktree_state() {
-            let root = crate::worktree::git_root(&dir).unwrap();
-            crate::worktree::remove_worktree(&root, &state, true).ok();
+            let root = crate::checkpoint::worktree::git_root(&dir).unwrap();
+            crate::checkpoint::worktree::remove_worktree(&root, &state, true).ok();
         }
         let _ = StdCommand::new("rm").arg("-rf").arg(&dir).status();
     }

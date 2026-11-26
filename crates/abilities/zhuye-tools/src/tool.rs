@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use zhuye_protocol::{PermissionMode, ThreadId, TurnId};
 
 use crate::approval::ApprovalGate;
-use crate::worktree::SessionWorktreeState;
+use crate::checkpoint::worktree::SessionWorktreeState;
 
 pub use zhuye_protocol::ToolError;
 pub use zhuye_protocol::ToolOutput;
@@ -154,14 +154,14 @@ pub struct ToolContext {
     /// `Some` 时 `ToolExecutionQueue::execute_single` 在每次工具执行前
     /// 记账并裁决:软档 advisory 前插提醒文本,硬档(重复+无进展)直接
     /// 阻断返回错误。执行后由 queue 登记输出指纹作进度证据。
-    pub loop_guard: Option<Arc<std::sync::Mutex<crate::loop_guard::LoopGuard>>>,
+    pub loop_guard: Option<Arc<std::sync::Mutex<crate::guards::loop_guard::LoopGuard>>>,
     /// v1.5 R2:后台任务生成器(宿主实现)。`None`(默认)= 工具不支持
     /// 后台执行;`Some` 时 bash 的 `run_in_background` 参数可用。
     pub background: Option<Arc<dyn TaskSpawner>>,
     /// v1.5 E2:人工输入持久化存储。`None`(默认)= `request_human_input`
     /// 维持旧行为(仅 TUI gate 等待);`Some` 时支持挂起文件 + 外部进程
     /// 应答文件(跨进程/跨重启闭环)。
-    pub human_input: Option<Arc<crate::human_input::HumanInputStore>>,
+    pub human_input: Option<Arc<crate::interaction::human_input::HumanInputStore>>,
     /// 父会话历史快照,由 `tool_exec` 注入并按工具声明分别限制。
     /// 元素是 llm 层 `ChatMessage` 的 JSON 形态,避免反向依赖。
     pub parent_tail_json: Arc<Vec<serde_json::Value>>,
@@ -172,7 +172,8 @@ pub struct ToolContext {
     /// `Some` 时由引擎在 `AgentThread::new` 注入 —— 它是**每线程一份**
     /// (基座 context 按 `AgentConfig` 构造),因此嵌套场景天然隔离:
     /// 子代理线程用自己的表,孙代理的完成不会误唤醒父回合。
-    pub pending_subagents: Option<Arc<crate::pending_subagent::PendingSubagentRegistry>>,
+    pub pending_subagents:
+        Option<Arc<crate::interaction::pending_subagent::PendingSubagentRegistry>>,
 }
 
 /// v1.4 C1:工具 → 引擎事件通道的转发器。`tool_exec` 在每批执行前构造

@@ -225,7 +225,7 @@ mod tests {
 mod e2e_tests {
     use super::*;
     use crate::approval::ApprovalGate;
-    use crate::human_input::HumanInputStore;
+    use crate::interaction::human_input::HumanInputStore;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 

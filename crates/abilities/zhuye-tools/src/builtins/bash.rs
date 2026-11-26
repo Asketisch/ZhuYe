@@ -589,7 +589,7 @@ impl Tool for BashTool {
             }
         }
 
-        let mut child = match crate::child_process::GroupedChild::spawn(&mut command) {
+        let mut child = match crate::execution::child_process::GroupedChild::spawn(&mut command) {
             Ok(c) => c,
             // 已请求 Linux 沙箱时，安装失败绝不能退回裸执行。
             Err(e) if landlock_applied => {
