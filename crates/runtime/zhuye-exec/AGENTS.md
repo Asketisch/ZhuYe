@@ -18,6 +18,7 @@ headless 与 serve 的共享装配层：读参数、bootstrap 会话、把协议
 | `src/runtime_config.rs` | 运行时配置构造器：tracing 初始化、telemetry sink、quota tracker |
 | `src/reload.rs` | 配置热重载：registry 替换、section diff、事件推送 |
 | `src/builtin_hooks.rs` | 内置上下文注入 hooks（AGENTS.md 注入等），归属 exec 层不进引擎循环 |
+| `src/tools/` | exec 层内置工具：把引擎外运行时组件包装成 agent 工具，四件同构 `impl Tool`——`cron`(cron 调度) / `goal`(目标模式) / `memory`(记忆读写) / `queue`(队列模式) |
 
 ## 本地契约与同步点
 

@@ -11,20 +11,16 @@
 | 文件 | 一句话职责 |
 |------|-----------|
 | `src/main.rs` | `enum Command` 子命令枚举、全局参数与 dispatch 分发 |
-| `src/config.rs` | `zhuye config` 读 / 设 / 取消单个配置项 |
-| `src/doctor.rs` | `zhuye doctor` 环境自检（best-effort，不阻塞） |
-| `src/session.rs` | `zhuye session` 列 / 看 / 删本地持久化会话 |
-| `src/task.rs` | `zhuye task` 与 `zhuye task team`，直连 TaskManager |
-| `src/pipeline.rs` | `zhuye pipeline` 运行 DAG 流水线 |
-| `src/plugin/mod.rs` | `zhuye plugin` 安装 / 列表 / 启停 / 卸载 |
+| `src/commands/` | 16 个工具类子命令的实现（一文件一子命令），速览与契约见 [commands/AGENTS.md](src/commands/AGENTS.md) |
+| `src/plugin/mod.rs` | `zhuye plugin` 安装 / 列表 / 启停 / 卸载（`skill` 安装亦由 plugin 模块承载） |
 | `src/plugin/marketplace.rs` | `zhuye plugin marketplace` 增删 / 刷新 / 移除 |
 
 ## 本地契约与同步点
 
 - **`enum Command`（`src/main.rs`）是 CLI 参数面的唯一权威**：子命令集合、旗标名、互斥关系、帮助文案都从这里出。`docs/cli.md` 的总览表是它的文档投影，不是另一份事实源。
 - `doctor` 展示静态可解析模型的窗口、压缩阈值及来源；未解析模型应明确说明阈值尚未确定。
-- **新增子命令的同步点**：① `src/main.rs` 的 `enum Command` 与 dispatch 分支；② `docs/cli.md` 的总览表与对应小节；③ `tests/functional/` 下的参数面用例（能力面统一用 Python 写）；④ 若因此新增了 crate，补 runtime 层篇的 crate 速览导航。
-- **clap 外壳与逻辑下沉的分工**：`exec` / `serve` 的参数结构与业务逻辑都在 `zhuye-exec`，本 crate 只做投影与转发；工具类子命令（config / session / task / pipeline / plugin / mcp / lsp / hooks / secrets / models / doctor / workspace / update / init / login / traces / skill / security）在本 crate 内直接实现。
+- **新增子命令的同步点**：① `src/commands/` 新增实现文件并在其 `mod.rs` 登记 + `src/main.rs` 的 `enum Command` 变体与 dispatch 分支；② `docs/cli.md` 的总览表与对应小节；③ `tests/functional/` 下的参数面用例（能力面统一用 Python 写）；④ 若因此新增了 crate，补 runtime 层篇的 crate 速览导航。
+- **clap 外壳与逻辑下沉的分工**：`exec` / `serve` 的参数结构与业务逻辑都在 `zhuye-exec`，本 crate 只做投影与转发；工具类子命令在本 crate 内直接实现——16 个落 `src/commands/`（速览见其子目录篇），`plugin` 族落 `src/plugin/`。
 - **本二进制不含 `tui` 子命令**：交互式 TUI 已拆至独立仓库，这里只提供 headless 与工具类子命令。
 - **`marketplace remove` 是不可逆删除**：`src/plugin/marketplace.rs` 用 `std::fs::remove_dir_all` 递归删掉插件安装目录。改动这段代码时保留明确的危险行为提示注释，并确保待删路径不能被未校验的外部输入决定。
 - 改子命令参数面后按根 `AGENTS.md` 的验证矩阵跑 `./tests/run_all.sh rust`（CLI 参数面）与 `./tests/run_all.sh functional`（能力面）。

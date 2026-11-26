@@ -8,13 +8,13 @@
 
 ## crate 速览
 
-本层五个 crate 目前**没有独立的 crate 篇**，本地契约集中写在本篇。
+本层五个 crate 中 `zhuye-task` 已有独立篇，其余四个 crate **没有独立的 crate 篇**，本地契约集中写在本篇。
 
 | crate | 一句话职责 | 本地契约在哪 |
 |-------|-----------|------------|
 | `zhuye-subagent` | Tool-per-Agent 子代理工厂与 session forking，对父级 LLM 以工具形式暴露 | 本篇「子代理工厂」节 |
 | `zhuye-discussion` | 多角色讨论编排器与进程内消息总线 | 本篇「角色讨论」节 |
-| `zhuye-task` | 结构化任务、团队 / squad 委派与 Coordinator 模式 | 本篇「任务与团队」节 |
+| `zhuye-task` | 结构化任务、团队 / squad 委派与 Coordinator 模式 | [zhuye-task/](zhuye-task/AGENTS.md) |
 | `zhuye-pipeline` | DAG 驱动的多阶段流水线运行时 | 本篇「流水线」节 |
 | `zhuye-goal` | 目标模式：每轮结束自校验，未达成则生成续作 | 本篇「目标模式」节 |
 

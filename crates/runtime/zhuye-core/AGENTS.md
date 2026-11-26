@@ -19,6 +19,7 @@
 | `src/side_channel/` | side-channel 旁路 agent 的注册表与驱动（并发旁路） |
 | `src/resume.rs` | `RolloutRecord` → `ChatMessage` 的纯映射，恢复历史用 |
 | `src/steering_queue.rs` | 下一轮 steer 输入队列 |
+| `src/misc/` | 引擎杂项三组：`f63`(干跑预览 / 回合截止 / 系统提醒信封 / 迟到审批)、`f64`(sudo 凭据 / 通知投递栈 / 系统权限引导)、`f65`(ADR / 错误人话化 / CLI↔GUI 行为差异) |
 
 ## 本地契约与同步点
 

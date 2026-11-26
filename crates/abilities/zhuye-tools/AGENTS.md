@@ -50,15 +50,16 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 | `src/builtin_tools.rs` | 内置工具注册入口与计数常量 |
 | `src/queue.rs` | 工具执行队列(串行 / 并行分组) |
 | `src/sandbox.rs` | 路径沙箱(workspace-write 口径:读全盘 + 凭证拒绝;写限 `resolve_writable_path` 允许根 + `.git`/`.agents`/`.aws` 元数据只读;`.zhuye` 走提权子项 denylist(`PROTECTED_ZHUYE_CHILDREN`:config/sessions/cron 等),其余子树(spill/plan/worktrees/uploads)放行;`resolve_sandbox_path` 旧工作区墙保留给 LSP) |
-| `src/approval/gate.rs` | 审批门与决策路由 |
-| `src/approval/mod.rs` | `ApprovalContext`：waiter 表族（审批 / 问答 / 询问 / MCP elicitation）+ 会话放行集 + 挂起交互注册表 |
-| `src/builtins/` | 各内置工具实现(按工具分文件) |
-| `src/loop_guard.rs` | 重复调用 / 无进展的循环守卫 |
-| `src/pending_subagent.rs` | 在飞异步子代理登记表(`PendingSubagentRegistry`)—— 异步派发写、引擎挂起等待读 |
+| `src/approval/` | 审批门与决策路由(`gate.rs`);`ApprovalContext`：waiter 表族（审批 / 问答 / 询问 / MCP elicitation）+ 会话放行集 + 挂起交互注册表(`mod.rs`) |
+| `src/builtins/` | 各内置工具实现,按能力域分六簇(fs/web/human/plan/exec/meta);对外平铺路径契约见 [builtins/AGENTS.md](src/builtins/AGENTS.md) |
+| `src/guards/` | 守卫与预算:`arg_repair`(schema 修参) / `loop_guard`(循环失控) / `result_budget`(超长输出落盘) / `web_guard`(failover + SSRF) |
+| `src/checkpoint/` | git 快照与回退:`snapshot`(原语,实现下沉 zhuye-git) / `checkpoint_tool`(Checkpoint/Rewind 工具) / `worktree`(会话状态) |
+| `src/interaction/` | 挂起交互:`human_input`(持久化存储) / `plan_approval`(Plan 审批路由) / `pending_subagent`(在飞异步子代理登记表) |
+| `src/execution/` | 执行形态:`code_mode`(批量调用计划) / `child_process`(进程组隔离) / `remote`(跨语言自定义工具) / `office`(文档读取) |
 
 ## 在飞异步子代理登记表
 
-`src/pending_subagent.rs` 的 `PendingSubagentRegistry` 是「异步子代理派发」与
+`src/interaction/pending_subagent.rs` 的 `PendingSubagentRegistry` 是「异步子代理派发」与
 「回合挂起激活」两侧共用的状态:
 
 - **工具侧**(`ToolContext.pending_subagents`):派发时 `register`(带父回合的
@@ -94,7 +95,7 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 
 ## v1.x 新增能力
 
-- **工具结果预算**(`src/result_budget.rs`):提供独立预算工具及队列可选接口。运行时配置在宿主事件发出后应用于模型上下文；持久化输出写入工作区的安全溢出目录，保持可读回与恢复一致。
+- **工具结果预算**(`src/guards/result_budget.rs`):提供独立预算工具及队列可选接口。运行时配置在宿主事件发出后应用于模型上下文；持久化输出写入工作区的安全溢出目录，保持可读回与恢复一致。
 - **deferred_call**(tool-defer 门控插件,默认关):只有入口已注册且目标来自 MCP 时,queue 才在**派发前**展开调用,审批/hook/floor 按真实工具走;直接执行、嵌套转发和非 MCP 目标均拒绝。`registry.deferred_tool_names()` 供 core 目录公告。
 - **stop_turn 级联**:工具以 `metadata["stop_turn"]=true` 请求结算后收口 turn(置 `force_final_answer`,结果仍完整回灌)。
 

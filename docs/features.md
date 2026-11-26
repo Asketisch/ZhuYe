@@ -65,9 +65,42 @@
 `BUNDLED_PLUGIN_DEFAULTS` / `bundled_plugin_enabled`(显式禁用 > 显式启用
 > 默认开关)。判定不热重载,变更后重启会话生效。
 
+## 形态判断(主循环 vs 插件)
+
+根 [AGENTS.md](../AGENTS.md) 开发流程检查表第 1 条的完整口径收录在本节:
+**所有功能开发**(新能力、既有能力的扩展 / 行为变更、bug 修复引入新行为)
+动手实现前,必须先回答两问,答案写进 commit message 或 PR 描述:
+
+- **第一问:是否属于主循环?** 该能力是否为 Submission 消费 →
+  StateGraph(PreLoop → ModelCall → ToolExec → CheckStop)流转必需的
+  引擎机制(协议 Op/EventMsg/Item、状态转移、审批与权限、持久化回放、
+  上下文治理、ToolExecutionQueue)?非主循环而允许内置的例外仅两类:
+  SDK 门面必需的原语、性能关键的通用工具(先例:多 agent 编排,见上文
+  「编排五原语」);
+- **第二问:能否以插件形式存在?** 插件能力槽:commands / 子代理 /
+  hooks / skills / MCP servers / WASM 工具(manifest 权威在
+  `crates/resources/zhuye-plugin/src/manifest.rs`,开发指南见
+  [plugin-dev-guide.md](plugin-dev-guide.md))。
+
+决策矩阵:
+
+| 第一问(主循环?) | 第二问(槽可承载?) | 形态 |
+|---|---|---|
+| 是(或属两类内置例外) | — | 内置,理由写进 commit / PR |
+| 否 | 能 | **必须插件**(外部接入 / 领域特定 / 可启停 / 第三方可定制);先例:`zhuye-computer-use` / `zhuye-shell` / `zhuye-git-tools` / `zhuye-kms` 作为 `plugins/*` 能力本体挂载、不进 SDK facade |
+| 否 | 能,但须保持原工具名 / 审批 / 默认行为(外部用法零影响) | **门控型插件**:能力本体留引擎 crate,注册由插件启用状态门控(判定单一事实源 `zhuye-plugin::bundled_plugin_enabled`,默认开关表 `BUNDLED_PLUGIN_DEFAULTS`);先例:`goal-queue`、`web-search`、`notebook`、`verify-hooks`、`lsp` |
+| 否 | 不能(需引擎内部状态) | goal-queue 式引擎侧特例装配,或先扩展插件系统再承载;理由必须写明 |
+
+拿不准时先做插件。
+
+**门控型与三层过滤的关系**:注册门控(插件级,`[plugins].disabled_plugins`,
+工具不进注册表)→ 可见性过滤(工具名级,`[active] tools` / `disallowed_tools`,
+LLM 不可见)→ 执行期审批(权限规则 / floor);三层正交,不要混用入口,
+细节见上文「三层工具管控」。
+
 ## 形态判断结论(不插件化清单)
 
-按根 AGENTS.md「形态判断(主循环 vs 插件)」铁律逐项过审后,**保留内置**
+按上文「形态判断(主循环 vs 插件)」铁律逐项过审后,**保留内置**
 的能力与理由:
 
 - 文件族 / bash 族 / Plan mode 三件 / ask_user 族 / `tool_search` /

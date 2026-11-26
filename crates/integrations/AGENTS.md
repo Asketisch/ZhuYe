@@ -1,4 +1,4 @@
-**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki 或安全扫描/通知时读本篇 —— 本层 9 个 crate 均无独立篇,它们的本地契约以本篇为准。
+**何时读我:** 当你要改动 MCP 客户端、LSP 客户端、流式会话后端(定时 / 自动驾驶 / 队列)、Computer Use、浏览器控制、常驻 shell 会话池、git 工作流 MCP server、本地知识库 wiki 或安全扫描/通知时读本篇 —— 本层 9 个 crate 中 `zhuye-mcp` / `zhuye-lsp` / `zhuye-kms` 已有独立篇(见速览表链接),其余 6 个 crate 的本地契约以本篇为准。
 
 # crates/integrations/ —— 外部系统接入层
 
@@ -8,19 +8,19 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ## crate 职责速览表
 
-本层 9 个 crate 都**没有独立篇**,下表只定位,细则见后续小节。
+本层 9 个 crate 中 `zhuye-mcp` / `zhuye-lsp` / `zhuye-kms` 有独立篇(见链接),其余 6 个 crate **没有独立篇**,下表只定位,细则见后续小节。
 
 | crate | 一句话职责 | 本地契约在哪 |
 |---|---|---|
-| `zhuye-mcp` | MCP 客户端:把外部 MCP server 的 tool / resource / prompt 接入工具注册表 | MCP 客户端 |
-| `zhuye-lsp` | LSP 客户端:以单一 `lsp` 工具承载 definition / references / hover | LSP 客户端 |
+| `zhuye-mcp` | MCP 客户端:把外部 MCP server 的 tool / resource / prompt 接入工具注册表 | [zhuye-mcp/](zhuye-mcp/AGENTS.md) |
+| `zhuye-lsp` | LSP 客户端:以单一 `lsp` 工具承载 definition / references / hover | [zhuye-lsp/](zhuye-lsp/AGENTS.md) |
 | `zhuye-integration` | 安全扫描(cargo audit 包装)与 Webhook 通知 | 外部集成 |
 | `zhuye-stream` | 流式会话后端:cron 定时 / autopilot 自动驾驶 / FIFO 队列 / 工作区同步 | 流式后端 |
 | `zhuye-computer-use` | Computer Use:截屏与键鼠输入,含 a11y 寻址与动作后验 | Computer Use |
 | `zhuye-browser` | 浏览器控制:CDP 驱动本机浏览器,复用 a11y 寻址与快照绑定 | 浏览器控制 |
 | `zhuye-shell` | 常驻 shell 会话池:启动进程 / 增量读 / 写 stdin / kill | 常驻 shell |
 | `zhuye-git-tools` | git 工作流 MCP server 协议层:分支摘要 / checkpoint 快照 | git 工作流 |
-| `zhuye-kms` | 本地知识库 wiki(grep 检索 + dream 固化),`plugins/kms` 的能力本体 | KMS 知识库 |
+| `zhuye-kms` | 本地知识库 wiki(grep 检索 + dream 固化),`plugins/kms` 的能力本体 | [zhuye-kms/](zhuye-kms/AGENTS.md) |
 
 ## 本层本地契约
 
@@ -28,15 +28,15 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ### MCP 客户端(`zhuye-mcp`)
 
-- transport 三态:`McpTransport::Stdio`(默认)/ `Http`(别名 `streamable-http`)/ `Sse`(legacy 兼容别名,实现上委托 streamable-http 客户端)。落点:`crates/integrations/zhuye-mcp/src/config.rs`、`crates/integrations/zhuye-mcp/src/transport.rs`。
-- 协议版本由常量 `PROTOCOL_VERSION` 固定(`crates/integrations/zhuye-mcp/src/protocol_version.rs`),判断 wire 兼容性先看它。
-- 工具全名强制 `mcp__<server>__<tool>` 前缀(`crates/integrations/zhuye-mcp/src/tool.rs`),不得与内置工具重名。
+- transport 三态:`McpTransport::Stdio`(默认)/ `Http`(别名 `streamable-http`)/ `Sse`(legacy 兼容别名,实现上委托 streamable-http 客户端)。落点:`crates/integrations/zhuye-mcp/src/config.rs`、`crates/integrations/zhuye-mcp/src/client/transport.rs`。
+- 协议版本由常量 `PROTOCOL_VERSION` 固定(`crates/integrations/zhuye-mcp/src/protocol/version.rs`),判断 wire 兼容性先看它。
+- 工具全名强制 `mcp__<server>__<tool>` 前缀(`crates/integrations/zhuye-mcp/src/client/tool.rs`),不得与内置工具重名。
 - 配置走 `[mcp_servers.<name>]` TOML 表。
 - `timeout_ms` 同时约束连接握手、首次 `tools/list` 和单次工具调用；初始化超时上报 `McpServerFailed` 并清理连接。
-- stdio 子进程 env 用 `env_clear()` 隔离,只注入 `HOME` / `PATH` + 用户显式 env(`crates/integrations/zhuye-mcp/src/transport.rs` 的 `inject_safe_env`)。
+- stdio 子进程 env 用 `env_clear()` 隔离,只注入 `HOME` / `PATH` + 用户显式 env(`crates/integrations/zhuye-mcp/src/client/transport.rs` 的 `inject_safe_env`)。
 - MCP 连接主动关闭或对端断开时必须取消共享 token 并结束后台任务；握手后工具列表获取失败也必须关闭连接，不能遗留子进程。
 - MCP 资源读取按服务端顺序保留文本、二进制及来源信息；二进制以 base64 JSON 文本传递，嵌入资源和链接也不得丢失；资源列表与读取响应宿主取消并向服务端发送取消通知。
-- 自暴露 MCP server(`crates/integrations/zhuye-mcp/src/server_mode.rs`)默认只读、随机 token 鉴权、仅回环监听、工具白名单。
+- 自暴露 MCP server(`crates/integrations/zhuye-mcp/src/protocol_ext/server_mode.rs`)默认只读、随机 token 鉴权、仅回环监听、工具白名单。
 - **客户端侧 OAuth(http 传输)**:`[mcp_servers.<name>.oauth]` 支持 `token` / `token_env` / `client_credentials` / `refresh_token`;token 端点缺省时按受保护资源元数据(RFC 9728)与授权服务器元数据(RFC 8414)发现。服务端要求授权而无可用凭据时,启动失败并上报 `McpError::AuthRequired`(含可执行提示),**不**含糊报「握手失败」。授权码流程(浏览器)由宿主完成。
 - **工具列表动态刷新**:服务端发 `notifications/tools/list_changed` → 重新 `tools/list` → 新工具注册、下线工具反注册(注册表是 LLM 可见面的唯一真相)。刷新与启动注册的先后不可预知,故以**版本化快照 + 注册表现状求差集**收口。
 - **Elicitation(server→client `elicitation/create`)**:`HostClientHandler` 把请求转成 `McpLifecycleEvent::Elicitation`,由宿主经 `Op::McpElicitationResponse` 裁决;`form` 形态按服务端 schema 逐字段还原,字段名不得改写;`link` 形态只带 URL。客户端**不声明 sampling 能力**(未实现),服务端不得依赖它。

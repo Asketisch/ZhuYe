@@ -14,7 +14,7 @@
 - provider 实现放在 `providers/` 下,各自实现 `client.rs` 的 `ModelClient` trait;`providers/mod.rs` 只放 provider 之间共享的 helper(版本段端点拼接、SSE 响应校验)。
 - provider 对外声明的能力走 `capabilities.rs` 的 `Capabilities` 标志位(`tool_use` / `prompt_caching` / `extended_thinking` / `vision` / `json_mode` / `system_blocks`)。**`zhuye-core` 据此决定是否注入 cache breakpoint、是否启用 extended thinking、是否发送多块 system prompt** —— 标志填错,行为会在上层静默走偏。
 - provider 身份用强类型的 `ProviderKind` 表达(`Anthropic` / `OpenAI` / `Ollama` / `Custom`),不要退回字符串比较。
-- 多凭据场景走 `registry.rs` 的 `ModelRegistry`(name → `CredentialPool`,加权轮询 + cooldown 过滤),单凭据元数据在 `credential.rs`,冷却状态在 `cooldown.rs`。
+- 多凭据场景走 `registry.rs` 的 `ModelRegistry`(name → `CredentialPool`,加权轮询 + cooldown 过滤),单凭据元数据在 `billing/credential.rs`,冷却状态在 `billing/cooldown.rs`(计费族五模块由 `billing/mod.rs` 统一声明)。
 - 端点有模型清单 API 的 provider 必须实现 `ModelClient::list_models`(trait 默认 `Ok(None)` = 诚实降级「无清单端点」):openai / responses / ollama / anthropic 均已实现(anthropic 走 `GET {base}/v1/models`,认证头与 chat 同规则)。**404/405 返回 `Ok(None)`、其余状态如实报错**;清单发现(`zhuye-config::discovery`)依赖本能力做 `model = "free"` 解析与 `zhuye models list`,GUI 侧展示清单另有直连实现,新增/改动时两侧口径要保持一致。
 
 ### 2. 内联 System 消息折叠是发 wire 前的硬步骤
@@ -29,9 +29,9 @@
 
 | 同步点 | 落点 |
 |---|---|
-| 凭据写入入口 | `zhuye login` 子命令的 provider 枚举(`crates/runtime/zhuye-cli/src/login.rs`) |
+| 凭据写入入口 | `zhuye login` 子命令的 provider 枚举(`crates/runtime/zhuye-cli/src/commands/login.rs`) |
 | 配置段 | `docs/configuration.md` 的 provider 段说明 + `zhuye-config` 的 schema |
-| 模型清单入口 | `zhuye models` 子命令(`crates/runtime/zhuye-cli/src/models.rs`) |
+| 模型清单入口 | `zhuye models` 子命令(`crates/runtime/zhuye-cli/src/commands/models.rs`) |
 
 ### 4. mock provider 是离线门禁的基础设施,不得静默变更
 
@@ -77,7 +77,7 @@
 | `src/routing.rs` | 每轮动态选模 |
 | `src/providers/` | 各 provider 实现与共享 helper |
 | `src/providers/mock.rs` | 离线 mock provider 契约 |
-| `src/quota.rs` / `src/spend.rs` | 配额追踪与成本护栏 |
+| `src/billing/` | 计费族:`accounts` / `quota` / `spend` / `cooldown` / `credential`(配额追踪与成本护栏、凭据元数据与冷却),`billing/mod.rs` 统一声明 |
 
 ### 模型元数据级联(谁能给谁补缺)
 
