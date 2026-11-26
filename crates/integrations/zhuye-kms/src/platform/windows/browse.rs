@@ -1,6 +1,6 @@
 //! 固定目录句柄后列举和读取 Windows 知识库。
 
-use super::page::{PinnedDir, pin_child, pin_root, read_file_at};
+use super::page::{self, PinnedDir, pin_child, pin_root, read_file_at};
 use crate::{
     KmsError, Page, SearchResult, WikiInfo, extract_description, extract_tags, extract_title,
 };
