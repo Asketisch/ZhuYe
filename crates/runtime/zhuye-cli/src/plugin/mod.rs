@@ -39,7 +39,7 @@ use zhuye_plugin::state::PluginScope;
 use zhuye_plugin::{InstalledPluginsFile, PluginManifest};
 use zhuye_plugin::{PluginId, PluginManager};
 
-use crate::login;
+use crate::commands::login;
 
 /// 用户数据目录下的插件根目录，与运行时使用同一解析规则。
 fn default_plugins_root() -> Option<PathBuf> {

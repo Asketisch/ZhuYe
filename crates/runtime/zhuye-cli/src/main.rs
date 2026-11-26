@@ -12,23 +12,8 @@ use zhuye_exec::ExecArgs;
 use zhuye_exec::serve::ServeArgs;
 use zhuye_plugin::state::PluginScope;
 
-mod config;
-mod doctor;
-mod hooks;
-mod init;
-mod login;
-mod lsp;
-mod mcp;
-mod models;
-mod pipeline;
+mod commands;
 mod plugin;
-mod secrets;
-mod security;
-mod session;
-mod task;
-mod traces;
-mod update;
-mod workspace;
 
 #[cfg(test)]
 mod test_home;
@@ -825,9 +810,9 @@ fn main() -> anyhow::Result<()> {
             provider,
             api_key,
             force,
-        } => login::run(&provider, api_key, force),
+        } => commands::login::run(&provider, api_key, force),
         Command::Mcp { action } => match action {
-            McpAction::Ls => mcp::ls(),
+            McpAction::Ls => commands::mcp::ls(),
             McpAction::Add {
                 name,
                 command,
@@ -835,40 +820,44 @@ fn main() -> anyhow::Result<()> {
                 url,
                 header,
                 timeout_ms,
-            } => mcp::add(&name, command, args, url, header, timeout_ms),
-            McpAction::Remove { name } => mcp::remove(&name),
+            } => commands::mcp::add(&name, command, args, url, header, timeout_ms),
+            McpAction::Remove { name } => commands::mcp::remove(&name),
             McpAction::Registry { action } => match action {
-                McpRegistryAction::Ls => mcp::registry_ls(),
-                McpRegistryAction::Show { id } => mcp::registry_show(&id),
+                McpRegistryAction::Ls => commands::mcp::registry_ls(),
+                McpRegistryAction::Show { id } => commands::mcp::registry_show(&id),
             },
-            McpAction::Show { name } => mcp::show(&name),
+            McpAction::Show { name } => commands::mcp::show(&name),
             McpAction::Test { name } => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(mcp::test(&name))
+                rt.block_on(commands::mcp::test(&name))
             }
         },
         Command::Config { action } => match action {
-            ConfigAction::Show { reveal } => config::show(reveal),
-            ConfigAction::Set { key, value } => config::set(&key, &value),
-            ConfigAction::Unset { key } => config::unset(&key),
-            ConfigAction::Edit => config::edit(),
-            ConfigAction::Ls => config::ls(),
+            ConfigAction::Show { reveal } => commands::config::show(reveal),
+            ConfigAction::Set { key, value } => commands::config::set(&key, &value),
+            ConfigAction::Unset { key } => commands::config::unset(&key),
+            ConfigAction::Edit => commands::config::edit(),
+            ConfigAction::Ls => commands::config::ls(),
         },
         Command::Session { action } => match action {
-            SessionAction::Ls { limit, model } => session::ls(limit, model.as_deref()),
-            SessionAction::Show { id } => session::show(&id),
-            SessionAction::Rm { id, yes } => session::rm(&id, yes),
-            SessionAction::Fork { id, branch } => session::fork(&id, branch.as_deref()),
-            SessionAction::Rename { id, name } => session::rename(&id, &name),
-            SessionAction::Export { id, out } => rt.block_on(session::export(&id, out.as_deref())),
-            SessionAction::Search { query, limit, json } => session::search(&query, limit, json),
-            SessionAction::Stats { workspace } => session::stats(workspace.as_deref()),
+            SessionAction::Ls { limit, model } => commands::session::ls(limit, model.as_deref()),
+            SessionAction::Show { id } => commands::session::show(&id),
+            SessionAction::Rm { id, yes } => commands::session::rm(&id, yes),
+            SessionAction::Fork { id, branch } => commands::session::fork(&id, branch.as_deref()),
+            SessionAction::Rename { id, name } => commands::session::rename(&id, &name),
+            SessionAction::Export { id, out } => {
+                rt.block_on(commands::session::export(&id, out.as_deref()))
+            }
+            SessionAction::Search { query, limit, json } => {
+                commands::session::search(&query, limit, json)
+            }
+            SessionAction::Stats { workspace } => commands::session::stats(workspace.as_deref()),
         },
         Command::Secrets { action } => match action {
-            SecretsAction::Set { name } => secrets::set(&name),
-            SecretsAction::Get { name } => secrets::get(&name),
-            SecretsAction::List => secrets::list(),
-            SecretsAction::Delete { name, yes } => secrets::delete(&name, yes),
+            SecretsAction::Set { name } => commands::secrets::set(&name),
+            SecretsAction::Get { name } => commands::secrets::get(&name),
+            SecretsAction::List => commands::secrets::list(),
+            SecretsAction::Delete { name, yes } => commands::secrets::delete(&name, yes),
         },
         Command::Skill { action } => match action {
             SkillAction::Install { repo, dir } => {
@@ -880,13 +869,13 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Command::Traces { action } => match action {
-            TracesAction::Ls { limit } => traces::ls(limit),
-            TracesAction::Show { id } => traces::show(&id),
+            TracesAction::Ls { limit } => commands::traces::ls(limit),
+            TracesAction::Show { id } => commands::traces::show(&id),
         },
         Command::Doctor {
             check_network,
             dump_config,
-        } => rt.block_on(doctor::run(check_network, dump_config)),
+        } => rt.block_on(commands::doctor::run(check_network, dump_config)),
         Command::Models { action } => {
             let code = match action {
                 ModelsAction::List {
@@ -894,7 +883,7 @@ fn main() -> anyhow::Result<()> {
                     free_only,
                     json,
                     timeout_secs,
-                } => rt.block_on(models::list(models::ListArgs {
+                } => rt.block_on(commands::models::list(commands::models::ListArgs {
                     provider,
                     free_only,
                     json,
@@ -905,7 +894,7 @@ fn main() -> anyhow::Result<()> {
                     free_only,
                     prefer,
                     timeout_secs,
-                } => rt.block_on(models::pick(models::PickArgs {
+                } => rt.block_on(commands::models::pick(commands::models::PickArgs {
                     provider,
                     free_only,
                     prefer,
@@ -922,7 +911,7 @@ fn main() -> anyhow::Result<()> {
             let existed = std::env::current_dir()
                 .ok()
                 .is_some_and(|d| d.join("AGENTS.md").exists());
-            let path = init::run(force)?;
+            let path = commands::init::run(force)?;
             if existed && !force {
                 println!("AGENTS.md 已存在,跳过(用 --force 覆盖):{}", path.display());
             } else {
@@ -930,7 +919,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Update { check_only } => update::run(check_only),
+        Command::Update { check_only } => commands::update::run(check_only),
         Command::Plugin { action } => match action {
             PluginAction::Install { path, scope } => {
                 rt.block_on(plugin::install(&path, scope.into()))
@@ -970,20 +959,20 @@ fn main() -> anyhow::Result<()> {
             },
         },
         Command::Lsp { action } => match action {
-            LspAction::List => lsp::list(),
-            LspAction::Status { name } => lsp::status(&name),
+            LspAction::List => commands::lsp::list(),
+            LspAction::Status { name } => commands::lsp::status(&name),
         },
         Command::Hooks { action } => match action {
-            HooksAction::Ls => hooks::ls(),
-            HooksAction::Disable { name } => hooks::disable(&name),
-            HooksAction::Enable { name } => hooks::enable(&name),
+            HooksAction::Ls => commands::hooks::ls(),
+            HooksAction::Disable { name } => commands::hooks::disable(&name),
+            HooksAction::Enable { name } => commands::hooks::enable(&name),
         },
         Command::Task { action } => match action {
             TaskAction::Ls {
                 list,
                 include_deleted,
-            } => rt.block_on(task::ls(list.as_deref(), include_deleted)),
-            TaskAction::Show { list, task_id } => rt.block_on(task::show(&list, task_id)),
+            } => rt.block_on(commands::task::ls(list.as_deref(), include_deleted)),
+            TaskAction::Show { list, task_id } => rt.block_on(commands::task::show(&list, task_id)),
             TaskAction::Create {
                 subject,
                 description,
@@ -998,7 +987,7 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     list
                 };
-                rt.block_on(task::create(
+                rt.block_on(commands::task::create(
                     &subject,
                     &description,
                     &list_id,
@@ -1010,24 +999,28 @@ fn main() -> anyhow::Result<()> {
                 list,
                 status,
                 subject,
-            } => rt.block_on(task::update(
+            } => rt.block_on(commands::task::update(
                 task_id,
                 &list,
                 status.as_deref(),
                 subject.as_deref(),
             )),
-            TaskAction::Stop { task_id, list } => rt.block_on(task::stop(&list, task_id)),
+            TaskAction::Stop { task_id, list } => rt.block_on(commands::task::stop(&list, task_id)),
             TaskAction::Purge { team, list, yes } => {
-                task::purge(team.as_deref(), list.as_deref(), yes)
+                commands::task::purge(team.as_deref(), list.as_deref(), yes)
             }
             TaskAction::Team { action: ta } => match ta {
-                TeamAction::Ls => rt.block_on(task::team_ls()),
-                TeamAction::Show { name } => rt.block_on(task::team_show(&name)),
+                TeamAction::Ls => rt.block_on(commands::task::team_ls()),
+                TeamAction::Show { name } => rt.block_on(commands::task::team_show(&name)),
                 TeamAction::Create { name, description } => {
-                    rt.block_on(task::team_create(&name, description.as_deref()))
+                    rt.block_on(commands::task::team_create(&name, description.as_deref()))
                 }
-                TeamAction::Delete { name, yes } => rt.block_on(task::team_delete(&name, yes)),
-                TeamAction::Sync { list_specs } => rt.block_on(task::team_sync(list_specs)),
+                TeamAction::Delete { name, yes } => {
+                    rt.block_on(commands::task::team_delete(&name, yes))
+                }
+                TeamAction::Sync { list_specs } => {
+                    rt.block_on(commands::task::team_sync(list_specs))
+                }
             },
         },
         Command::Pipeline { action } => match action {
@@ -1037,26 +1030,28 @@ fn main() -> anyhow::Result<()> {
                 failure_policy,
                 output,
                 inputs,
-            } => rt.block_on(pipeline::run(
+            } => rt.block_on(commands::pipeline::run(
                 &config,
                 &topic,
                 failure_policy.as_deref(),
                 output.as_deref(),
                 &inputs,
             )),
-            PipelineAction::Team { name, topic } => rt.block_on(pipeline::run_team(&name, &topic)),
+            PipelineAction::Team { name, topic } => {
+                rt.block_on(commands::pipeline::run_team(&name, &topic))
+            }
         },
         Command::Security { action } => match action {
-            SecurityAction::Audit { path } => security::run_audit(path),
+            SecurityAction::Audit { path } => commands::security::run_audit(path),
         },
         Command::Workspace { action } => match action {
-            WorkspaceAction::Ls => workspace::run_ls_hint(),
+            WorkspaceAction::Ls => commands::workspace::run_ls_hint(),
             WorkspaceAction::Clone {
                 url,
                 dest,
                 branch,
                 depth,
-            } => workspace::run_clone(url, dest, branch, depth),
+            } => commands::workspace::run_clone(url, dest, branch, depth),
         },
         Command::Version => {
             println!("zhuye {}", env!("CARGO_PKG_VERSION"));

@@ -18,7 +18,7 @@ use zhuye_mcp::{
     McpConnectionManager, McpLifecycleEvent, curated_catalog, find_entry, install_hint,
 };
 
-use crate::login;
+use super::login;
 
 /// `zhuye mcp ls` —— 列出已配 server(name / transport / command or url)。
 pub fn ls() -> anyhow::Result<()> {

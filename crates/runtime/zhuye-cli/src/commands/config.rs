@@ -6,7 +6,7 @@ use zhuye_config::{
     ReflectConfig, default_config_path, load_default,
 };
 
-use crate::login;
+use super::login;
 
 /// v0.4: `zhuye config show` —— 打印当前有效配置。`api_key` 默认 redact
 /// 成 `sk-…ake` 形式;`--reveal` 显示全文。

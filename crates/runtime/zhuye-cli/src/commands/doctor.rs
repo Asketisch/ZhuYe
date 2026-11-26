@@ -101,7 +101,7 @@ pub async fn run(check_network: bool, dump_config: bool) -> anyhow::Result<()> {
         if let Err(e) = cfg.apply_to_registry(&registry) {
             println!("{WARN} models    cannot build provider from config: {e}");
         } else {
-            match crate::models::doctor_summary(&cfg, &registry).await {
+            match crate::commands::models::doctor_summary(&cfg, &registry).await {
                 Some(summary) => println!("{OK} models    {summary}"),
                 None => {
                     println!("[skip]   models    no [active].group set; skipped model list probe")
