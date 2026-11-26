@@ -26,7 +26,7 @@ use lsp_types::{ServerCapabilities, ServerInfo, Uri};
 use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::document::DocumentState;
+use crate::session::document::DocumentState;
 use crate::transport::LspPeer;
 
 /// 单个 LSP server 已建立连接后的运行时内部状态。

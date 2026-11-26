@@ -47,7 +47,7 @@ use zhuye_protocol::{ContentBlock, PermissionMode, ToolError, ToolOutput};
 use zhuye_tools::{Tool, ToolContext};
 
 use crate::manager::LspConnectionManager;
-use crate::methods::{
+use crate::protocol::methods::{
     LspAction, invoke_completion, invoke_definition, invoke_document_symbol, invoke_hover,
     invoke_references, invoke_signature_help,
 };
@@ -214,7 +214,7 @@ impl Tool for LspTool {
                     .to_string(),
             ));
         }
-        let route = crate::matching::pick_server_for(
+        let route = crate::session::matching::pick_server_for(
             &abs,
             &ctx.workspace_path(),
             &handles,
@@ -316,7 +316,7 @@ fn default_true() -> bool {
 /// 返回 `serde_json::Value` 让 `ToolOutput` 直接吃;LLM 在历史里看到
 /// JSON 文本即可(无需再次反序列化)。
 async fn dispatch_action(
-    client: &Arc<crate::client::LspClientInner>,
+    client: &Arc<crate::session::client::LspClientInner>,
     action: LspAction,
     uri: &Uri,
     position: Position,

@@ -36,8 +36,8 @@ use tokio::time::timeout;
 
 use zhuye_protocol::PermissionMode;
 
-use crate::client::LspClientInner;
 use crate::error::LspError;
+use crate::session::client::LspClientInner;
 
 /// LLM 在 `lsp` tool 调用里填的 `action` 字段。
 ///

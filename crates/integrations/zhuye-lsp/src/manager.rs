@@ -29,9 +29,9 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 
 use crate::LspServerConfig;
-use crate::client::LspClientInner;
-use crate::diagnostics::DiagnosticRegistry;
 use crate::error::LspError;
+use crate::protocol::diagnostics::DiagnosticRegistry;
+use crate::session::client::LspClientInner;
 use crate::transport::LspPeer;
 
 /// LSP server 在 manager 中的 entry。

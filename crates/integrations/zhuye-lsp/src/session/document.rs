@@ -27,8 +27,8 @@ use lsp_types::{
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 
-use crate::client::LspClientInner;
 use crate::error::LspError;
+use crate::session::client::LspClientInner;
 
 /// 单个 LSP server 视角下,一个文档的状态。
 #[derive(Debug, Clone)]
@@ -172,7 +172,7 @@ mod tests {
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
-    use crate::client::LspClientInner;
+    use crate::session::client::LspClientInner;
 
     /// 构造一个不连 child 的 `LspClientInner`,只测文档 map 行为。
     fn make_inner() -> LspClientInner {

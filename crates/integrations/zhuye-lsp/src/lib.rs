@@ -33,24 +33,21 @@
 
 #![allow(clippy::module_name_repetitions)] // 多个模块都暴露 *Config/*Error 等命名
 
-/// F15:LSP 主动查询扩展 + DAP 调试协议形状。
-pub mod active;
-pub mod client;
 pub mod config;
-pub mod diagnostics;
-pub mod document;
 pub mod error;
 pub mod manager;
-pub mod matching;
-pub mod methods;
+/// LSP 协议形状（请求方法 / 主动查询 / 诊断缓存）。
+pub mod protocol;
+/// 单个 server 的会话状态（连接 / 文档同步 / 路由）。
+pub mod session;
 pub mod tool;
 pub mod transport;
 
 // 公开 API re-export
-pub use client::LspClientInner;
 pub use config::{CompiledFilePattern, LspServerConfig};
-pub use diagnostics::DiagnosticRegistry;
 pub use error::LspError;
 pub use manager::{LspConnectionManager, LspLifecycleEvent, LspServerHandle};
-pub use methods::LspAction;
+pub use protocol::diagnostics::DiagnosticRegistry;
+pub use protocol::methods::LspAction;
+pub use session::client::LspClientInner;
 pub use tool::LspTool;

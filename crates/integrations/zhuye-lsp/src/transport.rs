@@ -51,8 +51,8 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::diagnostics::DiagnosticRegistry;
 use crate::error::LspError;
+use crate::protocol::diagnostics::DiagnosticRegistry;
 
 // lsp_types::ServerCapabilities / ServerInfo 显式 import,避免路径穿透到
 // transport 公开 API 的返回类型签名。

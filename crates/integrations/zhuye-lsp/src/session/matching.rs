@@ -112,7 +112,7 @@ mod tests {
         };
         LspServerHandle {
             server_name: name.to_string(),
-            client: Arc::new(crate::client::LspClientInner {
+            client: Arc::new(crate::session::client::LspClientInner {
                 peer: Arc::new(crate::transport::LspPeer::stub_for_tests()),
                 server_name: name.to_string(),
                 server_info: None,
