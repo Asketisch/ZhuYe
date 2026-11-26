@@ -197,7 +197,8 @@ mod tests {
             .await
             .unwrap();
 
-        let claim_tool = crate::tools::task_claim::TaskClaimTool::new(manager.clone(), "w1@t");
+        let claim_tool =
+            crate::tools::task::task_claim::TaskClaimTool::new(manager.clone(), "w1@t");
         let _ = claim_tool
             .execute(ToolContext::default(), serde_json::json!({"listId": "L"}))
             .await
@@ -212,7 +213,7 @@ mod tests {
             .unwrap();
 
         // w2@t 再 claim 应该拿到同一任务
-        let claim_tool2 = crate::tools::task_claim::TaskClaimTool::new(manager, "w2@t");
+        let claim_tool2 = crate::tools::task::task_claim::TaskClaimTool::new(manager, "w2@t");
         let out = claim_tool2
             .execute(ToolContext::default(), serde_json::json!({"listId": "L"}))
             .await

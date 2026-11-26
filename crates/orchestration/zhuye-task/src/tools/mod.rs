@@ -21,28 +21,21 @@
 
 pub mod note_read;
 pub mod note_write;
-pub mod task_claim;
-pub mod task_create;
-pub mod task_get;
-pub mod task_list;
-pub mod task_output;
-pub mod task_release;
-pub mod task_stop;
-pub mod task_update;
+pub mod task;
 pub mod team_create;
 pub mod team_delete;
 pub mod todo_write;
 
 pub use note_read::ReadNotesTool;
 pub use note_write::WriteNoteTool;
-pub use task_claim::TaskClaimTool;
-pub use task_create::TaskCreateTool;
-pub use task_get::TaskGetTool;
-pub use task_list::TaskListTool;
-pub use task_output::TaskOutputTool;
-pub use task_release::TaskReleaseTool;
-pub use task_stop::TaskStopTool;
-pub use task_update::TaskUpdateTool;
+pub use task::task_claim::TaskClaimTool;
+pub use task::task_create::TaskCreateTool;
+pub use task::task_get::TaskGetTool;
+pub use task::task_list::TaskListTool;
+pub use task::task_output::TaskOutputTool;
+pub use task::task_release::TaskReleaseTool;
+pub use task::task_stop::TaskStopTool;
+pub use task::task_update::TaskUpdateTool;
 pub use team_create::TeamCreateTool;
 pub use team_delete::TeamDeleteTool;
 pub use todo_write::{TodoRow, TodoWriteTool};
