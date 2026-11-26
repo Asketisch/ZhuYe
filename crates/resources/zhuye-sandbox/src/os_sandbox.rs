@@ -717,6 +717,10 @@ impl OsSandbox {
     ///   依赖,限制读会大面积破坏可用性。写受限是核心安全边界。
     /// - 允许进程:`(allow process-exec)` 不限目录(子进程继承沙箱;
     ///   Xcode 的 git / 工作区构建产物不在四个固定 bin 目录里)。
+    /// - 允许 Mach IPC:`mach-lookup` / `mach-register` / `ipc-posix-shm`
+    ///   是自管子进程开发工具(Chrome 等)的通行需求 —— Chromium 起进程
+    ///   就要 launchd 查询与 `bootstrap_check_in` 注册 rendezvous 服务,
+    ///   缺任一直接 `Abort trap: 6`(本机实证,`--no-sandbox` 也不能省)。
     /// - 网络:`allow_network` 控制。开启 = `(allow network*)`;关闭 =
     ///   拒出站,但放行 localhost(bind/inbound/outbound)与 Unix socket
     ///   —— 本地 IPC(数据库 / docker / LSP server)是常见合法依赖。
@@ -737,10 +741,13 @@ impl OsSandbox {
         }
         // 元数据保护根(workspace + 额外目录的顶层 .git / .zhuye)。
         let meta_roots: Vec<String> = allow_write.clone();
-        // 临时目录(macOS tempdir 通常在 /private/var/folders 或 /tmp)。
+        // 临时目录(macOS tempdir 通常在 /private/var/folders)。注意
+        // /tmp 与 /var/tmp 是指向 /private/tmp、/private/var/tmp 的
+        // 符号链接,Seatbelt 按 vnode 真实路径匹配 —— 字面 /tmp 规则
+        // 不生效(实证:`cmd > /tmp/x` EPERM),必须写 /private/* 形态。
         allow_write.push("/private/var/folders".to_string());
-        allow_write.push("/tmp".to_string());
-        allow_write.push("/var/tmp".to_string());
+        allow_write.push("/private/tmp".to_string());
+        allow_write.push("/private/var/tmp".to_string());
 
         let write_rules = allow_write
             .iter()
@@ -925,6 +932,12 @@ impl OsSandbox {
             ;; Xcode 的 git / 工作区构建产物不在固定 bin 目录里)。
             (allow process-fork)
             (allow process-exec)
+            ;; Mach IPC:launchd 服务查询 + bootstrap_check_in 注册 +
+            ;; 共享内存。Chrome 等自管子进程工具缺任一则 Abort trap: 6
+            ;; (--no-sandbox 也绕不开 MachPortRendezvous,实证)。
+            (allow mach-lookup)
+            (allow mach-register)
+            (allow ipc-posix-shm)
             ;; 信号 / 系统调用基础
             (allow sysctl-read)
             (allow process-info* (target self))
@@ -1977,6 +1990,26 @@ mod tests {
         assert!(prof.contains("(deny file-write* (subpath \"/Users/x/project/.zhuye\"))"));
         // 进程执行不限目录(子进程继承沙箱)。
         assert!(prof.contains("(allow process-exec)\n"));
+    }
+
+    /// Mach IPC 与真实临时目录:Chrome 实证所需的最小放行集。
+    /// `mach-lookup` / `mach-register` / `ipc-posix-shm` 缺任一,
+    /// Chromium 起进程即 Abort trap: 6;`/tmp`、`/var/tmp` 是符号链接,
+    /// Seatbelt 按 vnode 真实路径匹配,字面规则不生效,必须写
+    /// `/private/*` 形态(实证 `cmd > /tmp/x` EPERM)。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_profile_allows_dev_tool_ipc_and_real_tmp() {
+        let s = OsSandbox::enabled(Vec::new());
+        let prof = s.seatbelt_profile(Path::new("/Users/x/project"));
+        assert!(prof.contains("(allow mach-lookup)"));
+        assert!(prof.contains("(allow mach-register)"));
+        assert!(prof.contains("(allow ipc-posix-shm)"));
+        // 真实路径形态必须在,符号链接字面形态必须不在(死规则)。
+        assert!(prof.contains("(allow file-write* (subpath \"/private/tmp\"))"));
+        assert!(prof.contains("(allow file-write* (subpath \"/private/var/tmp\"))"));
+        assert!(!prof.contains("(subpath \"/tmp\")"));
+        assert!(!prof.contains("(subpath \"/var/tmp\")"));
     }
 
     #[cfg(target_os = "macos")]
