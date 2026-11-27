@@ -21,6 +21,36 @@ ZHUYE_MODEL=mock ./target/debug/zhuye exec "hello"
 
 `ZHUYE_MODEL=mock` 是显式的离线模型——不配 API key 也能跑,且不会被静默替换成别的 provider。想用真模型就设 `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`。事件以 JSONL 走 stdout,tracing 日志走 stderr(`zhuye exec | jq` 不被日志污染)。
 
+## 真实模型测试
+
+两个真实模型脚本解决的问题不同,不能互相替代。它们都会调用真实 provider,请确认成本和配额后再运行。
+
+**`tests/eval/run_quality.sh`** —— 固定任务集的成对质量评测。它比较基线二进制和候选二进制,用外部产物验收结果,并输出成功率、耗时、token、工具调用和缓存指标:
+
+```bash
+export ZHUYE_EVAL_BASELINE=/path/to/baseline-zhuye
+export ZHUYE_EVAL_CANDIDATE=/path/to/candidate-zhuye
+export ZHUYE_EVAL_MODEL=<provider-model-id>
+export ZHUYE_EVAL_BASE_URL=<openai-compatible-endpoint>
+export ZHUYE_EVAL_API_KEY=<api-key>
+export ZHUYE_EVAL_REPETITIONS=3
+bash tests/eval/run_quality.sh
+```
+
+报告写入 `target/eval-quality/report.json`,门禁判定写入 `target/eval-quality/gate.json`。默认是 `observe` 模式,只记录结果,不因样本不足或质量回退改变退出码。
+
+**`tests/live/run.sh`** —— 实模型演练层。它检查真实流式响应下的协议形状、事件序、终态、usage 和工具调用配对,不把模型回答文本当作验收标准:
+
+```bash
+ZHUYE_LIVE=1 \
+ZHUYE_LIVE_BASE_URL=<provider-endpoint> \
+ZHUYE_LIVE_API_KEY=<api-key> \
+ZHUYE_LIVE_MODELS=<model-id-1,model-id-2> \
+bash tests/live/run.sh
+```
+
+不设置 `ZHUYE_LIVE=1` 时会跳过且不发起请求。更多模型发现、重试和预算变量见 [tests/live/README.md](tests/live/README.md)。
+
 ## 三种用法
 
 **进程内链接(Rust)** —— 引擎是库,直接连进你的进程:
