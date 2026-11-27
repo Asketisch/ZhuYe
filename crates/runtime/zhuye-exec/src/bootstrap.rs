@@ -893,11 +893,13 @@ pub(crate) async fn bootstrap_resume(thread_id_str: &str) -> anyhow::Result<Resu
     let prompt_snapshot = zhuye_core::resume::last_prompt_snapshot(&records);
     // v1.x:输入守恒对账 —— 崩溃窗口里未完成 turn 的 user 输入。
     let unsettled_inputs = zhuye_core::resume::unsettled_input_turns(&records);
+    let unsettled_tools = zhuye_core::resume::unsettled_tool_executions(&records);
     Ok(ResumeBundle {
         thread_id: tid,
         initial_messages: messages,
         prompt_snapshot,
         unsettled_inputs,
+        unsettled_tools,
     })
 }
 
@@ -911,6 +913,8 @@ pub struct ResumeBundle {
     /// v1.x:输入守恒对账 —— 崩溃窗口里未完成 turn 的 id(≤5 条)。
     /// 消费方据此显式告知「上次有输入未完成」,**永不自动重放**。
     pub unsettled_inputs: Vec<String>,
+    /// 上次进程退出时尚未结清的工具执行。
+    pub unsettled_tools: Vec<zhuye_protocol::ToolExecutionUncertainEvent>,
 }
 
 /// 无可用 LLM 客户端时使用的 fallback summarizer。始终报错,让

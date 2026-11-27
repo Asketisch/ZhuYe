@@ -11,8 +11,7 @@
 //!
 //! prompt_guard 是**逐条**扫描:一条干净但被"上下文投毒"的输出看不出来。
 //! taint 是**跨条**的:同一 web 域 / 同一 MCP server 已经出现过注入,
-//! 它后续的"看起来很干净"的输出也应降级信任 —— 这是 agno / openai-agents
-//! 的 tripwire 思路在本地可闭环的部分。
+//! 它后续的"看起来很干净"的输出也应降级信任。
 //!
 //! ## 三档
 //!
@@ -32,18 +31,20 @@ pub enum Provenance {
     /// 用户亲手敲的直接指令(权限层负责,不归 guard 管)。
     #[default]
     UserDirect,
-    /// 工作区内文件内容(本地可信度较高,但可能被 clone 的仓库污染)。
+    /// 工作区内文件内容,可能包含不可信指令。
     Workspace,
     /// 工具输出(bash 结果、read 内容等)。
     ToolOutput,
+    /// 子代理返回的内容,属于外部任务结果而非用户指令。
+    Subagent,
     /// 外部网络内容(web_fetch / MCP 远程 server / 第三方 API)。
     External,
 }
 
 impl Provenance {
-    /// 是否属于「不可信」侧(ToolOutput / External)。
+    /// 是否属于不可信数据侧(工作区文件、工具输出或外部内容)。
     pub fn is_untrusted(self) -> bool {
-        matches!(self, Provenance::ToolOutput | Provenance::External)
+        !matches!(self, Provenance::UserDirect)
     }
 
     /// 人读标签(审计 / 事件字段用)。
@@ -52,6 +53,7 @@ impl Provenance {
             Provenance::UserDirect => "user_direct",
             Provenance::Workspace => "workspace",
             Provenance::ToolOutput => "tool_output",
+            Provenance::Subagent => "subagent",
             Provenance::External => "external",
         }
     }
@@ -61,7 +63,7 @@ impl Provenance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceMode {
-    /// 不追踪(只记录 provenance 标签)。
+    /// 关闭来源标签与污染追踪。
     Off,
     /// 追踪 taint 并标注,但不改变裁决(默认)。
     #[default]
@@ -98,6 +100,7 @@ impl ProvenanceMode {
 /// (只有命中注入时才写),读侧一次 `contains`。
 #[derive(Debug, Default)]
 pub struct TaintTracker {
+    seen: Mutex<HashSet<String>>,
     tainted: Mutex<HashSet<String>>,
     /// 累计标记次数(诊断 / 统计)。
     marks: Mutex<u64>,
@@ -110,6 +113,7 @@ impl TaintTracker {
 
     /// 把来源键标为 tainted。返回是否**新**标记(幂等)。
     pub fn mark(&self, source_key: &str) -> bool {
+        self.observe(source_key);
         let mut set = self.tainted.lock().unwrap_or_else(|e| e.into_inner());
         let inserted = set.insert(source_key.to_string());
         if inserted {
@@ -117,6 +121,27 @@ impl TaintTracker {
             *marks += 1;
         }
         inserted
+    }
+
+    /// 登记已进入上下文的来源,不改变污染状态。
+    pub fn observe(&self, source_key: &str) {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(source_key.to_string());
+    }
+
+    /// 当前已观察到的来源键(排序后,供压缩与恢复使用)。
+    pub fn sources(&self) -> Vec<String> {
+        let mut sources: Vec<_> = self
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        sources.sort();
+        sources
     }
 
     /// 该来源是否已 tainted。
@@ -147,6 +172,7 @@ impl TaintTracker {
 
     /// 清空(会话退役 / 测试用)。
     pub fn clear(&self) {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.tainted
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -165,7 +191,7 @@ mod tests {
         assert!(Provenance::ToolOutput > Provenance::Workspace);
         assert!(Provenance::Workspace > Provenance::UserDirect);
         assert!(!Provenance::UserDirect.is_untrusted());
-        assert!(!Provenance::Workspace.is_untrusted());
+        assert!(Provenance::Workspace.is_untrusted());
         assert!(Provenance::ToolOutput.is_untrusted());
         assert!(Provenance::External.is_untrusted());
     }
@@ -195,6 +221,7 @@ mod tests {
     #[test]
     fn tainted_sources_sorted_and_clearable() {
         let t = TaintTracker::new();
+        t.observe("workspace:clean");
         t.mark("mcp:server-b");
         t.mark("mcp:server-a");
         assert_eq!(
@@ -203,6 +230,7 @@ mod tests {
         );
         t.clear();
         assert!(t.tainted_sources().is_empty());
+        assert!(t.sources().is_empty());
         assert_eq!(t.mark_count(), 0);
     }
 }

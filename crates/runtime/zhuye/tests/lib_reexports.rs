@@ -17,6 +17,14 @@ use zhuye::{
 };
 use zhuye_subagent::SubAgentFactory;
 
+#[test]
+fn 门面公开来源治理模式() {
+    let mut config = zhuye::AgentConfig::new("mock/mock-1", ".");
+    assert_eq!(config.provenance_mode, zhuye::ProvenanceMode::Observe);
+    config.provenance_mode = zhuye::ProvenanceMode::Enforce;
+    assert!(config.provenance_mode.escalates());
+}
+
 #[tokio::test]
 async fn lib_facade_exposes_message_bus_and_orchestrator() {
     // 1. 顶层 `MessageBus` 可构造

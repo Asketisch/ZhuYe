@@ -46,11 +46,10 @@ pub const INTERNAL_WORKER_TOOLS: &[&str] = &["TeamCreate", "TeamDelete", "send_m
 ///    注册,`register_except` 内部做排除 + 计数。
 pub fn build_worker_tool_registry(parent: &ToolRegistry) -> ToolRegistry {
     let mut by_source: HashMap<ToolSource, Vec<Arc<dyn zhuye_tools::Tool>>> = HashMap::new();
-    for (name, source) in parent.list_with_source() {
-        if !matches!(source, ToolSource::Builtin | ToolSource::Runtime) {
-            continue;
-        }
-        if let Some(tool) = parent.get(&name) {
+    for name in parent.list() {
+        if let Some((source, tool)) = parent.get_with_source(&name)
+            && matches!(source, ToolSource::Builtin | ToolSource::Runtime)
+        {
             // source 无 Copy(Plugin 携带 id):entry 键克隆。
             by_source.entry(source).or_default().push(tool);
         }

@@ -7,7 +7,7 @@
 //! M4:`pre_loop` 在每次 model call 之前运行 compaction + memory +
 //! skills + prompt builder;`NodeContext` 携带 M4 依赖。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -34,6 +34,50 @@ use crate::config::{AgentConfig, M4Deps};
 use crate::graph::StateGraph;
 use crate::graph::state::AgentState;
 use crate::steering_queue::{SteeringPriority, SteeringQueue};
+
+/// 回合任务无论正常退出还是 panic,都通知调度器释放串行槽位。
+struct SerialTurnFinished(mpsc::UnboundedSender<()>);
+
+pub(crate) fn task_budget_snapshot(
+    budget: &zhuye_llm::task_budget::TaskBudget,
+    turn_id: TurnId,
+) -> EventMsg {
+    let snapshot = budget.snapshot();
+    EventMsg::TaskBudgetSnapshot(zhuye_protocol::TaskBudgetSnapshotEvent {
+        task_id: budget.id().to_string(),
+        turn_id,
+        estimated_tokens: snapshot.estimated_tokens,
+        actual_tokens: snapshot.actual_tokens,
+        reserved_tokens: snapshot.reserved_tokens,
+        unknown_estimated_tokens: snapshot.unknown_estimated_tokens,
+        unknown_calls: snapshot.unknown_calls,
+        estimate_overrun_tokens: snapshot.estimate_overrun_tokens,
+        dispatched_subagents: snapshot.dispatched_subagents,
+    })
+}
+
+impl Drop for SerialTurnFinished {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+async fn abort_queued_turns(
+    pending: &mut VecDeque<(Submission, mpsc::Sender<Event>)>,
+    reason: AbortReason,
+) {
+    while let Some((sub, tx)) = pending.pop_front() {
+        let _ = tx
+            .send(Event::new(
+                sub.id,
+                EventMsg::TurnAborted(TurnAbortedEvent {
+                    turn_id: TurnId::new(),
+                    reason: reason.clone(),
+                }),
+            ))
+            .await;
+    }
+}
 
 fn poison_evidence(state: &AgentState, user_cancelled: bool) -> crate::poisoned::TurnEvidence {
     crate::poisoned::TurnEvidence {
@@ -121,6 +165,8 @@ pub struct NodeContext {
     /// 会话级「当前 todo 清单」槽(渲染好的紧凑文本)—— 见
     /// `AgentConfig::todos_slot`。`tool_exec` 写,`pre_loop` 读并注入。
     pub todos_slot: Arc<parking_lot::RwLock<Option<String>>>,
+    /// 在同一会话中串行持久化待办更新与压缩快照。
+    pub todo_persistence: Arc<tokio::sync::Mutex<()>>,
     /// v1.x 功能 7:token plan 配额追踪器。`None` = 不追踪(无 credential
     /// 声明配额);`Some` = `model_call` 在 LLM 调用成功后累计 usage,
     /// 耗尽时对该 credential 触发 cooldown,`next_for` 顺位切到下一个 plan。
@@ -238,10 +284,18 @@ pub async fn submission_loop(
     // 与 `SessionConfigured` 报告的 id 三者一致(TUI / 持久化场景需要)。
     let session_id = cfg.session_id.unwrap_or_default();
     let mut existing_session = false;
+    let mut todos_slot = cfg.todos_slot.clone();
+    let mut todo_persistence = Arc::new(tokio::sync::Mutex::new(()));
     if let Some(recorder) = cfg.m4.as_ref().and_then(|m| m.recorder.clone())
         && cfg.session_id.is_some()
         && let Ok(records) = recorder.replay(session_id).await
     {
+        crate::resume::restore_tainted_sources(&records, &cfg.provenance_tracker);
+        if cfg.dynamic_context
+            && let Some(checklist) = crate::resume::latest_dynamic_checklist(&records)
+        {
+            *todos_slot.write() = Some(checklist);
+        }
         existing_session = records
             .iter()
             .any(|record| matches!(record, RolloutRecord::SessionMeta { .. }));
@@ -291,12 +345,40 @@ pub async fn submission_loop(
     // 后续 `cfg.current_workspace()` 作为回退。捕获后保持不变,即使
     // `set_workspace` 后续切换工作区也不影响已归属 session。
     let mut session_workspace: Option<String> = None;
-    while let Some(sub) = sub_rx.recv().await {
+    let (serial_done_tx, mut serial_done_rx) = mpsc::unbounded_channel();
+    let mut serial_running = false;
+    let mut input_closed = false;
+    let mut pending: VecDeque<(Submission, mpsc::Sender<Event>)> = VecDeque::new();
+    // 无 recorder 时也要保留上一轮的上下文;只有显式串行模式读写此槽。
+    let mut serial_history: Arc<Mutex<Vec<ChatMessage>>> = Arc::new(Mutex::new(Vec::new()));
+    loop {
+        let queued = if cfg.serial_turns && !serial_running {
+            pending.pop_front()
+        } else {
+            None
+        };
+        let (mut sub, queued_tx) = if let Some((sub, tx)) = queued {
+            (sub, Some(tx))
+        } else {
+            if input_closed && !serial_running {
+                break;
+            }
+            tokio::select! {
+                done = serial_done_rx.recv(), if serial_running => {
+                    if done.is_some() { serial_running = false; }
+                    continue;
+                }
+                sub = sub_rx.recv(), if !input_closed => match sub {
+                    Some(sub) => (sub, None),
+                    None => { input_closed = true; continue; }
+                },
+            }
+        };
         // `AgentThread::submit` 会预注册 per-turn 订阅者;调度器等内部
         // 发送方直接注入 submission sender 时没有外部 handle。此时建立
         // 一个转发器,把回合事件送到 session 订阅者(serve 据此输出
         // cron 触发的回合,activity 也能记录)。
-        let turn_tx = match turn_subs.lock().remove(&sub.id) {
+        let turn_tx = match queued_tx.or_else(|| turn_subs.lock().remove(&sub.id)) {
             Some(tx) => tx,
             None => {
                 let (tx, mut rx) = mpsc::channel::<Event>(64);
@@ -317,6 +399,39 @@ pub async fn submission_loop(
             session_workspace = sub.workspace.clone();
         }
 
+        // 问答是解除当前回合阻塞的控制信号,必须在新输入入队前分流。
+        if let zhuye_protocol::Op::UserInput { items, .. } = &mut sub.op {
+            let mut rest = Vec::new();
+            let mut answered = false;
+            for item in std::mem::take(items) {
+                if let UserInputItem::QuestionAnswer {
+                    request_id,
+                    answers,
+                } = item
+                {
+                    answered = true;
+                    let mut resolved =
+                        complete_ask_user_question(&question_waiters, &request_id, answers.clone());
+                    if !resolved && let Some(driver) = cfg.side_channel_driver.as_ref() {
+                        resolved = driver.resolve_question(&request_id, answers).await;
+                    }
+                    if !resolved {
+                        tracing::debug!(request_id = %request_id, "inline question_answer arrived but no waiter; dropping");
+                    }
+                } else {
+                    rest.push(item);
+                }
+            }
+            *items = rest;
+            if cfg.serial_turns && answered && items.is_empty() {
+                continue;
+            }
+            if cfg.serial_turns && serial_running {
+                pending.push_back((sub, turn_tx));
+                continue;
+            }
+        }
+
         match sub.op {
             zhuye_protocol::Op::UserInput {
                 items,
@@ -325,45 +440,6 @@ pub async fn submission_loop(
                 // v1.x 保温:新请求即将到来 → 取消在飞保温任务(真实请求
                 // 会刷新缓存,重放已无意义)。候选槽保留,代际兜底。
                 cfg.cache_warming.cancel_active();
-                // v1.1.0 P1 #14 inline QuestionAnswer:用户在 input bar 直接
-                // 回答挂起的 `AskUserQuestion`(与 dedicated `Op::Answer` 平行)。
-                // 先分流并走与 `Op::AskUserQuestionResponse` 完全相同的 gate
-                // 完成路径 —— 答案本身是"解除阻塞"信号,不进本 turn 上下文;
-                // 无 waiter 时与 dedicated Op 同语义(debug 后丢弃,不报错)。
-                let items = {
-                    let (mut qa, mut rest) = (Vec::new(), Vec::new());
-                    for item in items {
-                        if matches!(item, UserInputItem::QuestionAnswer { .. }) {
-                            qa.push(item);
-                        } else {
-                            rest.push(item);
-                        }
-                    }
-                    for item in qa {
-                        let UserInputItem::QuestionAnswer {
-                            request_id,
-                            answers,
-                        } = item
-                        else {
-                            unreachable!("上面 matches! 保证分支成立");
-                        };
-                        let mut resolved = complete_ask_user_question(
-                            &question_waiters,
-                            &request_id,
-                            answers.clone(),
-                        );
-                        if !resolved && let Some(driver) = cfg.side_channel_driver.as_ref() {
-                            resolved = driver.resolve_question(&request_id, answers).await;
-                        }
-                        if !resolved {
-                            tracing::debug!(
-                                request_id = %request_id,
-                                "inline question_answer arrived but no waiter; dropping"
-                            );
-                        }
-                    }
-                    rest
-                };
                 // v1.3 analytics:一个 turn 一个根 span,涵盖 pre_loop →
                 // model_call → tool_exec → check_stop 全程,OTLP 后端
                 // 看到的是嵌套 span 而非离散事件。
@@ -584,6 +660,26 @@ pub async fn submission_loop(
                     }
                 }
 
+                // 崩溃后记录的开始项可能已经产生副作用。通知宿主并把同一
+                // 事实写入本轮输入,避免模型在看不到原调用时盲目重试。
+                let uncertain = std::mem::take(&mut *cfg.recovered_tool_executions.lock());
+                if !uncertain.is_empty() {
+                    for item in &uncertain {
+                        let _ = turn_tx
+                            .send(Event::new(
+                                sub_id.clone(),
+                                EventMsg::ToolExecutionUncertain(item.clone()),
+                            ))
+                            .await;
+                    }
+                    let details = serde_json::to_string(&uncertain).unwrap_or_default();
+                    merged_items.push(UserInputItem::Text {
+                        text: format!(
+                            "<system-reminder>以下工具执行结果未知,可能已产生副作用;请先核实,不要自动重试。记录为数据:{details}</system-reminder>"
+                        ),
+                    });
+                }
+
                 // 由用户输入构造初始 message 列表。
                 // v1.2 P0:Text + Image items 合并为同一个 UserContent blocks 数组,
                 // 让 provider 收到原子化的图文消息。Text-only 单 item 路径与旧行为
@@ -600,10 +696,20 @@ pub async fn submission_loop(
                 // 无 recorder 的线程保留旧 preload-once 语义(resume 路径的
                 // recorder 绑定旧 id,replay 已含全部历史,preload 不再叠加,
                 // 避免重复 echo)。
+                let mut replay_record_count = None;
+                let mut last_message_turn_id = None;
                 let base: Vec<ChatMessage> =
                     if let Some(rec) = cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
                         match rec.replay(session_id).await {
                             Ok(records) => {
+                                replay_record_count = Some(records.len());
+                                last_message_turn_id = records.iter().rev().find_map(|record| {
+                                    if let RolloutRecord::Message { turn_id, .. } = record {
+                                        Some(*turn_id)
+                                    } else {
+                                        None
+                                    }
+                                });
                                 let mut base = crate::resume::records_to_preload(&records);
                                 // v1.12 回归修复:子代理线程(factory 装配
                                 // rollout_base 后落独立 JSONL)首回合 replay
@@ -614,6 +720,8 @@ pub async fn submission_loop(
                                 // 会话)时用 preload 作种子历史;已有对话
                                 // 记录时维持 replay 口径,不重复叠加。
                                 if base.is_empty() {
+                                    // 回放成功但没有消息也有意义:显式回退可能
+                                    // 清空历史,用内存副本会复活已删除的消息。
                                     base = std::mem::take(&mut *cfg.preload_messages.write());
                                 }
                                 base
@@ -622,12 +730,32 @@ pub async fn submission_loop(
                                 // 回填失败不致命:退化为无历史轮(与 recorder
                                 // 缺席同款),本轮对话照常进行。
                                 tracing::warn!("rollout replay 回填失败,退化为无历史轮: {e:#}");
-                                Vec::new()
+                                if cfg.serial_turns {
+                                    serial_history.lock().clone()
+                                } else {
+                                    Vec::new()
+                                }
                             }
                         }
                     } else {
-                        std::mem::take(&mut *cfg.preload_messages.write())
+                        let history = serial_history.lock().clone();
+                        if cfg.serial_turns && !history.is_empty() {
+                            history
+                        } else {
+                            std::mem::take(&mut *cfg.preload_messages.write())
+                        }
                     };
+
+                if let Some(rec) = cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
+                    let _ = rec
+                        .record(RolloutRecord::HistorySnapshot {
+                            turn_id,
+                            replay_record_count,
+                            last_message_turn_id,
+                            visible_messages: base.len(),
+                        })
+                        .await;
+                }
 
                 // v1.2 P2:持久化本轮 user 输入(此前从未落盘)。
                 // submission_loop 原先只在 turn 结束后写 assistant 的最后一条
@@ -759,7 +887,8 @@ pub async fn submission_loop(
                     force_compact_next: cfg.force_compact_next.clone(),
                     telemetry: cfg.telemetry.clone(),
                     goal: cfg.goal.clone(),
-                    todos_slot: cfg.todos_slot.clone(),
+                    todos_slot: todos_slot.clone(),
+                    todo_persistence: todo_persistence.clone(),
                     quota_tracker: cfg.quota_tracker.clone(),
                     // v1.x Plan mode:把 submission_loop 拥有的共享
                     // `PlanApprovalGate` 与 session subscriber list clone
@@ -827,6 +956,7 @@ pub async fn submission_loop(
                     }),
                 };
 
+                let memory_seed = cfg.serial_turns.then(|| ctx.messages.clone());
                 let state = AgentState::default();
                 let graph = StateGraph::new(state, ctx);
 
@@ -863,11 +993,63 @@ pub async fn submission_loop(
                 // `turn.completed` + duration)。guard 在 spawned task 内创建,
                 // 这样 drop 时机 = turn 真正完成(而非 spawn 时刻)。
                 let telemetry_sink = cfg.telemetry.clone();
+                let task_budget = cfg.inherited_task_budget.clone().or_else(|| {
+                    cfg.task_budget_limits
+                        .clone()
+                        .map(zhuye_llm::task_budget::TaskBudget::new)
+                });
+                let serial_guard = cfg.serial_turns.then(|| {
+                    serial_running = true;
+                    SerialTurnFinished(serial_done_tx.clone())
+                });
+                let serial_history_clone = serial_history.clone();
                 tokio::spawn(async move {
+                    let _serial_guard = serial_guard;
                     let turn_span_guard = telemetry_sink
                         .as_ref()
                         .map(|sink| sink.enter_turn(&turn_id.to_string()));
-                    let mut final_state = graph.run().await;
+                    let mut final_state = if let Some(budget) = task_budget.as_ref() {
+                        let remaining = budget.remaining_time();
+                        let run =
+                            zhuye_llm::task_budget::scope_task_budget(budget.clone(), graph.run());
+                        tokio::pin!(run);
+                        if let Some(remaining) = remaining {
+                            tokio::select! {
+                                state = &mut run => state,
+                                _ = tokio::time::sleep(remaining) => {
+                                    // 触发回合取消后等待图清理工具与模型流,不能
+                                    // 抛弃在途任务或让串行队列提前运行。
+                                    turn_cancel_clone.cancel();
+                                    let mut state = run.await;
+                                    state.budget_exceeded = true;
+                                    state
+                                }
+                            }
+                        } else {
+                            run.await
+                        }
+                    } else {
+                        graph.run().await
+                    };
+                    if let Some(budget) = task_budget.as_ref() {
+                        let _ = turn_tx_clone
+                            .send(Event::new(
+                                sub_id_clone.clone(),
+                                task_budget_snapshot(budget, turn_id),
+                            ))
+                            .await;
+                    }
+                    if let Some(mut seed) = memory_seed {
+                        // 没有 M4 时 pre_loop 不播种状态,此时只把本轮新增
+                        // 消息接在输入之后;有 M4 时状态本身已含全部历史。
+                        if final_state.history_seeded {
+                            seed = final_state.messages.messages.clone();
+                        } else {
+                            seed.extend(final_state.messages.messages.iter().cloned());
+                        }
+                        *serial_history_clone.lock() =
+                            crate::resume::repair_orphan_tool_calls(seed);
+                    }
                     // 异步子代理不跨越派发它的回合:回合已收尾,仍登记在表的
                     // 本回合条目一并放弃。正常收尾时表里已无本回合条目
                     // (`check_stop` 等到了全部结果),这里是空操作;起作用的是
@@ -1287,6 +1469,7 @@ pub async fn submission_loop(
                         );
                     }
                 } else {
+                    abort_queued_turns(&mut pending, AbortReason::UserInterrupt).await;
                     // v1.4 A1:真中断 —— 对所有在飞回合的 turn 级令牌执行
                     // cancel。graph 各节点(模型流 select! / bash
                     // kill_on_cancel / 审批等待)收到取消信号后尽快收尾,
@@ -1339,13 +1522,40 @@ pub async fn submission_loop(
                 let target = to_turn_id
                     .as_deref()
                     .and_then(|s| zhuye_protocol::TurnId::parse_str(s).ok());
-                let dropped = match cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
-                    Some(rec) => rec.truncate_after(target.as_ref()).await.unwrap_or_else(|e| {
-                        tracing::warn!("rollout truncate_after failed, falling back to event-only rewind: {e:#}");
-                        0
-                    }),
-                    None => 0,
+                let dropped = if let Some(rec) = cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
+                    let dropped =
+                        rec.truncate_after(target.as_ref())
+                            .await
+                            .unwrap_or_else(|error| {
+                                tracing::warn!(%error, "历史截断失败,仅返回回退事件");
+                                0
+                            });
+                    if dropped > 0 {
+                        // 截断前缓存的种子历史可能包含被删除的消息。
+                        cfg.preload_messages.write().clear();
+                        if cfg.dynamic_context {
+                            let checklist = match rec.replay(session_id).await {
+                                Ok(records) => crate::resume::latest_dynamic_checklist(&records),
+                                Err(error) => {
+                                    tracing::warn!(%error, "回退后待办重建失败,清空旧状态");
+                                    None
+                                }
+                            };
+                            // 修复原因:旧槽缓存了已被回退的待办,在飞任务也可能
+                            // 写入它。新回合使用从保留记录重建的独立槽位。
+                            todos_slot = Arc::new(parking_lot::RwLock::new(checklist));
+                            todo_persistence = Arc::new(tokio::sync::Mutex::new(()));
+                        }
+                    }
+                    dropped
+                } else {
+                    0
                 };
+                if cfg.serial_turns && dropped > 0 {
+                    // 修复原因:回退后的回放若失败,旧内存历史会复活被删
+                    // 消息。更换槽位也隔离仍可能写入旧副本的在飞任务。
+                    serial_history = Arc::new(Mutex::new(Vec::new()));
+                }
                 let _ = turn_tx
                     .send(Event::new(
                         sub.id,
@@ -1357,6 +1567,7 @@ pub async fn submission_loop(
                     .await;
             }
             zhuye_protocol::Op::Shutdown => {
+                abort_queued_turns(&mut pending, AbortReason::Shutdown).await;
                 // 先触发取消令牌:任何正在 graph.run() 里跑的 turn
                 // (LLM 流 / 工具执行 / 审批等待)都会收到取消信号并尽快收尾,
                 // 而不是被 detached 后继续空转或挂死。此前漏了这一步,导致

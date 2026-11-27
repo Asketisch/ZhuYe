@@ -97,6 +97,7 @@ impl AgentThread {
         // 开启)。`None` = 显式关闭,queue 内部零开销。统计实例与
         // `ToolRegistry`(定义侧)共享同一份。
         tools_queue.set_prompt_guard(cfg.prompt_guard.clone(), cfg.guard_stats.clone());
+        tools_queue.set_provenance(cfg.provenance_tracker.clone(), cfg.provenance_mode);
         // 注入会话级 permission_mode 共享句柄,让 PreToolUse hook(PlanModeGate)
         // 能读到运行时 `/mode` 切换后的实时模式。与 `ApprovalGate` 持有的句柄
         // 同源(cfg.permission_mode),保证 hook 与 gate 决策一致。

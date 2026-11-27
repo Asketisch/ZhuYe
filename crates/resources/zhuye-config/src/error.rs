@@ -11,6 +11,9 @@ pub enum ConfigError {
     Io(String),
     #[error("parse: {0}")]
     Parse(String),
+    /// 显式配置了未知的来源治理模式。
+    #[error("invalid provenance.mode {0:?}; expected off, observe or enforce")]
+    InvalidProvenanceMode(String),
     #[error("watch: {0}")]
     Watch(String),
     #[error("build: {0}")]

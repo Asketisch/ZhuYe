@@ -120,10 +120,10 @@ pub struct SubAgentFactory {
     /// (对齐 `set_default_model` 模式),子 factory 通过 clone 共享。
     coordinator_footer: Mutex<Option<String>>,
     /// P2 `git-worktree-auto`:coordinator 模式下 per-worker worktree 规划器。
-    /// `None`(默认)= worker 不隔离,沿用 `.` 工作区(向后兼容);`Some` 时
+    /// `None`(默认)= worker 不隔离,沿用父工作区;`Some` 时
     /// spawn 走 `ensure_for_task(child_session_id)` 给每个 worker 建独立 worktree,
     /// 子 `AgentConfig.workspace` 指向该 worktree 路径。
-    worktree_coordinator: Mutex<Option<Arc<zhuye_tools::WorktreeCoordinator>>>,
+    worktree_coordinator: Mutex<Result<Option<Arc<zhuye_tools::WorktreeCoordinator>>, String>>,
     /// v1.2 P1:父 agent 的 telemetry sink(可选)。`None`(默认)= 子 agent
     /// 不落库(向后兼容);`Some` 时 `spawn` 把它 clone 进子 `AgentConfig.telemetry`,
     /// 让子 agent 内的 `model_call` 自动复用 zhuye-core 既有落库逻辑
@@ -185,7 +185,7 @@ impl SubAgentFactory {
             subagent_registry: Mutex::new(None),
             coordinator_mode: Arc::new(AtomicBool::new(false)),
             coordinator_footer: Mutex::new(None),
-            worktree_coordinator: Mutex::new(None),
+            worktree_coordinator: Mutex::new(Ok(None)),
             telemetry: Mutex::new(None),
             runtime_registry: Mutex::new(None),
             approval_context: zhuye_tools::ApprovalContext::default(),
@@ -360,15 +360,24 @@ impl SubAgentFactory {
     }
 
     /// P2 `git-worktree-auto`:注入 per-worker worktree 规划器。
-    /// 配合 `set_coordinator_mode(true, …)`,`spawn` 会给每个 worker 建独立
-    /// worktree 并把子工作区指向它(真实 git 隔离)。`None` 关闭隔离。
+    /// 设置后 `spawn` 会给每个子会话建独立 worktree 并把子工作区指向它。
+    /// `None` 恢复共享工作区。
     pub fn set_worktree_coordinator(&self, c: Option<Arc<zhuye_tools::WorktreeCoordinator>>) {
-        *self.worktree_coordinator.lock() = c;
+        *self.worktree_coordinator.lock() = Ok(c);
+    }
+
+    /// 隔离已启用但装配失败:记下原因,后续子会话派发必须拒绝。
+    pub fn set_worktree_isolation_error(&self, error: String) {
+        *self.worktree_coordinator.lock() = Err(error);
     }
 
     /// 当前 worktree 规划器(供测试与诊断)。
     pub fn worktree_coordinator(&self) -> Option<Arc<zhuye_tools::WorktreeCoordinator>> {
-        self.worktree_coordinator.lock().clone()
+        self.worktree_coordinator
+            .lock()
+            .as_ref()
+            .ok()
+            .and_then(Clone::clone)
     }
 
     // ── v1.0.0-rc2: plugin sub-agent 注册 ────────────────────────────
@@ -539,6 +548,13 @@ impl SubAgentFactory {
     ) -> Result<SpawnedChild, SubAgentError> {
         spec.validate().map_err(SubAgentError::SpecInvalid)?;
 
+        let task_budget = zhuye_llm::task_budget::current_task_budget();
+        let budget_reservation = task_budget
+            .as_ref()
+            .map(|budget| budget.reserve_subagent())
+            .transpose()
+            .map_err(|error| SubAgentError::SpawnFailed(error.to_string()))?;
+
         // 原子地预留一个并发槽位;若已到上限则拒绝。
         let prev = self.in_flight.fetch_add(1, Ordering::SeqCst);
         if prev >= crate::MAX_DEPTH {
@@ -562,12 +578,25 @@ impl SubAgentFactory {
         // 子会话挂在父会话下缩进展示(minimax code 形态),不污染顶层列表。
         // 未装配时维持旧行为:内存即丢,只在父 rollout 记 Fork 血缘。
         let child_thread_id = ThreadId::new();
-        // guard 不跨 await:先拷值再进 async 块。
-        let child_workspace = self
-            .workspace
-            .lock()
-            .clone()
-            .map(|p| p.to_string_lossy().to_string());
+        // 修复原因:隔离失败后静默回退共享目录会让并发 worker 互相覆盖。
+        // 在写入会话记录之前建立工作区,失败时直接拒绝并释放并发槽位。
+        let isolation = self.worktree_coordinator.lock().clone();
+        let workspace = match isolation
+            .map_err(|error| SubAgentError::SpawnFailed(format!("worktree 隔离失败: {error}")))?
+        {
+            Some(coordinator) => coordinator
+                .ensure_for_task(&child_thread_id.to_string(), true)
+                .map(|state| state.worktree_path)
+                .map_err(|e| SubAgentError::SpawnFailed(format!("worktree 隔离失败: {e}")))?,
+            None => self
+                .parent_config
+                .lock()
+                .as_ref()
+                .map(AgentConfig::current_workspace)
+                .or_else(|| self.workspace.lock().clone())
+                .map_or_else(std::env::current_dir, Ok)
+                .map_err(|e| SubAgentError::SpawnFailed(format!("无法确定父工作区: {e}")))?,
+        };
         let child_recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>> = {
             let base = self.rollout_base.lock().clone();
             base.map(|base| {
@@ -586,7 +615,8 @@ impl SubAgentFactory {
                         .clone()
                         .unwrap_or_else(|| self.default_model.lock().clone()),
                     started_at: chrono::Utc::now(),
-                    workspace: child_workspace,
+                    // 恢复以会话元数据定位工作区,必须与实际执行目录一致。
+                    workspace: Some(workspace.to_string_lossy().into_owned()),
                     parent_session_id: Some(self.parent_session_id),
                 })
                 .await;
@@ -614,27 +644,24 @@ impl SubAgentFactory {
         // 注:`Arc<ToolRegistry>` 共享父级 —— 即便 worker 之后做 reload 触发
         // 子 registry 重建,父级主 session 的 plugin 加载 / MCP server 启动
         // 等副作用仍由主 session 持有,worker 只读 filter 视图。
-        let child_tools = Arc::new(ToolRegistry::default());
         // review 修复:role 有专属工具注册表时从它过滤(同名工具多身份),
         // 否则从共享的 parent_tools 过滤。
         let role_registry = self.role_tools(&spec.role);
         let tool_source: &ToolRegistry = role_registry.as_deref().unwrap_or(&self.parent_tools);
-        if self.coordinator_mode.load(Ordering::SeqCst) {
+        let child_tools = Arc::new(if self.coordinator_mode.load(Ordering::SeqCst) {
             // coordinator 启用:从父 registry 排除 internal tools。
-            let worker_registry = build_worker_tool_registry(tool_source);
-            for name in worker_registry.list() {
-                if let Some(t) = worker_registry.get(&name) {
-                    child_tools.register(t);
-                }
-            }
+            build_worker_tool_registry(tool_source)
         } else {
-            // 默认路径:按 spec.allowed_tools 过滤。
+            // 修复原因:用 register 复制会抹掉来源标签,使子会话把
+            // 外部工具当成内置工具。保留父级已经完成的来源与权限包装。
+            let registry = ToolRegistry::default();
             for name in &spec.allowed_tools {
-                if let Some(t) = tool_source.get(name) {
-                    child_tools.register(t);
+                if let Some((source, tool)) = tool_source.get_with_source(name) {
+                    registry.register_with_source(source, tool);
                 }
             }
-        }
+            registry
+        });
 
         // 构造子 `AgentConfig` + thread。在 spawn 入口处快照 `default_model` —— reload 写锁不会和这里的读锁竞争(锁粒度 String 几纳秒)。
         // 在 spawn 入口取 —— reload 写锁不会和这里读锁竞争(锁粒度 String
@@ -643,33 +670,20 @@ impl SubAgentFactory {
             .model
             .clone()
             .unwrap_or_else(|| self.default_model.lock().clone());
-        // P2 `git-worktree-auto`:coordinator 模式 + worktree 规划器注入时,
-        // 给当前 worker 建独立 worktree,子工作区指向它(真实 git 隔离)。
-        // 失败仅 warn 并回退 `.`(不让 worktree 故障阻断 spawn)。
-        let workspace = if self.coordinator_mode.load(Ordering::SeqCst) {
-            if let Some(c) = self.worktree_coordinator.lock().clone() {
-                // 用 child session id 作 task key(唯一),create_git=true 建真实 worktree。
-                match c.ensure_for_task(&child_thread_id.to_string(), true) {
-                    Ok(state) => state.worktree_path,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "worktree 隔离失败,worker 回退到当前工作区"
-                        );
-                        std::path::PathBuf::from(".")
-                    }
-                }
-            } else {
-                std::path::PathBuf::from(".")
-            }
-        } else {
-            std::path::PathBuf::from(".")
-        };
         let history = zhuye_core::resume::repair_orphan_tool_calls(parent_tail);
+        // 修复原因:子会话记录器使用 child_thread_id 作文件名,若引擎
+        // 再随机分配会话号,工具执行账本和历史回放会指向不同会话。
         let mut cfg = AgentConfig::new(child_model, workspace)
+            .with_session_id(child_thread_id)
             .with_preload_messages(history)
             .with_approval_context(self.approval_context.clone());
+        cfg.inherited_task_budget = task_budget;
         if let Some(parent) = self.parent_config.lock().clone() {
+            cfg.strict_tool_journal = parent.strict_tool_journal;
+            cfg.serial_turns = parent.serial_turns;
+            cfg.provenance_tracker = parent.provenance_tracker.clone();
+            cfg.provenance_mode = parent.provenance_mode;
+            cfg.dynamic_context = parent.dynamic_context;
             cfg.prompt_library = parent.prompt_library.clone();
             cfg.prompt_selection = parent.prompt_selection.clone();
             cfg.prompt_default = parent.prompt_default.clone();
@@ -772,6 +786,9 @@ impl SubAgentFactory {
         );
         let sub = Submission::user_input(combined_user_input);
         let handle = child_thread.submit(sub).await;
+        if let Some(budget_reservation) = budget_reservation {
+            budget_reservation.commit();
+        }
         Ok(SpawnedChild {
             session_id: child_thread_id,
             handle,

@@ -40,7 +40,7 @@ use zhuye_llm::{
 };
 use zhuye_protocol::{
     CacheWarmingAction, CacheWarmingEvent, CacheWarmingPhase, EVENT_ID_NONE, Event, EventMsg,
-    TokenUsage,
+    TokenUsage, TurnId,
 };
 
 /// 候选请求:上次真实模型调用的保温蓝本。由 `model_call` 成功后写入。
@@ -67,6 +67,10 @@ pub struct WarmCandidate {
     /// 该候选是否可被 1-token 重放(provider 按 wire 形态判定;
     /// Anthropic 显式 thinking 不可重放)。
     pub replayable: bool,
+    /// 创建候选的根任务账本;保温任务是新任务,必须显式继承。
+    pub task_budget: Option<Arc<zhuye_llm::task_budget::TaskBudget>>,
+    /// 触发保温候选的回合,用于空闲结算的账本事件。
+    pub turn_id: TurnId,
 }
 
 /// 保温运行计数(可观测 / 测试断言)。
@@ -380,6 +384,48 @@ impl CacheWarmingScheduler {
                 zhuye_llm::METADATA_WARM_REPLAY_VALUE.into(),
             );
             let replay_started = Instant::now();
+            // 修复原因:空闲保温是独立任务,根回合结束后不再有截止时间
+            // 监督。已发出的重放也必须在同一截止时间停止并释放预留。
+            let remaining = cand
+                .task_budget
+                .as_ref()
+                .and_then(|budget| budget.remaining_time());
+            let deadline = async {
+                if let Some(remaining) = remaining {
+                    tokio::time::sleep_until(
+                        tokio::time::Instant::from_std(replay_started) + remaining,
+                    )
+                    .await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::pin!(deadline);
+            let report_budget = || {
+                if phase == WarmingPhase::Idle
+                    && let Some(budget) = cand.task_budget.as_ref()
+                    && let Some(tx) = self.event_tx.lock().as_ref()
+                {
+                    let _ = tx.try_send(Event::new(
+                        EVENT_ID_NONE,
+                        crate::submission_loop::task_budget_snapshot(budget, cand.turn_id),
+                    ));
+                }
+            };
+            let report_deadline = || {
+                cancel.cancel();
+                self.stats.cancelled.fetch_add(1, Ordering::Relaxed);
+                self.emit(
+                    CacheWarmingAction::Cancelled,
+                    phase,
+                    Some("task_deadline"),
+                    Some(&cand.model_spec),
+                    Some(cand.prompt_tokens),
+                    None,
+                    None,
+                    None,
+                );
+            };
             let stream_result = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
@@ -395,9 +441,24 @@ impl CacheWarmingScheduler {
                         None,
                         None,
                     );
+                    report_budget();
                     return;
                 }
-                result = cand.client.stream(replay, cancel.clone()) => result,
+                _ = &mut deadline => {
+                    report_deadline();
+                    report_budget();
+                    return;
+                }
+                result = async {
+                    if let Some(budget) = cand.task_budget.as_ref() {
+                        zhuye_llm::task_budget::stream_with_task_budget(
+                            cand.client.as_ref(), replay, cancel.clone(), budget, 1, false,
+                        ).await
+                    } else {
+                        cand.client.stream(replay, cancel.clone()).await
+                            .map_err(zhuye_llm::task_budget::BudgetedCallError::Model)
+                    }
+                } => result,
             };
             let Ok(mut s) = stream_result else {
                 // 建流失败(凭据冷却 / 网络抖动):单次尝试,不重试
@@ -413,6 +474,7 @@ impl CacheWarmingScheduler {
                     None,
                     None,
                 );
+                report_budget();
                 return;
             };
             use futures::StreamExt;
@@ -422,6 +484,7 @@ impl CacheWarmingScheduler {
                 tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
+                        drop(s);
                         self.stats.cancelled.fetch_add(1, Ordering::Relaxed);
                         self.emit(
                             CacheWarmingAction::Cancelled,
@@ -433,6 +496,13 @@ impl CacheWarmingScheduler {
                             None,
                             None,
                         );
+                        report_budget();
+                        return;
+                    }
+                    _ = &mut deadline => {
+                        drop(s);
+                        report_deadline();
+                        report_budget();
                         return;
                     }
                     item = s.next() => match item {
@@ -445,6 +515,8 @@ impl CacheWarmingScheduler {
                     }
                 }
             }
+            // 流内报错会提前退出,主动析构保证快照读到已结算账本。
+            drop(s);
             // 记账:quota(与真实请求同窗口)+ 本模块计数 + 事件。
             // **绝不**进 session_usage / state / rollout / TokenCount。
             let (warm_cached, warm_cost) = match usage {
@@ -495,6 +567,7 @@ impl CacheWarmingScheduler {
                 warm_cost,
                 decision.expected_savings_usd,
             );
+            report_budget();
             // 重放命中刷新了整条前缀的 TTL → 下一个刷新点从本次重放起算。
             last_refresh = Instant::now();
         }
@@ -618,6 +691,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingStub {
         requests: Mutex<Vec<zhuye_llm::ChatRequest>>,
+        stall: bool,
     }
 
     impl RecordingStub {
@@ -640,6 +714,9 @@ mod tests {
             LlmError,
         > {
             self.requests.lock().push(request);
+            if self.stall {
+                return Ok(Box::pin(futures::stream::pending()));
+            }
             let chunks: Vec<Result<ChatEvent, LlmError>> = vec![
                 Ok(ChatEvent::MessageStart {
                     id: "stub-1".into(),
@@ -696,6 +773,8 @@ mod tests {
             generation,
             created_at: Instant::now(),
             replayable: true,
+            task_budget: None,
+            turn_id: TurnId::new(),
         }
     }
 
@@ -781,6 +860,74 @@ mod tests {
 
     fn candidate_for_compare() -> WarmCandidate {
         candidate(Arc::new(RecordingStub::default()), 0)
+    }
+
+    #[tokio::test]
+    async fn 保温请求受任务树预算约束并结算() {
+        use zhuye_llm::task_budget::{TaskBudget, TaskBudgetLimits};
+        let allowed = TaskBudget::new(TaskBudgetLimits {
+            total_tokens: Some(100),
+            ..Default::default()
+        });
+        let denied = TaskBudget::new(TaskBudgetLimits {
+            total_tokens: Some(1),
+            ..Default::default()
+        });
+        let (yes, _) = scheduler(warm_settings());
+        let (no, _) = scheduler(warm_settings());
+        let yes_client = Arc::new(RecordingStub::default());
+        let no_client = Arc::new(RecordingStub::default());
+        let mut yes_candidate = candidate(yes_client.clone(), 0);
+        yes_candidate.task_budget = Some(allowed.clone());
+        let mut no_candidate = candidate(no_client.clone(), 0);
+        no_candidate.task_budget = Some(denied.clone());
+        let (yes_tx, mut yes_rx) = mpsc::channel(16);
+        let (no_tx, mut no_rx) = mpsc::channel(16);
+        yes.set_event_tx(yes_tx);
+        no.set_event_tx(no_tx);
+        yes.record_candidate(yes_candidate);
+        no.record_candidate(no_candidate);
+        yes.schedule(WarmingPhase::Idle);
+        no.schedule(WarmingPhase::Idle);
+        wait_action(&mut yes_rx, "executed", 8).await;
+        wait_action(&mut no_rx, "skipped", 8).await;
+        assert_eq!(yes_client.recorded().len(), 1);
+        assert!(no_client.recorded().is_empty());
+        assert_eq!(allowed.snapshot().actual_tokens, 11);
+        assert_eq!(allowed.snapshot().reserved_tokens, 0);
+        assert_eq!(denied.snapshot().settled_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn 在途保温请求在任务截止时结束并释放预留() {
+        use zhuye_llm::task_budget::{TaskBudget, TaskBudgetLimits};
+        let budget = TaskBudget::new(TaskBudgetLimits {
+            total_tokens: Some(100),
+            duration: Some(Duration::from_secs(1)),
+            ..Default::default()
+        });
+        let (sched, _) = scheduler(CacheWarmingSettings {
+            ttl_secs: Some(10),
+            refresh_margin_secs: 8,
+            ..warm_settings()
+        });
+        let client = Arc::new(RecordingStub {
+            stall: true,
+            ..Default::default()
+        });
+        let mut cand = candidate(client.clone(), 0);
+        cand.created_at -= Duration::from_secs(2);
+        cand.task_budget = Some(budget.clone());
+        let (tx, mut rx) = mpsc::channel(16);
+        sched.set_event_tx(tx);
+        sched.record_candidate(cand);
+        sched.schedule(WarmingPhase::Idle);
+
+        let cancelled = wait_action(&mut rx, "cancelled", 5).await;
+        assert_eq!(cancelled.reason.as_deref(), Some("task_deadline"));
+        assert_eq!(client.recorded().len(), 1);
+        assert_eq!(budget.snapshot().reserved_tokens, 0);
+        assert_eq!(budget.snapshot().unknown_calls, 1);
     }
 
     #[tokio::test]

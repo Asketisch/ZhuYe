@@ -5,6 +5,7 @@
 ## 评测基线
 
 真实任务评测的固定任务集 / 运行器 / 质量门禁在 `tests/eval/`;
+报告同时按用例和类别聚合成功率、耗时、成本与缓存统计;
 基线与前后对比的操作手册见 [docs/eval-baseline.md](../docs/eval-baseline.md)。
 离线自检(`bash tests/eval/run_offline.sh`,已并入 `functional` 套件)用 mock
 provider 验证流水线可用 —— **不衡量模型能力**,真实基线必须走

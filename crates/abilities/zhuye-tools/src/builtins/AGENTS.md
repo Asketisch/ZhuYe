@@ -28,6 +28,7 @@
 - 工具描述文案从 prompt 资源加载（`mod.rs` 的测试断言各描述非空），新增工具必须带描述资源。
 - 新增 / 移除工具走 crate 篇「清单三处同步」：`builtin_tools.rs` 的计数常量与注册断言 + `docs/tools-and-hooks.md` §2 权威清单。
 - 门控工具（web_search / notebook_edit）的注册行在 `register_builtin_tools_with_gates` 内由 `BundledToolGates` 包裹，本目录不自行判门控。
+- 工具执行记录严格模式仅放过明确声明无副作用的工具;read / glob / grep 声明只读,并发安全不能替代只读声明。
 
 ## 禁止事项
 

@@ -155,9 +155,10 @@ standalone tool.
 
 `ToolExecutionQueue` (`zhuye-tools/src/queue.rs`):
 
-- tools with `is_concurrency_safe() == true` (read / grep / glob / web
-  family) run concurrently; unsafe tools (bash / write / edit) run
-  **serially in submission order** to prevent write-write conflicts;
+- consecutive tools with `is_concurrency_safe() == true` (read / grep / glob / web
+  family) run concurrently; unsafe tools (bash / write / edit) act as barriers,
+  waiting for preceding tools and completing before subsequent tools start;
+  results preserve submission order;
 - the queue consumes hook decisions: a PreToolUse `Deny` becomes an
   error result directly, `ModifyArgs` replaces the arguments,
   `PermissionOverride` switches the permission mode, `Ask` routes to

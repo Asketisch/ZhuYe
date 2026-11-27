@@ -8,6 +8,14 @@
 
 ## Configuration File
 
+Tool execution journaling is best-effort by default. Set
+`[tool_journal]` `strict = true` to require a supported recorder and a successful
+start record before tools that are not explicitly read-only execute. A successful
+write flushes the process buffer but does not guarantee durability after power loss.
+On recovery, `tool_execution_uncertain` reports unresolved executions; they are
+not automatically retried. Side channels do not write session records, so strict
+mode rejects their tools unless they explicitly declare themselves read-only.
+
 Config lives in `~/.zhuye/config.toml`; `ZHUYE_HOME` relocates the whole
 directory:
 
@@ -80,6 +88,63 @@ The migration is **idempotent**: a config already in the new format loads
 without any change (no duplicate groups are appended, and an existing group
 with the same id is never overwritten — the group wins). Legacy section data
 never shows up in the written output.
+
+## Turn scheduling ([turn_scheduling])
+
+Turns in a session run concurrently by default and may share a workspace. Set
+`serial = true` to queue user inputs in arrival order and rebuild history after
+the previous turn exits. Approval and question responses remain responsive;
+interrupt and shutdown abort queued inputs. This setting applies to new
+sessions. Remove it or set it to `false` to restore concurrent scheduling.
+
+```toml
+[turn_scheduling]
+serial = true
+```
+
+## Task-tree budget ([task_budget])
+
+Disabled unless configured. Each root turn creates a ledger shared by its
+subagents. Model attempts, summaries and cache warming reserve estimated tokens
+before dispatch and settle reported usage afterward. A request without a usage
+receipt is recorded separately using its estimate. Estimates can be inaccurate,
+so a single call may exceed the limit; this is not an exact billing cap.
+`final_answer_tokens` reserves capacity for a final answer, provided there is
+also enough room for its input. The deadline starts at the root turn, and the
+dispatch limit counts successful subagent launches. Costs are statistics only.
+`task_budget_snapshot` events are point-in-time views of the shared ledger;
+do not sum snapshots with the same `task_id`.
+
+```toml
+[task_budget]
+total_tokens = 100000
+deadline_seconds = 1800
+subagent_dispatches = 8
+final_answer_tokens = 8000
+```
+
+## Provenance and dynamic context
+
+Tool results identify workspace, external, subagent or tool-output origins; the
+source key is hashed rather than exposing paths or addresses. The default
+`observe` mode tracks taint without changing existing prompt-guard decisions.
+`enforce` can block later suspicious output from a tainted source; `off`
+disables tracking. The CLI and Rust builder reject session startup when an explicit
+mode is unknown. Rust hosts can set `AgentConfig.provenance_mode` with the facade's
+`ProvenanceMode` enum. Provenance does not replace permissions, approval or sandboxing.
+
+With `[dynamic_context] enabled = true`, memory and todos are removed from the
+stable system prefix and appended as versioned context. An update is added only
+when content changes or compaction removes it; recovery restores the latest
+todo state. This remains disabled by default pending real-task evaluation.
+
+```toml
+[provenance]
+mode = "observe"
+
+[dynamic_context]
+enabled = false
+```
 
 ## How the active group is resolved
 

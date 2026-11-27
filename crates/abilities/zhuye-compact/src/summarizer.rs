@@ -378,7 +378,30 @@ async fn call_summarizer(
             model: model_name.clone(),
             ..request.clone()
         };
-        let stream_fut = client.stream(req, cancel.clone());
+        let budget = zhuye_llm::task_budget::current_task_budget();
+        let stream_fut = async {
+            if let Some(budget) = budget.as_ref() {
+                zhuye_llm::task_budget::stream_with_task_budget(
+                    client.as_ref(),
+                    req,
+                    cancel.clone(),
+                    budget,
+                    4096,
+                    false,
+                )
+                .await
+                .map_err(|error| match error {
+                    zhuye_llm::task_budget::BudgetedCallError::Model(error) => error,
+                    zhuye_llm::task_budget::BudgetedCallError::Budget(error) => {
+                        zhuye_llm::LlmError::InvalidRequest {
+                            message: error.to_string(),
+                        }
+                    }
+                })
+            } else {
+                client.stream(req, cancel.clone()).await
+            }
+        };
         match timeout(s.timeout, stream_fut).await {
             Ok(Ok(stream)) => {
                 s.registry.clear_cooldown(&provider, &label);
@@ -429,13 +452,24 @@ async fn call_summarizer(
     let mut s_pin = std::pin::pin!(stream);
     let mut buf = String::new();
     let mut cancelled = false;
+    let mut stopped = false;
     // v1.2 P1:累积 token usage(此前 `_ => {}` 把 Usage 事件丢了)。
     let mut usage_input: u64 = 0;
     let mut usage_output: u64 = 0;
     let mut usage_cached: u64 = 0;
     let mut usage_cache_write: u64 = 0;
     loop {
-        let evt = match s_pin.next().await {
+        // 有些提供方在停止帧之后发送用量。停止后只做有界排空,
+        // 避免少计摘要用量,同时防止连接未关闭时长期等待。
+        let next = if stopped {
+            tokio::time::timeout(Duration::from_secs(1), s_pin.next())
+                .await
+                .ok()
+                .flatten()
+        } else {
+            s_pin.next().await
+        };
+        let evt = match next {
             Some(Ok(e)) => e,
             Some(Err(e)) => {
                 if cancelled {
@@ -450,9 +484,9 @@ async fn call_summarizer(
             continue;
         }
         match evt {
-            ChatEvent::ContentDelta(d) => buf.push_str(&d),
-            ChatEvent::ThinkingDelta(d) => buf.push_str(&d), // tolerate
-            ChatEvent::MessageStop => break,
+            ChatEvent::ContentDelta(d) if !stopped => buf.push_str(&d),
+            ChatEvent::ThinkingDelta(d) if !stopped => buf.push_str(&d),
+            ChatEvent::MessageStop | ChatEvent::MessageStopTruncated { .. } => stopped = true,
             ChatEvent::Error(e) => return Err(SummarizerError::Llm(e.to_string())),
             ChatEvent::Usage {
                 input_tokens,
@@ -590,6 +624,53 @@ pub fn parse_summary(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
     use zhuye_llm::AssistantContent;
+
+    #[tokio::test]
+    async fn 摘要调用共享当前任务预算并在不足时拒绝请求() {
+        use zhuye_llm::task_budget::{TaskBudget, TaskBudgetLimits, scope_task_budget};
+        use zhuye_llm::{CredentialPool, MockClient, MockReply, ModelRegistry, PoolEntry};
+
+        let client = Arc::new(MockClient::with_script(vec![MockReply::Text {
+            text: "<summary>已总结</summary>".into(),
+        }]));
+        let registry = Arc::new(ModelRegistry::new());
+        registry.register_pool(
+            "mock",
+            CredentialPool {
+                entries: vec![PoolEntry {
+                    client: client.clone(),
+                    label: "default".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        let summarizer =
+            LlmSummarizer::new(registry, Arc::new(RoutingPolicy::default()), "mock/model");
+        let small = TaskBudget::new(TaskBudgetLimits {
+            total_tokens: Some(1),
+            ..Default::default()
+        });
+        assert!(
+            scope_task_budget(small, summarizer.summarize_full(&[]))
+                .await
+                .is_err()
+        );
+        assert!(client.recorded_requests().is_empty());
+
+        let budget = TaskBudget::new(TaskBudgetLimits {
+            total_tokens: Some(10000),
+            ..Default::default()
+        });
+        assert_eq!(
+            scope_task_budget(budget.clone(), summarizer.summarize_full(&[]))
+                .await
+                .unwrap(),
+            "已总结"
+        );
+        assert_eq!(budget.snapshot().actual_tokens, 4);
+        assert_eq!(budget.snapshot().settled_calls, 1);
+        assert_eq!(budget.snapshot().reserved_tokens, 0);
+    }
 
     #[test]
     fn parse_summary_extracts_content() {

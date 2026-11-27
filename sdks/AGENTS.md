@@ -24,6 +24,7 @@
 - `sdks/python/zhuye/agent.py` ↔ `sdks/typescript/src/agent.ts`:两边的公开 API、选项字段、事件语义逐项对齐。**改一边必须看另一边**,不要只改一处。
 - 类型层同样成对:`sdks/python/zhuye/protocol.py` ↔ `sdks/typescript/src/protocol.ts`。
 - 两侧零运行时第三方依赖(Python 仅标准库,TS 仅 Node 内置模块);新增依赖前先确认真有必要。
+- 启动时使用引擎校验 `[provenance].mode`;显式配置必须是 off、observe 或 enforce,非法值会让 serve 拒绝启动。
 
 ### wire 语义权威(`sdks/PROTOCOL.md`)
 
@@ -32,6 +33,8 @@
 - 英文版 `sdks/PROTOCOL.en.md` 不参与自动门禁,但协议变更后仍须同步翻译。
 - 前台 `bash` 成功启动后的 `tool_call_end.output.metadata.network_restriction` 报告实际网络限制；它是开放 metadata 内的附加字段，其他工具和失败启动不保证存在。
 - `ReadMcpResource` 的内容块与 `metadata.content_descriptors` 按服务端顺序对应，二进制资源以含 base64 `blob` 的 JSON 文本块传递。
+- `tool_execution_uncertain` 是恢复时的提交级事件,按 session / turn / call / tool 标识结果未知的执行。
+- `task_budget_snapshot` 是共享账本的时点快照;同一 task_id 的快照不可累加,未知用量以估算字段单独报告。
 
 ### 未知变体降级(两侧类型层)
 

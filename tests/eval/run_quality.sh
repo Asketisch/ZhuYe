@@ -11,6 +11,13 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 : "${ZHUYE_EVAL_MODE:=observe}"
 : "${ZHUYE_EVAL_POLICY:=$ROOT/tests/eval/policy.json}"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p zhuye-eval --bin zhuye-eval-score
+EVAL_ARGS=(--policy "$ZHUYE_EVAL_POLICY")
+if [[ -n "${ZHUYE_EVAL_INPUT_PRICE:-}" ]]; then
+    EVAL_ARGS+=(--input-price "$ZHUYE_EVAL_INPUT_PRICE")
+fi
+if [[ -n "${ZHUYE_EVAL_OUTPUT_PRICE:-}" ]]; then
+    EVAL_ARGS+=(--output-price "$ZHUYE_EVAL_OUTPUT_PRICE")
+fi
 exec python3 "$ROOT/tests/eval/run.py" \
     --candidate "$ZHUYE_EVAL_CANDIDATE" --baseline "$ZHUYE_EVAL_BASELINE" \
     --candidate-profile "${ZHUYE_EVAL_CANDIDATE_PROFILE:-default}" \
@@ -20,4 +27,4 @@ exec python3 "$ROOT/tests/eval/run.py" \
     --output "${ZHUYE_EVAL_OUTPUT:-$ROOT/target/eval-quality}" \
     --repetitions "${ZHUYE_EVAL_REPETITIONS:-3}" \
     --mode "$ZHUYE_EVAL_MODE" \
-    --policy "$ZHUYE_EVAL_POLICY"
+    "${EVAL_ARGS[@]}"

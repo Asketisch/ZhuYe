@@ -41,6 +41,11 @@
   - `zhuye-ast` 依赖 `zhuye-tools` → **`zhuye-tools` 不得依赖 `zhuye-ast`**;AST 工具以调用方注入方式进入工具层。
   - `zhuye-plugin` 依赖 `zhuye-tools` / `zhuye-hooks` → **`zhuye-tools` 与 `zhuye-hooks` 不得依赖 `zhuye-plugin`**。
   - `zhuye-wasm` 依赖 `zhuye-tools` / `zhuye-hooks` → 同上约束。
+- macOS Seatbelt profile 以随机路径独占创建,避免强杀残留与重用的 PID 冲突;写入失败由临时文件句柄清理,成功后由执行方清理。
+- `[tool_journal].strict` 默认关闭;JSONL recorder 在成功返回前将工具阶段写入不轮转的独立账本并 flush,可用于严格开始记录,不承诺断电持久性;账本不随 rewind 删除。回放跳过损坏行,包括强杀截断的 UTF-8;主文件与账本续写时补齐缺失的尾行分隔符。
+- `[turn_scheduling].serial` 默认关闭,由会话创建入口读取;变更只影响新建会话。
+- `[task_budget]` 默认缺席,由入口转换为每个根回合的任务树预算参数。
+- `[provenance].mode` 默认 observe,显式值只接受 off / observe / enforce,会话启动遇到未知值时拒绝加载;`[dynamic_context].enabled` 默认 false,均由会话创建入口读取。
 
 ## 本层通用规则
 

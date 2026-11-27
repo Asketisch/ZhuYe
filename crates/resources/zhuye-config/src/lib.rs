@@ -106,8 +106,8 @@ pub use analytics::{
 pub use builder::{LspServerConfigShape, McpServerConfigShape};
 pub use error::ConfigError;
 pub use load::{
-    default_config_path, load_default, load_from_file, load_from_file_with_migration,
-    load_from_str, load_from_str_with_migration,
+    default_config_path, load_default, load_default_for_runtime, load_from_file,
+    load_from_file_with_migration, load_from_str, load_from_str_with_migration,
 };
 pub use model_discovery::{
     DEFAULT_CATALOG_CACHE_TTL_SECS, DEFAULT_DISCOVERY_TIMEOUT_SECS, DiscoveredCatalog,
@@ -123,14 +123,16 @@ pub use flags::{FlagDecl, FlagRegistry, FlagState, ReleaseStage};
 pub use schema::{
     ACP_DEFAULT_BIND, AcpSection, ActiveSection, AnalyticsSection, AskUserQuestionSection,
     BridgeSection, CompactSection, ContextWindowsSection, CoordinatorSection, CredentialConfig,
-    DapSection, GoalSection, HooksSection, LangfuseSection, LspFilePattern, LspServerEntry,
-    LspServersSection, McpServerEntry, McpServersSection, McpTransport, ModelDiscoverySection,
-    ModelGroupSection, ModelSection, NotificationChannel, NotificationsSection, PermissionsSection,
-    PlanCompletionSection, PostgresSessionSection, PromptGuardSection, QuotaConfig, QuotaSource,
-    ReadBeforeEditSection, ReflectConfig, ResolvedAskUserQuestion, RoutingSection, SandboxSection,
-    SanitizeSection, SearchBudgetSection, SpecSlotConfig, SseRedisSection, SubagentSpecConfig,
-    TelemetrySection, TestRunnerSection, TokenBudgetSection, TuiNotificationsSection,
-    VerificationSection, VoiceSection, WebSearchSection, parse_permission_entry,
+    DapSection, DynamicContextSection, GoalSection, HooksSection, LangfuseSection, LspFilePattern,
+    LspServerEntry, LspServersSection, McpServerEntry, McpServersSection, McpTransport,
+    ModelDiscoverySection, ModelGroupSection, ModelSection, NotificationChannel,
+    NotificationsSection, PermissionsSection, PlanCompletionSection, PostgresSessionSection,
+    PromptGuardSection, ProvenanceSection, QuotaConfig, QuotaSource, ReadBeforeEditSection,
+    ReflectConfig, ResolvedAskUserQuestion, RoutingSection, SandboxSection, SanitizeSection,
+    SearchBudgetSection, SpecSlotConfig, SseRedisSection, SubagentSpecConfig, TaskBudgetSection,
+    TelemetrySection, TestRunnerSection, TokenBudgetSection, ToolJournalSection,
+    TuiNotificationsSection, TurnSchedulingSection, VerificationSection, VoiceSection,
+    WebSearchSection, parse_permission_entry,
 };
 pub use watch::{ConfigWatcher, WatcherHandle};
 

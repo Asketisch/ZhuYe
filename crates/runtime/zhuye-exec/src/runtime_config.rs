@@ -267,10 +267,10 @@ pub(crate) fn apply_coordinator_from_config(
         ensure_scratchpad(&coord_cfg, workspace, &thread_id.to_string());
         let scratchpad = build_scratchpad_path(workspace, &thread_id.to_string());
         let footer: String = coordinator_footer(&coord_cfg.system_prompt);
-        factory.set_coordinator_mode(true, Some(footer));
         // P2 `git-worktree-auto`:coordinator 启用时,解析 git root 并注入
         // WorktreeCoordinator,让每个 worker spawn 自动隔离到独立 worktree。
-        // 非 git 仓库(git_root 失败)仅 warn 跳过,不阻断 coordinator。
+        // 修复原因:根目录探测失败也是隔离失败;先登记错误,禁止 worker
+        // 派发退回共享目录,coordinator 仍可在本轮向宿主报告具体原因。
         match zhuye_tools::git_root(std::path::Path::new(workspace)) {
             Ok(root) => {
                 let coord = Arc::new(zhuye_tools::WorktreeCoordinator::new(root));
@@ -278,12 +278,17 @@ pub(crate) fn apply_coordinator_from_config(
                 tracing::info!("coordinator worktree 隔离已启用");
             }
             Err(e) => {
+                factory.set_worktree_isolation_error(format!(
+                    "无法确定工作区 {} 的 Git 根目录: {e}",
+                    workspace.display()
+                ));
                 tracing::warn!(
                     error = %e,
-                    "coordinator worktree 隔离跳过(非 git 仓库或 git_root 解析失败)"
+                    "coordinator worktree 无法初始化,将拒绝派发 worker"
                 );
             }
         }
+        factory.set_coordinator_mode(true, Some(footer));
         tools.register_with_source(
             zhuye_tools::ToolSource::Builtin,
             Arc::new(zhuye_task::tools::WriteNoteTool::new(Arc::new(
@@ -303,6 +308,7 @@ pub(crate) fn apply_coordinator_from_config(
         );
     } else {
         factory.set_coordinator_mode(false, None);
+        factory.set_worktree_coordinator(None);
         tools.unregister("WriteNote");
         tools.unregister("ReadNotes");
         tracing::info!("coordinator mode disabled");

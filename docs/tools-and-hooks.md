@@ -134,9 +134,9 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 
 `ToolExecutionQueue`(`zhuye-tools/src/queue.rs`):
 
-- `is_concurrency_safe() == true` 的工具(read / grep / glob / web 类)
-  并发执行;unsafe 工具(bash / write / edit)**按提交顺序串行**,
-  防止写写冲突;
+- 连续的 `is_concurrency_safe() == true` 工具(read / grep / glob / web 类)
+  并发执行;unsafe 工具(bash / write / edit)作为屏障,等待前面的工具完成后独占执行,
+  完成后才执行后续工具,结果保持提交顺序;
 - 队列消费 hook 决策:PreToolUse 的 `Deny` 直接转错误结果、
   `ModifyArgs` 替换入参、`PermissionOverride` 切换权限模式、
   `Ask` 路由到 ApprovalGate(§7);

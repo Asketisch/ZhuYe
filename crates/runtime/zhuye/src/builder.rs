@@ -264,7 +264,7 @@ impl ZhuyeBuilder {
     /// 默认 `~/.zhuye/sessions`(YYYY/MM/DD 分桶)。传入自定义目录便于
     /// 测试隔离 / 多租户分目录存储。rollout 记录会话消息、TokenCount
     /// (含模型归属)、Compaction 等审计轨迹,是 `session_stats` 统计的
-    /// 数据源。
+    /// 数据源。异步 Builder 装配的插件子代理也在同一根目录独立记录。
     pub fn with_rollout_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.rollout_base = Some(dir.as_ref().to_path_buf());
         self
@@ -273,7 +273,7 @@ impl ZhuyeBuilder {
     /// v1.x:完全关闭 rollout 会话记录(不落任何 session JSONL)。
     ///
     /// 适用于纯一次性执行 / 隐私敏感场景。关闭后 `session_stats` 等
-    /// 读取侧 API 对该会话无数据可查。
+    /// 读取侧 API 对该会话无数据可查,插件子代理也不会开启记录器。
     pub fn without_rollout(mut self) -> Self {
         self.rollout_enabled = false;
         self
@@ -355,10 +355,10 @@ impl ZhuyeBuilder {
     /// 如果想用最小 m4 路径,直接通过
     /// `AgentThread::new + AgentConfig::with_m4(default_m4_deps)` 走底层 API。
     pub fn build(self) -> Result<Zhuye, BuilderError> {
-        let registry = build_registry_from_env(&self.model)?;
         // v1.x(WP13):app_cfg 提前加载 —— 门控型 bundled 插件工具的注册
         // 门要与 exec 路径同源判定(默认开插件空配置下保持注册)。
-        let app_cfg = zhuye_config::load_default();
+        let app_cfg = zhuye_config::load_default_for_runtime()?;
+        let registry = build_registry_from_env(&self.model)?;
         let tools = default_tool_registry(bundled_gates_for(&app_cfg, self.plugins.as_deref()));
         // B6:嵌入方注入点 —— 自定义工具(Runtime floor)/ hook / skills
         // 目录。与 build_async 同权(两条路径能力面一致)。
@@ -394,6 +394,16 @@ impl ZhuyeBuilder {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
         }
         cfg = cfg.with_m4(m4);
+        cfg.strict_tool_journal = app_cfg.tool_journal.as_ref().is_some_and(|s| s.strict);
+        cfg.serial_turns = app_cfg.turn_scheduling.as_ref().is_some_and(|s| s.serial);
+        cfg.task_budget_limits = app_cfg.task_budget.as_ref().map(|s| s.limits());
+        cfg.dynamic_context = app_cfg.dynamic_context.as_ref().is_some_and(|s| s.enabled);
+        cfg.provenance_mode = app_cfg
+            .provenance
+            .as_ref()
+            .and_then(|s| s.mode.as_deref())
+            .and_then(zhuye_tools::sanitize::provenance::ProvenanceMode::parse)
+            .unwrap_or_default();
         validate_prompt_selection(&cfg, self.prompt_selection.as_ref())?;
         *cfg.prompt_selection.write() = self.prompt_selection.clone();
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
@@ -484,10 +494,10 @@ impl ZhuyeBuilder {
     /// - config `[mcp_servers]` 不消费(空 manager 兜底,仅供插件的
     ///   mcp_servers 能力落点)。
     pub async fn build_async(self) -> Result<Zhuye, BuilderError> {
-        let registry = build_registry_from_env(&self.model)?;
         // app_cfg 提前加载 —— 门控型 bundled 插件工具的注册门要与 exec
         // 路径同源判定(默认开插件空配置下保持注册,外部用法零影响)。
-        let app_cfg = zhuye_config::load_default();
+        let app_cfg = zhuye_config::load_default_for_runtime()?;
+        let registry = build_registry_from_env(&self.model)?;
         let tools = default_tool_registry(bundled_gates_for(&app_cfg, self.plugins.as_deref()));
         // B6:嵌入方注入点(与 build 同款,两条路径能力面一致)。
         for t in &self.extra_tools {
@@ -550,11 +560,13 @@ impl ZhuyeBuilder {
             None,
             tools.clone(),
             cancel.clone(),
-            None,
+            m4.recorder.clone(),
         ));
         factory.set_parent_skills(skills_for_plugins.clone());
 
         let mut cfg = AgentConfig::new(self.model.clone(), self.workspace.clone())
+            .with_session_id(thread_id)
+            .with_cancel(cancel.clone())
             .with_approvals(self.approvals)
             .with_context_window_overrides(app_cfg.effective_context_window_overrides(&self.model));
         // 0.5:Plan mode 必须**既设 permission mode,又注册 PlanModeGate**。
@@ -568,6 +580,16 @@ impl ZhuyeBuilder {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
         }
         cfg = cfg.with_m4(m4);
+        cfg.strict_tool_journal = app_cfg.tool_journal.as_ref().is_some_and(|s| s.strict);
+        cfg.serial_turns = app_cfg.turn_scheduling.as_ref().is_some_and(|s| s.serial);
+        cfg.task_budget_limits = app_cfg.task_budget.as_ref().map(|s| s.limits());
+        cfg.dynamic_context = app_cfg.dynamic_context.as_ref().is_some_and(|s| s.enabled);
+        cfg.provenance_mode = app_cfg
+            .provenance
+            .as_ref()
+            .and_then(|s| s.mode.as_deref())
+            .and_then(zhuye_tools::sanitize::provenance::ProvenanceMode::parse)
+            .unwrap_or_default();
         validate_prompt_selection(&cfg, self.prompt_selection.as_ref())?;
         *cfg.prompt_selection.write() = self.prompt_selection.clone();
         // v1.x:注入 telemetry 记录 sink(Auto 路径按 [telemetry] config 构造)。
@@ -593,6 +615,13 @@ impl ZhuyeBuilder {
             cfg.approvals,
         );
         cfg = cfg.with_side_channel_driver(side_channel_driver);
+        configure_plugin_subagents(
+            &factory,
+            &tools,
+            &cfg,
+            &app_cfg,
+            self.rollout_base.as_deref(),
+        );
         let thread = Arc::new(AgentThread::new(
             cfg,
             registry,
@@ -787,6 +816,9 @@ fn build_telemetry_sink(traces_dir: Option<&Path>) -> Option<Arc<TelemetrySink>>
 /// [`ZhuyeBuilder::build`] / [`ZhuyeBuilder::build_async`] 的失败原因。
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
+    /// 会话配置校验失败。
+    #[error(transparent)]
+    Config(#[from] zhuye_config::ConfigError),
     /// 模型客户端构造失败(provider 配置非法 / HTTP 客户端初始化失败)。
     #[error("model registry bootstrap failed: {0}")]
     Registry(#[from] zhuye_llm::LlmError),
@@ -964,6 +996,64 @@ fn apply_sandbox_config(
     cfg
 }
 
+fn configure_plugin_subagents(
+    factory: &zhuye_subagent::SubAgentFactory,
+    tools: &zhuye_tools::ToolRegistry,
+    parent: &AgentConfig,
+    app_cfg: &zhuye_config::ReflectConfig,
+    rollout_base: Option<&Path>,
+) {
+    // 修复原因:插件子代理此前回落到默认策略,会绕过父会话的严格工具记录。
+    factory.set_parent_config(parent.clone());
+    if parent.m4.as_ref().is_some_and(|m4| m4.recorder.is_some()) {
+        factory.set_rollout_base(
+            rollout_base.map_or_else(zhuye_rollout::path::default_base, Path::to_path_buf),
+        );
+    }
+
+    let default_section = zhuye_config::CoordinatorSection::default();
+    let coordinator = zhuye_task::coordinator::CoordinatorConfig::from_env_or_config(
+        app_cfg.coordinator.as_ref().unwrap_or(&default_section),
+    );
+    if !coordinator.enabled {
+        return;
+    }
+
+    let workspace = parent.current_workspace();
+    // 修复原因:仅注入协调提示词时,worker 会在同一目录执行。探测失败也必须拒绝派发。
+    match zhuye_tools::git_root(&workspace) {
+        Ok(root) => factory
+            .set_worktree_coordinator(Some(Arc::new(zhuye_tools::WorktreeCoordinator::new(root)))),
+        Err(error) => factory.set_worktree_isolation_error(format!(
+            "无法确定工作区 {} 的 Git 根目录: {error}",
+            workspace.display()
+        )),
+    }
+
+    let prompt = &coordinator.system_prompt;
+    let footer_start = prompt
+        .char_indices()
+        .rev()
+        .nth(199)
+        .map_or(0, |(index, _)| index);
+    factory.set_coordinator_mode(true, Some(prompt[footer_start..].to_owned()));
+
+    let session_id = factory.parent_session_id().to_string();
+    zhuye_task::coordinator::ensure_scratchpad(&coordinator, &workspace, &session_id);
+    let scratchpad = Arc::new(zhuye_task::coordinator::build_scratchpad_path(
+        &workspace,
+        &session_id,
+    ));
+    tools.register_with_source(
+        zhuye_tools::ToolSource::Builtin,
+        Arc::new(zhuye_task::tools::WriteNoteTool::new(scratchpad.clone())),
+    );
+    tools.register_with_source(
+        zhuye_tools::ToolSource::Builtin,
+        Arc::new(zhuye_task::tools::ReadNotesTool::new(scratchpad)),
+    );
+}
+
 /// v1.x(WP13):side-channel driver —— thread 工厂复用本 crate 的
 /// m4_bootstrap(与主会话同材料),recorder=None(不写主历史),取消
 /// 令牌由 registry 独立生成。
@@ -1015,6 +1105,17 @@ fn build_side_channel_factory(
                 .with_policy(Arc::new(app_cfg.routing_policy_with(&model)))
                 .with_cancel(cancel);
             let mut cfg = apply_sandbox_config(cfg.with_approvals(parent_approvals), &app_cfg);
+            // 侧通道不落盘;严格模式下未声明只读的工具必须失败关闭。
+            cfg.strict_tool_journal = app_cfg.tool_journal.as_ref().is_some_and(|s| s.strict);
+            cfg.serial_turns = app_cfg.turn_scheduling.as_ref().is_some_and(|s| s.serial);
+            cfg.task_budget_limits = app_cfg.task_budget.as_ref().map(|s| s.limits());
+            cfg.dynamic_context = app_cfg.dynamic_context.as_ref().is_some_and(|s| s.enabled);
+            cfg.provenance_mode = app_cfg
+                .provenance
+                .as_ref()
+                .and_then(|s| s.mode.as_deref())
+                .and_then(zhuye_tools::sanitize::provenance::ProvenanceMode::parse)
+                .unwrap_or_default();
             cfg.inherited_approval_mode = Some(parent_mode.clone());
             let thread = crate::AgentThread::new(
                 cfg,
@@ -1380,6 +1481,184 @@ mod tests {
         expected.set_model("mock/old");
         assert_eq!(new_thread.config().current_workspace(), switched);
         assert_eq!(new_thread.config().current_model(), "mock/new");
+    }
+
+    fn plugin_worker_spec() -> zhuye_subagent::SubAgentSpec {
+        zhuye_subagent::SubAgentSpec {
+            name: "worker".into(),
+            role: "worker".into(),
+            model: None,
+            system_prompt: "执行收到的任务".into(),
+            allowed_tools: vec!["write".into()],
+            data_transfer: Default::default(),
+            max_turns: None,
+            allowed_skills: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn 插件子代理在无法探测_git_根目录时拒绝派发() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = zhuye_config::ReflectConfig {
+            coordinator: Some(zhuye_config::CoordinatorSection {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let parent = AgentConfig::new("mock", dir.path());
+        let tools = Arc::new(zhuye_tools::ToolRegistry::default());
+        let factory = zhuye_subagent::SubAgentFactory::new(
+            ThreadId::new(),
+            "mock",
+            Arc::new(zhuye_llm::ModelRegistry::new()),
+            None,
+            tools.clone(),
+            parent.cancel.clone(),
+            None,
+        );
+        configure_plugin_subagents(&factory, &tools, &parent, &config, None);
+        let error = factory
+            .spawn(plugin_worker_spec(), Vec::new(), "写入文件".into())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("worktree 隔离失败"), "{error}");
+        assert!(error.to_string().contains("Git 根目录"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn 插件子代理继承记录策略并分会话落盘() {
+        use zhuye_llm::{CredentialPool, MockClient, MockReply, ModelRegistry, PoolEntry};
+        use zhuye_protocol::{EventMsg, RolloutRecord, ToolExecutionPhase};
+
+        let config = zhuye_config::ReflectConfig {
+            coordinator: Some(zhuye_config::CoordinatorSection {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for (strict, rollout_enabled) in [(false, true), (true, false), (true, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let rollout_base = dir.path().join("rollout");
+            let parent_id = ThreadId::new();
+            let mut parent = AgentConfig::new("mock", dir.path()).with_approvals(false);
+            parent.strict_tool_journal = strict;
+            let mut m4 = zhuye_core::config::default_m4_deps("test");
+            if rollout_enabled {
+                m4.recorder = Some(Arc::new(zhuye_rollout::JsonlRolloutWriter::new(
+                    &rollout_base,
+                    parent_id,
+                )));
+            }
+            parent.m4 = Some(m4);
+            let registry = Arc::new(ModelRegistry::new());
+            registry.register_pool("mock", CredentialPool {
+                entries: vec![PoolEntry {
+                    client: Arc::new(MockClient::with_script(vec![
+                        MockReply::ToolCall {
+                            name: "write".into(),
+                            args: serde_json::json!({"path": "worker.txt", "content": "worker"}),
+                        },
+                        MockReply::Text { text: "执行结束".into() },
+                    ])),
+                    label: "mock".into(),
+                    weight: 1,
+                }],
+            });
+            let tools = default_tool_registry(zhuye_tools::BundledToolGates::all_on());
+            let factory = zhuye_subagent::SubAgentFactory::new(
+                parent_id,
+                "mock",
+                registry,
+                None,
+                tools.clone(),
+                parent.cancel.clone(),
+                None,
+            );
+            configure_plugin_subagents(&factory, &tools, &parent, &config, Some(&rollout_base));
+            let mut child = factory
+                .spawn(plugin_worker_spec(), Vec::new(), "写入文件".into())
+                .await
+                .unwrap();
+            let call_id = loop {
+                let event = child.handle.next().await.expect("子代理应调用写工具");
+                if let EventMsg::ToolCallBegin(call) = event.msg {
+                    assert_eq!(call.tool_name, "write");
+                    break call.call_id;
+                }
+            };
+            let receipt = loop {
+                let event = child.handle.next().await.expect("子代理应返回工具回执");
+                if let EventMsg::ToolCallEnd(receipt) = event.msg {
+                    break receipt;
+                }
+            };
+            assert_eq!(receipt.call_id, call_id);
+            assert_eq!(receipt.is_error, !rollout_enabled, "{receipt:?}");
+            let worker_file = dir.path().join("worker.txt");
+            if rollout_enabled {
+                assert_eq!(std::fs::read_to_string(worker_file).unwrap(), "worker");
+                let child_path =
+                    zhuye_rollout::index::find_session_path(&rollout_base, child.session_id)
+                        .expect("子代理应有独立记录文件");
+                let records =
+                    zhuye_rollout::reader::replay_path(&child_path.with_extension("tool-journal"))
+                        .await
+                        .unwrap();
+                let phases: Vec<_> = records
+                    .iter()
+                    .filter_map(|record| match record {
+                        RolloutRecord::ToolExecution {
+                            session_id,
+                            call_id,
+                            phase,
+                            ..
+                        } if *session_id == child.session_id && *call_id == receipt.call_id => {
+                            Some(*phase)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    phases,
+                    [ToolExecutionPhase::Started, ToolExecutionPhase::Completed]
+                );
+            } else {
+                assert!(!worker_file.exists());
+                assert!(
+                    format!("{:?}", receipt.output).contains("严格工具记录需要支持的持久化后端")
+                );
+            }
+            child.collect_result().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn 侧通道继承严格工具记录策略() {
+        let config = zhuye_config::ReflectConfig {
+            tool_journal: Some(zhuye_config::ToolJournalSection { strict: true }),
+            ..Default::default()
+        };
+        let parent = AgentConfig::new("mock/mock-1", ".");
+        let factory = build_side_channel_factory(
+            Arc::new(zhuye_llm::ModelRegistry::new()),
+            default_tool_registry(zhuye_tools::BundledToolGates::all_on()),
+            &config,
+            parent.permission_mode.clone(),
+            false,
+        );
+        let thread = factory(
+            "default",
+            tokio_util::sync::CancellationToken::new(),
+            zhuye_core::side_channel::SideChannelContext {
+                workspace: parent.current_workspace(),
+                model: parent.current_model(),
+            },
+        )
+        .unwrap();
+        assert!(thread.config().strict_tool_journal);
+        assert!(thread.config().m4.as_ref().unwrap().recorder.is_none());
     }
 
     /// `is_mock_provider` 的判定口径:只认**显式 opt-in**,

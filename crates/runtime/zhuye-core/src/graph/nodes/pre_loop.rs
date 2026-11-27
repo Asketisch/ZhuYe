@@ -10,6 +10,64 @@ use crate::graph::GraphNode;
 use crate::graph::state::AgentState;
 use crate::submission_loop::NodeContext;
 
+const DYNAMIC_CONTEXT_PREFIX: &str = "<system-reminder>\n<dynamic-context ";
+
+fn dynamic_context_message(memory: &str, checklist: Option<&str>) -> String {
+    let data = serde_json::json!({"memory": memory, "todos": checklist.unwrap_or("")}).to_string();
+    let version = zhuye_sanitize::prompt_guard::fingerprint(data.as_bytes());
+    let escaped = data
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e");
+    format!(
+        "{DYNAMIC_CONTEXT_PREFIX}version=\"{version}\">\n{escaped}\n</dynamic-context>\n以上是动态状态数据,以最新版本为准。\n</system-reminder>"
+    )
+}
+
+async fn inject_dynamic_context(
+    state: &mut AgentState,
+    ctx: &NodeContext,
+    memory: &str,
+    checklist: Option<&str>,
+) {
+    let next = dynamic_context_message(memory, checklist);
+    let latest = state
+        .messages
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            ChatMessage::User(user) => user.blocks.iter().rev().find_map(|block| match block {
+                zhuye_llm::ContentBlock::Text { text }
+                    if text.starts_with(DYNAMIC_CONTEXT_PREFIX) =>
+                {
+                    Some(text.as_str())
+                }
+                _ => None,
+            }),
+            _ => None,
+        });
+    if latest == Some(next.as_str()) {
+        return;
+    }
+    state
+        .messages
+        .messages
+        .push(ChatMessage::User(zhuye_llm::UserContent {
+            blocks: vec![zhuye_llm::ContentBlock::Text { text: next.clone() }],
+        }));
+    if let Some(recorder) = ctx.recorder.as_ref() {
+        let blocks = vec![zhuye_protocol::ContentBlock::text(next)];
+        let _ = recorder
+            .record(RolloutRecord::message(
+                ctx.turn_id,
+                zhuye_protocol::MessageRole::User,
+                serde_json::to_value(blocks).unwrap_or(serde_json::Value::Null),
+            ))
+            .await;
+    }
+}
+
 pub(super) fn compose_prompt_core(
     context: &crate::graph::state::PromptCoreContext,
     set: &zhuye_prompt::PromptSet,
@@ -476,6 +534,15 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
             {
                 tracing::warn!(%error, "压缩快照记录失败，恢复时可能使用旧历史");
             }
+            crate::resume::persist_provenance_snapshot(
+                rec.as_ref(),
+                ctx.turn_id,
+                &ctx.cfg.provenance_tracker,
+            )
+            .await;
+            if ctx.cfg.dynamic_context {
+                super::persist_dynamic_checklist(ctx, rec.as_ref()).await;
+            }
         }
 
         // v1.x:记忆固化写入审计 —— compact 的 LLM 摘要成功后把提取的事实
@@ -684,14 +751,26 @@ pub async fn pre_loop(state: &mut AgentState, ctx: &NodeContext) -> Option<Graph
     let model_spec = ctx.model.read().clone();
     let prompt_set = ctx.cfg.resolve_prompt(&model_spec).set;
     let current_mode = ctx.cfg.permission_mode();
+    let checklist = ctx.todos_slot.read().clone();
+    if ctx.cfg.dynamic_context {
+        inject_dynamic_context(state, ctx, &memory_text, checklist.as_deref()).await;
+    }
     let prompt_context = crate::graph::state::PromptCoreContext {
         custom_main: matches!(
             m4.active_agent_def.source,
             zhuye_agent_def::SystemPromptSource::Custom
         )
         .then(|| m4.active_agent_def.system_prompt.clone()),
-        memory: memory_text,
-        checklist: ctx.todos_slot.read().clone(),
+        memory: if ctx.cfg.dynamic_context {
+            String::new()
+        } else {
+            memory_text
+        },
+        checklist: if ctx.cfg.dynamic_context {
+            None
+        } else {
+            checklist
+        },
         mode: current_mode,
     };
     let core = compose_prompt_core(&prompt_context, &prompt_set);
@@ -1107,6 +1186,7 @@ mod calibration_tests {
             telemetry: None,
             goal: Arc::new(parking_lot::RwLock::new(None)),
             todos_slot: Arc::new(parking_lot::RwLock::new(None)),
+            todo_persistence: Arc::new(tokio::sync::Mutex::new(())),
             quota_tracker: None,
             plan_approval_gate: None,
             plan_session_subs: None,
@@ -1116,6 +1196,100 @@ mod calibration_tests {
             cfg: crate::config::AgentConfig::new("stub/model", "."),
         };
         (state, ctx)
+    }
+
+    #[derive(Debug, Default)]
+    struct PausedChecklistRecorder {
+        records: parking_lot::Mutex<Vec<RolloutRecord>>,
+        snapshot_started: tokio::sync::Notify,
+        resume_snapshot: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl zhuye_protocol::RolloutRecorder for PausedChecklistRecorder {
+        async fn record(&self, record: RolloutRecord) -> Result<(), zhuye_protocol::RolloutError> {
+            if matches!(record, RolloutRecord::DynamicContextSnapshot { .. }) {
+                self.snapshot_started.notify_one();
+                self.resume_snapshot.notified().await;
+            }
+            self.records.lock().push(record);
+            Ok(())
+        }
+
+        async fn replay(
+            &self,
+            _: zhuye_protocol::ThreadId,
+        ) -> Result<Vec<RolloutRecord>, zhuye_protocol::RolloutError> {
+            Ok(self.records.lock().clone())
+        }
+
+        async fn list_sessions(
+            &self,
+        ) -> Result<Vec<zhuye_protocol::SessionInfo>, zhuye_protocol::RolloutError> {
+            Ok(Vec::new())
+        }
+
+        async fn truncate_after(
+            &self,
+            _: Option<&zhuye_protocol::TurnId>,
+        ) -> Result<usize, zhuye_protocol::RolloutError> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn 并发工具更新不会被后写的旧待办快照覆盖() {
+        let (_, mut ctx) = test_context(1_000, 8_000);
+        let recorder = Arc::new(PausedChecklistRecorder::default());
+        ctx.recorder = Some(recorder.clone());
+        *ctx.todos_slot.write() = Some("旧待办".into());
+        let ctx = Arc::new(ctx);
+
+        let snapshot = tokio::spawn({
+            let recorder = recorder.clone();
+            let ctx = ctx.clone();
+            async move {
+                super::super::persist_dynamic_checklist(&ctx, recorder.as_ref()).await;
+            }
+        });
+        recorder.snapshot_started.notified().await;
+
+        let call = zhuye_protocol::ContentBlock::ToolUse {
+            id: "todo".into(),
+            name: "TodoWrite".into(),
+            args: serde_json::json!({}),
+        };
+        let result = zhuye_protocol::ContentBlock::ToolResult {
+            call_id: "todo".into(),
+            output: zhuye_protocol::ToolOutput {
+                content: vec![],
+                is_error: false,
+                elapsed_ms: 0,
+                metadata: serde_json::json!({
+                    "todos": [{"content": "新待办", "status": "pending"}],
+                }),
+            },
+        };
+        let blocks = [call, result];
+        let mut update = std::pin::pin!(super::super::persist_tool_results(
+            &ctx,
+            &blocks,
+            Some("- [ ] 新待办\n".into())
+        ));
+        let first_poll =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(update.as_mut().poll(cx))).await;
+        assert!(first_poll.is_pending(), "待办回执应等待快照提交");
+        assert!(recorder.records.lock().is_empty());
+
+        recorder.resume_snapshot.notify_one();
+        snapshot.await.unwrap();
+        update.await;
+        let records = recorder.records.lock();
+        assert_eq!(
+            crate::resume::latest_dynamic_checklist(&records).as_deref(),
+            ctx.todos_slot.read().as_deref(),
+        );
+        assert!(ctx.todos_slot.read().as_deref().unwrap().contains("新待办"));
     }
 
     #[tokio::test]

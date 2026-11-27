@@ -26,6 +26,29 @@ pub struct TurnCompleteEvent {
     pub status: TurnStatus,
 }
 
+/// 任务树预算的一个时点快照;同一账本的多个快照不得累加。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskBudgetSnapshotEvent {
+    /// 任务树账本标识。
+    pub task_id: String,
+    /// 发出快照的回合。
+    pub turn_id: TurnId,
+    /// 已成功预留的各次调用估算值之和。
+    pub estimated_tokens: u64,
+    /// provider 已报告的 token 总量。
+    pub actual_tokens: u64,
+    /// 在途调用预留的估算 token 数。
+    pub reserved_tokens: u64,
+    /// 无用量回执调用的估算 token 数。
+    pub unknown_estimated_tokens: u64,
+    /// 没有用量回执的调用数。
+    pub unknown_calls: u64,
+    /// 实际用量超出单次预留的累计差额。
+    pub estimate_overrun_tokens: u64,
+    /// 已成功派发的子代理总数。
+    pub dispatched_subagents: u64,
+}
+
 /// turn 中止事件:turn 被用户中断或因错误(如 hook 拒绝 prompt)提前终止时发出。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnAbortedEvent {

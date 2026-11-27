@@ -138,7 +138,9 @@ def test_并行远程工具逆序回执并恢复对话(sandbox, serve_session, i
         records = coalesce_turn_messages(
             [json.loads(line) for line in rollout_files(sandbox.home)[-1].read_text().splitlines() if line])
         assistant = next(r for r in records if r.get("type") == "message" and r.get("role") == "assistant")
-        blocks = assistant["content"]
+        blocks = [block for record in records
+                  if record.get("type") == "message" and record.get("role") == "assistant"
+                  and record["turn_id"] == assistant["turn_id"] for block in record["content"]]
         assert [b["type"] for b in blocks] == ["tool_use", "tool_use", "tool_result", "tool_result", "text"], blocks
         assert [(b["id"], b["name"], b["args"]) for b in blocks[:2]] == [
             ("call-a", "scenario_lookup", {"key": "alpha"}),

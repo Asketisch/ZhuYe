@@ -74,11 +74,11 @@ pub use subagent::{
 };
 pub use tool::{
     ToolCallArgsDeltaEvent, ToolCallBeginEvent, ToolCallEndEvent, ToolCallOutputDeltaEvent,
-    ToolExecutionRequestEvent,
+    ToolExecutionRequestEvent, ToolExecutionUncertainEvent,
 };
 pub use turn::{
-    AbortReason, TokenUsage, TurnAbortedEvent, TurnCompleteEvent, TurnRewoundEvent,
-    TurnStartedEvent, TurnStatus,
+    AbortReason, TaskBudgetSnapshotEvent, TokenUsage, TurnAbortedEvent, TurnCompleteEvent,
+    TurnRewoundEvent, TurnStartedEvent, TurnStatus,
 };
 
 /// 用于日志的稳定字符串判别值。
@@ -313,6 +313,10 @@ pub enum EventMsg {
     StreamRecoveryTailDiscarded(StreamRecoveryEvent),
     /// 已从锚点重开请求(随后到来的增量属于重试轮)。
     StreamRecoveryRetryStarted(StreamRecoveryEvent),
+    /// 恢复时发现未结清或结果未知的工具执行。
+    ToolExecutionUncertain(ToolExecutionUncertainEvent),
+    /// 任务树预算在当前时点的快照。
+    TaskBudgetSnapshot(TaskBudgetSnapshotEvent),
 }
 
 impl EventMsg {
@@ -379,6 +383,8 @@ impl EventMsg {
             EventMsg::StreamRecoveryAnchorSelected(_) => "stream_recovery_anchor_selected",
             EventMsg::StreamRecoveryTailDiscarded(_) => "stream_recovery_tail_discarded",
             EventMsg::StreamRecoveryRetryStarted(_) => "stream_recovery_retry_started",
+            EventMsg::ToolExecutionUncertain(_) => "tool_execution_uncertain",
+            EventMsg::TaskBudgetSnapshot(_) => "task_budget_snapshot",
         }
     }
 }
@@ -454,6 +460,12 @@ mod tests {
     fn discriminant_covers_all_variants() {
         let _ = ApprovalPolicy::Auto; // 抑制该符号的 unused 警告
         let all = vec![
+            EventMsg::ToolExecutionUncertain(ToolExecutionUncertainEvent {
+                session_id: crate::ThreadId::new(),
+                turn_id: crate::TurnId::new(),
+                call_id: "call-1".into(),
+                tool_name: "write".into(),
+            }),
             EventMsg::ShutdownComplete,
             EventMsg::SubmissionClosed,
             EventMsg::AgentMessage(AgentMessage {

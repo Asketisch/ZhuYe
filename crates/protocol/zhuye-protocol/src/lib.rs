@@ -51,10 +51,11 @@ pub use event_msg::{
     PromptVariantRef, QuotaExhaustedEvent, RoutingEvent, RoutingEventKind, SideChannelEvent,
     SideChannelInfo, SideChannelStatusMirror, SideChannelStatusSnapshot, StreamErrorEvent,
     StreamRecoveryEvent, SubagentProgressEvent, SubagentProgressKind, SubagentRunStateMirror,
-    SubagentStatusEvent, SubagentStatusSnapshot, ThinkingDelta, ThinkingDeltaKind, TokenCountEvent,
-    TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent, ToolCallEndEvent,
-    ToolCallOutputDeltaEvent, ToolExecutionRequestEvent, TriedCredential, TurnAbortedEvent,
-    TurnCompleteEvent, TurnRewoundEvent, TurnStartedEvent, TurnStatus,
+    SubagentStatusEvent, SubagentStatusSnapshot, TaskBudgetSnapshotEvent, ThinkingDelta,
+    ThinkingDeltaKind, TokenCountEvent, TokenUsage, ToolCallArgsDeltaEvent, ToolCallBeginEvent,
+    ToolCallEndEvent, ToolCallOutputDeltaEvent, ToolExecutionRequestEvent,
+    ToolExecutionUncertainEvent, TriedCredential, TurnAbortedEvent, TurnCompleteEvent,
+    TurnRewoundEvent, TurnStartedEvent, TurnStatus,
 };
 pub use item::{
     ApprovalPolicy, ContentBlock, PermissionMode, PlanApprovalChoice, PlanId,
@@ -70,7 +71,7 @@ pub use question::{
 };
 pub use recorder::{
     MemoryOp, MessageRole, NullRecorder, RolloutError, RolloutRecord, RolloutRecorder, SessionInfo,
-    derive_title,
+    ToolExecutionPhase, derive_title,
 };
 pub use stats::{ModelUsage, SessionStats};
 pub use submission::{Submission, W3cTraceContext};

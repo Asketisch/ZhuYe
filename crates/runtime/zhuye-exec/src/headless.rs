@@ -264,7 +264,7 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     // 0. 尽早加载配置,让 `init_tracing` 能按 [analytics] 决定是否启用 OTLP。
     let config_path = zhuye_config::default_config_path()
         .ok_or_else(|| anyhow::anyhow!("HOME unset; cannot locate config directory"))?;
-    let initial_cfg = zhuye_config::load_default();
+    let initial_cfg = zhuye_config::load_default_for_runtime()?;
     init_tracing(initial_cfg.analytics.as_ref());
 
     // v1.x:`[sandbox]` 段启动期解析为 OS 沙箱默认开关(env > config >
@@ -611,6 +611,17 @@ fn build_side_channel_factory(
                 .with_initial_effort(cfg.resolve_reasoning_effort())
                 .with_cancel(cancel);
             thread_cfg.inherited_approval_mode = Some(security.parent_mode.clone());
+            // 侧通道不落盘;严格模式不能因此绕过父会话的执行记录要求。
+            thread_cfg.strict_tool_journal = cfg.tool_journal.as_ref().is_some_and(|s| s.strict);
+            thread_cfg.serial_turns = cfg.turn_scheduling.as_ref().is_some_and(|s| s.serial);
+            thread_cfg.task_budget_limits = cfg.task_budget.as_ref().map(|s| s.limits());
+            thread_cfg.dynamic_context = cfg.dynamic_context.as_ref().is_some_and(|s| s.enabled);
+            thread_cfg.provenance_mode = cfg
+                .provenance
+                .as_ref()
+                .and_then(|s| s.mode.as_deref())
+                .and_then(zhuye_tools::sanitize::provenance::ProvenanceMode::parse)
+                .unwrap_or_default();
             thread_cfg.yolo_classifier = security.yolo_classifier.clone();
             thread_cfg.yolo_threshold = security.yolo_threshold;
             if let Some(resolver) = &security.permission_resolver {
@@ -1008,6 +1019,22 @@ pub async fn bootstrap_normal(
     // 自行读同一 config,这里只接主会话与 resume 路径)。
     cfg.prompt_guard = prompt_guard.clone();
     cfg.guard_stats = guard_stats.clone();
+    cfg.strict_tool_journal = initial_cfg.tool_journal.as_ref().is_some_and(|s| s.strict);
+    cfg.serial_turns = initial_cfg
+        .turn_scheduling
+        .as_ref()
+        .is_some_and(|s| s.serial);
+    cfg.task_budget_limits = initial_cfg.task_budget.as_ref().map(|s| s.limits());
+    cfg.dynamic_context = initial_cfg
+        .dynamic_context
+        .as_ref()
+        .is_some_and(|s| s.enabled);
+    cfg.provenance_mode = initial_cfg
+        .provenance
+        .as_ref()
+        .and_then(|s| s.mode.as_deref())
+        .and_then(zhuye_tools::sanitize::provenance::ProvenanceMode::parse)
+        .unwrap_or_default();
     // v1.x(tool-defer 门控):MCP 工具按需加载开关。
     cfg.tool_defer_enabled = tool_defer_enabled;
     // v1.x:`[cache_warming]` 段 → 保温调度器设置(默认关闭,显式
@@ -1386,9 +1413,26 @@ pub async fn bootstrap_resumed(
     // 与 normal 分支同权:权限三层装配(config > project > user)+ YOLO
     // 分类器。此前 resume 分支漏装,resume 会话会绕过权限规则。
     let mut cfg = apply_permission_layers(cfg, &initial_cfg, &workspace).await;
+    *cfg.recovered_tool_executions.lock() = bundle.unsettled_tools.clone();
     // v1.x:prompt injection guard 注入(resume 路径与新会话一致)。
     cfg.prompt_guard = prompt_guard.clone();
     cfg.guard_stats = guard_stats.clone();
+    cfg.strict_tool_journal = initial_cfg.tool_journal.as_ref().is_some_and(|s| s.strict);
+    cfg.serial_turns = initial_cfg
+        .turn_scheduling
+        .as_ref()
+        .is_some_and(|s| s.serial);
+    cfg.task_budget_limits = initial_cfg.task_budget.as_ref().map(|s| s.limits());
+    cfg.dynamic_context = initial_cfg
+        .dynamic_context
+        .as_ref()
+        .is_some_and(|s| s.enabled);
+    cfg.provenance_mode = initial_cfg
+        .provenance
+        .as_ref()
+        .and_then(|s| s.mode.as_deref())
+        .and_then(zhuye_tools::sanitize::provenance::ProvenanceMode::parse)
+        .unwrap_or_default();
     // v1.x(tool-defer 门控):MCP 工具按需加载开关(resume 同口径)。
     cfg.tool_defer_enabled = tool_defer_enabled;
     // v1.x:`[cache_warming]` 段 → 保温调度器设置(resume 路径与

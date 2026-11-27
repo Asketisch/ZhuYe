@@ -27,7 +27,7 @@
 //! 满足 `Send + Sync`,可以安全地放在 `Arc` 后面共享。
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -38,6 +38,27 @@ use crate::redact::serialize_redacted;
 use crate::types::{MAX_ROTATED_FILES, ROTATE_AFTER_BYTES};
 use chrono::{DateTime, Utc};
 use zhuye_protocol::{RolloutError, RolloutRecord, RolloutRecorder, SessionInfo, ThreadId, TurnId};
+
+fn open_jsonl_for_append(path: &Path) -> std::io::Result<(File, u64)> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)?;
+    let mut size = file.metadata()?.len();
+    // 修复原因:强杀可能留下半行,直接续写会把第一条新记录拼进残片。
+    // 补分隔符即可,保留可解析但缺少结尾换行的旧记录。
+    if size > 0 {
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0u8; 1];
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            file.write_all(b"\n")?;
+            size = size.saturating_add(1);
+        }
+    }
+    Ok((file, size))
+}
 
 /// 缓存的 `SessionMeta` 快照,用于轮转时重写。`session_id` 直接挂在
 /// [`JsonlRolloutWriter`] 上;此处只缓存 `model` + `started_at` 以便
@@ -120,8 +141,7 @@ impl JsonlRolloutWriter {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let size = file.metadata().map_or(0, |m| m.len());
+        let (file, size) = open_jsonl_for_append(&path)?;
         g.writer = Some(BufWriter::new(file));
         g.current_path = Some(path);
         g.current_size = size;
@@ -211,6 +231,10 @@ impl JsonlRolloutWriter {
 
 #[async_trait]
 impl RolloutRecorder for JsonlRolloutWriter {
+    fn supports_strict_tool_journal(&self) -> bool {
+        true
+    }
+
     async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError> {
         let line = serialize_redacted(&r)?;
         let line_bytes = line.len() as u64 + 1; // +1 是换行符
@@ -246,6 +270,19 @@ impl RolloutRecorder for JsonlRolloutWriter {
 
         if g.current_size >= ROTATE_AFTER_BYTES {
             Self::rotate(&mut g, self.session_id)?;
+        }
+        if matches!(&r, RolloutRecord::ToolExecution { .. }) {
+            // 修复原因:工具可能跨越多次轮转,仅写主 JSONL 会在仍执行时
+            // 被淘汰。账本不随对话轮转,且须在返回成功前刷出。
+            // 主文件先写:若它失败,账本中的开始项仍是权威的未结清状态。
+            let path = g
+                .current_path
+                .as_ref()
+                .ok_or(RolloutError::NoActiveFile)?
+                .with_extension("tool-journal");
+            let (mut journal, _) = open_jsonl_for_append(&path)?;
+            writeln!(journal, "{line}")?;
+            journal.flush()?;
         }
         Ok(())
     }
@@ -430,6 +467,111 @@ fn write_backup(path: &Path, content: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn 工具开始记录跨多次轮转仍可恢复() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = ThreadId::new();
+        let turn_id = TurnId::new();
+        let writer = JsonlRolloutWriter::new(dir.path(), sid);
+        writer
+            .record(RolloutRecord::session_meta(sid, "mock/model"))
+            .await
+            .unwrap();
+        writer
+            .record(RolloutRecord::ToolExecution {
+                session_id: sid,
+                turn_id,
+                call_id: "long".into(),
+                tool_name: "bash".into(),
+                phase: zhuye_protocol::ToolExecutionPhase::Started,
+                is_error: None,
+                at: Utc::now(),
+            })
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            JsonlRolloutWriter::rotate(&mut writer.inner.lock(), sid).unwrap();
+        }
+        let records = writer.replay(sid).await.unwrap();
+        assert!(records.iter().any(|record| matches!(record,
+            RolloutRecord::ToolExecution { call_id, phase: zhuye_protocol::ToolExecutionPhase::Started, .. }
+            if call_id == "long")));
+    }
+
+    #[tokio::test]
+    async fn 账本损坏尾行不影响新记录恢复() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = ThreadId::new();
+        let turn_id = TurnId::new();
+        let writer = JsonlRolloutWriter::new(dir.path(), sid);
+        writer
+            .record(RolloutRecord::session_meta(sid, "mock/model"))
+            .await
+            .unwrap();
+        let entry = |phase| RolloutRecord::ToolExecution {
+            session_id: sid,
+            turn_id,
+            call_id: "call".into(),
+            tool_name: "write".into(),
+            phase,
+            is_error: None,
+            at: Utc::now(),
+        };
+        writer
+            .record(entry(zhuye_protocol::ToolExecutionPhase::Started))
+            .await
+            .unwrap();
+        let path = writer
+            .inner
+            .lock()
+            .current_path
+            .clone()
+            .unwrap()
+            .with_extension("tool-journal");
+        let mut file = OpenOptions::new().append(true).open(path).unwrap();
+        write!(file, "{{\"partial\":").unwrap();
+        file.flush().unwrap();
+        writer
+            .record(entry(zhuye_protocol::ToolExecutionPhase::Completed))
+            .await
+            .unwrap();
+        let records = writer.replay(sid).await.unwrap();
+        assert!(records.iter().any(|record| matches!(record,
+            RolloutRecord::ToolExecution { call_id, phase: zhuye_protocol::ToolExecutionPhase::Completed, .. }
+            if call_id == "call")));
+    }
+
+    #[tokio::test]
+    async fn 主文件重启后隔开损坏尾行再写入() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = ThreadId::new();
+        let meta = RolloutRecord::session_meta(sid, "mock/model");
+        let initial = JsonlRolloutWriter::new(dir.path(), sid);
+        initial.record(meta.clone()).await.unwrap();
+        let path = initial.inner.lock().current_path.clone().unwrap();
+        drop(initial);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"text\":\"\xe5")
+            .unwrap();
+
+        let next = RolloutRecord::message(
+            TurnId::new(),
+            zhuye_protocol::MessageRole::User,
+            serde_json::json!("恢复后第一条消息"),
+        );
+        let resumed = JsonlRolloutWriter::new(dir.path(), sid);
+        resumed.record(next.clone()).await.unwrap();
+
+        assert_eq!(resumed.replay(sid).await.unwrap(), vec![meta, next]);
+        assert_eq!(
+            resumed.inner.lock().current_size,
+            fs::metadata(path).unwrap().len()
+        );
+    }
 
     #[tokio::test]
     async fn rotation_preserves_prompt_selection_for_resume() {

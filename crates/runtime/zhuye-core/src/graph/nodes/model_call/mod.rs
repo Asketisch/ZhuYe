@@ -502,17 +502,68 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
         *cred_attempt += 1;
 
         // provider 可能在收到响应头之前一直等待网络;取消必须覆盖建流阶段。
+        let task_budget = zhuye_llm::task_budget::current_task_budget();
         let stream_result = tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => return None,
-            result = client.stream(request.clone(), ctx.cancel.clone()) => result,
+            result = async {
+                if let Some(budget) = task_budget.as_ref() {
+                    let mut result = zhuye_llm::task_budget::stream_with_task_budget(
+                        client.as_ref(), request.clone(), ctx.cancel.clone(), budget, 4096, state.force_final_answer,
+                    ).await;
+                    if matches!(result, Err(zhuye_llm::task_budget::BudgetedCallError::Budget(zhuye_llm::task_budget::TaskBudgetError::Tokens)))
+                        && !state.force_final_answer
+                    {
+                        // 修复原因:普通调用不得占用收口额度,但直接结束会使
+                        // 预留的最终答复额度永远无法使用。仅在还有输入和至少
+                        // 一个输出 token 的空间时改为无工具收口请求。
+                        let input = u64::from(zhuye_llm::output_budget::estimate_input_tokens(&request));
+                        let available = budget.available_tokens(true).unwrap_or(u64::MAX);
+                        let output = available.saturating_sub(input).min(u64::from(request.max_tokens.unwrap_or(4096))).min(u64::from(u32::MAX));
+                        if output > 0 {
+                            request.tools.clear();
+                            request.max_tokens = Some(output as u32);
+                            state.force_final_answer = true;
+                            result = zhuye_llm::task_budget::stream_with_task_budget(
+                                client.as_ref(), request.clone(), ctx.cancel.clone(), budget, 4096, true,
+                            ).await;
+                        }
+                    }
+                    result
+                } else {
+                    client.stream(request.clone(), ctx.cancel.clone()).await
+                        .map_err(zhuye_llm::task_budget::BudgetedCallError::Model)
+                }
+            } => result,
         };
         let mut s = match stream_result {
             Ok(s) => {
                 ctx.registry.clear_cooldown(&pool_name, &label);
                 std::pin::pin!(s)
             }
-            Err(e) => {
+            Err(zhuye_llm::task_budget::BudgetedCallError::Budget(error)) => {
+                state.budget_exceeded = true;
+                let _ = ctx
+                    .event_tx
+                    .send(Event::new(
+                        ctx.sub_id.clone(),
+                        EventMsg::Error(ErrorEvent {
+                            code: "task_budget_exceeded".into(),
+                            message: error.to_string(),
+                            details: task_budget.as_ref().map(|budget| {
+                                let snapshot = budget.snapshot();
+                                serde_json::json!({ "estimated_tokens": snapshot.estimated_tokens,
+                                    "actual_tokens": snapshot.actual_tokens,
+                            "reserved_tokens": snapshot.reserved_tokens,
+                            "unknown_estimated_tokens": snapshot.unknown_estimated_tokens,
+                            "estimate_overrun_tokens": snapshot.estimate_overrun_tokens })
+                            }),
+                        }),
+                    ))
+                    .await;
+                return None;
+            }
+            Err(zhuye_llm::task_budget::BudgetedCallError::Model(e)) => {
                 let action = classify_action(&e, default_cooldown_rate_limited);
                 let outcome = outcome_code(&e).to_string();
                 // v1.10:单凭证且无 fallback 模型时,RetrySame 不把当前
@@ -1173,6 +1224,8 @@ pub async fn model_call(state: &mut AgentState, ctx: &NodeContext) -> Option<Gra
             generation: ctx.cfg.current_cache_generation(),
             created_at: std::time::Instant::now(),
             replayable,
+            task_budget: zhuye_llm::task_budget::current_task_budget(),
+            turn_id: ctx.turn_id,
         });
         // 显式 thinking(Anthropic Enabled)不可重放:不排程,不发事件
         // (每步工具后都走这里,发事件是噪声;枚举值保留供防御分支)。

@@ -507,6 +507,31 @@ class ToolCallEnd(_ToolCallEndOptionalFields):
     elapsed_ms: int
 
 
+class ToolExecutionUncertain(TypedDict):
+    """恢复时工具执行结果未知;调用可能已产生副作用。"""
+
+    type: Literal["tool_execution_uncertain"]
+    session_id: str
+    turn_id: str
+    call_id: str
+    tool_name: str
+
+
+class TaskBudgetSnapshot(TypedDict):
+    """任务树预算的时点快照,同一 task_id 的快照不可相加。"""
+
+    type: Literal["task_budget_snapshot"]
+    task_id: str
+    turn_id: str
+    estimated_tokens: int
+    actual_tokens: int
+    reserved_tokens: int
+    unknown_estimated_tokens: int
+    unknown_calls: int
+    estimate_overrun_tokens: int
+    dispatched_subagents: int
+
+
 class ToolExecutionRequest(TypedDict):
     """v1.3 SDK:请求客户端执行其注册的远程工具。"""
 
@@ -922,6 +947,8 @@ EventMsg = Union[
     ToolCallArgsDelta,
     ToolCallOutputDelta,
     ToolCallEnd,
+    ToolExecutionUncertain,
+    TaskBudgetSnapshot,
     ToolExecutionRequest,
     ApprovalRequest,
     AskUserQuestion,

@@ -10,6 +10,22 @@ fn empty_string_yields_default() {
     assert!(cfg.model_group.is_empty());
 }
 
+#[test]
+fn 来源治理模式接受三种值并报告拼写错误() {
+    for mode in ["off", "observe", "enforce"] {
+        let config = load_from_str(&format!("[provenance]\nmode = {mode:?}")).unwrap();
+        assert_eq!(config.provenance.unwrap().mode.as_deref(), Some(mode));
+    }
+    assert!(matches!(
+        load_from_str("[provenance]\nmode = 'enfroce'"),
+        Err(ConfigError::InvalidProvenanceMode(mode)) if mode == "enfroce"
+    ));
+    assert!(matches!(
+        load_from_str("[provenance]\nmode = true"),
+        Err(ConfigError::InvalidProvenanceMode(mode)) if mode == "boolean"
+    ));
+}
+
 /// v1 的 `[anthropic]` 段读入后**自动迁移**成等价模型组。
 #[test]
 fn legacy_anthropic_section_migrates_to_model_group() {

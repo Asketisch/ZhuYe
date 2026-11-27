@@ -34,16 +34,6 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 #[path = "network_filter.rs"]
 mod network_filter;
-// 仅 seatbelt(macOS)使用;其余平台保持 import 干净,避免 -D warnings 下
-// unused import 报错。
-#[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// seatbelt 临时 profile 文件序号:同一进程内并发调用 `seatbelt_argv`
-/// 时 pid 相同,必须靠自增序号区分(见 `seatbelt_argv` 内注释)。
-#[cfg(target_os = "macos")]
-static SEATBELT_PROFILE_SEQ: AtomicU64 = AtomicU64::new(0);
-
 /// 沙箱后端状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsSandboxStatus {
@@ -956,44 +946,31 @@ impl OsSandbox {
         )
     }
 
-    /// macOS:把命令包成 `sandbox-exec -p <profile> -- sh -c <cmd>` 的 argv。
-    /// 返回 `(program, args)` 供 BashTool 用 `Command::new(program).args(args)`。
-    /// profile 较长时 `-p` 内联可能有 shell 转义问题,故优先写临时文件用
-    /// `-f <file>`;写失败则回退 `-p`(仍可用,只是 argv 长)。
+    /// macOS:把命令包成 `sandbox-exec -f <profile> -- sh -c <cmd>` 的 argv。
+    /// profile 写入失败时返回错误;成功时由调用方在子进程退出后清理文件。
     #[cfg(target_os = "macos")]
     pub fn seatbelt_argv(
         &self,
         workspace: &Path,
         shell_cmd: &str,
     ) -> std::io::Result<(String, Vec<String>)> {
-        let profile = self.seatbelt_profile(workspace);
-        // 写临时 .sb 文件(sandbox-exec -f 比 -p 更稳:profile 不进 argv,
-        // 不受 ARG_MAX / 转义影响)。
-        // 文件名必须**每次调用唯一**:同一进程内并发调用(如并行工具执行、
-        // 并行测试)若共用 `zhuye-sandbox-<pid>.sb`,fs::write 截断重写的
-        // 窗口内另一线程的 sandbox-exec 会读到半截 profile → 编译失败,
-        // 子进程根本不启动(表现为 stdout 空);或读到他人完整 profile,
-        // workspace 写白名单错乱。pid + 原子自增序号保证互不踩踏。
-        let seq = SEATBELT_PROFILE_SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp =
-            std::env::temp_dir().join(format!("zhuye-sandbox-{}-{seq}.sb", std::process::id()));
-        // review 修复:文件名可预测且 `fs::write` 跟随 symlink —— 同机低权
-        // 用户可预置 symlink 让我们覆写任意文件,或抢先把 profile 换成宽松版
-        // 弱化沙箱。改用 `OpenOptions::create_new` + 0600:已存在即失败、
-        // 不会被 symlink 重定向,且只有创建者可读。
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(profile.as_bytes())?;
+
+        let profile = self.seatbelt_profile(workspace);
+        // 修复原因:旧文件名由 PID 和进程内序号组成。强杀后文件可能残留,
+        // PID 重用时 create_new 会碰到旧文件并中止命令。随机独占创建确保
+        // 不跟随预置路径或复用旧文件,写入失败时由临时文件句柄清理。
+        let mut file = tempfile::Builder::new()
+            .prefix("zhuye-sandbox-")
+            .suffix(".sb")
+            .tempfile()?;
+        file.write_all(profile.as_bytes())?;
+        let (_, path) = file.keep().map_err(|error| error.error)?;
         Ok((
             "/usr/bin/sandbox-exec".to_string(),
             vec![
                 "-f".to_string(),
-                tmp.to_string_lossy().into_owned(),
+                path.to_string_lossy().into_owned(),
                 "--".to_string(),
                 "sh".to_string(),
                 "-c".to_string(),
@@ -2135,19 +2112,29 @@ mod tests {
         assert_eq!(args[3], "sh");
         assert_eq!(args[4], "-c");
         assert_eq!(args[5], "rm -rf /");
+        std::fs::remove_file(&args[1]).unwrap();
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn seatbelt_argv_temp_profiles_are_unique_per_call() {
-        // 回归:同一进程内两次调用必须生成不同的 .sb 临时文件。旧实现
-        // 共用 `zhuye-sandbox-<pid>.sb`,并发调用在 fs::write 截断重写
-        // 窗口内互相踩踏(sandbox-exec 读到半截 profile 编译失败,子进程
-        // 不启动),曾致 rm_rf_root_is_blocked_in_sandbox 并发跑必挂。
+    fn seatbelt_argv_temp_profiles_are_private_and_random() {
+        use std::os::unix::fs::PermissionsExt;
+
         let s = OsSandbox::enabled(Vec::new());
         let (_, a) = s.seatbelt_argv(Path::new("/tmp"), "true").unwrap();
         let (_, b) = s.seatbelt_argv(Path::new("/tmp"), "true").unwrap();
-        assert_ne!(a[1], b[1], "profile temp file must be unique per call");
+        assert_ne!(a[1], b[1]);
+        let legacy_prefix = format!("zhuye-sandbox-{}-", std::process::id());
+        for args in [a, b] {
+            let path = Path::new(&args[1]);
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(!name.starts_with(&legacy_prefix));
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[cfg(target_os = "macos")]

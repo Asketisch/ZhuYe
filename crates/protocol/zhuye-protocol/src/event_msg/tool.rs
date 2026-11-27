@@ -4,6 +4,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::item::ToolOutput;
 
+/// 恢复时发现工具执行结果无法确认。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolExecutionUncertainEvent {
+    /// 产生调用的会话。
+    pub session_id: crate::ThreadId,
+    /// 产生调用的回合。
+    pub turn_id: crate::TurnId,
+    /// 模型调用标识。
+    pub call_id: String,
+    /// 工具名称。
+    pub tool_name: String,
+}
+
 /// 工具调用开始:模型开始生成某个 tool_use 时即发出(早于参数增量与执行)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallBeginEvent {

@@ -33,6 +33,8 @@ pub mod request;
 pub mod routing;
 /// v1.x:strict schema 折叠(不支持约束写进 description,双保险)。
 pub mod schema_fold;
+/// 任务树共享预算的原子预留与结算。
+pub mod task_budget;
 
 pub use billing::accounts;
 pub use billing::cooldown;

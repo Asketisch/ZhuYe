@@ -68,6 +68,11 @@ pub enum MockReply {
         #[serde(default)]
         args: serde_json::Value,
     },
+    /// 在同一次模型回复中发出多个有序工具调用。
+    ToolBatch {
+        /// 按模型生成顺序排列的调用。
+        calls: Vec<MockToolCall>,
+    },
     /// 发起一次工具调用,参数**分片**下发(分片形态 provider:Anthropic /
     /// OpenAI 逐段 emit 参数 JSON)。
     ///
@@ -91,6 +96,16 @@ pub enum MockReply {
     /// 整段消息回复(非流式 provider 形态):一次性发出完整文本,
     /// 不经 delta —— 覆盖协议 `agent_message` 变体的引擎通路。
     AgentMessage { text: String },
+}
+
+/// 离线模型批次中的单个工具调用。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct MockToolCall {
+    /// 工具名。
+    pub name: String,
+    /// 工具参数。
+    #[serde(default)]
+    pub args: serde_json::Value,
 }
 
 /// 内置 mock client。脚本队列在所有调用间共享(每次 `stream()` 消耗一行)。
@@ -311,6 +326,15 @@ impl ModelClient for MockClient {
                     chunks.push(Ok(ChatEvent::ToolUseDelta(input_json)));
                 }
             }
+            Some(MockReply::ToolBatch { calls }) => {
+                for (index, call) in calls.into_iter().enumerate() {
+                    chunks.push(Ok(ChatEvent::ToolUseStart {
+                        id: format!("toolu_mock_{n}_{index}"),
+                        name: call.name,
+                        input_json: call.args.to_string(),
+                    }));
+                }
+            }
             Some(MockReply::ToolCallDelta {
                 name,
                 chunks: parts,
@@ -493,6 +517,28 @@ mod tests {
         let (name, input_json) = tool.expect("应有 ToolUseStart 事件");
         assert_eq!(name, "get_weather");
         assert_eq!(input_json, r#"{"city":"北京"}"#);
+    }
+
+    #[tokio::test]
+    async fn 批次脚本按顺序输出独立调用标识() {
+        let reply: MockReply = serde_json::from_str(r#"{"type":"tool_batch","calls":[{"name":"read","args":{"path":"x"}},{"name":"write","args":{"path":"x"}}]}"#).unwrap();
+        let events = collect(&MockClient::with_script(vec![reply])).await;
+        let calls: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ChatEvent::ToolUseStart {
+                    id,
+                    name,
+                    input_json,
+                } => Some((id, name, input_json)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, "read");
+        assert_eq!(calls[1].1, "write");
+        assert_ne!(calls[0].0, calls[1].0);
+        assert!(calls.iter().all(|call| call.2.contains("\"path\":\"x\"")));
     }
 
     #[test]

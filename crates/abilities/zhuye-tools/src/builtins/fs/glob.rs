@@ -40,6 +40,10 @@ impl Tool for GlobTool {
         true
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, ctx: ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let pattern = args
             .get("pattern")

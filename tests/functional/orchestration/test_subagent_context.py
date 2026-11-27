@@ -84,7 +84,8 @@ def test_父上下文只在请求时按尾部传给子代理(sandbox, serve_sess
         gateway.server_close()
 
 
-def test_父上下文截断边界保留完整工具调用和结果(sandbox, serve_session) -> None:
+@pytest.mark.parametrize("tail", [3, 4])
+def test_父上下文截断边界保留完整工具调用和结果(sandbox, serve_session, tail) -> None:
     requests: list[dict] = []
 
     class Gateway(BaseHTTPRequestHandler):
@@ -97,7 +98,7 @@ def test_父上下文截断边界保留完整工具调用和结果(sandbox, serv
                 delta, finish = {"content": "线索已经收集"}, "stop"
             elif number == 3:
                 delta, finish = _tool("delegate", "call_explorer", {
-                    "prompt": "基于线索探索", "context_tail": 3,
+                    "prompt": "基于线索探索", "context_tail": tail,
                 }), "tool_calls"
             else:
                 delta, finish = {"content": "子代理完成" if number == 4 else "父代理完成"}, "stop"
@@ -136,8 +137,16 @@ def test_父上下文截断边界保留完整工具调用和结果(sandbox, serv
                  for call in message.get("tool_calls", []) if call.get("id") == "parent-echo"]
         results = [(i, message) for i, message in enumerate(child)
                    if message.get("role") == "tool" and message.get("tool_call_id") == "parent-echo"]
-        assert len(calls) == len(results) == 1, child
-        assert calls[0][0] < results[0][0] and "已知线索" in results[0][1]["content"], child
+        source = first_event(first, "tool_call_end")["msg"]["output"]["metadata"]["provenance"]
+        if tail == 4:
+            assert len(calls) == len(results) == 1, child
+            assert calls[0][0] < results[0][0] and "已知线索" in results[0][1]["content"], child
+            assert any(source["source_key"] in str(message.get("content"))
+                       for message in child[results[0][0] + 1:]), child
+        else:
+            assert not calls and not results, child
+            assert "已知线索" not in json.dumps(child, ensure_ascii=False), child
+            assert source["source_key"] in json.dumps(child, ensure_ascii=False), child
         assert "delegate" not in json.dumps(child, ensure_ascii=False), child
         assert "基于线索探索" in json.dumps(child, ensure_ascii=False), child
     finally:

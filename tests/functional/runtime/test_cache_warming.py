@@ -90,6 +90,7 @@ def test_cache_warming_开启后空闲排程与重放_脚本行不被消耗(
     require_binary()
     sandbox.write_config(
         "\n[cache_warming]\nenabled = true\nforce = true\nttl_secs = 3\nrefresh_margin_secs = 0\n"
+        "\n[task_budget]\ntotal_tokens = 100000\n"
     )
     script = mock_script(
         [
@@ -99,7 +100,7 @@ def test_cache_warming_开启后空闲排程与重放_脚本行不被消耗(
     )
     with serve_session(env={"ZHUYE_MODEL": "mock", "ZHUYE_MOCK_SCRIPT": str(script)}) as s:
         # 第一轮:消耗脚本第 1 行。
-        s.submit(
+        first = s.submit(
             {"type": "user_input", "items": [{"type": "text", "text": "第一问"}]},
             timeout=DRAIN_TIMEOUT,
         )
@@ -117,6 +118,16 @@ def test_cache_warming_开启后空闲排程与重放_脚本行不被消耗(
         assert isinstance(executed.get("prompt_tokens"), int), f"prompt_tokens 字段:{executed}"
         # 重放流回的 usage(mock:cached=0)必须如实上报,不编造命中。
         assert executed.get("warm_cached_tokens") == 0, f"executed 字段:{executed}"
+        initial_budget = next(e["msg"] for e in first if e["msg"]["type"] == "task_budget_snapshot")
+        warmed_budget = s.wait_global(
+            lambda event: event["msg"].get("type") == "task_budget_snapshot"
+            and event["msg"]["actual_tokens"] > initial_budget["actual_tokens"],
+            timeout=DRAIN_TIMEOUT,
+        )["msg"]
+        assert warmed_budget["task_id"] == initial_budget["task_id"]
+        assert warmed_budget["turn_id"] == initial_budget["turn_id"]
+        assert warmed_budget["actual_tokens"] == initial_budget["actual_tokens"] + 1
+        assert warmed_budget["reserved_tokens"] == warmed_budget["unknown_calls"] == 0
 
         # 零污染:重放后 rollout 记录类型序列不变(无 Message / TokenCount 新增)。
         time.sleep(0.5)

@@ -95,6 +95,10 @@ impl Tool for FloorEnforcingTool {
     fn is_concurrency_safe(&self) -> bool {
         self.inner.is_concurrency_safe()
     }
+
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
     fn parent_context_limit(&self, args: &serde_json::Value) -> Option<usize> {
         self.inner.parent_context_limit(args)
     }
@@ -317,6 +321,14 @@ impl ToolRegistry {
         out
     }
 
+    /// 查询单个工具的注册来源。
+    pub fn source_of(&self, name: &str) -> Option<ToolSource> {
+        self.tools
+            .read()
+            .get(name)
+            .map(|(source, _)| source.clone())
+    }
+
     /// 反注册某个 source 下的所有 tool,返回实际移除的数量。
     ///
     /// 比较为**精确相等**:`ToolSource::Plugin(id)` 只移除该 id 插件的
@@ -345,6 +357,11 @@ impl ToolRegistry {
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.read().get(name).map(|(_, t)| t.clone())
+    }
+
+    /// 在同一注册表快照中读取工具及其来源,避免热重载导致二者错配。
+    pub fn get_with_source(&self, name: &str) -> Option<(ToolSource, Arc<dyn Tool>)> {
+        self.tools.read().get(name).cloned()
     }
 
     /// 按名字反注册一个工具。返回 `true` 表示确实移除了一个工具。

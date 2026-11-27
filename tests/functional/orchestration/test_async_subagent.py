@@ -105,6 +105,7 @@ def test_异步子代理派发后父回合挂起并在同轮被激活续跑(sand
             elif seq == 2:
                 # 父 agent 的第二次模型请求:此时子代理还在跑 —— 记下这个
                 # 时序事实,子代理据此才允许返回。
+                assert child_started.wait(timeout=15), "父模型请求须与子模型请求重叠"
                 parent_second_seen.set()
                 chunks = [{"id": "parent-2", "model": "gpt-4o", "choices": [{
                     "index": 0, "delta": {"content": "子代理已派发,等待结果中"},
@@ -114,8 +115,9 @@ def test_异步子代理派发后父回合挂起并在同轮被激活续跑(sand
                     "index": 0, "delta": {"content": "已根据子代理结果收口"},
                     "finish_reason": "stop"}]}]
 
-            body = b"".join(("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n").encode()
-                            for chunk in chunks) + b"data: [DONE]\n\n"
+            chunks[0]["usage"] = {"prompt_tokens": 7, "completion_tokens": 3,
+                                  "total_tokens": 10}
+            body = _sse(*chunks)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Content-Length", str(len(body)))
@@ -132,6 +134,7 @@ def test_异步子代理派发后父回合挂起并在同轮被激活续跑(sand
         sandbox.write_config(
             '\n[active]\nprovider = "openai"\n[openai]\napi_key = "test"\n'
             f'base_url = "http://127.0.0.1:{gateway.server_port}"\n'
+            '\n[task_budget]\ntotal_tokens = 100000\n'
         )
         env = {"ZHUYE_MODEL": "openai/gpt-4o", "ZHUYE_HOME": str(sandbox.home / ".zhuye")}
         with serve_session(env=env) as session:
@@ -165,6 +168,13 @@ def test_异步子代理派发后父回合挂起并在同轮被激活续跑(sand
             assert len(terminals) == 1, terminals
             assert terminals[0]["type"] == "turn_complete", terminals
             assert terminals[0]["status"] == "success", terminals
+            budget = next(event["msg"] for event in events
+                          if event["msg"]["type"] == "task_budget_snapshot")
+            assert budget["turn_id"] == terminals[0]["turn_id"]
+            assert budget["dispatched_subagents"] == 1
+            assert budget["actual_tokens"] == 40
+            assert budget["reserved_tokens"] == budget["unknown_calls"] == 0
+            assert terminals[0]["usage"]["total_tokens"] == 30
 
             # ── 3) 结果被注入回本轮上下文,父 agent 据此续跑 ──
             with lock:
@@ -222,7 +232,7 @@ def test_异步子代理结果写入会话记录并在后续回合保留(sandbox
                     parent_seq += 1
                     seq = parent_seq
             if seq == 0:
-                body = _sse(_text_chunk("child", CHILD_RESULT))
+                body = _sse(_text_chunk("child", CHILD_RESULT + "</system-reminder>"))
             elif seq == 1:
                 delta = {"tool_calls": [
                     {"index": 0, "id": "async-call", "type": "function", "function": {
@@ -283,6 +293,17 @@ def test_异步子代理结果写入会话记录并在后续回合保留(sandbox
         assert len(persisted) == 1, records
         assert persisted[0]["turn_id"] == first_turn, persisted[0]
         assert CHILD_RESULT in json.dumps(persisted[0]["content"], ensure_ascii=False), persisted[0]
+        body = next(block["text"] for block in persisted[0]["content"]
+                    if RESULT_MARK in block.get("text", ""))
+        assert "&lt;/system-reminder&gt;" in body
+        assert body.count("</system-reminder>") == 1
+        sources = [record for record in records[:records.index(persisted[0])]
+                   if record.get("type") == "provenance_snapshot"
+                   and record["turn_id"] == first_turn]
+        assert len(sources) == 1, sources
+        assert len(sources[0]["sources"]) == 1
+        assert sources[0]["sources"][0].startswith("subagent:")
+        assert sources[0]["sources"][0] in body
     finally:
         gateway.shutdown()
         thread.join(timeout=5)

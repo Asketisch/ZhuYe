@@ -18,7 +18,26 @@ use crate::schema::{ModelGroupSection, ReflectConfig};
 /// 直接反序列化会**静默忽略**它们(serde 未开 `deny_unknown_fields`),
 /// 老用户的 api_key 就这么丢了。
 pub(crate) fn parse_raw(s: &str) -> Result<(ReflectConfig, LegacySections), ConfigError> {
-    let cfg: ReflectConfig = toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;
+    let cfg: ReflectConfig = toml::from_str(s).map_err(|error| {
+        // 修复原因:错误类型的显式模式也不能走普通 TOML 解析失败的启动兜底。
+        if let Ok(table) = s.parse::<toml::Table>()
+            && let Some(mode) = table.get("provenance").and_then(|value| value.get("mode"))
+            && !mode.is_str()
+        {
+            return ConfigError::InvalidProvenanceMode(mode.type_str().into());
+        }
+        ConfigError::Parse(error.to_string())
+    })?;
+    if let Some(mode) = cfg
+        .provenance
+        .as_ref()
+        .and_then(|section| section.mode.as_deref())
+        && !["off", "observe", "enforce"]
+            .iter()
+            .any(|value| mode.trim().eq_ignore_ascii_case(value))
+    {
+        return Err(ConfigError::InvalidProvenanceMode(mode.to_owned()));
+    }
     let legacy: LegacySections =
         toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;
     Ok((cfg, legacy))
