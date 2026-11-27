@@ -3,7 +3,7 @@
 use crate::data_transfer::DataTransferConfig;
 
 /// 一个具名子代理。`role` 决定父级 LLM 用来调用该 agent 的工具名(`call_<role>`)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubAgentSpec {
     /// 人类可读的标签(用于日志)。
     pub name: String,

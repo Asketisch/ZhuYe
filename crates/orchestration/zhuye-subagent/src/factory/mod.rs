@@ -35,8 +35,54 @@ use crate::error::SubAgentError;
 use crate::spec::SubAgentSpec;
 use crate::worker_registry::build_worker_tool_registry;
 
+const MAX_CONTINUABLE_SESSIONS: usize = 64;
+type BudgetSlot = Arc<parking_lot::RwLock<Option<Arc<zhuye_llm::task_budget::TaskBudget>>>>;
+type Sessions = Arc<Mutex<HashMap<ThreadId, ContinuableSession>>>;
+
+struct ContinuableSession {
+    spec: SubAgentSpec,
+    tools: Arc<ToolRegistry>,
+    coordinator: bool,
+    isolation: Option<Arc<zhuye_tools::WorktreeCoordinator>>,
+    thread: Arc<AgentThread>,
+    cancel: CancellationToken,
+    status: Option<Arc<zhuye_core::subagent_registry::SubagentStatusSlot>>,
+    budget: BudgetSlot,
+    data_transfer: DataTransferConfig,
+    busy: bool,
+    updated: Instant,
+}
+
+impl Drop for ContinuableSession {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+struct ContinuationLease {
+    sessions: Sessions,
+    id: ThreadId,
+    completed: bool,
+}
+
+impl Drop for ContinuationLease {
+    fn drop(&mut self) {
+        let mut sessions = self.sessions.lock();
+        if self.completed {
+            if let Some(session) = sessions.get_mut(&self.id) {
+                session.busy = false;
+                session.updated = Instant::now();
+            }
+        } else {
+            // 修复原因:中断或失败后上下文可能不完整,不能静默续用该会话。
+            sessions.remove(&self.id);
+        }
+    }
+}
+
 /// 共享 factory:克隆成本低,所有克隆体共享同一并发计数器。
 pub struct SubAgentFactory {
+    sessions: Sessions,
     /// 共享的并发 in-flight 计数器;每次 `spawn()` 递增,`SpawnedChild`
     /// 析构或 `collect_result` 完成时递减。达到 [`crate::MAX_DEPTH`]
     /// 时 `spawn` 拒绝。
@@ -167,6 +213,7 @@ impl SubAgentFactory {
         recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>>,
     ) -> Self {
         Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             in_flight: Arc::new(AtomicU8::new(0)),
             parent_session_id,
             default_model: Mutex::new(default_model.into()),
@@ -490,6 +537,7 @@ impl SubAgentFactory {
     /// 由 [`spawn`] 使用 —— 让子 agent 拥有相同深度预算,从而其 spawn 也被计入。
     pub fn child_factory(&self) -> Self {
         Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             in_flight: Arc::clone(&self.in_flight),
             parent_session_id: self.parent_session_id,
             default_model: Mutex::new(self.default_model.lock().clone()),
@@ -569,6 +617,7 @@ impl SubAgentFactory {
             in_flight: Some(Arc::clone(&self.in_flight)),
             status_slot: None,
             cancel: None,
+            lease: None,
         };
 
         // 构造子 session —— 新的 `ThreadId` 用于血缘追踪。
@@ -581,9 +630,9 @@ impl SubAgentFactory {
         // 修复原因:隔离失败后静默回退共享目录会让并发 worker 互相覆盖。
         // 在写入会话记录之前建立工作区,失败时直接拒绝并释放并发槽位。
         let isolation = self.worktree_coordinator.lock().clone();
-        let workspace = match isolation
-            .map_err(|error| SubAgentError::SpawnFailed(format!("worktree 隔离失败: {error}")))?
-        {
+        let isolation = isolation
+            .map_err(|error| SubAgentError::SpawnFailed(format!("worktree 隔离失败: {error}")))?;
+        let workspace = match isolation.as_ref() {
             Some(coordinator) => coordinator
                 .ensure_for_task(&child_thread_id.to_string(), true)
                 .map(|state| state.worktree_path)
@@ -648,7 +697,8 @@ impl SubAgentFactory {
         // 否则从共享的 parent_tools 过滤。
         let role_registry = self.role_tools(&spec.role);
         let tool_source: &ToolRegistry = role_registry.as_deref().unwrap_or(&self.parent_tools);
-        let child_tools = Arc::new(if self.coordinator_mode.load(Ordering::SeqCst) {
+        let coordinator_mode = self.coordinator_mode.load(Ordering::SeqCst);
+        let child_tools = Arc::new(if coordinator_mode {
             // coordinator 启用:从父 registry 排除 internal tools。
             build_worker_tool_registry(tool_source)
         } else {
@@ -677,10 +727,10 @@ impl SubAgentFactory {
             .with_session_id(child_thread_id)
             .with_preload_messages(history)
             .with_approval_context(self.approval_context.clone());
-        cfg.inherited_task_budget = task_budget;
+        let budget_slot = Arc::new(parking_lot::RwLock::new(task_budget));
+        cfg.inherited_task_budget_slot = Some(budget_slot.clone());
         if let Some(parent) = self.parent_config.lock().clone() {
             cfg.strict_tool_journal = parent.strict_tool_journal;
-            cfg.serial_turns = parent.serial_turns;
             cfg.provenance_tracker = parent.provenance_tracker.clone();
             cfg.provenance_mode = parent.provenance_mode;
             cfg.dynamic_context = parent.dynamic_context;
@@ -706,6 +756,11 @@ impl SubAgentFactory {
             cfg.prompt_guard = parent.prompt_guard.clone();
             cfg.guard_stats = parent.guard_stats.clone();
         }
+        // 修复原因:无 recorder 的子会话需要串行历史才能在续派时保留上下文。
+        cfg.serial_turns = true;
+        // 修复原因:首轮的父上下文只预载而不落子会话日志;后续仅回放
+        // 日志会丢失子代理已经看到的内容,因此续派使用进程内完整历史。
+        cfg.in_memory_history_authoritative = true;
 
         // v1.x 功能 6:child M4 构造。即便没有 recorder,也构造一份 m4
         // (注入 skills catalog + subagent registry),让 subagent 拥有
@@ -761,14 +816,24 @@ impl SubAgentFactory {
         // 自己的槽(submission_loop / tool_exec 自报告迭代 / 工具 /
         // token),父会话 QuerySubagents 读快照。collect 完成 / Drop 放弃
         // 时槽位转终态并保留一段保留期供事后查询。
-        let status_slot = self
-            .runtime_registry()
-            .map(|reg| reg.register(child_thread_id.to_string(), spec.role.clone(), child_cancel));
+        let status_slot = self.runtime_registry().map(|reg| {
+            reg.register(
+                child_thread_id.to_string(),
+                spec.role.clone(),
+                child_cancel.clone(),
+            )
+        });
         reservation.status_slot = status_slot.clone();
         if let Some(slot) = &status_slot {
             cfg.subagent_status = Some(slot.clone());
         }
-        let child_thread = AgentThread::new(cfg, target_registry, child_tools, None, None);
+        let child_thread = Arc::new(AgentThread::new(
+            cfg,
+            target_registry,
+            child_tools.clone(),
+            None,
+            None,
+        ));
         // v1.x 修复:子代理注册 PlanModeGate。cfg.permission_mode 继承父级
         // (可能为 Plan),此前子代理的 hook engine 为空 —— 即使父会话
         // (CLI)带 gate,子代理内只剩 pre_loop 的 write/edit 裁剪,bash 写
@@ -786,6 +851,45 @@ impl SubAgentFactory {
         );
         let sub = Submission::user_input(combined_user_input);
         let handle = child_thread.submit(sub).await;
+        {
+            let mut sessions = self.sessions.lock();
+            if sessions.len() >= MAX_CONTINUABLE_SESSIONS
+                && let Some(oldest) = sessions
+                    .iter()
+                    .filter(|(_, session)| !session.busy)
+                    .min_by_key(|(_, session)| session.updated)
+                    .map(|(id, _)| *id)
+            {
+                sessions.remove(&oldest);
+            }
+            sessions.insert(
+                child_thread_id,
+                ContinuableSession {
+                    spec: spec.clone(),
+                    tools: child_tools,
+                    coordinator: coordinator_mode,
+                    isolation,
+                    thread: child_thread,
+                    cancel: child_cancel,
+                    status: status_slot,
+                    budget: budget_slot,
+                    data_transfer: spec.data_transfer.clone(),
+                    busy: true,
+                    updated: Instant::now(),
+                },
+            );
+        }
+        // 修复原因:子工具可能反向持有工厂,父会话关闭时必须主动清表,
+        // 避免工厂与空闲子线程通过工具注册表形成引用环。
+        let sessions_weak = Arc::downgrade(&self.sessions);
+        if let Some(session_cancel) = reservation.cancel.clone() {
+            tokio::spawn(async move {
+                session_cancel.cancelled().await;
+                if let Some(sessions) = sessions_weak.upgrade() {
+                    sessions.lock().remove(&child_thread_id);
+                }
+            });
+        }
         if let Some(budget_reservation) = budget_reservation {
             budget_reservation.commit();
         }
@@ -796,6 +900,114 @@ impl SubAgentFactory {
             in_flight: reservation.in_flight.take(),
             status_slot: reservation.status_slot.take(),
             cancel: reservation.cancel.take(),
+            lease: Some(ContinuationLease {
+                sessions: self.sessions.clone(),
+                id: child_thread_id,
+                completed: false,
+            }),
+        })
+    }
+
+    /// 向本工厂已完成的同角色子会话派发新任务,保留其上下文与工作区。
+    pub async fn follow_up(
+        &self,
+        spec: &SubAgentSpec,
+        session_id: ThreadId,
+        prompt: String,
+    ) -> Result<SpawnedChild, SubAgentError> {
+        let budget = zhuye_llm::task_budget::current_task_budget();
+        let dispatch = budget
+            .as_ref()
+            .map(|b| b.reserve_subagent())
+            .transpose()
+            .map_err(|e| SubAgentError::SpawnFailed(e.to_string()))?;
+        let prev = self.in_flight.fetch_add(1, Ordering::SeqCst);
+        if prev >= crate::MAX_DEPTH {
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            return Err(SubAgentError::MaxDepthExceeded {
+                max: crate::MAX_DEPTH,
+            });
+        }
+        let mut reservation = CleanupGuard {
+            in_flight: Some(self.in_flight.clone()),
+            status_slot: None,
+            cancel: None,
+            lease: None,
+        };
+        let (thread, status, cancel, transfer) = {
+            let mut sessions = self.sessions.lock();
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| SubAgentError::SpawnFailed("子会话不存在或已过期".into()))?;
+            if session.spec != *spec {
+                // 修复原因:同名角色被重载或替换后,不能沿用旧工具权限与身份。
+                return Err(SubAgentError::SpawnFailed("子会话角色或配置不匹配".into()));
+            }
+            // 修复原因:续用旧工具或共享工作区会绕过热重载后的撤权与隔离策略。
+            let isolation = self.worktree_coordinator.lock();
+            let isolation_matches = match (&*isolation, &session.isolation) {
+                (Ok(None), None) => true,
+                (Ok(Some(current)), Some(original)) => Arc::ptr_eq(current, original),
+                _ => false,
+            };
+            let role_tools = self.role_tools(&spec.role);
+            let source = role_tools.as_deref().unwrap_or(&self.parent_tools);
+            let tools_match = session.tools.list().into_iter().all(|name| {
+                match (
+                    session.tools.get_with_source(&name),
+                    source.get_with_source(&name),
+                ) {
+                    (Some((old_source, old)), Some((new_source, new))) => {
+                        old_source == new_source && Arc::ptr_eq(&old, &new)
+                    }
+                    _ => false,
+                }
+            });
+            if !isolation_matches
+                || session.coordinator != self.coordinator_mode.load(Ordering::SeqCst)
+                || !tools_match
+            {
+                return Err(SubAgentError::SpawnFailed(
+                    "子会话安全策略或工具已变化,请重新派发".into(),
+                ));
+            }
+            if session.busy || session.cancel.is_cancelled() {
+                return Err(SubAgentError::SpawnFailed("子会话正在运行或已关闭".into()));
+            }
+            session.busy = true;
+            *session.budget.write() = budget;
+            (
+                session.thread.clone(),
+                session.status.clone(),
+                session.cancel.clone(),
+                session.data_transfer.clone(),
+            )
+        };
+        reservation.lease = Some(ContinuationLease {
+            sessions: self.sessions.clone(),
+            id: session_id,
+            completed: false,
+        });
+        reservation.cancel = Some(cancel);
+        if let Some(slot) = status.as_ref() {
+            slot.restart();
+            if let Some(registry) = self.runtime_registry() {
+                registry.restore_slot(slot.clone());
+            }
+        }
+        reservation.status_slot = status;
+        let handle = thread.submit(Submission::user_input(prompt)).await;
+        if let Some(dispatch) = dispatch {
+            dispatch.commit();
+        }
+        Ok(SpawnedChild {
+            session_id,
+            handle,
+            data_transfer: transfer,
+            in_flight: reservation.in_flight.take(),
+            status_slot: reservation.status_slot.take(),
+            cancel: reservation.cancel.take(),
+            lease: reservation.lease.take(),
         })
     }
 }
@@ -849,6 +1061,7 @@ pub struct SpawnedChild {
     status_slot: Option<Arc<zhuye_core::subagent_registry::SubagentStatusSlot>>,
     /// 即使没有注入状态中心,放弃子代理时也必须取消子任务。
     cancel: Option<CancellationToken>,
+    lease: Option<ContinuationLease>,
 }
 
 impl std::fmt::Debug for SpawnedChild {
@@ -870,6 +1083,7 @@ struct CleanupGuard {
     in_flight: Option<Arc<AtomicU8>>,
     status_slot: Option<Arc<zhuye_core::subagent_registry::SubagentStatusSlot>>,
     cancel: Option<CancellationToken>,
+    lease: Option<ContinuationLease>,
 }
 
 impl Drop for CleanupGuard {
@@ -887,7 +1101,9 @@ impl Drop for CleanupGuard {
             }
         }
         if let Some(cancel) = self.cancel.take() {
-            cancel.cancel();
+            if !self.lease.as_ref().is_some_and(|lease| lease.completed) {
+                cancel.cancel();
+            }
         }
     }
 }
@@ -971,6 +1187,7 @@ impl SpawnedChild {
         let in_flight_arc = me.in_flight.take(); // Option<Arc<AtomicU8>> → None
         let status_slot = me.status_slot.take();
         let cancel = me.cancel.take();
+        let lease = me.lease.take();
         let mut handle = unsafe { std::ptr::read(&me.handle) };
         let data_transfer = unsafe { std::ptr::read(&me.data_transfer) };
         let _session_id = unsafe { std::ptr::read(&me.session_id) };
@@ -984,10 +1201,11 @@ impl SpawnedChild {
         // 文本增量,供 MessageStop 时合成完整 AgentMessage 回调。
         let cleanup_slot = status_slot.clone();
         let mut text_buf = String::new();
-        let _cleanup = CleanupGuard {
+        let mut cleanup = CleanupGuard {
             in_flight: in_flight_arc,
             status_slot,
             cancel,
+            lease,
         };
         let started_at = Instant::now();
         let mut events = Vec::new();
@@ -996,6 +1214,7 @@ impl SpawnedChild {
         let mut usage_from_token_count: Option<TokenUsage> = None;
         // 只有收到正常回合终态才能把提取到的文本当作成功结果。
         let mut completed = false;
+        let mut continuable = false;
         // 最后一个错误事件的摘要 —— 失败时**带上根因**。
         //
         // 此前失败只报「no result extractable」:调用方(流水线 / 讨论编排)
@@ -1052,6 +1271,7 @@ impl SpawnedChild {
                 zhuye_protocol::EventMsg::TurnComplete(tc) => {
                     usage_from_turn_complete = Some(tc.usage.clone());
                     completed = true;
+                    continuable = tc.status == zhuye_protocol::TurnStatus::Success;
                 }
                 zhuye_protocol::EventMsg::Error(e) => {
                     last_error = Some(format!("{}: {}", e.code, e.message));
@@ -1134,6 +1354,10 @@ impl SpawnedChild {
         })?;
         if let Some(slot) = cleanup_slot.as_ref() {
             slot.finish(zhuye_protocol::SubagentRunStateMirror::Completed);
+        }
+        if let Some(lease) = cleanup.lease.as_mut() {
+            // 修复原因:预算或迭代耗尽的部分结果不能当作完整上下文续派。
+            lease.completed = continuable;
         }
         let token_usage = usage_from_turn_complete.or(usage_from_token_count);
         // v1.4 A1:终态释放已交给 `_cleanup` guard(见函数开头),它在本

@@ -58,10 +58,15 @@ pub struct AgentConfig {
     pub strict_tool_journal: bool,
     /// 同一会话的用户回合按到达顺序串行执行。
     pub serial_turns: bool,
+    /// 进程内串行历史作为子会话续派的权威上下文。
+    pub in_memory_history_authoritative: bool,
     /// 根任务的预算参数;缺省时不启用任务树预算。
     pub task_budget_limits: Option<zhuye_llm::task_budget::TaskBudgetLimits>,
     /// 子代理继承的当前根任务账本。
     pub inherited_task_budget: Option<Arc<zhuye_llm::task_budget::TaskBudget>>,
+    /// 串行子会话每次续派时注入当前根任务账本。
+    pub inherited_task_budget_slot:
+        Option<Arc<RwLock<Option<Arc<zhuye_llm::task_budget::TaskBudget>>>>>,
     /// 来源污染状态由会话及其子代理共享。
     pub provenance_tracker: Arc<zhuye_tools::sanitize::provenance::TaintTracker>,
     /// 来源治理默认只观察。
@@ -362,8 +367,10 @@ impl AgentConfig {
             m4: None,
             strict_tool_journal: false,
             serial_turns: false,
+            in_memory_history_authoritative: false,
             task_budget_limits: None,
             inherited_task_budget: None,
+            inherited_task_budget_slot: None,
             provenance_tracker: Arc::new(zhuye_tools::sanitize::provenance::TaintTracker::new()),
             provenance_mode: zhuye_tools::sanitize::provenance::ProvenanceMode::Observe,
             dynamic_context: false,

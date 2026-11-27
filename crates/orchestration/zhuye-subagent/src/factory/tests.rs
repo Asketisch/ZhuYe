@@ -610,6 +610,117 @@ async fn 子代理模型用量结算到父任务账本() {
 }
 
 #[tokio::test]
+async fn 完成后的子会话可续派并保留上下文与独立预算() {
+    use zhuye_llm::task_budget::{TaskBudget, TaskBudgetLimits, scope_task_budget};
+    let client = Arc::new(zhuye_llm::MockClient::with_script(vec![
+        zhuye_llm::MockReply::Text {
+            text: "第一次答案".into(),
+        },
+        zhuye_llm::MockReply::Text {
+            text: "第二次答案".into(),
+        },
+    ]));
+    let registry = Arc::new(zhuye_llm::ModelRegistry::new());
+    registry.register_pool(
+        "mock",
+        zhuye_llm::CredentialPool {
+            entries: vec![zhuye_llm::PoolEntry {
+                client: client.clone(),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let factory = SubAgentFactory::new(
+        ThreadId::new(),
+        "mock/model",
+        registry,
+        None,
+        Arc::new(ToolRegistry::default()),
+        CancellationToken::new(),
+        None,
+    );
+    let runtime = Arc::new(zhuye_core::SubagentRuntimeRegistry::new());
+    factory.set_runtime_registry(runtime.clone());
+    let first_budget = TaskBudget::new(TaskBudgetLimits {
+        total_tokens: Some(20000),
+        ..Default::default()
+    });
+    let child = scope_task_budget(
+        first_budget.clone(),
+        factory.spawn(dummy_spec("worker"), vec![], "第一次任务".into()),
+    )
+    .await
+    .unwrap();
+    let id = child.session_id;
+    assert!(
+        factory
+            .follow_up(&dummy_spec("worker"), id, "不能并发".into())
+            .await
+            .is_err()
+    );
+    assert_eq!(child.collect_result().await.unwrap(), "第一次答案");
+    assert_eq!(
+        runtime.snapshot(Some(&id.to_string()))[0].state,
+        zhuye_protocol::SubagentRunStateMirror::Completed
+    );
+    assert!(
+        factory
+            .follow_up(&dummy_spec("other"), id, "角色错误".into())
+            .await
+            .is_err()
+    );
+    factory.set_coordinator_mode(true, None);
+    assert!(
+        factory
+            .follow_up(&dummy_spec("worker"), id, "策略已变化".into())
+            .await
+            .is_err()
+    );
+    factory.set_coordinator_mode(false, None);
+    factory.set_worktree_isolation_error("隔离不可用".into());
+    assert!(
+        factory
+            .follow_up(&dummy_spec("worker"), id, "隔离已变化".into())
+            .await
+            .is_err()
+    );
+    factory.set_worktree_coordinator(None);
+    let second_budget = TaskBudget::new(TaskBudgetLimits {
+        total_tokens: Some(20000),
+        ..Default::default()
+    });
+    let child = scope_task_budget(
+        second_budget.clone(),
+        factory.follow_up(&dummy_spec("worker"), id, "继续任务".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(child.session_id, id);
+    assert_eq!(
+        runtime.snapshot(Some(&id.to_string()))[0].state,
+        zhuye_protocol::SubagentRunStateMirror::Running
+    );
+    assert_eq!(child.collect_result().await.unwrap(), "第二次答案");
+    assert_eq!(
+        runtime.snapshot(Some(&id.to_string()))[0].state,
+        zhuye_protocol::SubagentRunStateMirror::Completed
+    );
+    let requests = client.recorded_requests();
+    let history = serde_json::to_string(&requests[1].messages).unwrap();
+    assert!(
+        history.contains("第一次任务")
+            && history.contains("第一次答案")
+            && history.contains("继续任务"),
+        "{history}"
+    );
+    assert_eq!(first_budget.snapshot().settled_calls, 1);
+    assert_eq!(second_budget.snapshot().settled_calls, 1);
+    assert_eq!(second_budget.snapshot().dispatched_subagents, 1);
+    assert_eq!(factory.depth(), 0);
+}
+
+#[tokio::test]
 async fn 配置隔离时为子代理创建独立工作区() {
     let dir = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {

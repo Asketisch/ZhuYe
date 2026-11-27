@@ -121,6 +121,18 @@ impl SubagentStatusSlot {
     pub fn is_running(&self) -> bool {
         self.inner.lock().state == SubagentRunStateMirror::Running
     }
+
+    /// 将已完成的子会话状态槽重置为新一轮运行。
+    pub fn restart(&self) {
+        let mut state = self.inner.lock();
+        state.state = SubagentRunStateMirror::Running;
+        state.started_at = chrono::Utc::now();
+        state.finished_at = None;
+        state.iteration = 0;
+        state.current_tool = None;
+        state.total_tokens = 0;
+        state.last_event = None;
+    }
 }
 
 /// 事件摘要截断(防异常长文本撑爆快照)。
@@ -155,6 +167,11 @@ impl Default for SubagentRuntimeRegistry {
 impl SubagentRuntimeRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 恢复被保留期清扫的状态槽。
+    pub fn restore_slot(&self, slot: std::sync::Arc<SubagentStatusSlot>) {
+        self.inner.write().insert(slot.child_id().to_owned(), slot);
     }
 
     /// 自定义终态保留时长(测试用)。

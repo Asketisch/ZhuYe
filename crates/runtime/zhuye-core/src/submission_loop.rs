@@ -698,53 +698,58 @@ pub async fn submission_loop(
                 // 避免重复 echo)。
                 let mut replay_record_count = None;
                 let mut last_message_turn_id = None;
-                let base: Vec<ChatMessage> =
-                    if let Some(rec) = cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
-                        match rec.replay(session_id).await {
-                            Ok(records) => {
-                                replay_record_count = Some(records.len());
-                                last_message_turn_id = records.iter().rev().find_map(|record| {
-                                    if let RolloutRecord::Message { turn_id, .. } = record {
-                                        Some(*turn_id)
-                                    } else {
-                                        None
-                                    }
-                                });
-                                let mut base = crate::resume::records_to_preload(&records);
-                                // v1.12 回归修复:子代理线程(factory 装配
-                                // rollout_base 后落独立 JSONL)首回合 replay
-                                // 只有 SessionMeta,若就此采用会**丢弃**
-                                // `preload_messages` —— 父上下文按需交接
-                                // (`context_tail` / pass_context_messages)
-                                // 整链断链。rollout 尚无对话记录(全新子
-                                // 会话)时用 preload 作种子历史;已有对话
-                                // 记录时维持 replay 口径,不重复叠加。
-                                if base.is_empty() {
-                                    // 回放成功但没有消息也有意义:显式回退可能
-                                    // 清空历史,用内存副本会复活已删除的消息。
-                                    base = std::mem::take(&mut *cfg.preload_messages.write());
-                                }
-                                base
-                            }
-                            Err(e) => {
-                                // 回填失败不致命:退化为无历史轮(与 recorder
-                                // 缺席同款),本轮对话照常进行。
-                                tracing::warn!("rollout replay 回填失败,退化为无历史轮: {e:#}");
-                                if cfg.serial_turns {
-                                    serial_history.lock().clone()
+                let retained_history = cfg
+                    .in_memory_history_authoritative
+                    .then(|| serial_history.lock().clone())
+                    .filter(|history| !history.is_empty());
+                let base: Vec<ChatMessage> = if let Some(history) = retained_history {
+                    history
+                } else if let Some(rec) = cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
+                    match rec.replay(session_id).await {
+                        Ok(records) => {
+                            replay_record_count = Some(records.len());
+                            last_message_turn_id = records.iter().rev().find_map(|record| {
+                                if let RolloutRecord::Message { turn_id, .. } = record {
+                                    Some(*turn_id)
                                 } else {
-                                    Vec::new()
+                                    None
                                 }
+                            });
+                            let mut base = crate::resume::records_to_preload(&records);
+                            // v1.12 回归修复:子代理线程(factory 装配
+                            // rollout_base 后落独立 JSONL)首回合 replay
+                            // 只有 SessionMeta,若就此采用会**丢弃**
+                            // `preload_messages` —— 父上下文按需交接
+                            // (`context_tail` / pass_context_messages)
+                            // 整链断链。rollout 尚无对话记录(全新子
+                            // 会话)时用 preload 作种子历史;已有对话
+                            // 记录时维持 replay 口径,不重复叠加。
+                            if base.is_empty() {
+                                // 回放成功但没有消息也有意义:显式回退可能
+                                // 清空历史,用内存副本会复活已删除的消息。
+                                base = std::mem::take(&mut *cfg.preload_messages.write());
+                            }
+                            base
+                        }
+                        Err(e) => {
+                            // 回填失败不致命:退化为无历史轮(与 recorder
+                            // 缺席同款),本轮对话照常进行。
+                            tracing::warn!("rollout replay 回填失败,退化为无历史轮: {e:#}");
+                            if cfg.serial_turns {
+                                serial_history.lock().clone()
+                            } else {
+                                Vec::new()
                             }
                         }
+                    }
+                } else {
+                    let history = serial_history.lock().clone();
+                    if cfg.serial_turns && !history.is_empty() {
+                        history
                     } else {
-                        let history = serial_history.lock().clone();
-                        if cfg.serial_turns && !history.is_empty() {
-                            history
-                        } else {
-                            std::mem::take(&mut *cfg.preload_messages.write())
-                        }
-                    };
+                        std::mem::take(&mut *cfg.preload_messages.write())
+                    }
+                };
 
                 if let Some(rec) = cfg.m4.as_ref().and_then(|m| m.recorder.clone()) {
                     let _ = rec
@@ -993,7 +998,11 @@ pub async fn submission_loop(
                 // `turn.completed` + duration)。guard 在 spawned task 内创建,
                 // 这样 drop 时机 = turn 真正完成(而非 spawn 时刻)。
                 let telemetry_sink = cfg.telemetry.clone();
-                let task_budget = cfg.inherited_task_budget.clone().or_else(|| {
+                let inherited_budget = cfg.inherited_task_budget_slot.as_ref().map_or_else(
+                    || cfg.inherited_task_budget.clone(),
+                    |slot| slot.read().clone(),
+                );
+                let task_budget = inherited_budget.or_else(|| {
                     cfg.task_budget_limits
                         .clone()
                         .map(zhuye_llm::task_budget::TaskBudget::new)

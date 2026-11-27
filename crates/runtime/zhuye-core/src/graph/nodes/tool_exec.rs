@@ -196,9 +196,25 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
     state.turn_content.append(&mut state.latest_content);
     let mut stop_turn_requested = false;
     let mut provenance_labels = Vec::new();
+    let mut child_sessions = Vec::new();
     let mut has_subagent_result = false;
     let mut updated_checklist = None;
     for mut r in results {
+        if !r.is_error
+            && let Some((name, _)) = call_meta.get(&r.call_id)
+            && name.starts_with("call_")
+            && matches!(
+                ctx.tools_queue.registry().get_with_source(name),
+                Some((zhuye_tools::ToolSource::Runtime, _))
+            )
+            && let Some(id) = r
+                .metadata
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+            && let Ok(id) = zhuye_protocol::ThreadId::parse_str(id)
+        {
+            child_sessions.push(format!("{}: {id}", name));
+        }
         // v1.9 C3:本 turn 工具证据计数(供中毒会话检测器在 turn 末读取)。
         state.turn_tool_calls += 1;
         if r.is_error {
@@ -609,6 +625,29 @@ pub async fn tool_exec(state: &mut AgentState, ctx: &NodeContext) -> Option<Grap
         .await;
     }
     super::persist_tool_results(ctx, &results, updated_checklist).await;
+    if !child_sessions.is_empty() {
+        // 修复原因:同步工具回执的元数据不发给模型;独立提醒保留会话 ID,
+        // 不改写可能为 JSON 的子代理正文。
+        let text = format!(
+            "<system-reminder>\n子代理会话可在完成后通过相同工具的 session_id 参数继续:\n{}\n</system-reminder>",
+            child_sessions.join("\n")
+        );
+        state
+            .messages
+            .messages
+            .push(ChatMessage::User(zhuye_llm::UserContent {
+                blocks: vec![zhuye_llm::ContentBlock::Text { text: text.clone() }],
+            }));
+        if let Some(rec) = ctx.recorder.as_ref() {
+            let _ = rec
+                .record(zhuye_protocol::RolloutRecord::message(
+                    ctx.turn_id,
+                    zhuye_protocol::MessageRole::User,
+                    serde_json::json!([zhuye_protocol::ContentBlock::text(text)]),
+                ))
+                .await;
+        }
+    }
     if !provenance_labels.is_empty() {
         // 修复原因:将标签插入工具正文会破坏 JSON 等结构化结果,改为在
         // 全批工具回执之后追加独立来源说明,保证调用与结果仍按协议配对。

@@ -9,7 +9,7 @@ use zhuye_llm::ChatMessage;
 use zhuye_protocol::{ContentBlock, Event, EventMsg};
 
 /// 单次 `spawn()` 调用时父↔子数据流的配置。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataTransferConfig {
     /// 从父级 `state.messages` 末尾复制并前置到子 agent 初始 prompt 的消息数;
     /// 若截断边界落在工具结果中,会向前扩展以保留完整调用和结果。
@@ -29,7 +29,7 @@ impl Default for DataTransferConfig {
 }
 
 /// 从子 agent 事件流中挑选回复的策略。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultExtractor {
     /// 取最后一个助手消息的文本;工具调用前的过程文本不进入最终结果。
     LastAssistantText,

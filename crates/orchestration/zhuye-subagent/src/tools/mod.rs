@@ -343,6 +343,7 @@ impl Tool for CallSubAgentTool {
         static DESC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         DESC.get_or_init(|| {
             "Spawn a sub-agent invocation with the given prompt. The sub-agent has its own session and tools; the returned text is its final answer. \
+             Supply session_id from an earlier completed invocation of the same role to continue that sub-agent with its prior context. \
              mode=\"sync\" (default) blocks until the sub-agent finishes. mode=\"async\" returns immediately; the sub-agent keeps running in the background and its result is injected back into the current turn once it completes."
                 .to_string()
         })
@@ -355,6 +356,7 @@ impl Tool for CallSubAgentTool {
             "type": "object",
             "properties": {
                 "prompt": { "type": "string", "description": "The user prompt to send to the sub-agent." },
+                "session_id": { "type": "string", "description": "Optional ID of a completed sub-agent session of this role to continue." },
                 "context_tail": {
                     "type": "integer",
                     "description": "Optional override of the parent's pass_context_messages setting.",
@@ -412,10 +414,29 @@ impl Tool for CallSubAgentTool {
         };
         let parent_tail =
             crate::data_transfer::select_parent_context(parent_history, &ctx.call_id, pass_n);
+        let session_id = match args.get("session_id") {
+            Some(value) => Some(
+                zhuye_protocol::ThreadId::parse_str(value.as_str().ok_or_else(|| {
+                    ToolError::InvalidArgs {
+                        message: "session_id must be a string".into(),
+                    }
+                })?)
+                .map_err(|_| ToolError::InvalidArgs {
+                    message: "invalid session_id".into(),
+                })?,
+            ),
+            None => None,
+        };
         let spawned = tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
-            result = self.factory.spawn(self.spec.clone(), parent_tail, prompt.clone()) =>
+            result = async {
+                if let Some(id) = session_id {
+                    self.factory.follow_up(&self.spec, id, prompt.clone()).await
+                } else {
+                    self.factory.spawn(self.spec.clone(), parent_tail, prompt.clone()).await
+                }
+            } =>
                 result.map_err(ToolError::from)?,
         };
         let child_session_id = spawned.session_id.to_string();

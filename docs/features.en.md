@@ -79,6 +79,13 @@ task budgets and dynamic context can be disabled through configuration;
 provenance can be set to `off`. Explicitly configured isolation fails closed;
 removing isolation configuration restores the shared workspace.
 
+Sub-agent continuation is a built-in orchestration primitive: pass a completed
+session's `session_id` and a new `prompt` to the same `call_<role>` tool to
+retain its history and workspace. Concurrent follow-ups and role mismatches are
+rejected. Sessions live in the parent factory's process, with at most 64 retained;
+evicted sessions and sessions from an earlier process cannot be continued. Each
+follow-up is charged to the current task-tree budget.
+
 Per the root AGENTS.md "form judgment (main loop vs plugin)" iron rule, the
 capabilities **kept built-in** and why:
 
