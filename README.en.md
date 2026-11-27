@@ -1,10 +1,12 @@
-<p align="center">
-  <a href="README.md">中文</a> · <b>English</b>
-</p>
+# ZhuYe
 
 <p align="center"><img src="res/logo.png" alt="Official ZhuYe logo" width="180"></p>
 
-# ZhuYe
+<p align="center">“折烛夜一花，倾与二君子尝。”<br><sub>——《纂异记·嵩岳嫁女》</sub></p>
+
+<p align="center">
+  <a href="README.md">中文</a> · <b>English</b>
+</p>
 
 ZhuYe is an AI agent runtime framework written in Rust. You embed it into your own product, and the agent runs inside your product: reading code, editing files, calling tools, calling models, spawning sub-agents.
 

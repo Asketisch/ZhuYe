@@ -1,10 +1,13 @@
+# 烛夜
+
+<p align="center"><img src="res/logo.png" alt="烛夜官方 logo" width="180"></p>
+
+<p align="center">“折烛夜一花，倾与二君子尝。”<br><sub>——《纂异记·嵩岳嫁女》</sub></p>
+
 <p align="center">
   <b>中文</b> · <a href="README.en.md">English</a>
 </p>
 
-<p align="center"><img src="res/logo.png" alt="烛夜官方 logo" width="180"></p>
-
-# 烛夜 ZhuYe
 
 烛夜是一个 AI agent 运行时框架,用 Rust 编写。你把它嵌进自己的产品,agent 就在你的产品里跑起来:读代码、改文件、调工具、调模型、开子代理。
 
