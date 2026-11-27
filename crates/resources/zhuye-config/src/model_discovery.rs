@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use zhuye_llm::{ModelInfo, ModelRegistry};
 
 use crate::error::ConfigError;
-use crate::schema::{ModelDiscoverySection, ReflectConfig};
+use crate::schema::{ModelDiscoverySection, ZhuyeConfig};
 
 /// `model` 特殊值:运行时从清单里挑一个免费模型。
 pub const MODEL_SPEC_FREE: &str = "free";
@@ -212,7 +212,7 @@ pub fn pick_free_model(
 /// 返回 `Ok(None)` = 该值**不是**动态值(走既有的同步解析路径即可);
 /// 返回 `Ok(Some(spec))` = 已解析成真实的 `"provider/model"` spec。
 pub async fn resolve_dynamic_model(
-    cfg: &ReflectConfig,
+    cfg: &ZhuyeConfig,
     registry: &ModelRegistry,
 ) -> Result<Option<String>, ConfigError> {
     let Some(group) = cfg.active_group() else {
@@ -252,7 +252,7 @@ pub async fn resolve_dynamic_model(
 ///
 /// 这是给调用方(bootstrap / serve / 热重载)用的**统一入口**。
 pub async fn resolve_model_spec(
-    cfg: &ReflectConfig,
+    cfg: &ZhuyeConfig,
     registry: &ModelRegistry,
 ) -> Result<Option<String>, ConfigError> {
     resolve_model_spec_with_env(
@@ -272,7 +272,7 @@ pub async fn resolve_model_spec(
 /// runner 门禁会设 `ZHUYE_MODEL=mock`,直接调 env 版的断言在该环境下
 /// 必假失败)。行为与公开版逐行一致,仅 model 解析改走注入值。
 pub async fn resolve_model_spec_with_env(
-    cfg: &ReflectConfig,
+    cfg: &ZhuyeConfig,
     registry: &ModelRegistry,
     env_provider: Option<&str>,
     env_model: Option<&str>,
@@ -299,7 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn 静态model不触发清单发现() {
-        let cfg = ReflectConfig {
+        let cfg = ZhuyeConfig {
             active: crate::schema::ActiveSection {
                 group: Some("openai".into()),
                 ..Default::default()

@@ -1,5 +1,5 @@
 //! git checkpoint 快照与回退 —— 合并框架 `zhuye-tools/src/checkpoint/snapshot.rs`
-//! 与 Reflect-TUI `git_checkpoint.rs` 双实现。
+//! 与 Zhuye-TUI `git_checkpoint.rs` 双实现。
 //!
 //! ## 为什么必须打 tag
 //!

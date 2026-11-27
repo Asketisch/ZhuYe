@@ -1,4 +1,4 @@
-//! 指令解析测试(移植 Reflect-TUI 的 5 例;原 insta 快照断言按快照内容
+//! 指令解析测试(移植 Zhuye-TUI 的 5 例;原 insta 快照断言按快照内容
 //! 展开为显式字符串断言,避免引入 insta 依赖)。
 
 use super::*;
@@ -45,7 +45,7 @@ fn renders_code_comment_directives_as_markdown() {
             "Found two issues.\n\n",
             r#"::code-comment{title="Fix body= parsing" body="Keep role=\"tab\", ::git-stage{cwd=/tmp}, file=, and \n literal." file="/repo/src/app.ts" start=10 end=12 priority="P2"}"#,
             "\n\n",
-            r#":::code-comment{title="[P1] Clamp the range" body="The line range should match the App." file="reflect/src/range.ts" start=8 end=2 priority=3}"#,
+            r#":::code-comment{title="[P1] Clamp the range" body="The line range should match the App." file="zhuye/src/range.ts" start=8 end=2 priority=3}"#,
         ),
         Path::new("/repo"),
     );
@@ -56,7 +56,7 @@ fn renders_code_comment_directives_as_markdown() {
         "Found two issues.\n\n\
          - [P2] Fix body= parsing — src/app.ts:10-12\n  \
          Keep role=\"tab\", ::git-stage{cwd=/tmp}, file=, and \\n literal.\n\n\
-         - [P1] Clamp the range — reflect/src/range.ts:8\n  \
+         - [P1] Clamp the range — zhuye/src/range.ts:8\n  \
          The line range should match the App."
     );
     assert!(parsed.git_actions.is_empty());

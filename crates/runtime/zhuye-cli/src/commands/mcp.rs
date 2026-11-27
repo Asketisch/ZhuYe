@@ -11,8 +11,7 @@ use anyhow::{Context, anyhow};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 use zhuye_config::{
-    McpServerEntry, McpServersSection, McpTransport, ReflectConfig, default_config_path,
-    load_default,
+    McpServerEntry, McpServersSection, McpTransport, ZhuyeConfig, default_config_path, load_default,
 };
 use zhuye_mcp::{
     McpConnectionManager, McpLifecycleEvent, curated_catalog, find_entry, install_hint,
@@ -158,7 +157,7 @@ pub fn show(name: &str) -> anyhow::Result<()> {
 }
 
 /// `show_in` 是 `show` 的纯函数版本(接受 cfg 作为参数),便于测试。
-pub fn show_in(cfg: &ReflectConfig, name: &str) -> anyhow::Result<()> {
+pub fn show_in(cfg: &ZhuyeConfig, name: &str) -> anyhow::Result<()> {
     let entry = cfg
         .mcp_servers
         .servers
@@ -265,9 +264,9 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Test helper: 在 tmpdir 构造一个 ReflectConfig 并 add 一个 stdio entry。
+/// Test helper: 在 tmpdir 构造一个 ZhuyeConfig 并 add 一个 stdio entry。
 #[cfg(test)]
-pub(crate) fn add_test_server(cfg: &mut ReflectConfig, name: &str, command: &str) {
+pub(crate) fn add_test_server(cfg: &mut ZhuyeConfig, name: &str, command: &str) {
     cfg.mcp_servers.servers.insert(
         name.into(),
         McpServerEntry {
@@ -286,7 +285,7 @@ pub(crate) fn add_test_server(cfg: &mut ReflectConfig, name: &str, command: &str
 
 /// Test helper: 把 cfg 写到 tmpdir config.toml 并返回 path。
 #[cfg(test)]
-pub(crate) fn write_to_tmp(cfg: &ReflectConfig, tmp: &tempfile::TempDir) -> std::path::PathBuf {
+pub(crate) fn write_to_tmp(cfg: &ZhuyeConfig, tmp: &tempfile::TempDir) -> std::path::PathBuf {
     let path = tmp.path().join(".zhuye").join("config.toml");
     login::write_config_to(cfg, &path).unwrap();
     path
@@ -304,7 +303,7 @@ mod tests {
     #[test]
     fn mcp_add_stdio_writes_to_config() {
         let tmp = tmpdir();
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         add_test_server(&mut cfg, "fs", "npx");
         let path = write_to_tmp(&cfg, &tmp);
 
@@ -319,7 +318,7 @@ mod tests {
     #[test]
     fn mcp_add_http_writes_url_and_headers() {
         let tmp = tmpdir();
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         cfg.mcp_servers.servers.insert(
             "github".into(),
             McpServerEntry {
@@ -356,7 +355,7 @@ mod tests {
     /// add 重名 → Err(由 caller 检查,这里是单元层测直接 `mcp_servers.contains_key`)。
     #[test]
     fn mcp_add_rejects_duplicate_at_data_layer() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         add_test_server(&mut cfg, "x", "npx");
         // 直接调 add_test_server 二次会覆盖;这里测的是业务逻辑的 contains_key 检查,
         // 走 `add` 函数路径更准确(在 integration 测试里覆盖)。
@@ -366,7 +365,7 @@ mod tests {
     /// remove 删 entry,其它 entry 不动。
     #[test]
     fn mcp_remove_clears_entry_only() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         add_test_server(&mut cfg, "a", "npx");
         add_test_server(&mut cfg, "b", "cat");
         assert!(cfg.mcp_servers.servers.remove("a").is_some());
@@ -392,7 +391,7 @@ mod tests {
     /// show 把 entry 序列化为完整 TOML。
     #[test]
     fn show_pretty_prints_one_server() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         add_test_server(&mut cfg, "fs", "npx");
         let result = show_in(&cfg, "fs");
         assert!(result.is_ok());
@@ -401,7 +400,7 @@ mod tests {
     /// show 找不到 → Err。
     #[test]
     fn show_unknown_server_errors() {
-        let cfg = ReflectConfig::default();
+        let cfg = ZhuyeConfig::default();
         let result = show_in(&cfg, "nonexistent");
         assert!(result.is_err());
     }

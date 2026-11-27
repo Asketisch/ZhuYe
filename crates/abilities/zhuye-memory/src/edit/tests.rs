@@ -1,4 +1,4 @@
-//! 条目级编辑测试(收编 ReflectDesktop memory_store/tests.rs 的 7 例,
+//! 条目级编辑测试(收编 ZhuYe-Desktop memory_store/tests.rs 的 7 例,
 //! 适配框架 API:scope 枚举 + `EntryWriteOptions` + `MemoryError`)。
 
 use super::*;
@@ -229,19 +229,19 @@ fn migrate_legacy_agent_dir_moves_only_when_target_absent() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
-    let legacy = resolve_path(MemoryScope::User, dir.path(), &home, "reflect").unwrap();
+    let legacy = resolve_path(MemoryScope::User, dir.path(), &home, "legacy").unwrap();
     std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
     std::fs::write(&legacy, "legacy memory").unwrap();
     let target = resolve_path(MemoryScope::User, dir.path(), &home, "coder").unwrap();
 
-    migrate_legacy_agent_dir(dir.path(), &home, "reflect", "coder");
+    migrate_legacy_agent_dir(dir.path(), &home, "legacy", "coder");
     assert!(!legacy.exists(), "迁移后源文件应已移走");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "legacy memory");
 
     // 目标已存在 → 不覆盖(用户新写的记忆优先)。
     std::fs::write(&legacy, "again").unwrap();
     std::fs::write(&target, "newer").unwrap();
-    migrate_legacy_agent_dir(dir.path(), &home, "reflect", "coder");
+    migrate_legacy_agent_dir(dir.path(), &home, "legacy", "coder");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "newer");
     assert!(legacy.exists(), "目标存在时源文件保留");
 

@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 /// 注:不再 derive `Eq` —— 模型组的 `temperature: Option<f32>`
 /// 不实现 `Eq`;`PartialEq` 已覆盖所有既有用法(断言比较)。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct ReflectConfig {
+pub struct ZhuyeConfig {
     #[serde(default)]
     pub active: ActiveSection,
     /// 新会话使用的提示词选择策略。
@@ -197,7 +197,7 @@ fn default_config_version() -> u32 {
     1
 }
 
-impl ReflectConfig {
+impl ZhuyeConfig {
     /// v1.10 功能3:`[context_windows]` 表的原始条目(未合并
     /// `[model].context_window`)。供 `apply_to_registry` 同步进
     /// `zhuye_llm` 进程级全局覆盖表。
@@ -317,7 +317,7 @@ impl ReflectConfig {
     }
 }
 
-impl Default for ReflectConfig {
+impl Default for ZhuyeConfig {
     fn default() -> Self {
         Self {
             active: ActiveSection::default(),
@@ -584,7 +584,7 @@ impl ModelSection {
 /// `[context_windows]` 段:per-model 上下文窗口覆盖表。
 ///
 /// 优先级:该表 > 内置 `context_window_for` 静态回退表 > `None`。
-/// key 不区分大小写(TOML 解析后 `ReflectConfig::context_window_overrides` 会 lowercase)。
+/// key 不区分大小写(TOML 解析后 `ZhuyeConfig::context_window_overrides` 会 lowercase)。
 ///
 /// 支持两种 TOML 写法:
 /// 1. 扁平 key/value(推荐):

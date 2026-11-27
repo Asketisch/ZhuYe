@@ -167,7 +167,7 @@ pub async fn run(check_network: bool, dump_config: bool) -> anyhow::Result<()> {
 ///
 /// 仅验证网络可达性,不发认证请求;对 401/403 之类无需区分(那是
 /// `zhuye exec` 真实调用阶段的事)。Ollama 走明文 http,云厂商走 https。
-fn probe_provider_network(cfg: &zhuye_config::ReflectConfig, provider: &str) {
+fn probe_provider_network(cfg: &zhuye_config::ZhuyeConfig, provider: &str) {
     use std::net::TcpStream;
     use std::time::Duration;
 
@@ -202,7 +202,7 @@ fn probe_provider_network(cfg: &zhuye_config::ReflectConfig, provider: &str) {
 ///
 /// 组 id 不再决定厂商 —— 组自带 `endpoint`(openai / anthropic / ollama),
 ///默认地址按 endpoint 走;组未声明 endpoint 时按 id 兜底。
-fn active_base_url(cfg: &zhuye_config::ReflectConfig, group_id: &str) -> Option<String> {
+fn active_base_url(cfg: &zhuye_config::ZhuyeConfig, group_id: &str) -> Option<String> {
     let group = cfg.model_group.iter().find(|g| g.id.trim() == group_id);
     let group_url = group.and_then(|g| g.base_url.clone());
     let endpoint = group
@@ -244,7 +244,7 @@ fn parse_host_port(url: &str) -> anyhow::Result<(String, u16)> {
 use std::net::ToSocketAddrs;
 
 /// MCP 配置校验 + 摘要。
-fn check_mcp(cfg: &zhuye_config::ReflectConfig) {
+fn check_mcp(cfg: &zhuye_config::ZhuyeConfig) {
     if cfg.mcp_servers.servers.is_empty() {
         println!("[skip]   mcp       no [mcp_servers.*] configured");
         return;
@@ -289,7 +289,7 @@ fn check_mcp(cfg: &zhuye_config::ReflectConfig) {
 }
 
 /// LSP 配置摘要。
-fn check_lsp(cfg: &zhuye_config::ReflectConfig) {
+fn check_lsp(cfg: &zhuye_config::ZhuyeConfig) {
     if cfg.lsp_servers.servers.is_empty() {
         println!("[skip]   lsp       no [lsp_servers.*] configured");
         return;
@@ -313,7 +313,7 @@ fn check_lsp(cfg: &zhuye_config::ReflectConfig) {
 }
 
 /// P2/P3 集成 stub 摘要行。
-fn check_integration_stubs(cfg: &zhuye_config::ReflectConfig) {
+fn check_integration_stubs(cfg: &zhuye_config::ZhuyeConfig) {
     use zhuye_config::analytics_status_line;
     use zhuye_integration::notifications::WebhookNotifier;
     use zhuye_stream::PostgresSessionConfig;
@@ -352,7 +352,7 @@ fn check_integration_stubs(cfg: &zhuye_config::ReflectConfig) {
 }
 
 /// 已安装 / 已启用 plugin 摘要。
-fn check_plugins(cfg: &zhuye_config::ReflectConfig) {
+fn check_plugins(cfg: &zhuye_config::ZhuyeConfig) {
     let enabled = cfg.plugins.enabled_plugins.len();
     let root = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".zhuye").join("plugins"));
@@ -415,7 +415,7 @@ fn run_probe_with_timeout(
 }
 
 #[cfg(test)]
-fn snapshot_summary(cfg: &zhuye_config::ReflectConfig) -> String {
+fn snapshot_summary(cfg: &zhuye_config::ZhuyeConfig) -> String {
     let mut out = String::new();
     let group_ids: Vec<&str> = cfg.model_group.iter().map(|g| g.id.as_str()).collect();
     out.push_str(&format!(
@@ -438,7 +438,7 @@ fn snapshot_summary(cfg: &zhuye_config::ReflectConfig) -> String {
 /// 插件 / 沙箱 / 预算 / 思考强度 / agent 定义目录 / 数据目录。
 /// 机器可读(`zhuye doctor --dump-config | jq`),供排障与「到底是什么
 /// 在生效」的一眼回答。
-fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value {
+fn dump_effective_config(cfg: &zhuye_config::ZhuyeConfig) -> serde_json::Value {
     use serde_json::json;
 
     // provider / model:解析后的生效值(env 优先级已含)。
@@ -549,7 +549,7 @@ fn dump_effective_config(cfg: &zhuye_config::ReflectConfig) -> serde_json::Value
 mod tests {
     use super::*;
     use anyhow::Context;
-    use zhuye_config::{ModelGroupSection, ReflectConfig};
+    use zhuye_config::{ModelGroupSection, ZhuyeConfig};
 
     #[tokio::test]
     async fn doctor_runs_without_panic_with_default() {
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn snapshot_summary_lists_present_sections() {
-        let cfg = ReflectConfig {
+        let cfg = ZhuyeConfig {
             model_group: vec![ModelGroupSection {
                 id: "anthropic".into(),
                 endpoint: "anthropic".into(),
@@ -611,7 +611,7 @@ mod tests {
     fn dump_effective_config_脱敏凭据只出布尔() {
         use zhuye_config::schema::CredentialConfig;
         const SECRET: &str = "sk-ant-super-secret-doctor-test";
-        let cfg = ReflectConfig {
+        let cfg = ZhuyeConfig {
             model_group: vec![ModelGroupSection {
                 id: "anthropic".into(),
                 endpoint: "anthropic".into(),
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn dump_effective_config_路由与复杂度映射() {
         use zhuye_config::schema::agent::{ComplexityRoutes, RoutingSection, SpecSlotConfig};
-        let cfg = ReflectConfig {
+        let cfg = ZhuyeConfig {
             routing: Some(RoutingSection {
                 main: SpecSlotConfig {
                     primary: Some("anthropic/claude-x".into()),
@@ -690,13 +690,13 @@ mod tests {
             "未配置档位应为 null(回退 primary)"
         );
         // 无 routing 段时整体仍可 dump 且不 panic。
-        let empty = dump_effective_config(&ReflectConfig::default());
+        let empty = dump_effective_config(&ZhuyeConfig::default());
         assert_eq!(empty["routing"]["main"]["primary"], serde_json::Value::Null);
     }
 
     #[test]
     fn config_serializes_for_inspection() {
-        let cfg = ReflectConfig::default();
+        let cfg = ZhuyeConfig::default();
         let s = toml::to_string_pretty(&cfg)
             .context("serialize default cfg")
             .unwrap();
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn active_base_url_uses_group_then_endpoint_defaults() {
-        let cfg = ReflectConfig {
+        let cfg = ZhuyeConfig {
             model_group: vec![ModelGroupSection {
                 id: "anthropic".into(),
                 endpoint: "anthropic".into(),

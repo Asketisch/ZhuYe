@@ -1,4 +1,4 @@
-//! `ReflectConfig → ModelRegistry` 转换。
+//! `ZhuyeConfig → ModelRegistry` 转换。
 //!
 //! ## 模型组是唯一的接入单元
 //!
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use zhuye_llm::{CredentialPool, MockClient, ModelRegistry, PoolEntry};
 
 use crate::error::ConfigError;
-use crate::schema::{ModelGroupSection, ReflectConfig, SpecSlotConfig};
+use crate::schema::{ModelGroupSection, SpecSlotConfig, ZhuyeConfig};
 
 pub(crate) use pools::{
     build_group_pool, build_subagent_anthropic_pool, build_subagent_ollama_pool,
@@ -45,7 +45,7 @@ pub use shapes::{LspServerConfigShape, McpServerConfigShape};
 pub(crate) const ENV_ZHUYE_PROVIDER: &str = "ZHUYE_PROVIDER";
 pub(crate) const ENV_ZHUYE_MODEL: &str = "ZHUYE_MODEL";
 
-impl ReflectConfig {
+impl ZhuyeConfig {
     /// 构造一个新的 `ModelRegistry`,把本配置中所有可用模型组注册进去。
     pub fn to_registry(&self) -> Result<ModelRegistry, ConfigError> {
         self.to_registry_with_env(
@@ -501,7 +501,7 @@ impl RoutingPolicyExt for zhuye_llm::RoutingPolicy {
 ///
 /// 只用于**已知组名**的判定 —— 别名映射到 `anthropic` / `openai` /
 /// `ollama` / `mock`,而这些名字是否是真正的组由调用方用
-/// [`ReflectConfig::group_id_exists`] 复核。
+/// [`ZhuyeConfig::group_id_exists`] 复核。
 fn canonical_group(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "anthropic" | "claude" => Some("anthropic"),

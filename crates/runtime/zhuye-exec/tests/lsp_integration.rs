@@ -16,7 +16,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use zhuye_config::{LspFilePattern, LspServerEntry, LspServersSection, ReflectConfig};
+use zhuye_config::{LspFilePattern, LspServerEntry, LspServersSection, ZhuyeConfig};
 use zhuye_lsp::{LspConnectionManager, LspLifecycleEvent, LspTool};
 use zhuye_protocol::{Event, EventMsg, LspServerFailedEvent, LspServerStartedEvent};
 use zhuye_tools::{ToolContext, ToolRegistry, ToolSource};
@@ -52,8 +52,8 @@ fn make_cfg(_name: &str, command: &str) -> LspServerEntry {
     }
 }
 
-fn make_reflect_config(entries: &[(&str, &str)]) -> ReflectConfig {
-    let mut cfg = ReflectConfig::default();
+fn make_zhuye_config(entries: &[(&str, &str)]) -> ZhuyeConfig {
+    let mut cfg = ZhuyeConfig::default();
     let mut servers = HashMap::new();
     for (name, cmd) in entries {
         servers.insert(name.to_string(), make_cfg(name, cmd));
@@ -63,7 +63,7 @@ fn make_reflect_config(entries: &[(&str, &str)]) -> ReflectConfig {
 }
 
 async fn start_manager(
-    cfg: &ReflectConfig,
+    cfg: &ZhuyeConfig,
 ) -> (
     Arc<ToolRegistry>,
     Arc<LspConnectionManager>,
@@ -152,7 +152,7 @@ async fn lsp_definition_returns_location_via_mock() {
     let a_rs = tmp.path().join("a.rs");
     std::fs::write(&a_rs, "fn foo() {}\nfn bar() { foo(); }\n").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());
@@ -192,7 +192,7 @@ async fn lsp_references_returns_array() {
     let a_rs = tmp.path().join("a.rs");
     std::fs::write(&a_rs, "fn foo() {}\nfn bar() { foo(); }\n").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());
@@ -227,7 +227,7 @@ async fn lsp_hover_returns_markdown() {
     let a_rs = tmp.path().join("a.rs");
     std::fs::write(&a_rs, "fn foo() {}\n").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());
@@ -262,7 +262,7 @@ async fn lsp_unsupported_file_path_returns_invalid_args() {
     let md = tmp.path().join("readme.md");
     std::fs::write(&md, "# hello").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());
@@ -298,7 +298,7 @@ async fn lsp_unknown_action_errors() {
     let a_rs = tmp.path().join("a.rs");
     std::fs::write(&a_rs, "fn foo() {}\n").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());
@@ -329,7 +329,7 @@ async fn lsp_unknown_action_errors() {
 
 #[tokio::test]
 async fn lsp_bad_binary_emits_failed_event() {
-    let cfg = make_reflect_config(&[("broken", "/this/binary/does/not/exist")]);
+    let cfg = make_zhuye_config(&[("broken", "/this/binary/does/not/exist")]);
     let (_tools, _manager, mut event_rx) = start_manager(&cfg).await;
     // Failed event 应已被推。
     let mut found_failed = false;
@@ -363,7 +363,7 @@ async fn lsp_document_symbol_returns_nested() {
     let a_rs = tmp.path().join("a.rs");
     std::fs::write(&a_rs, "fn foo() {}\nlet bar = 1;\n").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());
@@ -401,7 +401,7 @@ async fn lsp_completion_returns_list() {
     let a_rs = tmp.path().join("a.rs");
     std::fs::write(&a_rs, "fn foo() {}\nfn bar() {}\n").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());
@@ -439,7 +439,7 @@ async fn lsp_signature_help_returns_signatures() {
     let a_rs = tmp.path().join("a.rs");
     std::fs::write(&a_rs, "fn foo(a: i32, b: &str) {}\n").unwrap();
 
-    let cfg = make_reflect_config(&[("mock", &mock_binary_path().to_string_lossy())]);
+    let cfg = make_zhuye_config(&[("mock", &mock_binary_path().to_string_lossy())]);
     let (tools, _manager, _rx) = start_manager(&cfg).await;
     let tool = tools.get("lsp").expect("lsp tool");
     let ctx = ctx_for(tmp.path());

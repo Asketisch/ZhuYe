@@ -250,7 +250,7 @@ fn build_tool_registries(
 /// 每个 participant 都能注册 DiscussionToolSet + SubAgentFactory 可建。
 ///
 /// 任意一步失败返 `None`,调用方降级 `run_noop`。**不读**任何环境变量 —— 全
-/// 委托给 `zhuye_config::ReflectConfig::load_default`(已实现 env 优先于
+/// 委托给 `zhuye_config::ZhuyeConfig::load_default`(已实现 env 优先于
 /// TOML, TOML 优先于内置默认),保证与 `zhuye-exec` / `zhuye-tui` 的
 /// provider 选择行为完全一致。
 ///
@@ -484,7 +484,7 @@ system_prompt = "x"
     // ── try_build_llm_orchestrator(env 依赖) ────────────────────────────────
     //
     // 这些测试依赖环境变量;实际 CI / 本地 dev 环境差异大,只断言「无 provider 时返 None」。
-    // 想测 Some 路径必须写 ReflectConfig 配置文件或 set env,但 env 在 cargo test 并行下
+    // 想测 Some 路径必须写 ZhuyeConfig 配置文件或 set env,但 env 在 cargo test 并行下
     // 不安全 —— 留作手动 smoke。状态机 + wiring 的核心验证在
     // `crates/zhuye-discussion/tests/discussion_llm_e2e.rs`。
 
@@ -493,7 +493,7 @@ system_prompt = "x"
     /// 必须返 `None`(降级 noop 路径)。
     ///
     /// 注:不强制清 env,这样测试与本地 dev 配置兼容 —— 只要 env 没设关键变量,
-    /// `ReflectConfig::active_group()` 走 `None` 路径即 OK。
+    /// `ZhuyeConfig::active_group()` 走 `None` 路径即 OK。
     // `try_build_llm_orchestrator` 是 async(内部要 await 模型解析),
     // 故本用例必须 async —— 否则 `.await` 落在同步 fn 里编译不过
     // (E0728:await is only allowed inside async functions)。
@@ -501,7 +501,7 @@ system_prompt = "x"
     async fn try_build_returns_none_when_no_provider() {
         // SAFETY: 用 mutex 串行化避免与并行测试互相覆盖 env。简单起见,
         // 这里仅在大概率无 env 环境下断言;若用户本地真有 OPENAI_API_KEY,
-        // 该测试仍会通过(只要 ReflectConfig::resolved_model_spec 返回 Some 就不会 fail)。
+        // 该测试仍会通过(只要 ZhuyeConfig::resolved_model_spec 返回 Some 就不会 fail)。
         // 我们反着断言:仅当 config 拿不到 model spec 时返 None。
         let cfg = zhuye_config::load_default();
         if cfg.resolved_model_spec().is_none() {

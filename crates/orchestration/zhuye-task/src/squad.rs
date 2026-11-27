@@ -1,4 +1,4 @@
-//! Squad + Leader 委派 —— 多 agent 小组的语义层(WP10 收编 ReflectDesktop
+//! Squad + Leader 委派 —— 多 agent 小组的语义层(WP10 收编 ZhuYe-Desktop
 //! `app-core/src/squad.rs`)。
 //!
 //! Squad = 一组 agent + 一个 leader,leader 把任务派给成员。直接复用本

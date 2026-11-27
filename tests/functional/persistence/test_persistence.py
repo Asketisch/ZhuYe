@@ -273,7 +273,7 @@ def test_P7_导出稿含Usage段与模型级拆分(serve_session, mock_script, s
     (per-model 表 / token 总量),不再走 4000 字符截断的 Pill 预览版。
 
     依据:crates/resources/zhuye-rollout/src/export.rs
-    `render_transcript` / `render_usage_section`(收编自 ReflectDesktop)。
+    `render_transcript` / `render_usage_section`(收编自 ZhuYe-Desktop)。
     """
     require_binary()
     # mock 两轮:第一轮普通文本,第二轮触发一次 bash 工具调用(带 token_count)。

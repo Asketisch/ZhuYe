@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn has_now_reflects_queue_state() {
+    fn has_now_mirrors_queue_state() {
         let mut q = SteeringQueue::new();
         assert!(!q.has_now());
         q.push(SteeringPriority::Now, vec![]);
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn has_step_reflects_queue_state() {
+    fn has_step_mirrors_queue_state() {
         let mut q = SteeringQueue::new();
         assert!(!q.has_step());
         q.push_step(text("s"));

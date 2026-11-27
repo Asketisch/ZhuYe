@@ -6,7 +6,7 @@
 > single `zhuye` binary is produced by the `zhuye-cli` crate and has
 > 22 top-level subcommands, **no `tui` subcommand** (the TUI has been
 > split out into the separate repository
-> [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI)), and **no
+> [Zhuye-TUI](https://cnb.cool/Demon1019/Zhuye-CLI)), and **no
 > `import` subcommand either**. For the complete parameter list of each
 > command,
 > use `zhuye <command> --help`.
@@ -137,7 +137,7 @@ directory itself as the install location, and `remove` will execute
 
 ## Standalone binaries
 
-- **Reflect-TUI**: the TUI binary provided by a separate repository;
+- **Zhuye-TUI**: the TUI binary provided by a separate repository;
   the `zhuye` binary in this core repo has no `tui` subcommand.
 
 ## Global parameters & environment

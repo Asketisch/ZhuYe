@@ -2,8 +2,8 @@
 
 use anyhow::{Context, anyhow};
 use zhuye_config::{
-    CompactSection, HooksSection, ModelGroupSection, ModelSection, PromptGuardSection,
-    ReflectConfig, default_config_path, load_default,
+    CompactSection, HooksSection, ModelGroupSection, ModelSection, PromptGuardSection, ZhuyeConfig,
+    default_config_path, load_default,
 };
 
 use super::login;
@@ -15,13 +15,13 @@ pub fn show(reveal: bool) -> anyhow::Result<()> {
     let path = default_config_path();
 
     println!(
-        "# ReflectConfig @ {}",
+        "# ZhuyeConfig @ {}",
         path.as_ref()
             .map_or_else(|| "<no HOME>".into(), |p| p.display().to_string())
     );
     println!();
 
-    let toml_str = toml::to_string_pretty(&cfg).context("serialize ReflectConfig")?;
+    let toml_str = toml::to_string_pretty(&cfg).context("serialize ZhuyeConfig")?;
     let rendered = if reveal {
         toml_str
     } else {
@@ -65,7 +65,7 @@ pub fn edit() -> anyhow::Result<()> {
     let path = default_config_path().ok_or_else(|| anyhow!("HOME unset"))?;
     if !path.exists() {
         // 若文件不存在,先用 default 序列化创建一份,避免空编辑。
-        let cfg = ReflectConfig::default();
+        let cfg = ZhuyeConfig::default();
         login::write_config_to(&cfg, &path)?;
     }
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
@@ -127,7 +127,7 @@ fn allowed_keys_hint() -> String {
 }
 
 /// `apply_set` 把 `key = value` 写入 `cfg`,返回 Err 表示未知 key。
-fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), String> {
+fn apply_set(cfg: &mut ZhuyeConfig, key: &str, value: &str) -> Result<(), String> {
     match key {
         "active.group" => cfg.active.group = Some(value.to_string()),
         "anthropic.api_key" => group_mut(cfg, "anthropic").api_key = Some(value.to_string()),
@@ -213,7 +213,7 @@ fn apply_set(cfg: &mut ReflectConfig, key: &str, value: &str) -> Result<(), Stri
 }
 
 /// `apply_unset` 把 key 对应字段重置回 None / ""(区分 Option vs String)。
-fn apply_unset(cfg: &mut ReflectConfig, key: &str) -> Result<(), String> {
+fn apply_unset(cfg: &mut ZhuyeConfig, key: &str) -> Result<(), String> {
     match key {
         "active.group" => cfg.active.group = None,
         "anthropic.api_key" => group_mut(cfg, "anthropic").api_key = None,
@@ -252,7 +252,7 @@ fn apply_unset(cfg: &mut ReflectConfig, key: &str) -> Result<(), String> {
 
 /// 返回同名 id 的模型组的 mutable 引用,缺失则新建一个(endpoint 与 id
 /// 同名)后再返回。
-fn group_mut<'a>(cfg: &'a mut ReflectConfig, id: &str) -> &'a mut ModelGroupSection {
+fn group_mut<'a>(cfg: &'a mut ZhuyeConfig, id: &str) -> &'a mut ModelGroupSection {
     if let Some(pos) = cfg.model_group.iter().position(|g| g.id.trim() == id) {
         return &mut cfg.model_group[pos];
     }
@@ -265,19 +265,19 @@ fn group_mut<'a>(cfg: &'a mut ReflectConfig, id: &str) -> &'a mut ModelGroupSect
 }
 
 /// 读同名 id 的模型组(不存在 → 全空默认值)。
-fn group(cfg: &ReflectConfig, id: &str) -> ModelGroupSection {
+fn group(cfg: &ZhuyeConfig, id: &str) -> ModelGroupSection {
     cfg.model_group
         .iter()
         .find(|g| g.id.trim() == id)
         .cloned()
         .unwrap_or_default()
 }
-fn model_mut(cfg: &mut ReflectConfig) -> &mut ModelSection {
+fn model_mut(cfg: &mut ZhuyeConfig) -> &mut ModelSection {
     cfg.model.get_or_insert_with(ModelSection::default)
 }
 
 /// `current_value_of` 返回该 key 当前值(redact api_key)。
-fn current_value_of(cfg: &ReflectConfig, key: &str) -> String {
+fn current_value_of(cfg: &ZhuyeConfig, key: &str) -> String {
     let v = match key {
         "active.group" => cfg.active.group.clone().unwrap_or_default(),
         "anthropic.api_key" => group(cfg, "anthropic")
@@ -447,7 +447,7 @@ model = "claude-3-5-sonnet-latest"
     /// set 写入并能 read 回(落到同名 id 的模型组)。
     #[test]
     fn set_anthropic_model_updates_field() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_set(&mut cfg, "anthropic.model", "claude-3-haiku-20240307").unwrap();
         assert_eq!(cfg.model_group.len(), 1);
         assert_eq!(cfg.model_group[0].id, "anthropic");
@@ -461,7 +461,7 @@ model = "claude-3-5-sonnet-latest"
     /// `active.group` 写活跃模型组 id。
     #[test]
     fn set_active_group_updates_field() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_set(&mut cfg, "active.group", "my-glm").unwrap();
         assert_eq!(cfg.active.group.as_deref(), Some("my-glm"));
     }
@@ -469,7 +469,7 @@ model = "claude-3-5-sonnet-latest"
     /// 未知 key 拒绝。
     #[test]
     fn set_unknown_key_rejected() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         let r = apply_set(&mut cfg, "totally.unknown.key", "x");
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("unknown key"));
@@ -478,7 +478,7 @@ model = "claude-3-5-sonnet-latest"
     /// unset 重置 Option 字段为 None。
     #[test]
     fn unset_ollama_model_resets_to_none() {
-        let mut cfg = ReflectConfig {
+        let mut cfg = ZhuyeConfig {
             model_group: vec![zhuye_config::ModelGroupSection {
                 id: "ollama".into(),
                 endpoint: "ollama".into(),
@@ -494,7 +494,7 @@ model = "claude-3-5-sonnet-latest"
     /// `compact.trigger_tokens` 与 `hooks.enabled` 也能 set / unset。
     #[test]
     fn set_compact_and_hooks() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_set(&mut cfg, "compact.trigger_tokens", "12345").unwrap();
         assert_eq!(cfg.compact.trigger_tokens, Some(12_345));
         apply_set(&mut cfg, "hooks.enabled", "search_budget, verification").unwrap();
@@ -510,7 +510,7 @@ model = "claude-3-5-sonnet-latest"
     /// 坏值拒绝 / current_value_of 未配置显示默认 true。
     #[test]
     fn set_prompt_guard_enabled_roundtrip() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         assert_eq!(current_value_of(&cfg, "prompt_guard.enabled"), "true");
         apply_set(&mut cfg, "prompt_guard.enabled", "false").unwrap();
         assert_eq!(
@@ -531,7 +531,7 @@ model = "claude-3-5-sonnet-latest"
     /// current_value_of 对未配置项返回 `<unset>`。
     #[test]
     fn current_value_of_handles_unset() {
-        let cfg = ReflectConfig::default();
+        let cfg = ZhuyeConfig::default();
         assert_eq!(current_value_of(&cfg, "anthropic.model"), "<unset>");
         assert_eq!(current_value_of(&cfg, "unknown"), "(unknown)");
     }
@@ -542,7 +542,7 @@ model = "claude-3-5-sonnet-latest"
         let dir = tmpdir();
         // 把 HOME 临时改成 tmpdir;但 env 修改全局状态,可能影响并行测试 → 跳过这个 case,
         // 改测 write_config_to 直写路径。
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_set(&mut cfg, "anthropic.model", "gpt-4o-mini").unwrap();
         let path = dir.path().join(".zhuye").join("config.toml");
         login::write_config_to(&cfg, &path).unwrap();

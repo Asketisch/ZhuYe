@@ -77,7 +77,7 @@ pub(crate) fn override_test_lock() -> &'static std::sync::Mutex<()> {
 
 /// v1.10 功能3:全量替换运行时 override 表(键会先归一化再存入)。
 ///
-/// 由 `zhuye-config::ReflectConfig::apply_to_registry`(bootstrap 与
+/// 由 `zhuye-config::ZhuyeConfig::apply_to_registry`(bootstrap 与
 /// 热重载的公共 choke point)调用;传空 map 即清空(回到纯静态表)。
 pub fn set_context_window_overrides(entries: &HashMap<String, u32>) {
     let normalized: HashMap<String, u32> = entries

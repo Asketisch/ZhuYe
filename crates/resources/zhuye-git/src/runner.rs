@@ -1,4 +1,4 @@
-//! 有界命令执行抽象 —— 移植 Reflect-TUI `tui_core/workspace_command.rs`
+//! 有界命令执行抽象 —— 移植 Zhuye-TUI `tui_core/workspace_command.rs`
 //! 的 `WorkspaceCommandExecutor`。
 //!
 //! TUI 版的设计要点原样保留:**探测逻辑只与 trait 对话,不直接用

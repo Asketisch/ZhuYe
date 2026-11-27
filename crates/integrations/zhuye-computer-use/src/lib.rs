@@ -1,4 +1,4 @@
-//! `zhuye-computer-use` — Computer Use 抽象层(WP15 收编 ReflectDesktop
+//! `zhuye-computer-use` — Computer Use 抽象层(WP15 收编 ZhuYe-Desktop
 //! `app-core/src/media.rs` 的 Computer Use 半部 + `src-tauri/src/media_backend.rs`
 //! 的真实后端)。
 //!

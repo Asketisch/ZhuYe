@@ -6,9 +6,9 @@ use super::*;
 #[test]
 fn prompt_selection_config_defaults_and_roundtrips() {
     use zhuye_protocol::PromptSelection;
-    let default: ReflectConfig = toml::from_str("").unwrap();
+    let default: ZhuyeConfig = toml::from_str("").unwrap();
     assert_eq!(default.prompts, PromptSelection::Default);
-    let config: ReflectConfig =
+    let config: ZhuyeConfig =
         toml::from_str("[prompts]\nmode = 'manual'\nprofile = 'claude'\n").unwrap();
     assert_eq!(
         config.prompts,
@@ -17,7 +17,7 @@ fn prompt_selection_config_defaults_and_roundtrips() {
         }
     );
     let saved = toml::to_string(&config).unwrap();
-    let restored: ReflectConfig = toml::from_str(&saved).unwrap();
+    let restored: ZhuyeConfig = toml::from_str(&saved).unwrap();
     assert_eq!(restored.prompts, config.prompts);
 }
 
@@ -26,14 +26,14 @@ fn prompt_selection_config_defaults_and_roundtrips() {
 /// Phase 2:`[hooks]` 块空 → `read_before_edit = None`(默认行为)。
 #[test]
 fn hooks_section_without_read_before_edit_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[hooks]\nenabled = []\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[hooks]\nenabled = []\n").unwrap();
     assert!(cfg.hooks.read_before_edit.is_none());
 }
 
 /// Phase 2:`[hooks.read_before_edit]` 显式块解析为完整 section。
 #[test]
 fn hooks_section_parses_read_before_edit_with_values() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [hooks.read_before_edit]
         enabled = true
@@ -52,14 +52,14 @@ fn hooks_section_parses_read_before_edit_with_values() {
 /// `[web_search]` 段缺失时 → `None`(向后兼容)。
 #[test]
 fn web_search_section_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.web_search.is_none());
 }
 
 /// `[web_search].api_key` 显式配置 → 解析为 `Some`。
 #[test]
 fn web_search_section_parses_api_key() {
-    let cfg: ReflectConfig = toml::from_str("[web_search]\napi_key = \"BSA123\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[web_search]\napi_key = \"BSA123\"\n").unwrap();
     let ws = cfg.web_search.expect("web_search section present");
     assert_eq!(ws.api_key.as_deref(), Some("BSA123"));
 }
@@ -85,7 +85,7 @@ fn parses_stdio_mcp_server_entry() {
         args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
         timeout_ms = 30000
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let entry = cfg.mcp_servers.servers.get("filesystem").expect("entry");
     assert_eq!(entry.transport, McpTransport::Stdio);
     assert_eq!(entry.command.as_deref(), Some("npx"));
@@ -111,7 +111,7 @@ fn parses_http_mcp_server_entry_with_alias() {
         url = "https://mcp.example.com/github"
         headers = { Authorization = "Bearer xyz" }
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let entry = cfg.mcp_servers.servers.get("github").expect("entry");
     assert_eq!(entry.transport, McpTransport::Http);
     assert_eq!(entry.url.as_deref(), Some("https://mcp.example.com/github"));
@@ -131,7 +131,7 @@ fn transport_defaults_to_stdio_when_omitted() {
         [mcp_servers.minimal]
         command = "echo"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let entry = cfg.mcp_servers.servers.get("minimal").unwrap();
     assert_eq!(entry.transport, McpTransport::Stdio);
 }
@@ -144,7 +144,7 @@ fn unknown_keys_are_ignored() {
         command = "echo"
         future_field = "ignored"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert!(cfg.mcp_servers.servers.contains_key("x"));
 }
 
@@ -152,8 +152,8 @@ fn unknown_keys_are_ignored() {
 
 #[test]
 fn partial_eq_detects_added_server() {
-    let old = ReflectConfig::default();
-    let new: ReflectConfig = toml::from_str(
+    let old = ZhuyeConfig::default();
+    let new: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.github]
         type = "http"
@@ -166,27 +166,27 @@ fn partial_eq_detects_added_server() {
 
 #[test]
 fn partial_eq_detects_removed_server() {
-    let old: ReflectConfig = toml::from_str(
+    let old: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.x]
         command = "echo"
     "#,
     )
     .unwrap();
-    let new = ReflectConfig::default();
+    let new = ZhuyeConfig::default();
     assert_ne!(old.mcp_servers, new.mcp_servers);
 }
 
 #[test]
 fn partial_eq_detects_command_field_change() {
-    let a: ReflectConfig = toml::from_str(
+    let a: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.x]
         command = "echo"
     "#,
     )
     .unwrap();
-    let b: ReflectConfig = toml::from_str(
+    let b: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.x]
         command = "cat"
@@ -200,7 +200,7 @@ fn partial_eq_detects_command_field_change() {
 fn partial_eq_detects_timeout_change() {
     // timeout 变化本身不触发 restart,但仍属 config change (reload 路径会
     // diff_sections 列出 "mcp_servers")。此测试锁定 partial_eq 语义。
-    let a: ReflectConfig = toml::from_str(
+    let a: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.x]
         command = "echo"
@@ -208,7 +208,7 @@ fn partial_eq_detects_timeout_change() {
     "#,
     )
     .unwrap();
-    let b: ReflectConfig = toml::from_str(
+    let b: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.x]
         command = "echo"
@@ -235,7 +235,7 @@ fn parses_full_ollama_model_group() {
         num_gpu = 99
         timeout_secs = 120
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let o = cfg.model_group.first().expect("ollama 模型组");
     assert_eq!(o.base_url.as_deref(), Some("http://192.168.1.5:11434"));
     assert_eq!(o.api_key.as_deref(), Some("sk-local"));
@@ -254,7 +254,7 @@ fn parses_minimal_model_group_with_all_none_fields() {
         id = "ollama"
         endpoint = "ollama"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let o = cfg.model_group.first().expect("模型组");
     assert!(o.base_url.is_none());
     assert!(o.api_key.is_none());
@@ -268,7 +268,7 @@ fn parses_minimal_model_group_with_all_none_fields() {
 #[test]
 fn partial_eq_detects_model_group_change() {
     // 改 keep_alive_secs → partial_eq 不等 → diff_sections 报组名。
-    let a: ReflectConfig = toml::from_str(
+    let a: ZhuyeConfig = toml::from_str(
         r#"
         [[model_group]]
         id = "ollama"
@@ -293,13 +293,13 @@ fn unknown_model_group_keys_ignored() {
         model = "llama3.2"
         future_field = "ignored"
         "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert_eq!(cfg.model_group.len(), 1);
 }
 
 #[test]
 fn partial_eq_unchanged_when_only_other_section_changes() {
-    let a: ReflectConfig = toml::from_str(
+    let a: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.x]
         command = "echo"
@@ -317,7 +317,7 @@ fn partial_eq_unchanged_when_only_other_section_changes() {
 
 #[test]
 fn token_budget_section_parses_session_total() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [token_budget]
         session_total_tokens = 500000
@@ -337,13 +337,13 @@ fn token_budget_section_parses_session_total() {
 
 #[test]
 fn token_budget_section_defaults_to_none_when_absent() {
-    let cfg: ReflectConfig = toml::from_str("").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("").unwrap();
     assert!(cfg.token_budget.is_none(), "absent section → None");
 }
 
 #[test]
 fn token_budget_partial_eq_detects_change() {
-    let a: ReflectConfig = toml::from_str(
+    let a: ZhuyeConfig = toml::from_str(
         r#"
         [token_budget]
         session_total_tokens = 100000
@@ -360,7 +360,7 @@ fn token_budget_partial_eq_detects_change() {
 
 #[test]
 fn plugins_section_defaults_to_empty() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     assert!(cfg.plugins.enabled_plugins.is_empty());
     assert!(cfg.plugins.marketplaces.is_empty());
 }
@@ -380,7 +380,7 @@ fn plugins_section_parses_enabled_and_marketplaces() {
         type = "directory"
         path = "/Users/me/dev/marketplace"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert_eq!(cfg.plugins.enabled_plugins.len(), 2);
     assert!(cfg.plugins.is_enabled("code-formatter@anthropic-tools"));
     assert!(cfg.plugins.is_enabled("local@inline"));
@@ -402,16 +402,16 @@ fn plugins_section_parses_enabled_and_marketplaces() {
 
 #[test]
 fn plugins_partial_eq_detects_changes() {
-    let mut a = ReflectConfig::default();
+    let mut a = ZhuyeConfig::default();
     a.plugins.enabled_plugins.push("foo@bar".into());
-    let mut b = ReflectConfig::default();
+    let mut b = ZhuyeConfig::default();
     b.plugins.enabled_plugins.push("baz@qux".into());
     assert_ne!(a.plugins, b.plugins);
 }
 
 #[test]
 fn plugins_partial_eq_unchanged_when_only_other_section_changes() {
-    let mut a = ReflectConfig::default();
+    let mut a = ZhuyeConfig::default();
     a.plugins.enabled_plugins.push("foo@bar".into());
     let mut b = a.clone();
     b.compact.trigger_tokens = Some(20000);
@@ -424,7 +424,7 @@ fn plugins_marketplace_kind_defaults_to_directory() {
         [plugins.marketplaces.defaults]
         path = "/tmp/m"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let m = cfg.plugins.marketplaces.get("defaults").unwrap();
     assert_eq!(m.kind, PluginMarketplaceKind::Directory);
     assert_eq!(m.path.as_deref(), Some(std::path::Path::new("/tmp/m")));
@@ -435,7 +435,7 @@ fn plugins_marketplace_kind_defaults_to_directory() {
 /// `[coordinator]` 段默认 None,可通过 TOML 启用。
 #[test]
 fn coordinator_section_defaults_to_none() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     assert!(cfg.coordinator.is_none());
 }
 
@@ -448,7 +448,7 @@ fn parses_coordinator_section() {
         system_prompt_path = "/etc/coordinator.md"
         max_workers = 8
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let c = cfg.coordinator.expect("coordinator section");
     assert_eq!(c.enabled, Some(true));
     assert_eq!(
@@ -461,7 +461,7 @@ fn parses_coordinator_section() {
 /// 旧 TOML 无 `[coordinator]` → None,保留向后兼容。
 #[test]
 fn old_toml_without_coordinator_loads() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [active]
         group = "anthropic"
@@ -474,8 +474,8 @@ fn old_toml_without_coordinator_loads() {
 /// partial_eq 检测 `[coordinator]` 段变化。
 #[test]
 fn coordinator_partial_eq_detects_change() {
-    let a = ReflectConfig::default();
-    let b = ReflectConfig {
+    let a = ZhuyeConfig::default();
+    let b = ZhuyeConfig {
         coordinator: Some(CoordinatorSection {
             enabled: Some(true),
             ..Default::default()
@@ -490,7 +490,7 @@ fn coordinator_partial_eq_detects_change() {
 /// 缺省时 `sanitize` 为 `None`,与 `enabled = true`(运行时默认)一致。
 #[test]
 fn sanitize_section_defaults_to_none() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     assert!(cfg.sanitize.is_none());
 }
 
@@ -507,7 +507,7 @@ fn parses_full_sanitize_section() {
             "(?i)\\binternal_key\\b",
         ]
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let s = cfg.sanitize.expect("sanitize section");
     assert_eq!(s.enabled, Some(true));
     assert_eq!(s.marker.as_deref(), Some("[HIDDEN]"));
@@ -524,7 +524,7 @@ fn parses_minimal_sanitize_section_with_all_none_fields() {
     let toml = r#"
         [sanitize]
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let s = cfg.sanitize.expect("sanitize section");
     assert!(s.enabled.is_none());
     assert!(s.marker.is_none());
@@ -535,7 +535,7 @@ fn parses_minimal_sanitize_section_with_all_none_fields() {
 /// 旧 TOML(无 `[sanitize]` 段)依然能解析,向后兼容。
 #[test]
 fn old_toml_without_sanitize_loads() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [active]
         group = "anthropic"
@@ -554,9 +554,9 @@ fn sanitize_section_round_trip() {
         marker = "[X]"
         extra_patterns = ["(?i)foo"]
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let serialized = toml::to_string(&cfg).unwrap();
-    let cfg2: ReflectConfig = toml::from_str(&serialized).unwrap();
+    let cfg2: ZhuyeConfig = toml::from_str(&serialized).unwrap();
     assert_eq!(cfg.sanitize, cfg2.sanitize);
 }
 
@@ -588,10 +588,10 @@ fn sanitize_partial_eq_detects_marker_change() {
     assert_ne!(a, b);
 }
 
-/// ReflectConfig 顶层 partial_eq 在 sanitize 变化时也检测得到。
+/// ZhuyeConfig 顶层 partial_eq 在 sanitize 变化时也检测得到。
 #[test]
 fn zhuye_config_partial_eq_detects_sanitize_change() {
-    let a = ReflectConfig::default();
+    let a = ZhuyeConfig::default();
     let mut b = a.clone();
     b.sanitize = Some(SanitizeSection {
         enabled: Some(false),
@@ -605,7 +605,7 @@ fn zhuye_config_partial_eq_detects_sanitize_change() {
 /// `[model]` 段缺省 → `None`(零行为变化)。
 #[test]
 fn model_section_absent_by_default() {
-    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.model.is_none());
 }
 
@@ -613,14 +613,14 @@ fn model_section_absent_by_default() {
 /// 框架层不向会话注入编码向目录文本。
 #[test]
 fn bundled_skills_disabled_by_default() {
-    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(!cfg.active.bundled_skills);
 }
 
 /// `[active] bundled_skills = true` 显式开启 → 合入 15 项内置 skill。
 #[test]
 fn bundled_skills_opt_in_parses() {
-    let cfg: ReflectConfig =
+    let cfg: ZhuyeConfig =
         toml::from_str("[active]\ngroup = \"anthropic\"\nbundled_skills = true\n").unwrap();
     assert!(cfg.active.bundled_skills);
 }
@@ -631,7 +631,7 @@ fn bundled_skills_opt_in_parses() {
 /// false」。
 #[test]
 fn agents_md_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert_eq!(cfg.active.agents_md, None);
 }
 
@@ -639,7 +639,7 @@ fn agents_md_absent_is_none() {
 /// 读 AGENTS.md(等价旧行为)。
 #[test]
 fn agents_md_explicit_false_parses() {
-    let cfg: ReflectConfig =
+    let cfg: ZhuyeConfig =
         toml::from_str("[active]\ngroup = \"anthropic\"\nagents_md = false\n").unwrap();
     assert_eq!(cfg.active.agents_md, Some(false));
 }
@@ -648,7 +648,7 @@ fn agents_md_explicit_false_parses() {
 /// 殊途同归,但三态解析必须完整覆盖 —— 显式写 true 不应被误读为 None)。
 #[test]
 fn agents_md_explicit_true_parses() {
-    let cfg: ReflectConfig =
+    let cfg: ZhuyeConfig =
         toml::from_str("[active]\ngroup = \"anthropic\"\nagents_md = true\n").unwrap();
     assert_eq!(cfg.active.agents_md, Some(true));
 }
@@ -656,7 +656,7 @@ fn agents_md_explicit_true_parses() {
 /// `[model]` 段解析 context_window + micro-USD 计价。
 #[test]
 fn model_section_parses_context_window_and_pricing() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [model]
         context_window = 1000000
@@ -677,7 +677,7 @@ fn model_section_parses_context_window_and_pricing() {
 /// 只配 context_window 不配价格:input_price → None(不自行计价)。
 #[test]
 fn model_section_context_window_only() {
-    let cfg: ReflectConfig = toml::from_str("[model]\ncontext_window = 256000\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[model]\ncontext_window = 256000\n").unwrap();
     let m = cfg.model.expect("[model] section parsed");
     assert_eq!(m.context_window, Some(256_000));
     assert!(m.input_price_usd_per_mtok().is_none());
@@ -686,7 +686,7 @@ fn model_section_context_window_only() {
 /// v1.10 功能4:`[model].reasoning_effort` 解析(字符串档位,宽松加载)。
 #[test]
 fn model_section_parses_reasoning_effort() {
-    let cfg: ReflectConfig = toml::from_str("[model]\nreasoning_effort = \"ultra\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[model]\nreasoning_effort = \"ultra\"\n").unwrap();
     let m = cfg.model.as_ref().expect("[model] section parsed");
     assert_eq!(m.reasoning_effort.as_deref(), Some("ultra"));
     // 大小写不敏感解析为协议镜像枚举。
@@ -695,7 +695,7 @@ fn model_section_parses_reasoning_effort() {
         Some(zhuye_protocol::ReasoningEffortMirror::Ultra)
     );
     // max 档同样可解析(deepseek 系模型可用)。
-    let cfg2: ReflectConfig = toml::from_str("[model]\nreasoning_effort = \"Max\"\n").unwrap();
+    let cfg2: ZhuyeConfig = toml::from_str("[model]\nreasoning_effort = \"Max\"\n").unwrap();
     assert_eq!(
         cfg2.resolve_reasoning_effort(),
         Some(zhuye_protocol::ReasoningEffortMirror::Max)
@@ -705,7 +705,7 @@ fn model_section_parses_reasoning_effort() {
 /// 非法档位字符串不阻断配置加载 —— `resolve_reasoning_effort` 返回 None。
 #[test]
 fn model_section_invalid_reasoning_effort_is_ignored() {
-    let cfg: ReflectConfig =
+    let cfg: ZhuyeConfig =
         toml::from_str("[model]\nreasoning_effort = \"extreme\"\ncontext_window = 128000\n")
             .unwrap();
     // 配置整体仍解析成功(宽松口径),窗口字段不受影响。
@@ -716,9 +716,9 @@ fn model_section_invalid_reasoning_effort_is_ignored() {
 /// 未配置时 `resolve_reasoning_effort` → None。
 #[test]
 fn model_section_reasoning_effort_default_none() {
-    let cfg: ReflectConfig = toml::from_str("[model]\ncontext_window = 1000\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[model]\ncontext_window = 1000\n").unwrap();
     assert_eq!(cfg.resolve_reasoning_effort(), None);
-    let empty = ReflectConfig::default();
+    let empty = ZhuyeConfig::default();
     assert_eq!(empty.resolve_reasoning_effort(), None);
 }
 
@@ -727,7 +727,7 @@ fn model_section_reasoning_effort_default_none() {
 /// (作用于活跃模型,per-model 条目优先),键归一化。
 #[test]
 fn effective_context_window_overrides_merges_model_section() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [model]
         context_window = 200000
@@ -749,8 +749,7 @@ fn effective_context_window_overrides_merges_model_section() {
 /// `[model].context_window` 未配置时合并结果就是原表(归一化键)。
 #[test]
 fn effective_context_window_overrides_without_model_section() {
-    let cfg: ReflectConfig =
-        toml::from_str("[context_windows]\n\"Qwen36-1M\" = 1000000\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[context_windows]\n\"Qwen36-1M\" = 1000000\n").unwrap();
     let map = cfg.effective_context_window_overrides("whatever");
     assert_eq!(map.len(), 1);
     assert_eq!(map.get("qwen36-1m"), Some(&1_000_000));
@@ -759,7 +758,7 @@ fn effective_context_window_overrides_without_model_section() {
 /// v1.10 功能3:`configured_context_window_for` 只认用户显式配置的窗口。
 #[test]
 fn configured_context_window_for_respects_explicit_only() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [model]
         context_window = 300000
@@ -779,7 +778,7 @@ fn configured_context_window_for_respects_explicit_only() {
         Some(300_000)
     );
     // 什么都不配 → None(静态表命中与否与此无关)。
-    let bare = ReflectConfig::default();
+    let bare = ZhuyeConfig::default();
     assert_eq!(bare.configured_context_window_for("claude-sonnet-4"), None);
 }
 
@@ -796,7 +795,7 @@ shell_pattern = "git *"
 tool = "Write"
 action = "deny"
 "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let sec = cfg.permissions.expect("[permissions] section parsed");
     assert_eq!(sec.rules.len(), 2, "应解析 2 条规则");
     assert_eq!(sec.rules[0].tool, "Bash");
@@ -815,7 +814,7 @@ action = "deny"
 /// 无 `[permissions]` 段时,字段为 None(向后兼容,行为不变)。
 #[test]
 fn permissions_section_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.permissions.is_none(), "无 [permissions] 段应为 None");
 }
 
@@ -829,7 +828,7 @@ fn permissions_section_parses_allow_deny_arrays() {
 allow = ["Bash", "Edit", "Bash(git:*)"]
 deny  = ["Bash(curl:*)"]
 "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let sec = cfg.permissions.expect("[permissions] section parsed");
     assert_eq!(sec.allow, vec!["Bash", "Edit", "Bash(git:*)"]);
     assert_eq!(sec.deny, vec!["Bash(curl:*)"]);
@@ -926,7 +925,7 @@ fn expanded_rules_end_to_end_with_matcher() {
 /// 形式(TOML 友好,无需 `[context_windows.entries]` 嵌套)。
 #[test]
 fn parses_context_windows_flat_keys() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [context_windows]
         "MiniMax-M3" = 1000000
@@ -948,7 +947,7 @@ fn parses_context_windows_flat_keys() {
 /// 备选语法:嵌套 `[context_windows.entries]` 子段也支持(为向后兼容既存手动构造)。
 #[test]
 fn parses_context_windows_nested_entries() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [context_windows.entries]
         "MiniMax-M3" = 1000000
@@ -962,7 +961,7 @@ fn parses_context_windows_nested_entries() {
 /// 无 `[context_windows]` 段时为 None(向后兼容,行为不变)。
 #[test]
 fn context_windows_section_absent_is_none() {
-    let cfg: ReflectConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[active]\ngroup = \"anthropic\"\n").unwrap();
     assert!(cfg.context_windows.is_none());
 }
 
@@ -984,7 +983,7 @@ fn context_windows_lookup_normalizes() {
 /// 映射表(空档位丢弃;未配置 → 空 map)。
 #[test]
 fn routing_main_complexity_routes_parse() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [routing.main]
         primary = "anthropic/claude-sonnet"
@@ -1010,9 +1009,9 @@ fn routing_main_complexity_routes_parse() {
 /// complexity 缺省 / 空白 spec → 空 map(不启用复杂度路由)。
 #[test]
 fn routing_complexity_absent_yields_empty() {
-    let cfg: ReflectConfig = toml::from_str("[routing.main]\nprimary = \"x\"\n").unwrap();
+    let cfg: ZhuyeConfig = toml::from_str("[routing.main]\nprimary = \"x\"\n").unwrap();
     assert!(cfg.effort_model_routes().is_empty());
-    let cfg2: ReflectConfig = toml::from_str(
+    let cfg2: ZhuyeConfig = toml::from_str(
         "[routing.main]\nprimary = \"x\"\n[routing.main.complexity]\nlow = \"  \"\n",
     )
     .unwrap();
@@ -1021,16 +1020,16 @@ fn routing_complexity_absent_yields_empty() {
 
 #[test]
 fn 工具执行记录严格模式默认关闭并支持配置() {
-    let default: ReflectConfig = toml::from_str("").unwrap();
+    let default: ZhuyeConfig = toml::from_str("").unwrap();
     assert!(default.tool_journal.is_none());
-    let configured: ReflectConfig = toml::from_str("[tool_journal]\nstrict = true\n").unwrap();
+    let configured: ZhuyeConfig = toml::from_str("[tool_journal]\nstrict = true\n").unwrap();
     assert!(configured.tool_journal.unwrap().strict);
 }
 
 #[test]
 fn 串行回合默认关闭并支持配置() {
-    let default: ReflectConfig = toml::from_str("").unwrap();
+    let default: ZhuyeConfig = toml::from_str("").unwrap();
     assert!(default.turn_scheduling.is_none());
-    let configured: ReflectConfig = toml::from_str("[turn_scheduling]\nserial = true\n").unwrap();
+    let configured: ZhuyeConfig = toml::from_str("[turn_scheduling]\nserial = true\n").unwrap();
     assert!(configured.turn_scheduling.unwrap().serial);
 }

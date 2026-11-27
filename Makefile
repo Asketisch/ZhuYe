@@ -8,7 +8,7 @@ INSTALL_DIR := /usr/local/bin
 build:
 	cargo build --release -p zhuye-cli
 
-## run: 构建并打印 CLI 帮助(本仓库二进制无 TUI 子命令,TUI 在 Reflect-CLI 仓库)
+## run: 构建并打印 CLI 帮助(本仓库二进制无 TUI 子命令,TUI 在 Zhuye-CLI 仓库)
 run: build
 	./target/release/$(BINARY_NAME) --help
 

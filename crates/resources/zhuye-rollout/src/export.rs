@@ -371,7 +371,7 @@ fn push_header(out: &mut String, name: &str) {
 // 不截断,且逐条渲染全部 13 个 `RolloutRecord` 变体 + 文末 Usage 段
 // (模型级 token 拆分 / 压缩节省 / 记忆访问审计)。
 //
-// 收编自 ReflectDesktop `src-tauri/src/commands/export.rs` —— 此前只有
+// 收编自 ZhuYe-Desktop `src-tauri/src/commands/export.rs` —— 此前只有
 // 桌面端能导出带 Usage 段的完整稿,CLI 的 `to_markdown` 缺 per-model
 // 表与审计行。渲染拆成两个纯函数(无 IO,便于单测)。
 

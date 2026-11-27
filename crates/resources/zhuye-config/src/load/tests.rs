@@ -247,7 +247,7 @@ model = "claude-haiku"
 /// 立即失败(v1 的 `[subagent_providers]` 已改名 `[subagent_models]`)。
 #[test]
 fn toml_surface_has_no_provider_key() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     let rendered = toml::to_string(&cfg).unwrap();
     assert!(
         !rendered.contains("provider"),
@@ -394,10 +394,10 @@ another_unknown = 42
 
 // ── Phase 4 config_version migration tests ───────────────────
 
-/// ReflectConfig::default() 显式给 `config_version = CURRENT_CONFIG_VERSION`。
+/// ZhuyeConfig::default() 显式给 `config_version = CURRENT_CONFIG_VERSION`。
 #[test]
 fn default_has_current_config_version() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     assert_eq!(cfg.config_version, CURRENT_CONFIG_VERSION);
     assert_eq!(cfg.config_version, 2);
 }

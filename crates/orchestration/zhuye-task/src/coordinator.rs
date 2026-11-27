@@ -138,7 +138,7 @@ pub struct CoordinatorConfig {
 }
 
 impl CoordinatorConfig {
-    /// 综合 env var + `ReflectConfig` 构造 —— config 优先,env 兜底。
+    /// 综合 env var + `ZhuyeConfig` 构造 —— config 优先,env 兜底。
     ///
     /// 规则:
     /// - `enabled`:config 显式 `Some(_)` → 用 config;否则走

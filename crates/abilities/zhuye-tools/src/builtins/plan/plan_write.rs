@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writes_plan_to_reflect_plan_dir() {
+    async fn writes_plan_to_zhuye_plan_dir() {
         let ws = tmp_workspace();
         let t = PlanWriteTool;
         let out = t

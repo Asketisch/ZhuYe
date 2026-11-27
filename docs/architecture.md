@@ -20,7 +20,7 @@
   依赖它即可。
 - **headless CLI(`zhuye exec`)** —— 薄 CLI 入口,由 `zhuye-cli` crate 产出
   单一 `zhuye` 二进制。**不含 `tui` 子命令**(TUI 已拆至独立仓库
-  [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI))。跑一轮就退出:
+  [Zhuye-TUI](https://cnb.cool/Demon1019/Zhuye-CLI))。跑一轮就退出:
   事件以 JSONL 流写 stdout,tracing 日志走 stderr,`zhuye exec | jq` 不被
   日志污染。
 - **serve 协议入口(`zhuye serve`)** —— 常驻 stdio JSONL 会话服务,一个进程

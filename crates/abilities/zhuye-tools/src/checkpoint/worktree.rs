@@ -235,13 +235,13 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_branch_name_defaults_to_reflect_prefix() {
+    fn sanitize_branch_name_defaults_to_zhuye_prefix() {
         let name = sanitize_branch_name(None);
         assert!(name.starts_with("zhuye/wt-"));
     }
 
     #[test]
-    fn default_worktree_path_uses_reflect_subdir() {
+    fn default_worktree_path_uses_zhuye_subdir() {
         let root = PathBuf::from("/tmp/repo");
         let p = default_worktree_path(&root, "feature/foo");
         assert!(p.starts_with(root.join(".zhuye/worktrees")));

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use zhuye_config::{McpServerEntry, McpServersSection, McpTransport, ReflectConfig};
+use zhuye_config::{McpServerEntry, McpServersSection, McpTransport, ZhuyeConfig};
 use zhuye_exec::handle_reload;
 use zhuye_llm::ModelRegistry;
 use zhuye_protocol::{
@@ -108,12 +108,12 @@ fn broken_cfg_entry(_name: &str) -> McpServerEntry {
     }
 }
 
-fn cfg_with(names_and_entries: Vec<(&str, McpServerEntry)>) -> ReflectConfig {
+fn cfg_with(names_and_entries: Vec<(&str, McpServerEntry)>) -> ZhuyeConfig {
     let mut mcp = McpServersSection::default();
     for (name, entry) in names_and_entries {
         mcp.servers.insert(name.to_string(), entry);
     }
-    ReflectConfig {
+    ZhuyeConfig {
         mcp_servers: mcp,
         ..Default::default()
     }

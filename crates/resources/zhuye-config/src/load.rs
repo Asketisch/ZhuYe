@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use crate::DEFAULT_CONFIG_FILE;
 use crate::error::ConfigError;
 use crate::migration::migrate_to_target;
-use crate::schema::{CURRENT_CONFIG_VERSION, ReflectConfig};
+use crate::schema::{CURRENT_CONFIG_VERSION, ZhuyeConfig};
 
 /// config.toml 的绝对路径。
 ///
@@ -39,7 +39,7 @@ pub fn default_config_path() -> Option<PathBuf> {
 /// 只想按原始 TOML 解析、不迁移的调用方请用
 /// [`load_from_str_with_migration`](load_from_str_with_migration) 并显式
 /// 指定 `target`。
-pub fn load_from_str(s: &str) -> Result<ReflectConfig, ConfigError> {
+pub fn load_from_str(s: &str) -> Result<ZhuyeConfig, ConfigError> {
     load_from_str_with_migration(s, CURRENT_CONFIG_VERSION)
 }
 
@@ -49,7 +49,7 @@ pub fn load_from_str(s: &str) -> Result<ReflectConfig, ConfigError> {
 /// v1→v2 的迁移内容:旧固定段(`[anthropic]` / `[openai]` / `[ollama]`)
 /// 就地转成等价模型组;`[active].provider` 转成 `[active].group`。
 /// 迁移**幂等** —— 已是新格式的配置读入后不产生任何变化。
-pub fn load_from_str_with_migration(s: &str, target: u32) -> Result<ReflectConfig, ConfigError> {
+pub fn load_from_str_with_migration(s: &str, target: u32) -> Result<ZhuyeConfig, ConfigError> {
     migrate_to_target(s, target)
 }
 
@@ -57,7 +57,7 @@ pub fn load_from_str_with_migration(s: &str, target: u32) -> Result<ReflectConfi
 ///
 /// **会跑迁移**(升到 [`CURRENT_CONFIG_VERSION`])—— 语义与
 /// [`load_from_str`] 一致。
-pub fn load_from_file(path: &Path) -> Result<ReflectConfig, ConfigError> {
+pub fn load_from_file(path: &Path) -> Result<ZhuyeConfig, ConfigError> {
     let s = std::fs::read_to_string(path)?;
     load_from_str(&s)
 }
@@ -66,7 +66,7 @@ pub fn load_from_file(path: &Path) -> Result<ReflectConfig, ConfigError> {
 ///
 /// 与 [`load_from_file`] 语义一致(都升到最新版本);保留此函数是为了
 /// 让「显式要迁移」的调用方(readiness 检查 / doctor)表达清楚意图。
-pub fn load_from_file_with_migration(path: &Path) -> Result<ReflectConfig, ConfigError> {
+pub fn load_from_file_with_migration(path: &Path) -> Result<ZhuyeConfig, ConfigError> {
     let s = std::fs::read_to_string(path)?;
     load_from_str_with_migration(&s, CURRENT_CONFIG_VERSION)
 }
@@ -75,19 +75,19 @@ pub fn load_from_file_with_migration(path: &Path) -> Result<ReflectConfig, Confi
 /// 并通过 `tracing::warn` 提示 —— 与 `HooksConfig::load_default` 语义一致。
 ///
 /// **会跑迁移** —— 旧固定段读入后自动转成模型组。
-pub fn load_default() -> ReflectConfig {
+pub fn load_default() -> ZhuyeConfig {
     load_default_impl(false).unwrap_or_default()
 }
 
 /// 为会话启动读取默认配置,显式指定的未知来源治理模式视为错误。
-pub fn load_default_for_runtime() -> Result<ReflectConfig, ConfigError> {
+pub fn load_default_for_runtime() -> Result<ZhuyeConfig, ConfigError> {
     load_default_impl(true)
 }
 
-fn load_default_impl(validate_provenance: bool) -> Result<ReflectConfig, ConfigError> {
+fn load_default_impl(validate_provenance: bool) -> Result<ZhuyeConfig, ConfigError> {
     let Some(path) = default_config_path() else {
-        tracing::debug!("HOME unset; using ReflectConfig::default()");
-        return Ok(ReflectConfig::default());
+        tracing::debug!("HOME unset; using ZhuyeConfig::default()");
+        return Ok(ZhuyeConfig::default());
     };
     match load_from_file(&path) {
         Ok(c) => Ok(c),
@@ -95,7 +95,7 @@ fn load_default_impl(validate_provenance: bool) -> Result<ReflectConfig, ConfigE
         Err(e @ ConfigError::InvalidProvenanceMode(_)) if validate_provenance => Err(e),
         Err(e) => {
             tracing::debug!(path = %path.display(), error = %e, "config load failed; using default");
-            Ok(ReflectConfig::default())
+            Ok(ZhuyeConfig::default())
         }
     }
 }

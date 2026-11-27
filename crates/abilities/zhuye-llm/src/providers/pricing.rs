@@ -217,7 +217,7 @@ pub fn cumulative_cost_usd(model_id: &str, history: &[TokenUsage]) -> Option<f64
 
 // ── v1.x:费率表公开 + 费率卡 ────────────────────────────────────────
 //
-// 背景:ReflectDesktop 要在 GUI 上解释「这笔费用怎么算出来的」,而
+// 背景:ZhuYe-Desktop 要在 GUI 上解释「这笔费用怎么算出来的」,而
 // `PRICING_TABLE` 是私有 const —— 桌面端只能用**合成用量反解**线性
 // 公式(令 input=1M / output=1M / cached=1M / cache_write=1M 各调一次
 // `price()`,从四个结果倒推倍率)把价目表读出来。反解能工作,但它是

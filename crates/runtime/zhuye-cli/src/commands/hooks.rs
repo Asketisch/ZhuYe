@@ -1,6 +1,6 @@
 //! `zhuye hooks` —— 内置 hook 的启停持久化(list / enable / disable)。
 //!
-//! 收编 ReflectDesktop `src-tauri/src/hook_store.rs`。`HookEngine` 的
+//! 收编 ZhuYe-Desktop `src-tauri/src/hook_store.rs`。`HookEngine` 的
 //! `disabled` 状态此前只活在内存里 —— 运行期 `disable()` 一调就生效,
 //! 但进程退出即丢;桌面端自己存了一份 `~/.zhuye/hook_state.json`
 //! (`HashMap<String, bool>`),于是 hook 配置出现第三处口径。
@@ -23,7 +23,7 @@ use zhuye_hooks::config::HooksConfig;
 pub fn ls() -> Result<()> {
     let path = default_config_path().context("cannot locate config.toml")?;
     let (_, cfg) = read_config(&path)?;
-    let engine = HooksConfig::from_reflect_section(&cfg.hooks).build_engine();
+    let engine = HooksConfig::from_zhuye_section(&cfg.hooks).build_engine();
     let names = engine.hook_names();
     if names.is_empty() {
         println!("(no hooks registered; check [hooks].enabled in config.toml)");
@@ -62,7 +62,7 @@ pub fn enable(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_config(path: &std::path::Path) -> Result<(String, zhuye_config::ReflectConfig)> {
+fn read_config(path: &std::path::Path) -> Result<(String, zhuye_config::ZhuyeConfig)> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),

@@ -1,4 +1,4 @@
-"""test_registry.py —— Reflect-Agent(基础 Runtime + 双 SDK)任务注册表。
+"""test_registry.py —— ZhuYe-Agent(基础 Runtime + 双 SDK)任务注册表。
 
 任务 ID 与 PLAN.md 第 2 章(以及公共基座 B 系列)对应;每条映射到
 仓库现有测试入口,不复制测试逻辑。coverage 语义:

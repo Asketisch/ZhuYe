@@ -279,7 +279,7 @@ rollout、不进 session_usage、不发 TokenCount、不喂 CacheBreakDetector)�
 ## 边界与限制
 
 - 这个仓库的二进制没有 TUI 子命令。交互界面在
-  [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI) 仓库。
+  [Zhuye-TUI](https://cnb.cool/Demon1019/Zhuye-CLI) 仓库。
 - Linux 的 Landlock 当前不限制敏感读取；**可写根内的嵌套敏感路径也无法
   强制只读** —— Landlock 的规则按位合并,父级可写根授予的写权会传播到
   其下的嵌套路径,内核没有按路径撤销(deny)规则的能力(已在 Linux

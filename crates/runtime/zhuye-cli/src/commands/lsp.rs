@@ -7,7 +7,7 @@
 //! 与 `mcp` 区别:LSP 不支持 `add` / `remove` / `test`(v0.5 不做跨进程
 //! 热重载,用户直接编辑 `config.toml` 重启更直观)。
 
-use zhuye_config::{ReflectConfig, load_default};
+use zhuye_config::{ZhuyeConfig, load_default};
 
 /// `zhuye lsp list` —— 列出已配 server。
 pub fn list() -> anyhow::Result<()> {
@@ -17,7 +17,7 @@ pub fn list() -> anyhow::Result<()> {
 }
 
 /// 共享的打印逻辑(单元测试也可复用)。
-pub(crate) fn print_servers(cfg: &ReflectConfig) {
+pub(crate) fn print_servers(cfg: &ZhuyeConfig) {
     if cfg.lsp_servers.servers.is_empty() {
         println!(
             "(no [lsp_servers.*] configured; add a section like:\n  [lsp_servers.rust]\n  command = \"rust-analyzer\"\n  file_patterns = [{{ glob = \"**/*.rs\", language_id = \"rust\" }}])"

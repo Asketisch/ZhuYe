@@ -86,11 +86,11 @@ impl ModelDiscoverySection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ReflectConfig;
+    use crate::ZhuyeConfig;
 
     #[test]
     fn 缺省时发现能力开启() {
-        let cfg = ReflectConfig::default();
+        let cfg = ZhuyeConfig::default();
         let section = cfg.model_discovery.unwrap_or_default();
         assert!(section.enabled);
     }
@@ -105,7 +105,7 @@ mod tests {
             always_free = ["x-free"]
             free_id_patterns = ["-free"]
         "#;
-        let cfg: crate::ReflectConfig = toml::from_str(toml).unwrap();
+        let cfg: crate::ZhuyeConfig = toml::from_str(toml).unwrap();
         let d = cfg.model_discovery.expect("model_discovery 段应被解析");
         assert!(!d.enabled);
         assert_eq!(d.timeout_secs, Some(30));

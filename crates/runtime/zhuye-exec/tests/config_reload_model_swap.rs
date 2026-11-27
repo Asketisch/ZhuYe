@@ -1,4 +1,4 @@
-//! 端到端热重载切 model:从 `ReflectConfig` 变更 → `handle_reload` →
+//! 端到端热重载切 model:从 `ZhuyeConfig` 变更 → `handle_reload` →
 //! `AgentConfig.model` 实际更新。
 //!
 //! 这条路径覆盖 v0.2.2 P0(roadmap `热重载切 model`)的核心契约。
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use zhuye_config::{ActiveSection, ModelGroupSection, ReflectConfig};
+use zhuye_config::{ActiveSection, ModelGroupSection, ZhuyeConfig};
 use zhuye_core::AgentConfig;
 use zhuye_exec::handle_reload;
 use zhuye_llm::ModelRegistry;
@@ -28,7 +28,7 @@ async fn model_field_change_propagates_to_agent_config() {
     unsafe { std::env::remove_var("ZHUYE_MODEL") };
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut rx) = mpsc::channel::<Event>(4);
-    let old_cfg = ReflectConfig {
+    let old_cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("anthropic".into()),
             ..Default::default()
@@ -101,7 +101,7 @@ async fn model_field_change_propagates_to_agent_config() {
 async fn no_op_reload_does_not_touch_model() {
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut rx) = mpsc::channel::<Event>(2);
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("anthropic".into()),
             ..Default::default()

@@ -461,7 +461,7 @@ def test_C11_config_set_unset_ls(sandbox) -> None:
     assert "<unset>" in model_line, model_line
 
     show = run_cli(sandbox, "config", "show")
-    assert "ReflectConfig @" in show.stdout
+    assert "ZhuyeConfig @" in show.stdout
 
 
 def test_C12_mcp双传输与registry(sandbox) -> None:

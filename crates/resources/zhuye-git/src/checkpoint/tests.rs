@@ -1,4 +1,4 @@
-//! checkpoint 测试(移植 Reflect-TUI `git_checkpoint.rs` 的 6 例;
+//! checkpoint 测试(移植 Zhuye-TUI `git_checkpoint.rs` 的 6 例;
 //! git 不可用时跳过,CI 友好)。
 
 use super::*;

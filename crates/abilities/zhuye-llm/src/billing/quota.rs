@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn is_tracked_reflects_registration() {
+    fn is_tracked_mirrors_registration() {
         let t = QuotaTracker::new();
         assert!(!t.is_tracked("anthropic", "x"));
         t.register("anthropic", "x", cfg(18000, 100));

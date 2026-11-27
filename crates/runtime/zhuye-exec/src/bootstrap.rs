@@ -81,7 +81,7 @@ fn build_note_store(
 /// - cfg 两项皆空:原样返回(零行为变化)。
 fn apply_active_tool_filter(
     mut def: AgentDefinition,
-    cfg: &zhuye_config::ReflectConfig,
+    cfg: &zhuye_config::ZhuyeConfig,
 ) -> AgentDefinition {
     let allow = &cfg.active.tools;
     let deny = &cfg.active.disallowed_tools;
@@ -120,7 +120,7 @@ pub(crate) fn bootstrap_m4(
     registry: &SharedModelRegistry,
     thread_id: ThreadId,
     toml_trigger_tokens: Option<u32>,
-    cfg: &zhuye_config::ReflectConfig,
+    cfg: &zhuye_config::ZhuyeConfig,
     telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
     compact_prefix_slot: zhuye_core::config::CompactPrefixSlot,
 ) -> Option<zhuye_core::config::M4Deps> {
@@ -396,7 +396,7 @@ pub(crate) fn bootstrap_m5(
     thread_id: ThreadId,
     parent_recorder: Arc<dyn zhuye_protocol::RolloutRecorder>,
     m4: &zhuye_core::config::M4Deps,
-    initial_cfg: &zhuye_config::ReflectConfig,
+    initial_cfg: &zhuye_config::ZhuyeConfig,
 ) -> Arc<SubAgentFactory> {
     // v1.x 功能 1:从 `[subagent_models]` 段构建独立 child registry,
     // 让 subagent 用独立的 base_url + api_key + model。`None` = 父子共享。
@@ -532,7 +532,7 @@ fn mcp_elicitation_ttl() -> std::time::Duration {
 /// 单 server 启动失败(spawn / initialize / list_tools)仅 warn,不阻塞
 /// 其它 server 与 agent 启动。
 pub(crate) async fn bootstrap_m6(
-    initial_cfg: &zhuye_config::ReflectConfig,
+    initial_cfg: &zhuye_config::ZhuyeConfig,
     event_tx: tokio::sync::mpsc::Sender<zhuye_protocol::Event>,
     elicitation_waiters: zhuye_tools::McpElicitationWaiters,
 ) -> Option<Arc<McpConnectionManager>> {
@@ -780,7 +780,7 @@ pub(crate) fn transport_mirror_from_runtime(
 ///
 /// 单 server 启动失败仅 warn,不阻塞其它 server 与 agent 启动。
 pub(crate) async fn bootstrap_lsp(
-    initial_cfg: &zhuye_config::ReflectConfig,
+    initial_cfg: &zhuye_config::ZhuyeConfig,
     event_tx: tokio::sync::mpsc::Sender<zhuye_protocol::Event>,
     tools: Arc<ToolRegistry>,
     lsp_plugin_disabled: bool,
@@ -944,13 +944,13 @@ mod tests {
     #[test]
     fn active_tool_filter_intersect_union_and_noop() {
         // 全空 → 原样返回(向后兼容)。
-        let cfg = zhuye_config::ReflectConfig::default();
+        let cfg = zhuye_config::ZhuyeConfig::default();
         let def = AgentDefinition::default();
         let out = apply_active_tool_filter(def, &cfg);
         assert!(out.tools.is_empty() && out.disallowed_tools.is_empty());
 
         // 白名单:定义层为空 → 直接采用。
-        let mut cfg = zhuye_config::ReflectConfig::default();
+        let mut cfg = zhuye_config::ZhuyeConfig::default();
         cfg.active.tools = vec!["get_weather".into(), "read".into()];
         let out = apply_active_tool_filter(AgentDefinition::default(), &cfg);
         assert_eq!(
@@ -967,7 +967,7 @@ mod tests {
         assert_eq!(out.tools, vec!["read".to_string()]);
 
         // 黑名单:并集叠加,不重复。
-        let cfg2 = zhuye_config::ReflectConfig {
+        let cfg2 = zhuye_config::ZhuyeConfig {
             active: zhuye_config::ActiveSection {
                 disallowed_tools: vec!["bash".into(), "write".into()],
                 ..Default::default()

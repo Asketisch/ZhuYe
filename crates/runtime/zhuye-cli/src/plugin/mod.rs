@@ -2,7 +2,7 @@
 //!
 //! v1.0.0-rc2 范围:
 //! - `install <path>` 走 `PluginManager::install_local`,写真实表(`installed_plugins.json`)。
-//! - `enable` / `disable` 改 `ReflectConfig.plugins.enabled_plugins`(权威启用表)。
+//! - `enable` / `disable` 改 `ZhuyeConfig.plugins.enabled_plugins`(权威启用表)。
 //! - `list` / `info` / `show` 联表(安装 + 启用)显示。
 //! - `uninstall` 双写:install 事实表 + enabled 列表。
 //! - `marketplace add/ls/remove`:
@@ -33,7 +33,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
-use zhuye_config::{ReflectConfig, default_config_path, load_default};
+use zhuye_config::{ZhuyeConfig, default_config_path, load_default};
 use zhuye_plugin::state::PluginScope;
 #[cfg(test)]
 use zhuye_plugin::{InstalledPluginsFile, PluginManifest};
@@ -52,7 +52,7 @@ fn default_marketplaces_path() -> Option<PathBuf> {
 }
 
 /// 一次性 load manager + config,失败报错并退出。
-fn load_manager_and_config() -> anyhow::Result<(PluginManager, ReflectConfig)> {
+fn load_manager_and_config() -> anyhow::Result<(PluginManager, ZhuyeConfig)> {
     let root =
         default_plugins_root().ok_or_else(|| anyhow!("HOME unset; cannot locate plugins dir"))?;
     let mgr = PluginManager::load(&root)
@@ -62,7 +62,7 @@ fn load_manager_and_config() -> anyhow::Result<(PluginManager, ReflectConfig)> {
 }
 
 /// 把 cfg 写回 `~/.zhuye/config.toml`(复用 `login::write_config_to`)。
-fn save_config(cfg: &ReflectConfig) -> anyhow::Result<()> {
+fn save_config(cfg: &ZhuyeConfig) -> anyhow::Result<()> {
     let path =
         default_config_path().ok_or_else(|| anyhow!("HOME unset; cannot locate config dir"))?;
     login::write_config_to(cfg, &path)?;
@@ -211,7 +211,7 @@ pub fn info(id_str: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `zhuye plugin enable <id>` —— 写 ReflectConfig.plugins.enabled_plugins;
+/// `zhuye plugin enable <id>` —— 写 ZhuyeConfig.plugins.enabled_plugins;
 /// 若此前被显式禁用(默认开的门控插件),同时从 disabled_plugins 移除。
 pub fn enable(id_str: &str) -> anyhow::Result<()> {
     let (mgr, mut cfg) = load_manager_and_config()?;

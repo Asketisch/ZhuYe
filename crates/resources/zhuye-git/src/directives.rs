@@ -1,4 +1,4 @@
-//! assistant markdown 里的 git 指令解析 —— 移植 Reflect-TUI
+//! assistant markdown 里的 git 指令解析 —— 移植 Zhuye-TUI
 //! `tui_core/git_action_directives.rs`(267 行,纯 std)。
 //!
 //! 两种指令语法(属性一律**空格分隔**,值可带双引号):

@@ -14,7 +14,7 @@
 //! (网络 / SSE 中断 / 5xx / 429)在引擎内自动重试,烧满 10 次才向
 //! 客户端报错。
 //!
-//! v1.0 Phase 3:从 `ReflectConfig.routing` TOML 段构建;v1.0 Phase 1
+//! v1.0 Phase 3:从 `ZhuyeConfig.routing` TOML 段构建;v1.0 Phase 1
 //! 暂用 `RoutingPolicy::default()`,`main.primary` 为空时由 caller
 //! 用 `cfg.resolve_model(provider)` 兜底。
 

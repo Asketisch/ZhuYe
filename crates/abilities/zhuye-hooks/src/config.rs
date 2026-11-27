@@ -84,12 +84,12 @@ impl HooksConfig {
 
     /// 从 `~/.zhuye/config.toml` 加载,失败时回退到默认值。
     ///
-    /// **自 M7 起已弃用**:推荐 [`ReflectConfig::load_default`](zhuye_config::ReflectConfig::load_default)
-    /// 加 [`HooksConfig::from_reflect_section`] 转换。等统一配置成为规范路径后,
+    /// **自 M7 起已弃用**:推荐 [`ZhuyeConfig::load_default`](zhuye_config::ZhuyeConfig::load_default)
+    /// 加 [`HooksConfig::from_zhuye_section`] 转换。等统一配置成为规范路径后,
     /// 本入口会在 M8+ 删除。
     #[deprecated(
         since = "0.0.0",
-        note = "use zhuye_config::ReflectConfig::load_default + HooksConfig::from_reflect_section"
+        note = "use zhuye_config::ZhuyeConfig::load_default + HooksConfig::from_zhuye_section"
     )]
     pub fn load_default() -> Self {
         let home = match std::env::var("HOME") {
@@ -106,7 +106,7 @@ impl HooksConfig {
 
     /// 从统一配置 (`zhuye_config::HooksSection`) 构造 `HooksConfig`。
     /// 各 `Option<>` 字段缺失时回退到 `Default` —— 与 `build_engine` 的 per-field 默认值语义对齐。
-    pub fn from_reflect_section(s: &HooksSection) -> Self {
+    pub fn from_zhuye_section(s: &HooksSection) -> Self {
         Self {
             enabled: s.enabled.clone(),
             disabled: s.disabled.clone(),
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_roundtrips_from_reflect_section() {
+    fn disabled_roundtrips_from_zhuye_section() {
         let section = zhuye_config::HooksSection {
             enabled: None,
             disabled: Some(vec!["test_runner".into()]),
@@ -284,7 +284,7 @@ mod tests {
             langfuse_tracker: None,
             read_before_edit: None,
         };
-        let cfg = HooksConfig::from_reflect_section(&section);
+        let cfg = HooksConfig::from_zhuye_section(&section);
         assert_eq!(
             cfg.disabled.as_deref(),
             Some(&["test_runner".to_string()][..])
@@ -365,7 +365,7 @@ test_command = "cargo test --no-fail-fast"
 
     /// M7:与 `zhuye_config::HooksSection`(统一配置 schema)做往返转换。
     #[test]
-    fn from_reflect_section_round_trip() {
+    fn from_zhuye_section_round_trip() {
         let toml = r#"
 [hooks]
 enabled = ["search_budget", "verification"]
@@ -378,8 +378,8 @@ search_tools = ["grep", "read"]
 run_on_stop = true
 test_command = "cargo test --quiet"
 "#;
-        let cfg: zhuye_config::ReflectConfig = toml::from_str(toml).unwrap();
-        let hooks = HooksConfig::from_reflect_section(&cfg.hooks);
+        let cfg: zhuye_config::ZhuyeConfig = toml::from_str(toml).unwrap();
+        let hooks = HooksConfig::from_zhuye_section(&cfg.hooks);
         assert_eq!(
             hooks.enabled.as_deref(),
             Some(&["search_budget".to_string(), "verification".to_string()][..])
@@ -393,20 +393,20 @@ test_command = "cargo test --quiet"
     }
 
     #[test]
-    fn from_reflect_section_empty_section_yields_default() {
+    fn from_zhuye_section_empty_section_yields_default() {
         use zhuye_config::HooksSection;
         let empty = HooksSection::default();
-        let hooks = HooksConfig::from_reflect_section(&empty);
+        let hooks = HooksConfig::from_zhuye_section(&empty);
         assert!(hooks.enabled.is_none());
         assert!(hooks.search_budget.is_none());
         assert!(hooks.test_runner.is_none());
     }
 
     #[test]
-    fn from_reflect_section_then_build_engine_matches_default() {
+    fn from_zhuye_section_then_build_engine_matches_default() {
         use zhuye_config::HooksSection;
         let empty = HooksSection::default();
-        let hooks = HooksConfig::from_reflect_section(&empty);
+        let hooks = HooksConfig::from_zhuye_section(&empty);
         let engine = hooks.build_engine();
         assert_eq!(engine.len(), 5);
     }

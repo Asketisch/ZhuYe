@@ -3,7 +3,7 @@
 //!
 //! ## 使用方式
 //! ```ignore
-//! let initial = ReflectConfig::load_default();   // 初始加载
+//! let initial = ZhuyeConfig::load_default();   // 初始加载
 //! let watcher = ConfigWatcher::spawn(path, initial)?;  // 启动监听
 //! let mut rx = watcher.subscribe();              // 订阅变更
 //! // 在另一个 task 里:
@@ -33,7 +33,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher, event::EventKind};
 use tokio::sync::watch;
 
 use crate::error::ConfigError;
-use crate::schema::ReflectConfig;
+use crate::schema::ZhuyeConfig;
 
 /// debounce 窗口 —— 编辑器保存通常触发多次 fs 事件(先 truncate 再 write)。
 const DEBOUNCE: Duration = Duration::from_millis(250);
@@ -44,7 +44,7 @@ const POLL_FALLBACK: Duration = Duration::from_secs(60);
 /// 文件变更时通过 `watch` channel 派发新配置。
 /// 解析失败时保持上一个有效值并 `tracing::warn`。
 pub struct ConfigWatcher {
-    rx: watch::Receiver<ReflectConfig>,
+    rx: watch::Receiver<ZhuyeConfig>,
     /// 持有 watcher + 后台 task;Drop 后整个链路关闭。字段本身不直接读。
     #[allow(dead_code)]
     handle: WatcherHandle,
@@ -58,15 +58,15 @@ pub struct WatcherHandle {
 
 impl ConfigWatcher {
     /// 启动一个 watcher,监听 `path` 所在目录(非递归),默认 60s polling 兜底。
-    /// 初始值由调用者提供 (通常 `ReflectConfig::load_default()`)。
-    pub fn spawn(path: PathBuf, initial: ReflectConfig) -> Result<Self, ConfigError> {
+    /// 初始值由调用者提供 (通常 `ZhuyeConfig::load_default()`)。
+    pub fn spawn(path: PathBuf, initial: ZhuyeConfig) -> Result<Self, ConfigError> {
         Self::spawn_with_poll(path, initial, POLL_FALLBACK)
     }
 
     /// 同 `spawn`,但显式指定 polling 周期(测试用短间隔验证兜底路径)。
     pub fn spawn_with_poll(
         path: PathBuf,
-        initial: ReflectConfig,
+        initial: ZhuyeConfig,
         poll_interval: Duration,
     ) -> Result<Self, ConfigError> {
         let (cfg_tx, cfg_rx) = watch::channel(initial);
@@ -98,12 +98,12 @@ impl ConfigWatcher {
     }
 
     /// 当前配置快照(便宜)。
-    pub fn current(&self) -> ReflectConfig {
+    pub fn current(&self) -> ZhuyeConfig {
         self.rx.borrow().clone()
     }
 
     /// 拿一个新的订阅 receiver;每次调用独立。
-    pub fn subscribe(&self) -> watch::Receiver<ReflectConfig> {
+    pub fn subscribe(&self) -> watch::Receiver<ZhuyeConfig> {
         self.rx.clone()
     }
 }
@@ -111,7 +111,7 @@ impl ConfigWatcher {
 async fn run_debounce_loop(
     fs_rx: mpsc::Receiver<()>,
     path: PathBuf,
-    cfg_tx: watch::Sender<ReflectConfig>,
+    cfg_tx: watch::Sender<ZhuyeConfig>,
     poll_interval: Duration,
 ) {
     // std mpsc -> tokio mpsc 桥接,放在 blocking thread 避免阻塞 reactor。
@@ -158,7 +158,7 @@ async fn run_debounce_loop(
 /// 尝试 reload 配置并在内容变化时广播。`source` 仅用于 log 区分 fs/poll 路径。
 async fn try_reload(
     path: &Path,
-    cfg_tx: &watch::Sender<ReflectConfig>,
+    cfg_tx: &watch::Sender<ZhuyeConfig>,
     last_hash: &mut u64,
     source: &str,
 ) {
@@ -186,20 +186,16 @@ async fn try_reload(
 
 /// 对配置做内容 hash,用于 polling 兜底的去重。
 /// 仅在同一进程内比较,因此 `DefaultHasher` 的非稳定 seed 无影响。
-fn hash_config(cfg: &ReflectConfig) -> u64 {
+fn hash_config(cfg: &ZhuyeConfig) -> u64 {
     let mut h = DefaultHasher::new();
-    // `ReflectConfig` 已派生 `Debug`,`{:?}` 输出包含所有字段,跨字段差异会反映在 hash 上。
+    // `ZhuyeConfig` 已派生 `Debug`,`{:?}` 输出包含所有字段,跨字段差异会反映在 hash 上。
     format!("{cfg:?}").hash(&mut h);
     h.finish()
 }
 
 /// 用于测试:只探测一个事件(无需真 watcher)。
 #[cfg(test)]
-async fn drain_once(
-    fs_rx: mpsc::Receiver<()>,
-    cfg_tx: watch::Sender<ReflectConfig>,
-    path: PathBuf,
-) {
+async fn drain_once(fs_rx: mpsc::Receiver<()>, cfg_tx: watch::Sender<ZhuyeConfig>, path: PathBuf) {
     let (async_tx, mut async_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     std::thread::spawn(move || {
         while fs_rx.recv().is_ok() {
@@ -238,7 +234,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
-        let initial = ReflectConfig::default();
+        let initial = ZhuyeConfig::default();
         let watcher = ConfigWatcher::spawn(path.clone(), initial).unwrap();
 
         // 改文件。
@@ -262,7 +258,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
-        let initial = ReflectConfig::default();
+        let initial = ZhuyeConfig::default();
         let watcher = ConfigWatcher::spawn(path.clone(), initial).unwrap();
 
         // 写入无效 TOML。
@@ -281,7 +277,7 @@ mod tests {
         fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
         let (fs_tx, fs_rx) = mpsc::channel::<()>();
-        let (cfg_tx, mut cfg_rx) = watch::channel(ReflectConfig::default());
+        let (cfg_tx, mut cfg_rx) = watch::channel(ZhuyeConfig::default());
 
         let path_for_task = path.clone();
         let task = tokio::spawn(drain_once(fs_rx, cfg_tx, path_for_task));
@@ -325,7 +321,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "[active]\ngroup = \"anthropic\"\n").unwrap();
 
-        let initial = ReflectConfig::default();
+        let initial = ZhuyeConfig::default();
         // 50ms poll 间隔 —— 走 spawn_with_poll 显式 override。
         let watcher =
             ConfigWatcher::spawn_with_poll(path.clone(), initial, Duration::from_millis(50))
@@ -357,7 +353,7 @@ mod tests {
         // 初始文件 = openai;但 channel initial = default —— 第一次 poll 必触发 send。
         fs::write(&path, "[active]\ngroup = \"openai\"\n").unwrap();
 
-        let initial = ReflectConfig::default();
+        let initial = ZhuyeConfig::default();
         // 关键:把 watcher 绑到变量,否则 `.subscribe()` 后临时 drop,后台 task 被取消。
         let watcher =
             ConfigWatcher::spawn_with_poll(path.clone(), initial, Duration::from_millis(50))

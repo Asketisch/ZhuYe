@@ -1,4 +1,4 @@
-//! squad 测试(移植 ReflectDesktop squad.rs 的 13 例 + created_at 还原回归)。
+//! squad 测试(移植 ZhuYe-Desktop squad.rs 的 13 例 + created_at 还原回归)。
 
 use super::*;
 use crate::actor::ActorKind;

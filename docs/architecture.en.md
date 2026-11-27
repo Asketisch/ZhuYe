@@ -23,7 +23,7 @@ in-process. The `zhuye` library flattens and re-exports the key types of each la
 public names); a host process just depends on it directly.
 - **Headless CLI (`zhuye exec`)** — a thin CLI entry, emitted by the
 `zhuye-cli` crate as a single `zhuye` binary. It **does not include a `tui` subcommand** (the TUI has
-been split into the standalone repository [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI)). It runs
+been split into the standalone repository [Zhuye-TUI](https://cnb.cool/Demon1019/Zhuye-CLI)). It runs
 one turn and exits: events are written as a JSONL stream to stdout, tracing logs go to stderr, so `zhuye
 exec | jq` is not polluted by logs.
 - **Serve protocol entry (`zhuye serve`)** — a resident stdio JSONL

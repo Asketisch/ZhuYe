@@ -1,4 +1,4 @@
-//! 分支 / PR 元数据探测 —— 移植 Reflect-TUI
+//! 分支 / PR 元数据探测 —— 移植 Zhuye-TUI
 //! `tui_core/branch_summary.rs`(499 行)。
 //!
 //! 设计原样保留:本模块**只与 [`crate::runner::CommandRunner`] 对话**,

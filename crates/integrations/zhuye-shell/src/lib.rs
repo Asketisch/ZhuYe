@@ -1,4 +1,4 @@
-//! `zhuye-shell` — 常驻 shell 会话池(WP16 收编 ReflectDesktop
+//! `zhuye-shell` — 常驻 shell 会话池(WP16 收编 ZhuYe-Desktop
 //! `src-tauri/src/shell_sessions.rs` 的 registry + `commands/shell.rs` 的
 //! pump 正确性细节)。
 //!

@@ -242,7 +242,7 @@ Design in [docs/PLAN_MODE.md](PLAN_MODE.md).
 ## Boundaries and Limitations
 
 - This repository's binary has no TUI subcommand. The interactive
-interface lives in the [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI) repository.
+interface lives in the [Zhuye-TUI](https://cnb.cool/Demon1019/Zhuye-CLI) repository.
 - Linux Landlock does not protect sensitive reads, and it cannot force nested
   sensitive paths inside a writable root to be read-only — Landlock merges
   rules bitwise, so write rights granted on a parent propagate to the nested

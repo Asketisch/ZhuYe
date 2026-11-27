@@ -445,7 +445,7 @@ impl Tool for BashTool {
             ));
         }
         script.push_str(&format!(
-            "{{ {cmd}\n}} ; __reflect_rc=$? ; printf '\\n{SENTINEL_PREFIX}rc=%s cwd=%s' \"$__reflect_rc\" \"$PWD\" ; printf '\\n{SENTINEL_PREFIX}rc=%s cwd=%s' \"$__reflect_rc\" \"$PWD\" >&2 ; exit \"$__reflect_rc\"\n"
+            "{{ {cmd}\n}} ; __zhuye_rc=$? ; printf '\\n{SENTINEL_PREFIX}rc=%s cwd=%s' \"$__zhuye_rc\" \"$PWD\" ; printf '\\n{SENTINEL_PREFIX}rc=%s cwd=%s' \"$__zhuye_rc\" \"$PWD\" >&2 ; exit \"$__zhuye_rc\"\n"
         ));
 
         // v1.3:OS 沙箱。`OsSandbox::default()` v1.3 起 enabled + strict,

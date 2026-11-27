@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use zhuye_config::{ReflectConfig, fetch_catalog, pick_free_model};
+use zhuye_config::{ZhuyeConfig, fetch_catalog, pick_free_model};
 use zhuye_llm::{FreeModelRules, ModelRegistry};
 
 /// `zhuye models` 子命令的退出码约定。
@@ -58,7 +58,7 @@ pub struct PickArgs {
 }
 
 /// 加载配置并注册 provider(与其他子命令一致的口径)。
-fn load_registry() -> anyhow::Result<(ReflectConfig, Arc<ModelRegistry>)> {
+fn load_registry() -> anyhow::Result<(ZhuyeConfig, Arc<ModelRegistry>)> {
     let cfg = zhuye_config::load_default();
     let registry = Arc::new(ModelRegistry::new());
     cfg.apply_to_registry(&registry)
@@ -67,7 +67,7 @@ fn load_registry() -> anyhow::Result<(ReflectConfig, Arc<ModelRegistry>)> {
 }
 
 /// 解析目标 provider(实为**模型组 id**):显式参数 > 配置里的活跃组。
-fn target_provider(cfg: &ReflectConfig, explicit: Option<&str>) -> anyhow::Result<String> {
+fn target_provider(cfg: &ZhuyeConfig, explicit: Option<&str>) -> anyhow::Result<String> {
     if let Some(p) = explicit.map(str::trim).filter(|p| !p.is_empty()) {
         return Ok(p.to_string());
     }
@@ -224,7 +224,7 @@ pub async fn pick(args: PickArgs) -> anyhow::Result<i32> {
 }
 
 /// 供 `zhuye doctor` 复用:检查清单可拉取性与免费模型数量。
-pub async fn doctor_summary(cfg: &ReflectConfig, registry: &ModelRegistry) -> Option<String> {
+pub async fn doctor_summary(cfg: &ZhuyeConfig, registry: &ModelRegistry) -> Option<String> {
     let provider = cfg.active_group()?;
     let timeout_secs = cfg
         .model_discovery

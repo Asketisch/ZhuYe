@@ -56,7 +56,7 @@ pub(crate) fn init_tracing(analytics: Option<&zhuye_config::AnalyticsSection>) {
 /// sink 的 session_id 用一个新生成的 uuid(与 rollout 的 thread_id 独立,
 /// 因 telemetry 的 model-io 文件按这个 id 命名)。
 pub(crate) fn build_telemetry_sink(
-    cfg: &zhuye_config::ReflectConfig,
+    cfg: &zhuye_config::ZhuyeConfig,
 ) -> Option<Arc<zhuye_telemetry::TelemetrySink>> {
     let default_section = zhuye_config::TelemetrySection::default();
     let section = cfg.telemetry.as_ref().unwrap_or(&default_section);
@@ -115,7 +115,7 @@ pub(crate) fn build_telemetry_sink(
 /// credentials,收集声明了 `quota` 的条目,注册到 `QuotaTracker`。
 /// 任一 provider 有 quota 声明 → 返回 `Some(tracker)`;全无 → `None`(向后兼容)。
 /// v1 暂忽略 subagent_models(subagent 配额切换后续迭代)。
-pub(crate) fn build_quota_tracker(cfg: &zhuye_config::ReflectConfig) -> Option<SharedQuotaTracker> {
+pub(crate) fn build_quota_tracker(cfg: &zhuye_config::ZhuyeConfig) -> Option<SharedQuotaTracker> {
     use std::sync::Arc as StdArc;
     use zhuye_config::QuotaSource;
     use zhuye_llm::{
@@ -243,7 +243,7 @@ pub(crate) fn build_sanitizer(section: Option<&zhuye_config::SanitizeSection>) -
 /// 根据 `[coordinator]` 配置启用/关闭 coordinator 模式。
 /// `async_main` 启动与 `handle_reload` 热重载共用此入口。
 pub(crate) fn apply_coordinator_from_config(
-    cfg: &zhuye_config::ReflectConfig,
+    cfg: &zhuye_config::ZhuyeConfig,
     workspace: &std::path::Path,
     m4: Option<&M4Deps>,
     factory: &SubAgentFactory,

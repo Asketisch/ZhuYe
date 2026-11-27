@@ -22,7 +22,7 @@ mod test_home;
 #[command(
     name = "zhuye",
     version,
-    about = "ZhuYe — Rust agent runtime CLI (subcommands: exec, serve, discussion, login, init, mcp, config, session, traces, secrets, doctor, models, plugin, lsp, task, pipeline, security, workspace, update, version). 交互式 TUI 见独立仓库 Reflect-TUI.",
+    about = "ZhuYe — Rust agent runtime CLI (subcommands: exec, serve, discussion, login, init, mcp, config, session, traces, secrets, doctor, models, plugin, lsp, task, pipeline, security, workspace, update, version). 交互式 TUI 见独立仓库 Zhuye-TUI.",
     propagate_version = true
 )]
 struct Cli {

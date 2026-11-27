@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn status_line_reflects_mode() {
+    fn status_line_mirrors_mode() {
         let off = UntrustedGate::with_allow_bare(false);
         let on = UntrustedGate::with_allow_bare(true);
         if UntrustedGate::backend_available() {

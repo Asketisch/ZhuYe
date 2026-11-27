@@ -10,15 +10,15 @@
 
 use crate::error::ConfigError;
 use crate::schema::legacy::LegacySections;
-use crate::schema::{ModelGroupSection, ReflectConfig};
+use crate::schema::{ModelGroupSection, ZhuyeConfig};
 
 /// 把 TOML 解析成「主结构 + 旧形态」两份。
 ///
-/// 旧形态单独解析 —— `ReflectConfig` 里已经没有 `[anthropic]` 等槽位,
+/// 旧形态单独解析 —— `ZhuyeConfig` 里已经没有 `[anthropic]` 等槽位,
 /// 直接反序列化会**静默忽略**它们(serde 未开 `deny_unknown_fields`),
 /// 老用户的 api_key 就这么丢了。
-pub(crate) fn parse_raw(s: &str) -> Result<(ReflectConfig, LegacySections), ConfigError> {
-    let cfg: ReflectConfig = toml::from_str(s).map_err(|error| {
+pub(crate) fn parse_raw(s: &str) -> Result<(ZhuyeConfig, LegacySections), ConfigError> {
+    let cfg: ZhuyeConfig = toml::from_str(s).map_err(|error| {
         // 修复原因:错误类型的显式模式也不能走普通 TOML 解析失败的启动兜底。
         if let Ok(table) = s.parse::<toml::Table>()
             && let Some(mode) = table.get("provenance").and_then(|value| value.get("mode"))
@@ -48,7 +48,7 @@ pub(crate) fn parse_raw(s: &str) -> Result<(ReflectConfig, LegacySections), Conf
 /// - `target = CURRENT_CONFIG_VERSION`(默认推荐)即「升到最新」。
 /// - `target` 低于 `current` 时 no-op(避免降级损坏 in-memory 数据)。
 /// - 未知起始版本号 → `ConfigError::Migration`。
-pub(crate) fn migrate_to_target(s: &str, target: u32) -> Result<ReflectConfig, ConfigError> {
+pub(crate) fn migrate_to_target(s: &str, target: u32) -> Result<ZhuyeConfig, ConfigError> {
     let (mut cfg, mut legacy) = parse_raw(s)?;
     // 旧 TOML 无 `config_version` 字段时,serde 默认填 1;此处不再做 .max。
     let mut current = cfg.config_version;
@@ -80,7 +80,7 @@ pub(crate) fn migrate_to_target(s: &str, target: u32) -> Result<ReflectConfig, C
 
 /// v1 → v2 migration:旧固定接入段 → 等价模型组。
 fn migrate_v1_to_v2(
-    cfg: &mut ReflectConfig,
+    cfg: &mut ZhuyeConfig,
     legacy: &mut LegacySections,
 ) -> Result<u32, ConfigError> {
     absorb_legacy_sections(cfg, legacy);
@@ -104,7 +104,7 @@ fn migrate_v1_to_v2(
 /// - 已有同 id 的模型组 → **不覆盖**(保留模型组现状),只丢旧段;
 /// - 迁移后的组被前插到 `model_group` 首位,保持旧「固定段优先于模型组」
 ///   的活跃组挑选顺序。
-fn absorb_legacy_sections(cfg: &mut ReflectConfig, legacy: &mut LegacySections) {
+fn absorb_legacy_sections(cfg: &mut ZhuyeConfig, legacy: &mut LegacySections) {
     // v1 的 `[active].provider` → `[active].group`(仅当 group 未设 ——
     // 两个键同时存在时以新键为准,不报 duplicate field)。
     if cfg.active.group.is_none()

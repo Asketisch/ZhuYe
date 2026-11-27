@@ -141,7 +141,7 @@ Per-tool details:
   concurrent overwrites). `replace_all` is **not** supported (a planned
   gap-filler).
 - §2.4 `grep`: `ignore::WalkBuilder` traversal + regex; the sorting
-  argument is `rank`, taking `regex` (default) / `bm25` (reflects
+  argument is `rank`, taking `regex` (default) / `bm25` (mirrors
   `zhuye-bm25`). Output is paths relative to the workspace.
 - §2.5 `glob`: pattern / path; also walks the ignore tree (respecting
   .gitignore). The current implementation is **path substring

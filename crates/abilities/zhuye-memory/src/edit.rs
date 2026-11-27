@@ -1,6 +1,6 @@
 //! v1.x:记忆条目级编辑 —— `## <key>` 标题块的增 / 删 / 整份替换。
 //!
-//! 收编 ReflectDesktop `src-tauri/src/memory_store.rs` 的写侧。此前框架
+//! 收编 ZhuYe-Desktop `src-tauri/src/memory_store.rs` 的写侧。此前框架
 //! 只有**读**路径(`MemoryStore::load` / `retrieve_relevant` / pre_loop
 //! 注入),写侧散在客户端各自实现 —— 桌面端用核心的 `split_sections` /
 //! `resolve_path` 解析,但增删逻辑、乐观锁、歧义检测都在 GUI 仓库里,
@@ -241,9 +241,9 @@ impl FileMemoryStore {
 
 /// 旧 agent 目录迁移:把 `from_agent` 名下的 MEMORY.md 移到 `to_agent`。
 ///
-/// 收编桌面端 `migrate_legacy_memory_dir`(桌面端曾把 agent 段写死
-/// `reflect`,运行时按 agent 定义名读,两边对不上;首次启动时把旧数据
-/// 搬到当前活跃 agent 目录)。只在**目标不存在、源存在**时 move ——
+/// 通用迁移助手(收编自桌面端同名逻辑):agent 目录由活跃 agent 名派生,
+/// 旧版本若写死过别的目录名,首次启动时把旧数据搬到当前活跃目录。
+/// 只在**目标不存在、源存在**时 move ——
 /// 不覆盖用户新写的记忆;两个 scope 各迁一次;失败只记日志不阻断
 /// (记忆不是启动前提)。
 pub fn migrate_legacy_agent_dir(workspace: &Path, home: &Path, from_agent: &str, to_agent: &str) {

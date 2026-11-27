@@ -1,4 +1,4 @@
-//! `memory_tool` — v1.x 记忆读写工具(收编 ReflectDesktop 的 memory 写侧)。
+//! `memory_tool` — v1.x 记忆读写工具(收编 ZhuYe-Desktop 的 memory 写侧)。
 //!
 //! 此前框架只有记忆的**读**路径(pre_loop 注入 + `retrieve_relevant`),
 //! 写入能力长在桌面端 GUI 里 —— CLI / SDK 完全没有入口,模型也无法在

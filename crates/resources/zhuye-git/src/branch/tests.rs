@@ -1,4 +1,4 @@
-//! 分支 / PR 探测测试(移植 Reflect-TUI 的 5 例,FakeRunner 脚本化
+//! 分支 / PR 探测测试(移植 Zhuye-TUI 的 5 例,FakeRunner 脚本化
 //! git / gh 响应链)。
 
 use super::*;

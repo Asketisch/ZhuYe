@@ -569,7 +569,7 @@ mod tests {
     /// v0.2.3 起:SendMessageTool 在 execute 时读取共享 AtomicU32,runtime
     /// 每轮 `store(round)`,消息 `round` 字段反映 runtime 当前轮次。
     #[tokio::test]
-    async fn send_message_round_atomic_reflects_runtime_state() {
+    async fn send_message_round_atomic_mirrors_runtime_state() {
         let (bus, _finished, round, _token_slot, send, _read, _finish) =
             mk_bus_and_tools(AgentId("a".into()), AgentId("b".into()));
         // 模拟 runtime 跑到第 2 轮
@@ -586,7 +586,7 @@ mod tests {
 
     /// v0.2.3 起:FinishDiscussionTool 同样读共享 AtomicU32 写入 round 字段。
     #[tokio::test]
-    async fn finish_discussion_round_atomic_reflects_runtime_state() {
+    async fn finish_discussion_round_atomic_mirrors_runtime_state() {
         let (bus, _finished, round, _token_slot, _send, _read, finish) =
             mk_bus_and_tools(AgentId("a".into()), AgentId("b".into()));
         round.store(3, Ordering::SeqCst);

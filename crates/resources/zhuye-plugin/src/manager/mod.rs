@@ -300,7 +300,7 @@ impl PluginManager {
 
     /// 刷新 `(id, scope)` 条目的 `last_updated` 字段并落盘。
     ///
-    /// v1.0.0-rc2 简化决策:**启用态的真实权威表**是 `ReflectConfig.plugins.enabled_plugins`,
+    /// v1.0.0-rc2 简化决策:**启用态的真实权威表**是 `ZhuyeConfig.plugins.enabled_plugins`,
     /// 这里只更新 `last_updated` 供 UI 显示用。CLI / TUI 在改 enabled_plugins
     /// 后**不**调用 `touch`(避免双重写盘);只有用户显式 upgrade / reinstall
     /// 时才会走这里。

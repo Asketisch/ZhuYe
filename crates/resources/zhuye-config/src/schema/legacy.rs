@@ -14,7 +14,7 @@
 //! 接入单元。但**旧配置必须仍能读入**,否则老用户的 api_key 会静默
 //! 丢失(serde 未开 `deny_unknown_fields`,直接删字段 = 悄悄忽略)。
 //!
-//! 因此这三段以 `LegacySections` 的形式挂在 [`ReflectConfig`] 的
+//! 因此这三段以 `LegacySections` 的形式挂在 [`ZhuyeConfig`] 的
 //! **私有**字段上(`#[serde(skip_serializing)]`):
 //!
 //! - **读**:旧 TOML 里的 `[anthropic]` / `[openai]` / `[ollama]` 被解析

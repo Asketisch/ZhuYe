@@ -1,5 +1,5 @@
 //! Side-channel agent —— 用户驱动、独立于主 agent 轮次生命周期的并发
-//! agent 运行(WP9 收编 ReflectDesktop `app-core/src/side_channel.rs`)。
+//! agent 运行(WP9 收编 ZhuYe-Desktop `app-core/src/side_channel.rs`)。
 //!
 //! ## 与 `Task` 工具(模型驱动子代理)的区别
 //!

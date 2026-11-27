@@ -69,7 +69,7 @@ pub struct HeadlessArgs {
 /// 加载是进程级语义,不回写配置。
 pub fn resolve_enabled_plugins(
     args: &HeadlessArgs,
-    cfg: &zhuye_config::ReflectConfig,
+    cfg: &zhuye_config::ZhuyeConfig,
 ) -> Vec<String> {
     match args.plugins.as_deref() {
         Some(list) if !list.is_empty() => list.to_vec(),
@@ -182,7 +182,7 @@ fn goal_status_to_probe(status: zhuye_goal::GoalStatus) -> zhuye_stream::GoalPro
 
 /// [`bootstrap_common`] 的产物:两个分支后续装配都要用的共享句柄。
 pub struct HeadlessCommon {
-    pub initial_cfg: zhuye_config::ReflectConfig,
+    pub initial_cfg: zhuye_config::ZhuyeConfig,
     pub config_path: PathBuf,
     pub registry: Arc<ModelRegistry>,
     pub hook_engine: Arc<zhuye_hooks::HookEngine>,
@@ -331,7 +331,7 @@ pub async fn bootstrap_common(args: &HeadlessArgs) -> anyhow::Result<HeadlessCom
     // serve(hooks_explicit_only)把「未配置 = 全部启用」收紧为「未配置
     // = 不启用任何内置 hook」:嵌入场景不应默认跑 verification 之类
     // 会在宿主 cwd 执行 shell 命令的 Stop hook;显式列出的照常启用。
-    let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_reflect_section(&initial_cfg.hooks);
+    let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_zhuye_section(&initial_cfg.hooks);
     if args.hooks_explicit_only && hooks_cfg.enabled.is_none() {
         hooks_cfg.enabled = Some(Vec::new());
     }
@@ -561,7 +561,7 @@ struct SideChannelSecurity {
 fn build_side_channel_factory(
     registry: zhuye_llm::SharedModelRegistry,
     tools: Arc<ToolRegistry>,
-    cfg: zhuye_config::ReflectConfig,
+    cfg: zhuye_config::ZhuyeConfig,
     telemetry: Option<Arc<zhuye_telemetry::TelemetrySink>>,
     security: SideChannelSecurity,
 ) -> zhuye_core::side_channel::SideContextThreadFactory {
@@ -645,7 +645,7 @@ fn build_side_channel_factory(
 /// 权限规则与 YOLO 分类器。
 async fn apply_permission_layers(
     mut cfg: AgentConfig,
-    initial_cfg: &zhuye_config::ReflectConfig,
+    initial_cfg: &zhuye_config::ZhuyeConfig,
     workspace: &std::path::Path,
 ) -> AgentConfig {
     let file_store: Arc<dyn zhuye_permissions::PermissionStore> =
@@ -1829,7 +1829,7 @@ mod side_channel_security_tests {
         let factory = build_side_channel_factory(
             Arc::new(ModelRegistry::new()),
             Arc::new(ToolRegistry::new()),
-            zhuye_config::ReflectConfig::default(),
+            zhuye_config::ZhuyeConfig::default(),
             None,
             SideChannelSecurity {
                 permission_resolver: None,

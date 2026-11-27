@@ -4,7 +4,7 @@
 
 > `zhuye` 二进制的子命令全量一览与用法。单一 `zhuye` 二进制由
 > `zhuye-cli` crate 产出,共 22 个顶层子命令,**不含 `tui` 子命令**
-> (TUI 已拆至独立仓库 [Reflect-TUI](https://cnb.cool/Demon1019/Reflect-CLI)),
+> (TUI 已拆至独立仓库 [Zhuye-TUI](https://cnb.cool/Demon1019/Zhuye-CLI)),
 > **也没有 `import` 子命令**。
 > 每个命令的完整参数以 `zhuye <命令> --help` 为准。
 
@@ -123,7 +123,7 @@ github / git / url / file / directory)、`ls`、`refresh`、`discover`
 
 ## 独立二进制
 
-- **Reflect-TUI**:独立仓库提供的 TUI 二进制,核心仓库的 `zhuye`
+- **Zhuye-TUI**:独立仓库提供的 TUI 二进制,核心仓库的 `zhuye`
   不含 `tui` 子命令。
 
 ## 全局参数与环境

@@ -4,10 +4,10 @@
 //! 把模型 / compact / hooks 配置集中到 `~/.zhuye/config.toml`。
 //!
 //! ## 模块
-//! - [`schema`] —— 数据结构 (`ReflectConfig` 及各 section)
+//! - [`schema`] —— 数据结构 (`ZhuyeConfig` 及各 section)
 //! - [`load`] —— 单次同步加载(含 v1→v2 迁移)
 //! - [`watch`] —— 基于 `notify` 的热重载 (debounce 250ms)
-//! - [`builder`] —— `ReflectConfig → ModelRegistry`
+//! - [`builder`] —— `ZhuyeConfig → ModelRegistry`
 //!
 //! ## 配置示例
 //!
@@ -128,11 +128,11 @@ pub use schema::{
     ModelDiscoverySection, ModelGroupSection, ModelSection, NotificationChannel,
     NotificationsSection, PermissionsSection, PlanCompletionSection, PostgresSessionSection,
     PromptGuardSection, ProvenanceSection, QuotaConfig, QuotaSource, ReadBeforeEditSection,
-    ReflectConfig, ResolvedAskUserQuestion, RoutingSection, SandboxSection, SanitizeSection,
-    SearchBudgetSection, SpecSlotConfig, SseRedisSection, SubagentSpecConfig, TaskBudgetSection,
-    TelemetrySection, TestRunnerSection, TokenBudgetSection, ToolJournalSection,
-    TuiNotificationsSection, TurnSchedulingSection, VerificationSection, VoiceSection,
-    WebSearchSection, parse_permission_entry,
+    ResolvedAskUserQuestion, RoutingSection, SandboxSection, SanitizeSection, SearchBudgetSection,
+    SpecSlotConfig, SseRedisSection, SubagentSpecConfig, TaskBudgetSection, TelemetrySection,
+    TestRunnerSection, TokenBudgetSection, ToolJournalSection, TuiNotificationsSection,
+    TurnSchedulingSection, VerificationSection, VoiceSection, WebSearchSection, ZhuyeConfig,
+    parse_permission_entry,
 };
 pub use watch::{ConfigWatcher, WatcherHandle};
 

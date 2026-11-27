@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_reflects_running_toggle() {
+    async fn status_mirrors_running_toggle() {
         let t = tool();
         let s0 = t
             .execute(ctx(), serde_json::json!({"action": "status"}))

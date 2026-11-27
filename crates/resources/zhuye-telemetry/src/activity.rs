@@ -1,4 +1,4 @@
-//! Activity 时间线 —— 本地事件审计日志(WP12 收编 ReflectDesktop
+//! Activity 时间线 —— 本地事件审计日志(WP12 收编 ZhuYe-Desktop
 //! `app-core/src/activity.rs` + `src-tauri/src/state/activity.rs` 的映射层)。
 //!
 //! 记录「谁(actor)在何时(ts)做了什么(kind + summary)」,供 Inbox /

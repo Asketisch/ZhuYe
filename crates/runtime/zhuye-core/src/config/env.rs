@@ -64,7 +64,7 @@ pub fn trigger_tokens_from_env() -> u32 {
 /// 按优先级解析触发阈值,构造 `CompactorConfig`:env `ZHUYE_AUTO_COMPACT_INPUT_TOKENS`
 /// > TOML `trigger_tokens` > `CompactorConfig::default()` (= 10 000)。
 ///
-/// `toml_trigger_tokens` 取自 `~/.zhuye/config.toml` 中 `ReflectConfig.compact.trigger_tokens`。
+/// `toml_trigger_tokens` 取自 `~/.zhuye/config.toml` 中 `ZhuyeConfig.compact.trigger_tokens`。
 /// 若该 section 缺失则传 `None`。`CompactorConfig::default()` 是其他可调参数
 /// (`microcompact_ratio`、`keep_recent_*`、`target_ratio`、`summarize_after`)
 /// 的单一事实源;此处仅覆盖 `trigger_tokens`。
@@ -133,7 +133,7 @@ pub fn compact_trigger_policy(
 /// 10k 误触发,未知私端模型也有量级合理的默认。
 ///
 /// `toml_trigger_tokens` / `toml_trigger_ratio` 取自 config.toml
-/// `ReflectConfig.compact`;`model_spec` 是当前会话活跃模型。exec 与
+/// `ZhuyeConfig.compact`;`model_spec` 是当前会话活跃模型。exec 与
 /// 库门面(m4_bootstrap)两条装配路径都必须走本函数,禁止只走
 /// [`compactor_config_from_env_and_toml`](那会让窗口推导在桌面静默失效,
 /// v1.12 的教训)。

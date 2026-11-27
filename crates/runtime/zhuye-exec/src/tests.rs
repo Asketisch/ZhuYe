@@ -19,8 +19,8 @@ use zhuye_tools::ToolRegistry;
 #[test]
 fn diff_sections_includes_model_group_when_group_added() {
     use zhuye_config::ModelGroupSection;
-    let old = zhuye_config::ReflectConfig::default();
-    let new = zhuye_config::ReflectConfig {
+    let old = zhuye_config::ZhuyeConfig::default();
+    let new = zhuye_config::ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "ollama".into(),
             endpoint: "ollama".into(),
@@ -73,7 +73,7 @@ fn ephemeral_tasks_field_is_bool_with_default_false() {
 #[test]
 fn diff_sections_only_model_group_changes() {
     use zhuye_config::ModelGroupSection;
-    let old = zhuye_config::ReflectConfig {
+    let old = zhuye_config::ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "ollama".into(),
             endpoint: "ollama".into(),
@@ -190,8 +190,8 @@ async fn handle_reload_pushes_config_reloaded_event() {
     let (tx, mut rx) = mpsc::channel::<Event>(2);
     // 使用最小 config(没有 provider section → 不注册任何 client;
     // 此时 `apply_to_registry` 是 no-op,因为 section 不存在)。
-    let old_cfg = zhuye_config::ReflectConfig::default();
-    let new_cfg = zhuye_config::ReflectConfig::default();
+    let old_cfg = zhuye_config::ZhuyeConfig::default();
+    let new_cfg = zhuye_config::ZhuyeConfig::default();
     let path = std::path::PathBuf::from("/tmp/test-config.toml");
     let agent_cfg = AgentConfig::new("anthropic/x", "/tmp")
         .with_m4(zhuye_core::config::default_m4_deps("test"));
@@ -248,8 +248,8 @@ async fn handle_reload_returns_err_when_channel_closed() {
     let registry = Arc::new(ModelRegistry::new());
     let (tx, rx) = mpsc::channel::<Event>(1);
     drop(rx);
-    let old_cfg = zhuye_config::ReflectConfig::default();
-    let new_cfg = zhuye_config::ReflectConfig::default();
+    let old_cfg = zhuye_config::ZhuyeConfig::default();
+    let new_cfg = zhuye_config::ZhuyeConfig::default();
     let path = std::path::PathBuf::from("/tmp/test.toml");
     let agent_cfg = AgentConfig::new("anthropic/x", "/tmp")
         .with_m4(zhuye_core::config::default_m4_deps("test"));
@@ -288,7 +288,7 @@ async fn handle_reload_updates_agent_config_model_when_section_changes() {
     use zhuye_config::{ActiveSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut _rx) = mpsc::channel::<Event>(4);
-    let old_cfg = zhuye_config::ReflectConfig {
+    let old_cfg = zhuye_config::ZhuyeConfig {
         active: ActiveSection {
             group: Some("anthropic".into()),
             ..Default::default()
@@ -340,7 +340,7 @@ async fn handle_reload_does_not_touch_model_when_credentials_change() {
     use zhuye_config::{ActiveSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut _rx) = mpsc::channel::<Event>(4);
-    let old_cfg = zhuye_config::ReflectConfig {
+    let old_cfg = zhuye_config::ZhuyeConfig {
         active: ActiveSection {
             group: Some("anthropic".into()),
             ..Default::default()
@@ -388,7 +388,7 @@ async fn handle_reloaded_event_lists_only_changed_sections() {
     use zhuye_config::{ActiveSection, CompactSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut rx) = mpsc::channel::<Event>(4);
-    let old_cfg = zhuye_config::ReflectConfig {
+    let old_cfg = zhuye_config::ZhuyeConfig {
         active: ActiveSection {
             group: Some("anthropic".into()),
             ..Default::default()
@@ -466,7 +466,7 @@ async fn handle_reload_swaps_active_group_spec() {
     use zhuye_config::{ActiveSection, ModelGroupSection};
     let registry = Arc::new(ModelRegistry::new());
     let (tx, mut _rx) = mpsc::channel::<Event>(4);
-    let old_cfg = zhuye_config::ReflectConfig {
+    let old_cfg = zhuye_config::ZhuyeConfig {
         active: ActiveSection {
             group: Some("anthropic".into()),
             ..Default::default()
@@ -480,7 +480,7 @@ async fn handle_reload_swaps_active_group_spec() {
         }],
         ..Default::default()
     };
-    let new_cfg = zhuye_config::ReflectConfig {
+    let new_cfg = zhuye_config::ZhuyeConfig {
         active: ActiveSection {
             group: Some("openai".into()),
             ..Default::default()
@@ -544,8 +544,8 @@ async fn handle_reload_applies_coordinator_section() {
     let agent_cfg = AgentConfig::new("openai/gpt-4o", "/tmp/ws").with_m4(m4);
     let path = std::path::PathBuf::from("/tmp/coordinator-reload.toml");
 
-    let old_cfg = zhuye_config::ReflectConfig::default();
-    let new_cfg = zhuye_config::ReflectConfig {
+    let old_cfg = zhuye_config::ZhuyeConfig::default();
+    let new_cfg = zhuye_config::ZhuyeConfig {
         coordinator: Some(CoordinatorSection {
             enabled: Some(true),
             system_prompt_path: None,
@@ -577,7 +577,7 @@ async fn handle_reload_applies_coordinator_section() {
 
     while rx.try_recv().is_ok() {}
 
-    let disabled_cfg = zhuye_config::ReflectConfig {
+    let disabled_cfg = zhuye_config::ZhuyeConfig {
         coordinator: Some(CoordinatorSection {
             enabled: Some(false),
             system_prompt_path: None,

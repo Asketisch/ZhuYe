@@ -468,7 +468,7 @@ C9 覆盖插件安装、列表与运行时按 `ZHUYE_HOME` 隔离。
 - **C10** login:4 provider 路径 / 缺 key 报错(含 api_key 提示)/ 短 key
   告警与 `--force` 静默 / `config show` 脱敏与 `--reveal`。
 - **C11** config:set 回显 / ls 新值与 `<unset>` / 非法 key 列出允许清单 /
-  unset 复位 / show 打印 ReflectConfig 头。
+  unset 复位 / show 打印 ZhuyeConfig 头。
 - **C12** mcp:stdio+http add / `--command`×`--url` 互斥(rc=2)/ ls 标注
   传输 / show(stdio/http)/ `test` 真 mock server 列出双工具、坏 binary
   报 failed to start / remove / registry ls 三条目 + 有效 id + unknown 报错。

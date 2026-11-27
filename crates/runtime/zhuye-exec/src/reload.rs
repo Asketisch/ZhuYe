@@ -36,7 +36,7 @@ pub fn spawn_reload_task(
     watcher: ConfigWatcher,
     event_tx: tokio::sync::mpsc::Sender<zhuye_protocol::Event>,
     path: std::path::PathBuf,
-    previous_cfg: zhuye_config::ReflectConfig,
+    previous_cfg: zhuye_config::ZhuyeConfig,
     agent_cfg: AgentConfig,
     factory: Option<Arc<SubAgentFactory>>,
     recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>>,
@@ -101,8 +101,8 @@ pub fn spawn_reload_task(
 /// 的纯路径聚合点,bundle 参数进 struct 会增加跳转成本而无功能收益。
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_reload(
-    old_cfg: &zhuye_config::ReflectConfig,
-    new_cfg: &zhuye_config::ReflectConfig,
+    old_cfg: &zhuye_config::ZhuyeConfig,
+    new_cfg: &zhuye_config::ZhuyeConfig,
     registry: &Arc<ModelRegistry>,
     agent_cfg: &AgentConfig,
     factory: Option<&SubAgentFactory>,
@@ -355,22 +355,22 @@ fn apply_hook_toggles(
     }
 }
 
-/// 比较两份 `ReflectConfig`,返回发生变化的 section 名列表。
+/// 比较两份 `ZhuyeConfig`,返回发生变化的 section 名列表。
 /// v0.2.2 升级替代 M8 的 `vec!["all"]` 占位实现。
 ///
 /// v0.3: 加 `mcp_servers` —— 走 `PartialEq` 直接比对,manager 用
 /// `entry_unchanged` 做字段级细分(只重启真改了 command/args/env/url
 /// 的 server,timeout 变化不 restart)。
 pub fn diff_sections_for_test(
-    old: &zhuye_config::ReflectConfig,
-    new: &zhuye_config::ReflectConfig,
+    old: &zhuye_config::ZhuyeConfig,
+    new: &zhuye_config::ZhuyeConfig,
 ) -> Vec<String> {
     diff_sections(old, new)
 }
 
 pub(crate) fn diff_sections(
-    old: &zhuye_config::ReflectConfig,
-    new: &zhuye_config::ReflectConfig,
+    old: &zhuye_config::ZhuyeConfig,
+    new: &zhuye_config::ZhuyeConfig,
 ) -> Vec<String> {
     let mut out = Vec::new();
     if old.prompts != new.prompts {

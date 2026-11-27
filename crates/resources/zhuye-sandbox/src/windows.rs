@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_reflects_config() {
+    fn plan_mirrors_config() {
         let cfg = WindowsSandboxConfig {
             allow_network: true,
             job: JobLimits {

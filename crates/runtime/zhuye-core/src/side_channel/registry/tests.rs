@@ -1,4 +1,4 @@
-//! Registry 测试(移植 ReflectDesktop side_channel 的 9 例)。
+//! Registry 测试(移植 ZhuYe-Desktop side_channel 的 9 例)。
 
 use super::*;
 

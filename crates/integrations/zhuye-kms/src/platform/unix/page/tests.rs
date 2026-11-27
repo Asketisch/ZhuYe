@@ -191,7 +191,7 @@ fn replacement_preserves_linux_xattrs_and_posix_acl() {
     let original = File::open(&target).unwrap();
     fs::fsetxattr(
         &original,
-        "user.reflect-test",
+        "user.zhuye-test",
         b"sentinel",
         fs::XattrFlags::empty(),
     )
@@ -210,7 +210,7 @@ fn replacement_preserves_linux_xattrs_and_posix_acl() {
     write_to_dir(&pages, "page", false, |file| file.write_all(b"updated")).unwrap();
     let updated = File::open(target).unwrap();
     let mut attribute = [0u8; 1024];
-    let len = fs::fgetxattr(&updated, "user.reflect-test", &mut attribute[..]).unwrap();
+    let len = fs::fgetxattr(&updated, "user.zhuye-test", &mut attribute[..]).unwrap();
     assert_eq!(&attribute[..len], b"sentinel");
     let len = fs::fgetxattr(&updated, "system.posix_acl_access", &mut attribute[..]).unwrap();
     assert_eq!(&attribute[..len], acl);
@@ -264,7 +264,7 @@ fn replacement_preserves_acl_and_extended_attributes() {
     );
     assert!(
         Command::new("xattr")
-            .args(["-w", "com.reflect.test", "sentinel"])
+            .args(["-w", "com.zhuye.test", "sentinel"])
             .arg(&target)
             .status()
             .unwrap()
@@ -283,7 +283,7 @@ fn replacement_preserves_acl_and_extended_attributes() {
         after.lines().skip(1).collect::<Vec<_>>()
     );
     let attribute = Command::new("xattr")
-        .args(["-p", "com.reflect.test"])
+        .args(["-p", "com.zhuye.test"])
         .arg(&target)
         .output()
         .unwrap();

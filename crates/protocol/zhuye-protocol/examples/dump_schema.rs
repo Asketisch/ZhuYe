@@ -7,7 +7,7 @@
 //!
 //! - 仅生成 `EventMsg` 与 `Submission` 的**顶层** schema(union discriminator
 //!   `type`)。nested 结构不在 schema 中展开 —— 由前端的 `json2ts --unknownAny = false`
-//!   配合 `ReflectEvent` 类型的`unknown`字段处理,见 `crates/zhuye-gui/src/types/protocol.ts`。
+//!   配合 `ZhuyeEvent` 类型的`unknown`字段处理,见 `crates/zhuye-gui/src/types/protocol.ts`。
 //! - schemars derive 整个 30+ 子类型工作量超出 M1.2 范围。 M2.x 再追加 derive
 //!   并重写本 example 为完整 schema 版本。
 //! - 本文件不依赖 `schemars` derive, 直接 hand-write JSON。
@@ -84,7 +84,7 @@ fn main() {
     // EventMsg ---- { id: str, msg: { type, ... } } (外层 Event 在 src-tauri 自行定义)
     let schema = json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
-        "title": "ReflectProtocol",
+        "title": "ZhuyeProtocol",
         "definitions": {
             "Submission": {
                 "type": "object",

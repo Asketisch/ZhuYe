@@ -23,8 +23,8 @@ fn group(id: &str, endpoint: &str, base_url: &str) -> ModelGroupSection {
     }
 }
 
-fn cfg_with_anthropic(key: &str) -> ReflectConfig {
-    ReflectConfig {
+fn cfg_with_anthropic(key: &str) -> ZhuyeConfig {
+    ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "anthropic".into(),
             endpoint: "anthropic".into(),
@@ -38,8 +38,8 @@ fn cfg_with_anthropic(key: &str) -> ReflectConfig {
     }
 }
 
-fn cfg_with_openai(key: &str) -> ReflectConfig {
-    ReflectConfig {
+fn cfg_with_openai(key: &str) -> ZhuyeConfig {
+    ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "openai".into(),
             endpoint: "openai".into(),
@@ -51,8 +51,8 @@ fn cfg_with_openai(key: &str) -> ReflectConfig {
     }
 }
 
-fn cfg_with_ollama(model: Option<&str>) -> ReflectConfig {
-    ReflectConfig {
+fn cfg_with_ollama(model: Option<&str>) -> ZhuyeConfig {
+    ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "ollama".into(),
             endpoint: "ollama".into(),
@@ -65,7 +65,7 @@ fn cfg_with_ollama(model: Option<&str>) -> ReflectConfig {
 
 #[test]
 fn empty_config_yields_empty_registry() {
-    let r = ReflectConfig::default()
+    let r = ZhuyeConfig::default()
         .to_registry_with_env(None, None)
         .unwrap();
     assert!(r.list().is_empty());
@@ -73,7 +73,7 @@ fn empty_config_yields_empty_registry() {
 
 #[test]
 fn registry_registers_anthropic_and_openai() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![
             ModelGroupSection {
                 id: "anthropic".into(),
@@ -123,7 +123,7 @@ fn apply_to_registry_is_additive() {
 /// `apply_to_registry` 会随时清空全局表,读全局的断言在压测下必闪。
 #[test]
 fn apply_to_registry_feeds_merged_context_window_overrides() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "anthropic".into(),
             endpoint: "anthropic".into(),
@@ -147,7 +147,7 @@ fn apply_to_registry_feeds_merged_context_window_overrides() {
     let merged = cfg.effective_context_window_overrides("anthropic/ZZ-Merge-Model");
     assert_eq!(merged.get("zz-merge-model"), Some(&262_144));
     // [context_windows] per-model 条目照常并入。
-    let cfg2 = ReflectConfig {
+    let cfg2 = ZhuyeConfig {
         context_windows: Some(crate::schema::ContextWindowsSection {
             entries: [("zz-merge-other".to_string(), 32_768)].into(),
         }),
@@ -170,7 +170,7 @@ fn registry_registers_ollama_group() {
 #[test]
 fn active_group_canonicalizes_ollama_aliases() {
     // 显式 `group = "ollama"` → 选 ollama。
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("ollama".into()),
             ..Default::default()
@@ -188,7 +188,7 @@ fn active_group_canonicalizes_ollama_aliases() {
     );
 
     // alias `"local"` 也被 canonicalize。
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("Local".into()),
             ..Default::default()
@@ -228,7 +228,7 @@ fn resolve_model_ollama_returns_group_override() {
 /// 模型名剥前缀:**只剥已知组 id** + `mock`;厂商式命名原样保留。
 #[test]
 fn strip_group_prefix_strips_only_known_group_ids() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![
             group("openai", "openai", "https://a.example.test"),
             group("my-glm", "openai", "https://b.example.test"),
@@ -279,7 +279,7 @@ fn resolve_model_env_with_group_prefix_is_stripped() {
 /// v1.5 诚实化:未显式配置任何 model → `None`(不再编造内置默认)。
 #[test]
 fn resolve_model_returns_none_when_nothing_configured() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     assert_eq!(cfg.resolve_model_inner("ollama", None, None), None);
     assert_eq!(cfg.resolve_model_inner("anthropic", None, None), None);
     assert_eq!(cfg.resolve_model_inner("openai", None, None), None);
@@ -288,7 +288,7 @@ fn resolve_model_returns_none_when_nothing_configured() {
 
 #[test]
 fn resolved_model_spec_for_ollama() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("ollama".into()),
             ..Default::default()
@@ -326,7 +326,7 @@ fn credentials_array_builds_multi_entry_pool() {
         label = "personal"
         api_key = "sk-personal"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let r = cfg.to_registry_with_env(None, None).unwrap();
     let healthy = r.healthy_clients("anthropic/claude-3-5-sonnet-latest");
     assert_eq!(healthy.len(), 2, "应有 work + personal 两个 entry");
@@ -350,7 +350,7 @@ fn credentials_array_builds_multi_entry_pool() {
 /// 组级 `api_key` 单值形态注册为单 entry "default" 池。
 #[test]
 fn group_api_key_wraps_to_default_credential() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "anthropic".into(),
             endpoint: "anthropic".into(),
@@ -367,7 +367,7 @@ fn group_api_key_wraps_to_default_credential() {
 /// `credentials` 数组与组级 `api_key` 同时存在 → 数组优先。
 #[test]
 fn credentials_array_takes_precedence_over_group_api_key() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "anthropic".into(),
             endpoint: "anthropic".into(),
@@ -390,7 +390,7 @@ fn credentials_array_takes_precedence_over_group_api_key() {
 #[test]
 fn no_ollama_group_means_no_ollama_pool() {
     // 无 ollama 组 → 不注册。
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     let r = cfg.to_registry_with_env(None, None).unwrap();
     assert!(r.get("ollama").is_none());
     // active_group 依赖 env 兜底,只断言不 panic 即可。
@@ -413,7 +413,7 @@ fn canonical_group_round_trip_includes_ollama() {
 /// 既没 key 也没 base_url 的组 → 不注册(用户没配,不造空池)。
 #[test]
 fn keyless_group_without_base_url_still_skipped() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "openai".into(),
             endpoint: "openai".into(),
@@ -434,7 +434,7 @@ fn keyless_group_without_base_url_still_skipped() {
 /// 数组形态绕道 —— 配置形态被迫分叉,GUI 也无法表达。
 #[test]
 fn keyless_group_with_base_url_registers_pool() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "openai".into(),
             endpoint: "openai".into(),
@@ -456,7 +456,7 @@ fn keyless_group_with_base_url_registers_pool() {
 /// 免 Key 端点也应能推出活跃组(与注册条件同口径)。
 #[test]
 fn keyless_group_with_base_url_is_active_group() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "openai".into(),
             endpoint: "openai".into(),
@@ -487,7 +487,7 @@ fn credential_block_without_api_key_deserializes() {
         base_url = "https://api.kilo.ai/api/gateway"
         model = "free"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).expect("缺省 api_key 的凭据块应能反序列化");
+    let cfg: ZhuyeConfig = toml::from_str(toml).expect("缺省 api_key 的凭据块应能反序列化");
     let cred = &cfg.model_group[0].credentials[0];
     assert_eq!(cred.label, "kilo-free");
     assert!(cred.api_key.is_empty(), "缺省 api_key = 空串(免 Key)");
@@ -495,7 +495,7 @@ fn credential_block_without_api_key_deserializes() {
 
 #[test]
 fn active_group_explicit_in_toml() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("openai".into()),
             ..Default::default()
@@ -525,7 +525,7 @@ fn active_group_explicit_in_toml() {
 /// `[active].group` 指向**不存在的组** → 继续往下兜底(首个有凭据的组)。
 #[test]
 fn active_group_unknown_id_falls_through() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("gemini".into()),
             ..Default::default()
@@ -555,7 +555,7 @@ fn active_group_falls_back_to_first_nonempty() {
 
 #[test]
 fn active_group_canonicalizes_aliases() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("Claude".into()),
             ..Default::default()
@@ -573,7 +573,7 @@ fn active_group_canonicalizes_aliases() {
         Some("anthropic")
     );
 
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("gpt".into()),
             ..Default::default()
@@ -594,7 +594,7 @@ fn active_group_canonicalizes_aliases() {
 
 #[test]
 fn active_group_unknown_string_returns_none() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("gemini".into()),
             ..Default::default()
@@ -616,7 +616,7 @@ fn resolve_model_returns_group_override() {
 /// v1.5 诚实化:组级 / env / 钉住条目都没有 → `None`,不再回落内置默认。
 #[test]
 fn resolve_model_returns_none_when_group_missing() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     assert_eq!(cfg.resolve_model_inner("anthropic", None, None), None);
     assert_eq!(cfg.resolve_model_inner("openai", None, None), None);
     assert_eq!(cfg.resolve_model_inner("gemini", None, None), None);
@@ -653,7 +653,7 @@ fn resolved_model_spec_uses_group_override() {
 /// `[active].group` 优先于「首个有凭据的组」的隐式回退。
 #[test]
 fn resolved_model_spec_prefers_active_group() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("openai".into()),
             ..Default::default()
@@ -684,7 +684,7 @@ fn resolved_model_spec_prefers_active_group() {
 /// 没有可用组(`api_key` 空 + env 未设)→ `None`。
 #[test]
 fn resolved_model_spec_returns_none_when_no_group() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     let result = cfg.resolved_model_spec_with_env(None, None);
     // env 兜底可能让结果非 None(宿主环境可能设了 ANTHROPIC_API_KEY 等);
     // 此处只验证类型,不把 env 状态写死。
@@ -695,7 +695,7 @@ fn resolved_model_spec_returns_none_when_no_group() {
 /// 显示"未配置模型",而不是编造 `claude-3-5-sonnet-latest` 之类默认值)。
 #[test]
 fn resolved_model_spec_returns_none_when_no_model_configured() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("openai".into()),
             ..Default::default()
@@ -735,7 +735,7 @@ fn resolve_model_prefers_pinned_credential_model() {
         api_key = "sk-o"
         model = "other-model"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert_eq!(cfg.active_credential().as_deref(), Some("minimax"));
     // 命中条目无 model → 回落组级;不因别的条目有 model 而误取。
     assert_eq!(
@@ -748,7 +748,7 @@ fn resolve_model_prefers_pinned_credential_model() {
         "api_key = \"sk-m\"",
         "api_key = \"sk-m\"\n        model = \"minimax-model\"",
     );
-    let cfg: ReflectConfig = toml::from_str(&toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(&toml).unwrap();
     assert_eq!(
         cfg.resolve_model_inner("anthropic", None, None),
         Some("minimax-model".to_string())
@@ -781,7 +781,7 @@ fn resolve_model_pin_applies_only_to_active_group() {
         endpoint = "openai"
         model = "gpt-group"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert_eq!(
         cfg.resolve_model_inner("openai", None, None),
         Some("gpt-group".to_string()),
@@ -797,7 +797,7 @@ fn active_credential_trims_and_filters_empty() {
         group = "anthropic"
         credential = "  MiniMax  "
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert_eq!(cfg.active_credential().as_deref(), Some("MiniMax"));
 
     let toml = r#"
@@ -805,7 +805,7 @@ fn active_credential_trims_and_filters_empty() {
         group = "anthropic"
         credential = "   "
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert_eq!(cfg.active_credential(), None);
 }
 
@@ -829,21 +829,21 @@ fn apply_to_registry_sets_preferred_label() {
         label = "backup"
         api_key = "sk-b"
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     let r = cfg.to_registry_with_env(None, None).unwrap();
     assert_eq!(r.preferred_label("anthropic").as_deref(), Some("minimax"));
     assert_eq!(r.preferred_label("openai"), None);
 
     // 未钉住 → preferred 不设。
     let toml = toml.replace("credential = \"minimax\"", "");
-    let cfg: ReflectConfig = toml::from_str(&toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(&toml).unwrap();
     let r = cfg.to_registry_with_env(None, None).unwrap();
     assert_eq!(r.preferred_label("anthropic"), None);
 }
 
 // ── MCP (v0.3) ────────────────────────────────────────────────────────
 
-fn cfg_with_mcp_stdio(name: &str, cmd: &str) -> ReflectConfig {
+fn cfg_with_mcp_stdio(name: &str, cmd: &str) -> ZhuyeConfig {
     let toml = format!(
         r#"
         [mcp_servers.{name}]
@@ -856,7 +856,7 @@ fn cfg_with_mcp_stdio(name: &str, cmd: &str) -> ReflectConfig {
     toml::from_str(&toml).unwrap()
 }
 
-fn cfg_with_mcp_http(name: &str, url: &str) -> ReflectConfig {
+fn cfg_with_mcp_http(name: &str, url: &str) -> ZhuyeConfig {
     let toml = format!(
         r#"
         [mcp_servers.{name}]
@@ -903,7 +903,7 @@ fn mcp_server_configs_validates_http() {
 
 #[test]
 fn mcp_server_configs_errors_on_stdio_without_command() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.bad]
         type = "stdio"
@@ -918,7 +918,7 @@ fn mcp_server_configs_errors_on_stdio_without_command() {
 
 #[test]
 fn mcp_server_configs_errors_on_http_without_url() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.bad]
         type = "http"
@@ -931,7 +931,7 @@ fn mcp_server_configs_errors_on_http_without_url() {
 
 #[test]
 fn mcp_server_configs_results_are_sorted_by_name() {
-    let cfg: ReflectConfig = toml::from_str(
+    let cfg: ZhuyeConfig = toml::from_str(
         r#"
         [mcp_servers.zeta]
         command = "z"
@@ -954,7 +954,7 @@ fn mcp_server_configs_results_are_sorted_by_name() {
 /// mock 的三种 opt-in 路径与 model 前缀剥离。
 #[test]
 fn mock_group_opt_in_paths_and_model_resolution() {
-    let cfg = ReflectConfig::default();
+    let cfg = ZhuyeConfig::default();
     // `ZHUYE_PROVIDER=mock` 显式 opt-in。
     assert_eq!(
         cfg.active_group_inner(Some("mock"), None).as_deref(),
@@ -1021,7 +1021,7 @@ fn routing_max_attempts_from_toml() {
         [routing]
         max_attempts = 4
     "#;
-    let cfg: ReflectConfig = toml::from_str(toml).unwrap();
+    let cfg: ZhuyeConfig = toml::from_str(toml).unwrap();
     assert_eq!(cfg.routing_policy().max_attempts, 4);
 
     // `[routing]` 段存在但未写 max_attempts → 缺省 10
@@ -1031,7 +1031,7 @@ fn routing_max_attempts_from_toml() {
         [routing.main]
         primary = "anthropic/claude-test"
     "#;
-    let cfg_default: ReflectConfig = toml::from_str(toml_default).unwrap();
+    let cfg_default: ZhuyeConfig = toml::from_str(toml_default).unwrap();
     assert_eq!(cfg_default.routing_policy().max_attempts, 10);
 
     // 整个 `[routing]` 段缺省 → 缺省 10。
@@ -1044,7 +1044,7 @@ fn routing_max_attempts_from_toml() {
 /// openai 格式的组以组 id 为池名注册;`[active].group` 直接写组 id。
 #[test]
 fn model_group_registers_pool_under_group_id() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("my-glm".into()),
             ..Default::default()
@@ -1068,7 +1068,7 @@ fn model_group_registers_pool_under_group_id() {
 /// anthropic 格式的组同样按组 id 注册(走 AnthropicClient)。
 #[test]
 fn model_group_anthropic_endpoint_registers_pool() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![group("magpie", "anthropic", "http://127.0.0.1:3425")],
         ..Default::default()
     };
@@ -1084,7 +1084,7 @@ fn model_group_anthropic_endpoint_registers_pool() {
 /// ollama 端点的组同样按组 id 注册(走 OllamaClient)—— 本地模型可用。
 #[test]
 fn model_group_ollama_endpoint_registers_pool() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![group("local", "ollama", "http://127.0.0.1:11434")],
         ..Default::default()
     };
@@ -1098,7 +1098,7 @@ fn model_group_ollama_endpoint_registers_pool() {
 fn model_group_resolved_model_spec_uses_group_prefix() {
     let mut g = group("my-glm", "openai", "https://open.bigmodel.cn/api/paas/v4");
     g.model = Some("GLM-5.3-Flash".into());
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![g],
         ..Default::default()
     };
@@ -1113,7 +1113,7 @@ fn model_group_resolved_model_spec_uses_group_prefix() {
 fn model_group_keyless_with_base_url_registers() {
     let mut g = group("free-pool", "openai", "https://free.example.test");
     g.api_key = Some(String::new());
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![g],
         ..Default::default()
     };
@@ -1124,7 +1124,7 @@ fn model_group_keyless_with_base_url_registers() {
 /// 既没 key 也没 base_url 的组不注册(用户没配,不造空池)。
 #[test]
 fn model_group_without_credential_not_registered() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![ModelGroupSection {
             id: "empty".into(),
             endpoint: "openai".into(),
@@ -1141,7 +1141,7 @@ fn model_group_without_credential_not_registered() {
 /// 不阻断其余组的注册。
 #[test]
 fn model_group_invalid_entries_skipped() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![
             group("mock", "openai", "https://a.example.test"),
             group("a/b", "openai", "https://b.example.test"),
@@ -1160,7 +1160,7 @@ fn model_group_invalid_entries_skipped() {
 /// 组间重复 id:先出现的注册,后出现的跳过(同名池覆盖保护)。
 #[test]
 fn model_group_duplicate_id_first_wins() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![
             group("dup", "openai", "https://first.example.test"),
             group("dup", "anthropic", "https://second.example.test"),
@@ -1184,7 +1184,7 @@ fn model_group_pin_credential_and_entry_model() {
         model: Some("entry-model".into()),
         ..Default::default()
     }];
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("my-glm".into()),
             credential: Some("backup".into()),
@@ -1202,7 +1202,7 @@ fn model_group_pin_credential_and_entry_model() {
 /// `ZHUYE_MODEL` 的前缀是已知组 id 时 → 选中该组。
 #[test]
 fn env_model_prefix_selects_known_group() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         model_group: vec![
             group("my-glm", "openai", "https://open.bigmodel.cn/api/paas/v4"),
             group("other", "openai", "https://other.example.test"),
@@ -1225,7 +1225,7 @@ fn env_model_prefix_selects_known_group() {
 /// `[active].group` 优先于 `ZHUYE_MODEL` 前缀。
 #[test]
 fn active_group_wins_over_env_model_prefix() {
-    let cfg = ReflectConfig {
+    let cfg = ZhuyeConfig {
         active: ActiveSection {
             group: Some("other".into()),
             ..Default::default()

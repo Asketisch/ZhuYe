@@ -1,4 +1,4 @@
-//! Autopilot —— 定时驱动 agent 跑任务的闭环(WP11 收编 ReflectDesktop
+//! Autopilot —— 定时驱动 agent 跑任务的闭环(WP11 收编 ZhuYe-Desktop
 //! `app-core/src/autopilot.rs`)。
 //!
 //! 桌面端只有 config / history 两个 JSON 文件的 CRUD,模块 doc 自述

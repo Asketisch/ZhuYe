@@ -13,7 +13,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
-use zhuye_config::{ReflectConfig, default_config_path, load_default};
+use zhuye_config::{ZhuyeConfig, default_config_path, load_default};
 
 /// v0.4: `zhuye login` 子命令的实际实现。
 ///
@@ -82,7 +82,7 @@ fn normalize_provider(p: &str) -> Option<String> {
 }
 
 /// 把 key 写入同名 id 的模型组(缺失则新建,endpoint 与 id 同名)。
-fn apply_key(cfg: &mut ReflectConfig, provider: &str, key: String) {
+fn apply_key(cfg: &mut ZhuyeConfig, provider: &str, key: String) {
     if let Some(pos) = cfg.model_group.iter().position(|g| g.id.trim() == provider) {
         cfg.model_group[pos].api_key = Some(key);
         return;
@@ -113,19 +113,19 @@ fn read_from_stdin(prompt: &str) -> anyhow::Result<String> {
 
 /// 把 `cfg` 序列化回 TOML,写到 `~/.zhuye/config.toml`,自动 mkdir 父目录。
 /// 返回写入路径。
-fn write_config(cfg: &ReflectConfig) -> anyhow::Result<PathBuf> {
+fn write_config(cfg: &ZhuyeConfig) -> anyhow::Result<PathBuf> {
     let path =
         default_config_path().ok_or_else(|| anyhow!("HOME unset; cannot locate config dir"))?;
     write_config_to(cfg, &path)
 }
 
 /// 把 cfg 写到指定路径(测试用)。
-pub fn write_config_to(cfg: &ReflectConfig, path: &Path) -> anyhow::Result<PathBuf> {
+pub fn write_config_to(cfg: &ZhuyeConfig, path: &Path) -> anyhow::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config parent dir {}", parent.display()))?;
     }
-    let s = toml::to_string_pretty(cfg).context("failed to serialize ReflectConfig")?;
+    let s = toml::to_string_pretty(cfg).context("failed to serialize ZhuyeConfig")?;
     std::fs::write(path, s).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path.to_path_buf())
 }
@@ -146,7 +146,7 @@ mod tests {
         let tmp = tmp_home();
         let path = tmp.path().join(".zhuye").join("config.toml");
 
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_key(&mut cfg, "anthropic", "sk-test-anthropic".into());
         write_config_to(&cfg, &path).unwrap();
 
@@ -169,7 +169,7 @@ mod tests {
     /// 已有 base_url 时,login 不删 base_url(只覆盖 api_key)。
     #[test]
     fn login_appends_to_existing_section() {
-        let mut cfg = ReflectConfig {
+        let mut cfg = ZhuyeConfig {
             model_group: vec![ModelGroupSection {
                 id: "anthropic".into(),
                 endpoint: "anthropic".into(),
@@ -206,7 +206,7 @@ mod tests {
         let path = tmp.path().join(".zhuye").join("config.toml");
         // 直接调 apply_key + write_config_to 模拟 run() 的内部路径,
         // 不走 run() 的 HOME 解析。
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_key(&mut cfg, "anthropic", "sk".into());
         write_config_to(&cfg, &path).unwrap();
         assert!(path.exists());
@@ -220,7 +220,7 @@ mod tests {
         let path = nested.join("config.toml");
         assert!(!nested.exists());
 
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_key(&mut cfg, "openai", "sk-openai-x".into());
         write_config_to(&cfg, &path).unwrap();
         assert!(nested.is_dir(), "parent dir should be created");
@@ -246,7 +246,7 @@ mod tests {
         let tmp = tmp_home();
         let path = tmp.path().join(".zhuye").join("config.toml");
 
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         apply_key(&mut cfg, "openai", "sk-openai-key".into());
         apply_key(&mut cfg, "ollama", "sk-ollama-key".into());
         write_config_to(&cfg, &path).unwrap();
@@ -262,7 +262,7 @@ mod tests {
     /// 序列化 roundtrip:mcp_servers + hooks + compact 全保留。
     #[test]
     fn roundtrip_preserves_all_sections() {
-        let mut cfg = ReflectConfig::default();
+        let mut cfg = ZhuyeConfig::default();
         cfg.compact.trigger_tokens = Some(12_000);
         let mut hooks = HashMap::new();
         hooks.insert("Authorization".to_string(), "Bearer token-x".to_string());
@@ -278,7 +278,7 @@ mod tests {
             },
         );
         let s = toml::to_string_pretty(&cfg).unwrap();
-        let back: ReflectConfig = toml::from_str(&s).unwrap();
+        let back: ZhuyeConfig = toml::from_str(&s).unwrap();
         assert_eq!(back.compact.trigger_tokens, Some(12_000));
         assert!(back.mcp_servers.servers.contains_key("fs"));
     }

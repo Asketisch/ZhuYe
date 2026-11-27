@@ -423,7 +423,7 @@ impl ZhuyeBuilder {
         // 一致:config [hooks] 未显式列出 = 不启用内置 hook(嵌入场景从紧)。
         // (app_cfg 已在上方提前加载,供注册门判定。)
         let sanitizer = build_sanitizer(app_cfg.sanitize.as_ref());
-        let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_reflect_section(&app_cfg.hooks);
+        let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_zhuye_section(&app_cfg.hooks);
         if hooks_cfg.enabled.is_none() {
             hooks_cfg.enabled = Some(Vec::new());
         }
@@ -525,7 +525,7 @@ impl ZhuyeBuilder {
         // HookEngine:插件 shell hooks 与内置 hook 的共同落点。嵌入场景
         // 未显式配置的内置 hook 不启用(见方法 doc)。
         // (app_cfg 已在上方提前加载,供注册门判定。)
-        let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_reflect_section(&app_cfg.hooks);
+        let mut hooks_cfg = zhuye_hooks::config::HooksConfig::from_zhuye_section(&app_cfg.hooks);
         if hooks_cfg.enabled.is_none() {
             hooks_cfg.enabled = Some(Vec::new());
         }
@@ -574,7 +574,7 @@ impl ZhuyeBuilder {
         // 强制力(它只是让审批层知道当前是 Plan 模式),写工具照样放行。
         // 真正的执行机制是 `PlanModeGate` 这个 PreToolUse hook 把白名单外
         // 工具 blanket-deny。此前全 workspace 只有 `zhuye-exec/src/
-        // headless.rs` 注册它,导致库门面(Reflect-TUI / ReflectDesktop)与
+        // headless.rs` 注册它,导致库门面(Zhuye-TUI / ZhuYe-Desktop)与
         // zhuye-py 的 `plan_mode(true)` 拿到的是一个零强制的 Plan mode。
         if self.plan_mode {
             cfg = cfg.with_initial_permission_mode(zhuye_protocol::PermissionMode::Plan);
@@ -979,7 +979,7 @@ fn is_mock_provider(model_spec: &str) -> bool {
 /// 解析走 zhuye-sandbox::OsSandbox::resolve)。
 fn apply_sandbox_config(
     mut cfg: zhuye_core::AgentConfig,
-    app_cfg: &zhuye_config::ReflectConfig,
+    app_cfg: &zhuye_config::ZhuyeConfig,
 ) -> zhuye_core::AgentConfig {
     let sec = &app_cfg.sandbox;
     if sec.os_level.is_none() && sec.writable_dirs.is_empty() && !sec.allow_network {
@@ -1000,7 +1000,7 @@ fn configure_plugin_subagents(
     factory: &zhuye_subagent::SubAgentFactory,
     tools: &zhuye_tools::ToolRegistry,
     parent: &AgentConfig,
-    app_cfg: &zhuye_config::ReflectConfig,
+    app_cfg: &zhuye_config::ZhuyeConfig,
     rollout_base: Option<&Path>,
 ) {
     // 修复原因:插件子代理此前回落到默认策略,会绕过父会话的严格工具记录。
@@ -1062,7 +1062,7 @@ fn build_side_channel_driver(
     model: Arc<parking_lot::RwLock<String>>,
     registry: zhuye_llm::SharedModelRegistry,
     tools: Arc<ToolRegistry>,
-    app_cfg: &zhuye_config::ReflectConfig,
+    app_cfg: &zhuye_config::ZhuyeConfig,
     parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
     parent_approvals: bool,
 ) -> zhuye_core::side_channel::SideChannelDriver {
@@ -1079,7 +1079,7 @@ fn build_side_channel_driver(
 fn build_side_channel_factory(
     registry: zhuye_llm::SharedModelRegistry,
     tools: Arc<ToolRegistry>,
-    app_cfg: &zhuye_config::ReflectConfig,
+    app_cfg: &zhuye_config::ZhuyeConfig,
     parent_mode: Arc<parking_lot::RwLock<zhuye_protocol::PermissionMode>>,
     parent_approvals: bool,
 ) -> zhuye_core::side_channel::SideContextThreadFactory {
@@ -1136,7 +1136,7 @@ fn build_side_channel_factory(
 /// 不 spawn 泵、不落 activity.jsonl。
 fn maybe_spawn_activity_logger(
     thread: &Arc<crate::AgentThread>,
-    app_cfg: &zhuye_config::ReflectConfig,
+    app_cfg: &zhuye_config::ZhuyeConfig,
 ) {
     let enabled = app_cfg
         .telemetry
@@ -1178,7 +1178,7 @@ fn build_sanitizer(
 /// `with_plugins` 显式覆盖(语义同 serve `--plugin`:显式列表不隐含
 /// 关闭默认开插件,关闭走 `[plugins].disabled_plugins`)。
 fn bundled_gates_for(
-    app_cfg: &zhuye_config::ReflectConfig,
+    app_cfg: &zhuye_config::ZhuyeConfig,
     explicit: Option<&[String]>,
 ) -> zhuye_tools::BundledToolGates {
     let enabled: Vec<String> = explicit.map_or_else(
@@ -1358,7 +1358,7 @@ mod tests {
         use zhuye_protocol::{ContentBlock, EventMsg, Submission};
 
         let dir = tempfile::tempdir().unwrap();
-        let mut config = zhuye_config::ReflectConfig::default();
+        let mut config = zhuye_config::ZhuyeConfig::default();
         config.sandbox.os_level = Some(false);
         config.sanitize = Some(zhuye_config::SanitizeSection {
             marker: Some("<MASKED>".into()),
@@ -1499,7 +1499,7 @@ mod tests {
     #[tokio::test]
     async fn 插件子代理在无法探测_git_根目录时拒绝派发() {
         let dir = tempfile::tempdir().unwrap();
-        let config = zhuye_config::ReflectConfig {
+        let config = zhuye_config::ZhuyeConfig {
             coordinator: Some(zhuye_config::CoordinatorSection {
                 enabled: Some(true),
                 ..Default::default()
@@ -1531,7 +1531,7 @@ mod tests {
         use zhuye_llm::{CredentialPool, MockClient, MockReply, ModelRegistry, PoolEntry};
         use zhuye_protocol::{EventMsg, RolloutRecord, ToolExecutionPhase};
 
-        let config = zhuye_config::ReflectConfig {
+        let config = zhuye_config::ZhuyeConfig {
             coordinator: Some(zhuye_config::CoordinatorSection {
                 enabled: Some(false),
                 ..Default::default()
@@ -1636,7 +1636,7 @@ mod tests {
 
     #[tokio::test]
     async fn 侧通道继承严格工具记录策略() {
-        let config = zhuye_config::ReflectConfig {
+        let config = zhuye_config::ZhuyeConfig {
             tool_journal: Some(zhuye_config::ToolJournalSection { strict: true }),
             ..Default::default()
         };
@@ -1748,7 +1748,7 @@ mod tests {
     /// **0.5 补强**:permission mode 单独存在时**没有任何强制力** ——
     /// `PermissionMode::Plan` 只是让审批层知道当前是 Plan 模式,写工具照样
     /// 放行。真正的执行机制是 `PlanModeGate` 这个 PreToolUse hook。此前
-    /// builder 只设前者不注册后者,库门面(Reflect-TUI / ReflectDesktop)与
+    /// builder 只设前者不注册后者,库门面(Zhuye-TUI / ZhuYe-Desktop)与
     /// zhuye-py 的 `plan_mode(true)` 拿到的是零强制的 Plan mode。
     /// 下面两条断言分别守住这两个必要条件。
     #[test]
