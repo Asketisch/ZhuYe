@@ -90,7 +90,12 @@ for ev in agent.submit("北京天气如何?"):
 agent.close()
 ```
 
-`pip install zhuye` installs the Python package (pure standard library), `npm install zhuye` installs the TypeScript package (isomorphic API). Integration details: [docs/sdk.md](docs/sdk.md).
+## SDK Distribution
+
+- **Python** (PyPI): [`pip install zhuye`](https://pypi.org/project/zhuye/) — pure standard library, zero runtime dependencies
+- **TypeScript** (npm): [`npm install zhuye`](https://www.npmjs.com/package/zhuye) — isomorphic API
+
+Integration details: [docs/sdk.md](docs/sdk.md).
 
 ## Core Features
 

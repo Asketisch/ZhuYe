@@ -91,7 +91,12 @@ for ev in agent.submit("北京天气如何?"):
 agent.close()
 ```
 
-`pip install zhuye` 装 Python 包(纯标准库),`npm install zhuye` 装 TypeScript 包(API 同构)。接入细节见 [docs/sdk.md](docs/sdk.md)。
+## SDK 分发
+
+- **Python**(PyPI):[`pip install zhuye`](https://pypi.org/project/zhuye/) —— 纯标准库,零运行时依赖
+- **TypeScript**(npm):[`npm install zhuye`](https://www.npmjs.com/package/zhuye) —— API 同构
+
+接入细节见 [docs/sdk.md](docs/sdk.md)。
 
 ## 核心特性
 
