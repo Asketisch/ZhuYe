@@ -83,12 +83,17 @@ impl CallSubAgentTool {
             let tool_names: std::sync::Mutex<std::collections::HashMap<String, String>> =
                 std::sync::Mutex::new(std::collections::HashMap::new());
             Arc::new(move |ev: &zhuye_protocol::Event| {
+                // InteractionResolved 一并放行:子代理向人提问被应答 / 超时 /
+                // 取消后,了结广播原在子线程通道上,父会话客户端(GUI 挂起
+                // 卡)看不到就无法按 request_id 收敛本地挂起态 —— 提问事件
+                // 既然转发,了结事件必须配对转发。
                 if matches!(
                     &ev.msg,
                     zhuye_protocol::EventMsg::ApprovalRequest(_)
                         | zhuye_protocol::EventMsg::AskUserQuestion(_)
                         | zhuye_protocol::EventMsg::AskUserInput(_)
                         | zhuye_protocol::EventMsg::PermissionBubble(_)
+                        | zhuye_protocol::EventMsg::InteractionResolved(_)
                 ) {
                     fwd.forward(ev.msg.clone());
                     return;

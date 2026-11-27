@@ -319,7 +319,11 @@ pub fn to_markdown(records: &[RolloutRecord]) -> String {
             // v1.x:Prompt Snapshot —— 内部恢复源,转写稿不渲染。
             RolloutRecord::PromptSnapshot { .. } => {}
             // v1.x:输入守恒 ledger —— 审计面,转写稿不渲染。
-            RolloutRecord::InputDisposition { .. } => {}
+            RolloutRecord::InputDisposition { .. }
+            | RolloutRecord::HistorySnapshot { .. }
+            | RolloutRecord::ProvenanceSnapshot { .. }
+            | RolloutRecord::DynamicContextSnapshot { .. }
+            | RolloutRecord::ToolExecution { .. } => {}
         }
     }
 
@@ -523,7 +527,11 @@ pub fn render_transcript(id: &ThreadId, records: &[RolloutRecord]) -> String {
             // v1.x:Prompt Snapshot —— 内部恢复源,markdown 导出不渲染。
             RolloutRecord::PromptSnapshot { .. } => {}
             // v1.x:输入守恒 ledger —— 审计面,markdown 导出不渲染。
-            RolloutRecord::InputDisposition { .. } => {}
+            RolloutRecord::InputDisposition { .. }
+            | RolloutRecord::HistorySnapshot { .. }
+            | RolloutRecord::ProvenanceSnapshot { .. }
+            | RolloutRecord::DynamicContextSnapshot { .. }
+            | RolloutRecord::ToolExecution { .. } => {}
         }
     }
     out

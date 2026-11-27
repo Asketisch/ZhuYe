@@ -1018,3 +1018,19 @@ fn routing_complexity_absent_yields_empty() {
     .unwrap();
     assert!(cfg2.effort_model_routes().is_empty(), "空白 spec 应丢弃");
 }
+
+#[test]
+fn 工具执行记录严格模式默认关闭并支持配置() {
+    let default: ReflectConfig = toml::from_str("").unwrap();
+    assert!(default.tool_journal.is_none());
+    let configured: ReflectConfig = toml::from_str("[tool_journal]\nstrict = true\n").unwrap();
+    assert!(configured.tool_journal.unwrap().strict);
+}
+
+#[test]
+fn 串行回合默认关闭并支持配置() {
+    let default: ReflectConfig = toml::from_str("").unwrap();
+    assert!(default.turn_scheduling.is_none());
+    let configured: ReflectConfig = toml::from_str("[turn_scheduling]\nserial = true\n").unwrap();
+    assert!(configured.turn_scheduling.unwrap().serial);
+}

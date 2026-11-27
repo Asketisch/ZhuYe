@@ -501,6 +501,251 @@ fn worktree_coordinator_set_and_inherited_by_child() {
     assert!(factory.worktree_coordinator().is_none());
 }
 
+#[tokio::test]
+async fn 配置隔离但创建失败时拒绝派发并释放槽位() {
+    let dir = tempfile::tempdir().unwrap();
+    let factory = dummy_factory();
+    factory.set_workspace(dir.path().to_path_buf());
+    factory.set_worktree_coordinator(Some(Arc::new(zhuye_tools::WorktreeCoordinator::new(
+        dir.path(),
+    ))));
+    let result = factory
+        .spawn(dummy_spec("worker"), vec![], "任务".into())
+        .await;
+    assert!(
+        matches!(result, Err(SubAgentError::SpawnFailed(ref message))
+        if message.contains("worktree"))
+    );
+    assert_eq!(factory.depth(), 0);
+}
+
+#[tokio::test]
+async fn 任务树派发额度在隔离失败后释放并跨子工厂共享() {
+    use zhuye_llm::task_budget::{TaskBudget, TaskBudgetLimits, scope_task_budget};
+    let budget = TaskBudget::new(TaskBudgetLimits {
+        subagent_dispatches: Some(1),
+        ..Default::default()
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let factory = dummy_factory();
+    factory.set_workspace(dir.path().to_path_buf());
+    factory.set_coordinator_mode(true, None);
+    factory.set_worktree_coordinator(Some(Arc::new(zhuye_tools::WorktreeCoordinator::new(
+        dir.path(),
+    ))));
+    let failure = scope_task_budget(
+        budget.clone(),
+        factory.spawn(dummy_spec("worker"), vec![], "任务".into()),
+    )
+    .await;
+    assert!(matches!(failure, Err(SubAgentError::SpawnFailed(_))));
+    assert_eq!(budget.snapshot().reserved_subagents, 0);
+    assert_eq!(budget.snapshot().dispatched_subagents, 0);
+
+    factory.set_coordinator_mode(false, None);
+    factory.set_worktree_coordinator(None);
+    let child = scope_task_budget(
+        budget.clone(),
+        factory.spawn(dummy_spec("worker"), vec![], "任务".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(budget.snapshot().dispatched_subagents, 1);
+    let nested = factory.child_factory();
+    let failure = scope_task_budget(
+        budget.clone(),
+        nested.spawn(dummy_spec("worker"), vec![], "任务".into()),
+    )
+    .await;
+    assert!(
+        matches!(failure, Err(SubAgentError::SpawnFailed(ref reason)) if reason.contains("预算"))
+    );
+    drop(child);
+}
+
+#[tokio::test]
+async fn 子代理模型用量结算到父任务账本() {
+    use zhuye_llm::task_budget::{TaskBudget, TaskBudgetLimits, scope_task_budget};
+    let registry = Arc::new(zhuye_llm::ModelRegistry::new());
+    registry.register_pool(
+        "mock",
+        zhuye_llm::CredentialPool {
+            entries: vec![zhuye_llm::PoolEntry {
+                client: Arc::new(zhuye_llm::MockClient::with_script(vec![
+                    zhuye_llm::MockReply::Text {
+                        text: "完成".into(),
+                    },
+                ])),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let factory = SubAgentFactory::new(
+        ThreadId::new(),
+        "mock/model",
+        registry,
+        None,
+        Arc::new(ToolRegistry::default()),
+        CancellationToken::new(),
+        None,
+    );
+    let budget = TaskBudget::new(TaskBudgetLimits {
+        total_tokens: Some(20000),
+        subagent_dispatches: Some(2),
+        ..Default::default()
+    });
+    let child = scope_task_budget(
+        budget.clone(),
+        factory.spawn(dummy_spec("worker"), vec![], "任务".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(child.collect_result().await.unwrap(), "完成");
+    let snapshot = budget.snapshot();
+    assert_eq!(snapshot.actual_tokens, 4);
+    assert_eq!(snapshot.settled_calls, 1);
+    assert_eq!(snapshot.dispatched_subagents, 1);
+    assert_eq!(snapshot.reserved_tokens, 0);
+}
+
+#[tokio::test]
+async fn 配置隔离时为子代理创建独立工作区() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "测试")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "测试")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{:?}", status);
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "--allow-empty", "-qm", "初始"]);
+    let factory = dummy_factory();
+    let rollout_base = tempfile::tempdir().unwrap();
+    factory.set_rollout_base(rollout_base.path().to_owned());
+    factory.set_workspace(dir.path().to_path_buf());
+    factory.set_coordinator_mode(true, None);
+    let coordinator = Arc::new(zhuye_tools::WorktreeCoordinator::new(dir.path()));
+    factory.set_worktree_coordinator(Some(coordinator.clone()));
+    let child = factory
+        .spawn(dummy_spec("worker"), vec![], "任务".into())
+        .await
+        .unwrap();
+    let entries = coordinator.list();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].worktree_path.is_dir());
+    assert_ne!(entries[0].worktree_path, dir.path());
+    assert!(entries[0].branch.contains(&child.session_id.to_string()));
+    let records = zhuye_rollout::replay(rollout_base.path(), child.session_id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        records.first(),
+        Some(RolloutRecord::SessionMeta { workspace: Some(workspace), .. })
+            if std::path::Path::new(workspace) == entries[0].worktree_path
+    ));
+}
+
+#[tokio::test]
+async fn 共享模式下子代理使用父会话切换后的工作区() {
+    struct WorkspaceProbe(Arc<parking_lot::Mutex<Option<std::path::PathBuf>>>);
+    #[async_trait::async_trait]
+    impl zhuye_tools::Tool for WorkspaceProbe {
+        fn name(&self) -> &str {
+            "workspace_probe"
+        }
+        fn description(&self) -> &str {
+            "记录工作区"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            ctx: zhuye_tools::ToolContext,
+            _args: serde_json::Value,
+        ) -> Result<zhuye_protocol::ToolOutput, zhuye_protocol::ToolError> {
+            *self.0.lock() = Some(ctx.workspace_path());
+            Ok(zhuye_protocol::ToolOutput {
+                content: vec![zhuye_protocol::ContentBlock::text("完成")],
+                is_error: false,
+                metadata: serde_json::json!({}),
+                elapsed_ms: 0,
+            })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old");
+    let current = dir.path().join("current");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::create_dir_all(&current).unwrap();
+    let seen = Arc::new(parking_lot::Mutex::new(None));
+    let tools = Arc::new(ToolRegistry::new());
+    tools.register_with_source(
+        zhuye_tools::ToolSource::Mcp,
+        Arc::new(WorkspaceProbe(seen.clone())),
+    );
+    let registry = Arc::new(zhuye_llm::ModelRegistry::new());
+    registry.register_pool(
+        "mock",
+        zhuye_llm::CredentialPool {
+            entries: vec![zhuye_llm::PoolEntry {
+                client: Arc::new(zhuye_llm::MockClient::with_script(vec![
+                    zhuye_llm::MockReply::ToolCall {
+                        name: "workspace_probe".into(),
+                        args: serde_json::json!({}),
+                    },
+                    zhuye_llm::MockReply::Text {
+                        text: "完成".into(),
+                    },
+                ])),
+                label: "default".into(),
+                weight: 1,
+            }],
+        },
+    );
+    let factory = SubAgentFactory::new(
+        ThreadId::new(),
+        "mock/mock-1",
+        registry,
+        None,
+        tools,
+        CancellationToken::new(),
+        None,
+    );
+    let parent = AgentConfig::new("mock/mock-1", old.clone());
+    let rollout_base = tempfile::tempdir().unwrap();
+    factory.set_rollout_base(rollout_base.path().to_owned());
+    factory.set_parent_config(parent.clone());
+    factory.set_workspace(old);
+    parent.set_workspace(current.clone());
+    let mut spec = dummy_spec("worker");
+    spec.allowed_tools.push("workspace_probe".into());
+    let child = factory.spawn(spec, vec![], "任务".into()).await.unwrap();
+    let child_id = child.session_id;
+    child.collect_result().await.unwrap();
+    assert_eq!(*seen.lock(), Some(current.clone()));
+    let records = zhuye_rollout::replay(rollout_base.path(), child_id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        records.first(),
+        Some(RolloutRecord::SessionMeta { workspace: Some(workspace), .. })
+            if std::path::Path::new(workspace) == current
+    ));
+    assert!(
+        serde_json::to_string(&records)
+            .unwrap()
+            .contains("来源数据: external")
+    );
+}
+
 /// `Arc<SubAgentFactory>` 共享语义:两个 Arc 副本调 `set_coordinator_mode`,
 /// `is_coordinator_mode` 互见。
 #[test]

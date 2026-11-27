@@ -71,6 +71,14 @@ after changing it.
 
 ## Form-Judgment Conclusions (not pluginized)
 
+Tool-batch ordering, execution journaling, turn scheduling, task-tree budgets
+and context provenance are general execution guarantees that must coordinate
+with the runtime queue, persistence and cancellation. Domain tasks and business
+acceptance remain with hosts, hooks or plugins. Serial turns, strict journaling,
+task budgets and dynamic context can be disabled through configuration;
+provenance can be set to `off`. Explicitly configured isolation fails closed;
+removing isolation configuration restores the shared workspace.
+
 Per the root AGENTS.md "form judgment (main loop vs plugin)" iron rule, the
 capabilities **kept built-in** and why:
 
@@ -124,6 +132,12 @@ current turn's context (under the same context budget as tool results, and writt
 record so later turns can still see it) and the main agent is resumed **within the same turn**.
 An async sub-agent never outlives the turn that dispatched it: interrupting the parent turn also
 cancels its in-flight async sub-agents, exactly as in sync mode.
+
+Without worktree isolation, a sub-agent uses the parent session's current workspace.
+Enabling the coordinator in the CLI or async Rust builder requires Git worktree
+isolation. Dispatch reports an error if Git root discovery or worktree creation
+fails. Plugin sub-agents inherit their parent session’s tool journaling policy and
+write separate session records under the same root when rollout is enabled.
 
 The side-channel lets user-initiated concurrent agents run in parallel with the main turn without
 interfering with each other (carried by `zhuye-core`).

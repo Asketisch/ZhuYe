@@ -41,6 +41,19 @@ non-breaking,客户端必须容忍未知 `"type"`)。
   `TokenCount`(token / 成本索引)。文件 256 KiB 轮转 ×3,单条 16 KiB
   截断 + 密钥脱敏(见 [docs/sanitize.md](../docs/sanitize.md));
   `truncate_after` 支持 rewind 物理截断(先写 `.bak`)。
+- `tool_execution` 记录含 `session_id`、`turn_id`、`call_id`、
+  `tool_name`、`phase` 和可选 `is_error`;独立 `.tool-journal` 账本
+  不随会话轮转或 rewind 删除。旧 reader 会跳过未知变体,不能展示本账本;
+  新 reader 同时读取账本和会话记录,按调用身份对账。
+- `history_snapshot` 记录回合读取历史时的 `turn_id`、`replay_record_count`、
+  `last_message_turn_id` 和 `visible_messages`,不含消息正文;计数表示当次
+  replay 返回的记录数,不是跨轮转的文件偏移。旧版本可能跳过未知记录,
+  不能展示该边界;第三方严格反序列化器需要升级后才能读取新增变体。
+- `provenance_snapshot` 在压缩边界或子代理结果写入历史前保存已观察与已污染来源键;
+  工具结果的 `metadata.provenance` 含 `source`、`source_key`、`tainted`。
+  旧版严格解码器需更新以读取新记录;来源标签不构成权限或沙箱决策。
+- `dynamic_context_snapshot` 记录可选动态上下文中的待办状态,用于压缩后恢复;
+  它是新增记录,旧版严格解码器需更新。
 
 ---
 
@@ -136,6 +149,8 @@ SDK 关心的核心变体(完整列表见 `event_msg/mod.rs`):
 | `agent_message_reset` | `reason_code`, `retry_in_ms` | **v1.10 新增(additive)**:模型流式调用失败将自动重试,本 turn 的半成品输出(文本 / thinking / 未完成工具调用)作废;客户端应清空对应流式缓冲,等待重试的全新输出,防止两次输出拼接。老客户端按未知 `type` 忽略即可(代价是重试输出与旧输出拼接) |
 | `tool_call_args_delta` | `call_id`, `delta` | **v1.5 新增(additive)**:模型生成工具参数的原始 JSON 片段;按 `call_id` 和到达顺序拼接得到完整参数。老客户端按未知 `type` 忽略即可 |
 | `tool_call_begin` / `tool_call_end` | `call_id`, `tool_name`, `output`, `is_error` | 内置工具调用 |
+| `tool_execution_uncertain` | `session_id`, `turn_id`, `call_id`, `tool_name` | 恢复时工具执行结果未知,可能已产生副作用,不会自动重试 |
+| `task_budget_snapshot` | `task_id`, `turn_id`, `estimated_tokens`, `actual_tokens`, `reserved_tokens`, `unknown_estimated_tokens`, `unknown_calls`, `estimate_overrun_tokens`, `dispatched_subagents` | 任务树共享预算的时点快照。空闲保温结算后通过全局事件追加原任务和回合的快照。估算含后来取消的预留，同一 `task_id` 的快照不可累加 |
 | `tool_execution_request` | `call_id`, `tool`, `args` | **远程工具**:请求客户端本地执行(见 §5) |
 | `approval_request` | `request_id`, `kind`, `risk` | 等待 `tool_approval` 回执 |
 | `error` | `code`, `message`, `details?` | 会话级错误。v1.x 新增 code:`compact_rapid_refill`(压缩→立即填满死循环熔断,连续 3 次后收口当前 turn)/ `suspicious_empty_model_result`(模型正常结束但零产出,details 含 `raw_finish_reason` / `provider`)/ `steer_input_too_large`(转向输入超 200KB,details 含 `payload_bytes` / `max_bytes`) |
@@ -205,8 +220,10 @@ hook 会在宿主 cwd 执行 `cargo test` 并否决 turn 完成,对嵌入方既�
 
 ## 4. 并发与顺序
 
-- 允许上一个 turn 未结束就提交下一个 submission;core 侧并发执行,各
-  submission 的事件以各自 `id` 路由,互不干扰。
+- 允许上一个 turn 未结束就提交下一个 submission;core 默认并发执行,
+  各 submission 的事件以各自 `id` 路由。显式配置 `[turn_scheduling]`
+  的 `serial = true` 后,用户回合按接收顺序排队,审批和问答响应仍立即处理;
+  中断或关闭时排队输入收到 `turn_aborted`。并发回合仍可能共享工作区。
 - 所有事件经单一 writer task 串行写 stdout,**全局顺序有保证**。
 - 不带 `child_id` 的 `interrupt` 会打断所有在飞 turn,并取消这些 turn
   正在等待的子代理;被打断的 turn 以 `turn_aborted` 收尾。指定

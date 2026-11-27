@@ -1,10 +1,12 @@
-<p align="center">
-  <a href="README.md">中文</a> · <b>English</b>
-</p>
+# ZhuYe
 
 <p align="center"><img src="res/logo.png" alt="Official ZhuYe logo" width="180"></p>
 
-# ZhuYe
+<p align="center">“折烛夜一花，倾与二君子尝。”<br><sub>——《纂异记·嵩岳嫁女》</sub></p>
+
+<p align="center">
+  <a href="README.md">中文</a> · <b>English</b>
+</p>
 
 ZhuYe is an AI agent runtime framework written in Rust. You embed it into your own product, and the agent runs inside your product: reading code, editing files, calling tools, calling models, spawning sub-agents.
 
@@ -20,6 +22,36 @@ ZHUYE_MODEL=mock ./target/debug/zhuye exec "hello"
 ```
 
 `ZHUYE_MODEL=mock` is an explicit offline model — it runs without an API key, and will not be silently swapped for another provider. To use a real model, set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. Events flow as JSONL on stdout, tracing logs go to stderr (`zhuye exec | jq` stays free of log noise).
+
+## Real-Model Tests
+
+The two real-model scripts solve different problems and do not replace each other. Both call a real provider; check cost and quota before running them.
+
+**`tests/eval/run_quality.sh`** — paired quality evaluation over a fixed task set. It compares a baseline binary with a candidate binary, validates external artifacts, and reports success rate, latency, token usage, tool calls, and cache metrics:
+
+```bash
+export ZHUYE_EVAL_BASELINE=/path/to/baseline-zhuye
+export ZHUYE_EVAL_CANDIDATE=/path/to/candidate-zhuye
+export ZHUYE_EVAL_MODEL=<provider-model-id>
+export ZHUYE_EVAL_BASE_URL=<openai-compatible-endpoint>
+export ZHUYE_EVAL_API_KEY=<api-key>
+export ZHUYE_EVAL_REPETITIONS=3
+bash tests/eval/run_quality.sh
+```
+
+The report is written to `target/eval-quality/report.json`, and the gate decision to `target/eval-quality/gate.json`. The default `observe` mode records results without changing the exit code for insufficient samples or regressions.
+
+**`tests/live/run.sh`** — the live-model exercise layer. It checks protocol shape, event order, terminal states, usage, and tool-call pairing against real streaming responses; it does not use model answer text as acceptance criteria:
+
+```bash
+ZHUYE_LIVE=1 \
+ZHUYE_LIVE_BASE_URL=<provider-endpoint> \
+ZHUYE_LIVE_API_KEY=<api-key> \
+ZHUYE_LIVE_MODELS=<model-id-1,model-id-2> \
+bash tests/live/run.sh
+```
+
+Without `ZHUYE_LIVE=1`, the suite skips and makes no requests. Model discovery, retries, and budget variables are documented in [tests/live/README.md](tests/live/README.md).
 
 ## Three Ways to Use It
 

@@ -9,6 +9,11 @@
 
 ## 本地契约
 
+同批工具按输入顺序划分连续安全区间,区间内并发;非安全工具是屏障,
+必须在前序完成后执行并在后序开始前结束,不可通过结果排序掩盖实际执行重排。
+严格工具记录在审批和 hook 放行后、实际执行前写开始项;工具只读能力缺省 false,
+不能用并发安全推断无副作用。终态写失败向宿主报告并保留开始项供恢复对账。
+
 ### 1. 内置工具清单必须三处同步
 
 新增或移除内置工具时,以下三处必须同时改到位,缺一即视为未完成:
@@ -46,7 +51,7 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 | 文件 | 一句话职责 |
 |---|---|
 | `src/tool.rs` | `Tool` trait 与伴随类型 |
-| `src/registry.rs` | name → 工具的注册表(带 source 标记) |
+| `src/registry.rs` | name → 工具的注册表(带 source 标记);复制或派发时用 `get_with_source` 同时读取工具和来源 |
 | `src/builtin_tools.rs` | 内置工具注册入口与计数常量 |
 | `src/queue.rs` | 工具执行队列(串行 / 并行分组) |
 | `src/sandbox.rs` | 路径沙箱(workspace-write 口径:读全盘 + 凭证拒绝;写限 `resolve_writable_path` 允许根 + `.git`/`.agents`/`.aws` 元数据只读;`.zhuye` 走提权子项 denylist(`PROTECTED_ZHUYE_CHILDREN`:config/sessions/cron 等),其余子树(spill/plan/worktrees/uploads)放行;`resolve_sandbox_path` 旧工作区墙保留给 LSP) |
@@ -96,6 +101,7 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 ## v1.x 新增能力
 
 - **工具结果预算**(`src/guards/result_budget.rs`):提供独立预算工具及队列可选接口。运行时配置在宿主事件发出后应用于模型上下文；持久化输出写入工作区的安全溢出目录，保持可读回与恢复一致。
+- **来源追踪**：队列为工具结果写入来源类别、摘要键和污染状态;默认仅观察,显式 enforce 才将已污染来源的后续 Review 升级为 Block。队列为成功回执及进入模型上下文的工具执行错误签发来源字段;关闭来源追踪时清除工具自报的同名保留字段。来源追踪不代替权限、审批与沙箱。
 - **deferred_call**(tool-defer 门控插件,默认关):只有入口已注册且目标来自 MCP 时,queue 才在**派发前**展开调用,审批/hook/floor 按真实工具走;直接执行、嵌套转发和非 MCP 目标均拒绝。`registry.deferred_tool_names()` 供 core 目录公告。
 - **stop_turn 级联**:工具以 `metadata["stop_turn"]=true` 请求结算后收口 turn(置 `force_final_answer`,结果仍完整回灌)。
 

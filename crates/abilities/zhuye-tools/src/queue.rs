@@ -1,7 +1,7 @@
 //! `ToolExecutionQueue` —— 一批工具调用与 hook 集成的执行队列。
 //!
-//! 协议说明见 `docs/tools-and-hooks.md §3`。unsafe 工具按提交顺序串行执行;
-////! concurrency-safe 工具通过 `futures::future::join_all` 并行执行。
+//! 协议说明见 `docs/tools-and-hooks.md §3`。非安全工具是顺序屏障;
+//! 屏障之间连续的并发安全工具通过 `futures::future::join_all` 并行执行。
 //!
 //! 队列需要 `HookEngine`(M2+);可通过 `HookEngine::new()` 构造默认的空操作引擎。
 //!
@@ -22,9 +22,14 @@ use zhuye_protocol::{
     ContentBlock, PermissionMode, ReviewDecision, RiskLevel, ToolError, ToolOutput,
 };
 
+#[cfg(test)]
+#[path = "queue_journal_tests.rs"]
+mod journal_tests;
+
 use crate::approval::ApprovalGate;
 use crate::builtins::exec::bash::{BashCommandClass, classify_command};
 use crate::registry::ToolRegistry;
+use crate::sanitize::provenance::{Provenance, ProvenanceMode, TaintTracker};
 use crate::sanitize::{Sanitizer, sanitize_output, sanitize_output_pii, sanitize_text};
 use crate::tool::ToolContext;
 use zhuye_sanitize::prompt_guard::PromptGuard;
@@ -70,6 +75,64 @@ pub(crate) fn permission_resource(args: &Value) -> Option<&str> {
     ["path", "file_path", "url"]
         .iter()
         .find_map(|key| args.get(key).and_then(Value::as_str))
+}
+
+fn provenance_identity(
+    name: &str,
+    args: &Value,
+    workspace: &std::path::Path,
+    source: crate::registry::ToolSource,
+) -> (Provenance, String) {
+    let provenance = if matches!(source, crate::registry::ToolSource::Builtin)
+        && matches!(name, "read" | "glob" | "grep")
+    {
+        Provenance::Workspace
+    } else if matches!(source, crate::registry::ToolSource::Runtime) && name.starts_with("call_") {
+        Provenance::Subagent
+    } else if name == "web_fetch"
+        || matches!(
+            source,
+            crate::registry::ToolSource::Mcp
+                | crate::registry::ToolSource::Plugin(_)
+                | crate::registry::ToolSource::Remote
+        )
+    {
+        Provenance::External
+    } else {
+        Provenance::ToolOutput
+    };
+    let resource = match provenance {
+        Provenance::Workspace => Some({
+            let path = workspace.join(args.get("path").and_then(Value::as_str).unwrap_or("."));
+            path.canonicalize()
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned()
+        }),
+        Provenance::External => args
+            .get("url")
+            .and_then(Value::as_str)
+            .and_then(|url| url::Url::parse(url).ok())
+            .and_then(|url| url.host_str().map(str::to_owned)),
+        _ => None,
+    }
+    .unwrap_or_else(|| name.to_owned());
+    let fingerprint = zhuye_sanitize::prompt_guard::fingerprint(resource.as_bytes());
+    (provenance, format!("{}:{fingerprint}", provenance.label()))
+}
+
+fn set_provenance_metadata(output: &mut ToolOutput, source: Provenance, key: &str, tainted: bool) {
+    if !output.metadata.is_object() {
+        output.metadata = serde_json::json!({});
+    }
+    if let Some(metadata) = output.metadata.as_object_mut() {
+        metadata.insert(
+            "provenance".into(),
+            serde_json::json!({
+                "source": source.label(), "source_key": key, "tainted": tainted,
+            }),
+        );
+    }
 }
 
 /// 对路径同时检查原始写法、工作区绝对路径和可解析的符号链接目标。
@@ -159,6 +222,8 @@ pub struct ToolExecutionQueue {
     /// F01:guard 裁决统计(输出侧)。与 `ToolRegistry`(定义侧)
     /// 共享同一实例,由 bootstrap 一并注入;`None` = guard 未启用。
     guard_stats: Option<Arc<zhuye_sanitize::guard_stats::GuardStats>>,
+    provenance_tracker: Arc<TaintTracker>,
+    provenance_mode: ProvenanceMode,
     /// 会话级 `permission_mode` 的共享句柄(同 `ApprovalGate` 持有的那份)。
     ///
     /// **为什么需要这个**:`base_ctx.permission_mode` 是值类型快照,在
@@ -212,6 +277,8 @@ impl ToolExecutionQueue {
             sanitizer: Arc::new(Sanitizer::with_defaults()),
             prompt_guard: None,
             guard_stats: None,
+            provenance_tracker: Arc::new(TaintTracker::new()),
+            provenance_mode: ProvenanceMode::Observe,
             session_permission_mode: None,
             permission_resolver: None,
         }
@@ -253,6 +320,12 @@ impl ToolExecutionQueue {
     ) {
         self.prompt_guard = guard;
         self.guard_stats = stats;
+    }
+
+    /// 配置会话及子代理共享的来源追踪状态。
+    pub fn set_provenance(&mut self, tracker: Arc<TaintTracker>, mode: ProvenanceMode) {
+        self.provenance_tracker = tracker;
+        self.provenance_mode = mode;
     }
 
     pub fn hook_engine(&self) -> &Arc<HookEngine> {
@@ -363,7 +436,7 @@ impl ToolExecutionQueue {
             name == crate::builtins::meta::deferred_call::DEFERRED_CALL_TOOL_NAME
                 && matches!(source, crate::registry::ToolSource::Builtin)
         });
-        let mut calls: Vec<ToolCallRequest> = calls
+        let mut pending = calls
             .into_iter()
             .map(|mut c| {
                 if !defer_registered
@@ -389,42 +462,38 @@ impl ToolExecutionQueue {
                     .unwrap_or_else(|| serde_json::json!({}));
                 c
             })
-            .collect();
-        // 按并发安全性切分。需保留原始下标,保证最终结果顺序与输入一致。
-        let mut indexed_safe: Vec<(usize, ToolCallRequest)> = Vec::new();
-        let mut indexed_unsafe: Vec<(usize, ToolCallRequest)> = Vec::new();
-        for (i, c) in std::mem::take(&mut calls).into_iter().enumerate() {
-            match self.registry.get(&c.name) {
-                Some(t) if t.is_concurrency_safe() => indexed_safe.push((i, c)),
-                _ => indexed_unsafe.push((i, c)),
+            .peekable();
+        // 修复原因:先执行所有写入会让排在写入之前的读取看到未来状态。
+        // 不安全调用作为屏障,只并发屏障之间连续的安全调用。
+        let mut results = Vec::new();
+        while let Some(call) = pending.next() {
+            let safe = self
+                .registry
+                .get(&call.name)
+                .is_some_and(|t| t.is_concurrency_safe());
+            if !safe {
+                results.push(
+                    self.execute_single(call, gate.as_ref(), forwarder.clone())
+                        .await,
+                );
+                continue;
             }
-        }
-
-        // unsafe:串行,按原始顺序。
-        let mut unsafe_results: Vec<(usize, ToolResult)> = Vec::new();
-        for (idx, call) in indexed_unsafe {
-            let r = self
-                .execute_single(call, gate.as_ref(), forwarder.clone())
-                .await;
-            unsafe_results.push((idx, r));
-        }
-
-        // safe:通过 join_all 并发执行。
-        let safe_futures = indexed_safe.into_iter().map(|(idx, call)| {
-            let gate_ref = gate.as_ref();
-            let forwarder = forwarder.clone();
-            async move {
-                let r = self.execute_single(call, gate_ref, forwarder).await;
-                (idx, r)
+            let mut batch = vec![call];
+            while pending.peek().is_some_and(|next| {
+                self.registry
+                    .get(&next.name)
+                    .is_some_and(|t| t.is_concurrency_safe())
+            }) {
+                if let Some(next) = pending.next() {
+                    batch.push(next);
+                }
             }
-        });
-        let safe_results: Vec<(usize, ToolResult)> = join_all(safe_futures).await;
-
-        // 按原始顺序合并。
-        let mut all: Vec<(usize, ToolResult)> = unsafe_results;
-        all.extend(safe_results);
-        all.sort_by_key(|(i, _)| *i);
-        all.into_iter().map(|(_, r)| r).collect()
+            let futures = batch
+                .into_iter()
+                .map(|call| self.execute_single(call, gate.as_ref(), forwarder.clone()));
+            results.extend(join_all(futures).await);
+        }
+        results
     }
 
     /// 单次工具调用的执行流程:PreToolUse →(可选 ApprovalGate)→ execute →
@@ -466,9 +535,9 @@ impl ToolExecutionQueue {
             }
         };
 
-        let tool = self.registry.get(&call.name);
-        let tool = match tool {
-            Some(t) => t,
+        // 修复原因:审批暂停期间注册可能重载,工具和来源必须取同一个快照。
+        let (tool_source, tool) = match self.registry.get_with_source(&call.name) {
+            Some(entry) => entry,
             None => {
                 return ToolResult {
                     call_id: call.id,
@@ -500,6 +569,12 @@ impl ToolExecutionQueue {
             ctx.os_sandbox = fwd.os_sandbox;
             if let Some(cancel) = &fwd.turn_cancel {
                 ctx.cancel = cancel.clone();
+            }
+            if let Some(turn_id) = fwd.turn_id {
+                ctx.turn_id = turn_id;
+            }
+            if let Some(session_id) = fwd.session_id {
+                ctx.session_id = session_id;
             }
             ctx.parent_tail_json = history;
         }
@@ -867,6 +942,87 @@ impl ToolExecutionQueue {
             }
         }
 
+        // 修复原因:工具可能先产生副作用再因进程退出丢失回执。严格模式
+        // 必须在执行前成功记录,否则恢复时无法区分未执行和结果未知。
+        let recorder = forwarder.as_ref().and_then(|f| f.recorder.clone());
+        let strict =
+            forwarder.as_ref().is_some_and(|f| f.strict_tool_journal) && !tool.is_read_only();
+        let supported = recorder
+            .as_ref()
+            .is_some_and(|r| r.supports_strict_tool_journal());
+        let mut started = false;
+        let start_error = if strict && !supported {
+            Some("严格工具记录需要支持的持久化后端".to_string())
+        } else if let Some(rec) = &recorder {
+            let entry = zhuye_protocol::RolloutRecord::ToolExecution {
+                session_id: ctx.session_id,
+                turn_id: ctx.turn_id,
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                phase: zhuye_protocol::ToolExecutionPhase::Started,
+                is_error: None,
+                at: chrono::Utc::now(),
+            };
+            let recorded = tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => {
+                    return ToolResult {
+                        call_id: call.id,
+                        content: vec![ContentBlock::text("工具调用已取消")],
+                        is_error: true,
+                        elapsed_ms: 0,
+                        metadata: serde_json::json!({"error": "cancelled"}),
+                    };
+                }
+                result = rec.record(entry) => result,
+            };
+            match recorded {
+                Ok(()) => {
+                    started = true;
+                    None
+                }
+                Err(error) => Some(error.to_string()),
+            }
+        } else {
+            None
+        };
+        if let Some(error) = start_error {
+            warn!(tool = %call.name, %error, "工具开始记录失败");
+            if strict {
+                return ToolResult {
+                    call_id: call.id,
+                    content: vec![ContentBlock::text(format!(
+                        "工具未执行:记录写入失败({error})"
+                    ))],
+                    is_error: true,
+                    elapsed_ms: 0,
+                    metadata: serde_json::json!({"error": "tool_journal_unavailable"}),
+                };
+            }
+        }
+        if ctx.cancel.is_cancelled() {
+            // 已写开始项但尚未执行时取消,保守保留未结清记录。
+            return ToolResult {
+                call_id: call.id,
+                content: vec![ContentBlock::text("工具调用已取消")],
+                is_error: true,
+                elapsed_ms: 0,
+                metadata: serde_json::json!({"error": "cancelled"}),
+            };
+        }
+        let journal_identity = (ctx.session_id, ctx.turn_id);
+        let provenance = if self.provenance_mode.tracks() {
+            let workspace = ctx.workspace.read().clone();
+            Some(provenance_identity(
+                &call.name,
+                &effective_args,
+                &workspace,
+                tool_source,
+            ))
+        } else {
+            None
+        };
+
         // 带超时执行。
         // (v1.9 C1/C2:args 在 move 前留一份指纹/登记用副本。)
         let lg_args = effective_args.clone();
@@ -874,6 +1030,44 @@ impl ToolExecutionQueue {
         let exec = tool.execute(ctx, effective_args);
         let outcome = timeout(effective_timeout, exec).await;
         let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        if started && let Some(rec) = &recorder {
+            let (phase, is_error) = match &outcome {
+                Ok(Ok(output)) => (
+                    zhuye_protocol::ToolExecutionPhase::Completed,
+                    Some(output.is_error),
+                ),
+                Ok(Err(_)) => (zhuye_protocol::ToolExecutionPhase::Completed, Some(true)),
+                Err(_) => (zhuye_protocol::ToolExecutionPhase::Unknown, None),
+            };
+            let entry = zhuye_protocol::RolloutRecord::ToolExecution {
+                session_id: journal_identity.0,
+                turn_id: journal_identity.1,
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                phase,
+                is_error,
+                at: chrono::Utc::now(),
+            };
+            if let Err(error) = rec.record(entry).await {
+                warn!(tool = %call.name, %error, "工具终态记录失败,恢复时结果未知");
+                if let Some(fwd) = &forwarder {
+                    let event = zhuye_protocol::Event::new(
+                        fwd.sub_id.clone(),
+                        zhuye_protocol::EventMsg::Error(zhuye_protocol::ErrorEvent {
+                            code: "tool_journal_completion_failed".into(),
+                            message: "工具已执行,但终态记录失败;恢复后结果未知".into(),
+                            details: Some(
+                                serde_json::json!({"call_id": call.id, "tool": call.name}),
+                            ),
+                        }),
+                    );
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(1), fwd.raw_sender().send(event))
+                            .await;
+                }
+            }
+        }
 
         // v1.9 C1/C2:执行后登记输出指纹(进度证据)。error / timeout
         // 也登记 —— 失败输出的"每次都一样"同样是失控证据。
@@ -930,6 +1124,19 @@ impl ToolExecutionQueue {
                         }
                     }
                 }
+                if let Some((source, key)) = provenance.as_ref() {
+                    self.provenance_tracker.observe(key);
+                    set_provenance_metadata(
+                        &mut output,
+                        *source,
+                        key,
+                        self.provenance_tracker.is_tainted(key),
+                    );
+                } else if let Some(metadata) = output.metadata.as_object_mut() {
+                    // 修复原因:关闭追踪时也必须清除工具自报的保留字段,
+                    // 否则模型侧会把第三方元数据误认成引擎签发的来源。
+                    metadata.remove("provenance");
+                }
                 // v1.x:输入侧提示注入检测(在脱敏后、PostToolUse 前)。
                 // `Block` → 整条输出替换为 guard 错误(注入指令不进模型
                 // 上下文,PostToolUse 也只见替换后版本);`Review` → 正文
@@ -946,7 +1153,29 @@ impl ToolExecutionQueue {
                         .collect::<Vec<_>>()
                         .join("\n");
                     let report = guard.scan(&scan_text);
-                    match report.verdict {
+                    let was_tainted = if report.verdict
+                        != zhuye_sanitize::prompt_guard::Verdict::Allow
+                        && let Some((source, key)) = provenance.as_ref()
+                    {
+                        // 修复原因:并发结果若先分别查询再标记,两个可疑结果
+                        // 都可能误认自己是首次发现,从而漏掉加强模式的升级。
+                        let already_tainted = !self.provenance_tracker.mark(key);
+                        set_provenance_metadata(&mut output, *source, key, true);
+                        already_tainted
+                    } else {
+                        provenance
+                            .as_ref()
+                            .is_some_and(|(_, key)| self.provenance_tracker.is_tainted(key))
+                    };
+                    let verdict = if self.provenance_mode.escalates()
+                        && was_tainted
+                        && report.verdict == zhuye_sanitize::prompt_guard::Verdict::Review
+                    {
+                        zhuye_sanitize::prompt_guard::Verdict::Block
+                    } else {
+                        report.verdict
+                    };
+                    match verdict {
                         zhuye_sanitize::prompt_guard::Verdict::Allow => {}
                         zhuye_sanitize::prompt_guard::Verdict::Review => {
                             tracing::warn!(
@@ -988,7 +1217,7 @@ impl ToolExecutionQueue {
                                 fingerprint = %report.fingerprint_sha256,
                                 "prompt_guard: tool output blocked"
                             );
-                            let blocked = ToolOutput {
+                            let mut blocked = ToolOutput {
                                 content: vec![ContentBlock::text(format!(
                                     "[prompt injection guard] 工具输出被拦截(规则: {})。原内容未进入模型上下文。",
                                     codes.join(", ")
@@ -1004,6 +1233,14 @@ impl ToolExecutionQueue {
                                 }),
                                 elapsed_ms: output.elapsed_ms,
                             };
+                            if let Some((source, key)) = provenance.as_ref() {
+                                set_provenance_metadata(
+                                    &mut blocked,
+                                    *source,
+                                    key,
+                                    self.provenance_tracker.is_tainted(key),
+                                );
+                            }
                             let blocked_clone = blocked.clone();
                             let _ = self
                                 .hook_engine
@@ -1066,12 +1303,22 @@ impl ToolExecutionQueue {
             }
             Ok(Err(e)) => {
                 let tool_error = e.clone();
-                let output = ToolOutput {
+                let mut output = ToolOutput {
                     content: vec![ContentBlock::text(e.to_string())],
                     is_error: true,
                     metadata: serde_json::json!({"kind": format!("{e:?}")}),
                     elapsed_ms,
                 };
+                // 失败文本也会送入模型;远程工具与子代理返回的错误要保留来源。
+                if let Some((source, key)) = provenance.as_ref() {
+                    self.provenance_tracker.observe(key);
+                    set_provenance_metadata(
+                        &mut output,
+                        *source,
+                        key,
+                        self.provenance_tracker.is_tainted(key),
+                    );
+                }
                 // v1.9 C1/C2:登记失败输出指纹。
                 lg_record!(e.to_string());
                 let _ = self
@@ -1220,6 +1467,136 @@ mod tests {
         let q = ToolExecutionQueue::with_defaults(reg, engine, ctx());
         let out = q.execute_all(vec![]).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn 读写屏障按调用顺序观察状态() {
+        struct StateTool {
+            name: &'static str,
+            state: Arc<parking_lot::Mutex<String>>,
+            safe: bool,
+        }
+        #[async_trait]
+        impl Tool for StateTool {
+            fn name(&self) -> &str {
+                self.name
+            }
+            fn description(&self) -> &str {
+                "测试状态"
+            }
+            fn parameters_schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn is_concurrency_safe(&self) -> bool {
+                self.safe
+            }
+            async fn execute(
+                &self,
+                _ctx: ToolContext,
+                args: Value,
+            ) -> Result<ToolOutput, ToolError> {
+                let mut state = self.state.lock();
+                if let Some(value) = args.get("value").and_then(Value::as_str) {
+                    *state = value.into();
+                }
+                Ok(ToolOutput {
+                    content: vec![ContentBlock::text(state.clone())],
+                    is_error: false,
+                    metadata: serde_json::json!({}),
+                    elapsed_ms: 0,
+                })
+            }
+        }
+        let state = Arc::new(parking_lot::Mutex::new("初始".to_string()));
+        let reg = Arc::new(ToolRegistry::default());
+        for (name, safe) in [("read_state", true), ("write_state", false)] {
+            reg.register(Arc::new(StateTool {
+                name,
+                state: state.clone(),
+                safe,
+            }));
+        }
+        let q = ToolExecutionQueue::with_defaults(reg, Arc::new(HookEngine::new()), ctx());
+        let calls = [
+            ("1", "read_state", serde_json::json!({})),
+            ("2", "write_state", serde_json::json!({"value": "第一次"})),
+            ("3", "read_state", serde_json::json!({})),
+            ("4", "write_state", serde_json::json!({"value": "第二次"})),
+            ("5", "read_state", serde_json::json!({})),
+        ]
+        .into_iter()
+        .map(|(id, name, args)| ToolCallRequest {
+            id: id.into(),
+            name: name.into(),
+            args,
+        })
+        .collect();
+        let out = q.execute_all(calls).await;
+        let actual: Vec<_> = out
+            .iter()
+            .map(|result| match &result.content[0] {
+                ContentBlock::Text { text } => text.as_str(),
+                _ => panic!("预期文本结果"),
+            })
+            .collect();
+        assert_eq!(actual, vec!["初始", "第一次", "第一次", "第二次", "第二次"]);
+    }
+
+    #[tokio::test]
+    async fn 连续安全调用仍可并发() {
+        struct BarrierTool(Arc<tokio::sync::Barrier>);
+        #[async_trait]
+        impl Tool for BarrierTool {
+            fn name(&self) -> &str {
+                "barrier"
+            }
+            fn description(&self) -> &str {
+                "测试并发"
+            }
+            fn parameters_schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn is_concurrency_safe(&self) -> bool {
+                true
+            }
+            async fn execute(
+                &self,
+                _ctx: ToolContext,
+                _args: Value,
+            ) -> Result<ToolOutput, ToolError> {
+                self.0.wait().await;
+                Ok(ToolOutput {
+                    content: vec![ContentBlock::text("完成")],
+                    is_error: false,
+                    metadata: serde_json::json!({}),
+                    elapsed_ms: 0,
+                })
+            }
+        }
+        let reg = Arc::new(ToolRegistry::default());
+        reg.register(Arc::new(BarrierTool(Arc::new(tokio::sync::Barrier::new(
+            2,
+        )))));
+        let q = ToolExecutionQueue::with_defaults(reg, Arc::new(HookEngine::new()), ctx());
+        let calls = ["a", "b"]
+            .into_iter()
+            .map(|id| ToolCallRequest {
+                id: id.into(),
+                name: "barrier".into(),
+                args: serde_json::json!({}),
+            })
+            .collect();
+        let results = tokio::time::timeout(std::time::Duration::from_secs(3), q.execute_all(calls))
+            .await
+            .expect("连续安全工具应同时运行");
+        assert_eq!(
+            results
+                .iter()
+                .map(|r| r.call_id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert!(results.iter().all(|r| !r.is_error));
     }
 
     #[tokio::test]

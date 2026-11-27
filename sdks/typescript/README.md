@@ -36,6 +36,8 @@ options.bin  →  ZHUYE_BIN  →  平台子包内嵌二进制  →  PATH 上的 
 [GitHub Releases](https://github.com/Asketisch/ZhuYe/releases) 下载安装包,
 或从源码 `make build` 产出 `target/release/zhuye` 后以 `ZHUYE_BIN` 指向。
 
+SDK 启动的引擎会校验 `[provenance].mode`。显式配置仅接受 `off`、`observe`、`enforce`，未知值会使会话启动失败。
+
 ## 快速开始
 
 ```ts
@@ -311,6 +313,8 @@ for await (const e of await agent.submit({
 | `thinking_delta` | submission | 思考流增量 |
 | `token_count` | 全局 | 用量统计 |
 | `tool_call_begin` / `tool_call_args_delta` / `tool_call_output_delta` / `tool_call_end` | submission | 内置工具调用四件套;end 带 `is_error` 与最终 output |
+| `tool_execution_uncertain` | submission | 恢复时报告结果未知的工具执行,携带原 session、turn、call 和工具名 |
+| `task_budget_snapshot` | submission 或全局 | 任务树预算时点快照。空闲保温结算后发送全局快照，同一 `task_id` 以最新读数为准 |
 | `tool_execution_request` | (SDK 内部拦截) | 远程工具请求 → 本地 handler |
 | `approval_request` / `permission_bubble` | 全局 | 需要审批 → `approve()` 回应 |
 | `ask_user_question` / `ask_user_input` | 全局 | 需要用户作答 → `submit()` 回应对应 response Op |

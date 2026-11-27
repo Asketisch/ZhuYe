@@ -1,6 +1,25 @@
 {
   "comment": "EventMsg 线格式契约样本表:当前全部变体各一条最小合法样本。新增 EventMsg 变体时必须同步补样本,协议集成测试会做 Rust enum ↔ 样本表奇偶校验、serde 反序列化与 roundtrip。",
   "events": {
+    "task_budget_snapshot": {
+      "type": "task_budget_snapshot",
+      "task_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      "turn_id": "5f8a3c1e-9b2d-4c6a-8e7f-1a2b3c4d5e6f",
+      "estimated_tokens": 80,
+      "actual_tokens": 50,
+      "reserved_tokens": 10,
+      "unknown_estimated_tokens": 5,
+      "unknown_calls": 1,
+      "estimate_overrun_tokens": 2,
+      "dispatched_subagents": 1
+    },
+    "tool_execution_uncertain": {
+      "type": "tool_execution_uncertain",
+      "session_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      "turn_id": "5f8a3c1e-9b2d-4c6a-8e7f-1a2b3c4d5e6f",
+      "call_id": "call-1",
+      "tool_name": "write"
+    },
     "session_configured": {
       "type": "session_configured",
       "session_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",

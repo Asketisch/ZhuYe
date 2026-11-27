@@ -704,6 +704,7 @@ mod tests {
             telemetry: None,
             goal: Arc::new(parking_lot::RwLock::new(None)),
             todos_slot: Arc::new(parking_lot::RwLock::new(None)),
+            todo_persistence: Arc::new(tokio::sync::Mutex::new(())),
             quota_tracker: None,
             plan_approval_gate: None,
             plan_session_subs: None,

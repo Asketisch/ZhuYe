@@ -1056,7 +1056,11 @@ pub fn fork_with_history(
             | RolloutRecord::Compaction { turn_id, .. }
             | RolloutRecord::Checkpoint { turn_id, .. }
             | RolloutRecord::Rewind { turn_id, .. }
-            | RolloutRecord::TokenCount { turn_id, .. } => Some(turn_id),
+            | RolloutRecord::TokenCount { turn_id, .. }
+            | RolloutRecord::HistorySnapshot { turn_id, .. }
+            | RolloutRecord::ProvenanceSnapshot { turn_id, .. }
+            | RolloutRecord::DynamicContextSnapshot { turn_id, .. }
+            | RolloutRecord::ToolExecution { turn_id, .. } => Some(turn_id),
             // v1.x:PlanRequest / PlanReady / PlanRejected / PermissionModeChanged(均为 enum 变体名)
             // 不绑定 turn(plan 生命周期跨 turn),走 None → 不参与 up_to_turn_id
             // 截断,原样复制到子会话。`_` 兜底已覆盖,此处仅为显式说明意图。

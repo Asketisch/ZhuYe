@@ -26,6 +26,8 @@ headless 与 serve 的共享装配层：读参数、bootstrap 会话、把协议
 - **压缩热配置**：模型或配置变更时刷新压缩阈值策略与模型窗口覆盖；每次压缩决策以当前模型窗口计算有效阈值。
 - **`ExecArgs`（`src/lib.rs`）与 `ServeArgs`（`src/serve.rs`）是两个入口的参数结构**，也是 CLI 文档的同源定义；`zhuye-cli` 的 clap 外壳投影自它们。改参数先改这里，再改 CLI 侧投影。
 - **恢复链三选一**：`--resume <UUID>` / `-c`（`continue_last`）/ `-r N`（`resume_by`）在 clap 层用 `conflicts_with_all` 互斥；`async_main` 另有 `if/else if` 优先级链兜底（`--resume` 优先于 `-c` / `-r`，二者优先于 `prompt`）。两边都要改才能保持一致。
+- **工具执行恢复**：启动和恢复均装配 `[tool_journal].strict`;恢复读取未结清工具记录并交给 core 通知宿主,不自动重放。
+- **子代理隔离装配**：coordinator 启用时要求 worktree 隔离;Git 根目录解析失败后拒绝派发并返回原因。关闭模式时清除隔离设置。
 - **`--prompt-profile` 三态提示词方案**（`ExecArgs::prompt_profile` + `src/lib.rs` 的 `apply_prompt_profile`）：取值 `default` / `auto` / 方案标识，映射 `PromptSelection` 后在会话装配前以一条 `Op::PromptCommand { Select }` 提交生效；与 resume 输入不互斥，仅设定本会话的提示词选择。方案库与来源登记见 abilities 层篇 `zhuye-prompt` 条目。
 - **`PLAN_MODE_EXIT_CODE`**（`src/lib.rs`）：`--plan-mode` 下计划未产出时的退出码，`docs/PLAN_MODE.md` 对它有明文承诺，改它要同步文档与依赖该码值的调用方脚本。
 - **hooks 启用口径**由 `HeadlessArgs::hooks_explicit_only`（`src/headless.rs`）决定：serve 侧收紧为 `true`（内置 hook 需在配置段显式列出才启用），exec / 库侧保持 `false`（未配置即全部启用）。

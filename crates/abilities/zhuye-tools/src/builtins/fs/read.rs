@@ -80,6 +80,10 @@ impl Tool for ReadTool {
         true
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, ctx: ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let path_str =
             args.get("path")

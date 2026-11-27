@@ -40,6 +40,12 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// 是否明确保证本次工具的所有调用均无外部副作用。
+    /// 未知或可写工具必须保守返回 false;并发安全不代表只读。
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
     /// 本次调用可读取的父会话历史条数。`None` 表示需要完整历史,
     /// 默认保持最近 10 条;队列会分别限制每个工具的上下文快照。
     /// 此方法在 hook 改写参数前调用,若改写后可能需要更多历史,
@@ -192,6 +198,14 @@ pub struct ToolEventForwarder {
     pub os_sandbox: Option<bool>,
     /// 本批所属回合的取消令牌;为空时沿用队列的基础上下文。
     pub turn_cancel: Option<CancellationToken>,
+    /// 本批回合与会话标识;未设置时保留基础上下文。
+    pub turn_id: Option<TurnId>,
+    /// 本批所属会话标识。
+    pub session_id: Option<ThreadId>,
+    /// 当前回合的可选记录器。
+    pub recorder: Option<Arc<dyn zhuye_protocol::RolloutRecorder>>,
+    /// 是否要求有副作用工具在执行前可靠记录。
+    pub strict_tool_journal: bool,
 }
 
 impl std::fmt::Debug for ToolEventForwarder {
@@ -214,6 +228,10 @@ impl ToolEventForwarder {
             parent_tail_json: Arc::new(parent_tail_json),
             os_sandbox: None,
             turn_cancel: None,
+            turn_id: None,
+            session_id: None,
+            recorder: None,
+            strict_tool_journal: false,
         }
     }
 

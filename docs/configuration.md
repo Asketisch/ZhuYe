@@ -92,6 +92,72 @@ preview_chars = 2000
 persist = true
 ```
 
+## 工具执行记录([tool_journal])
+
+默认尽力将工具执行开始与终态写入会话记录。显式设置 `strict = true`
+时,未声明只读的工具必须先成功写入开始记录才能执行;无支持的 recorder 或
+写入失败时拒绝执行。记录仅保证成功写入后刷出进程缓冲区,不保证断电持久性。
+恢复时未结清的执行以 `tool_execution_uncertain` 事件告知宿主,不会自动重试。
+侧通道按设计不写会话记录,因此严格模式下侧通道的非只读工具会被拒绝。
+
+```toml
+[tool_journal]
+strict = true
+```
+
+## 回合调度([turn_scheduling])
+
+默认同一会话的用户回合并发执行,各回合读取启动时的历史,并可能共享工作区。
+设置 `serial = true` 后,用户输入按到达顺序排队,上一回合退出后才构造下一轮
+历史;审批与问答响应仍立即处理。中断或关闭会为排队输入发送 `turn_aborted`。
+配置在创建会话时生效;关闭该选项或移除配置可恢复默认并发行为。
+
+```toml
+[turn_scheduling]
+serial = true
+```
+
+## 任务树预算([task_budget])
+
+缺省不启用。每个根回合创建独立账本,子代理共享该账本;主模型、重试、摘要
+和缓存保温都先预留估算用量,有用量回执时按实际值结算。`final_answer_tokens`
+为最终答复保留额度,不足以容纳输入时仍可能无法收口。`deadline_seconds` 从
+根任务开始计算,到期取消回合;`subagent_dispatches` 限制整个任务树的成功派发数。
+无回执的请求在释放在途预留后单独按估算值保守记账。估算可能低于真实用量,
+所以单次调用可能超出上限;该设置不是精确计费硬上限。金额仅作统计,没有金额硬限制。
+回合结束前的 `task_budget_snapshot` 报告共享账本的时点快照,同一 `task_id`
+的多个快照不能相加。
+
+```toml
+[task_budget]
+total_tokens = 100000
+deadline_seconds = 1800
+subagent_dispatches = 8
+final_answer_tokens = 8000
+```
+
+## 来源与动态上下文
+
+工具结果会标注工作区、外部内容、子代理或工具输出来源,来源键使用摘要而不
+暴露路径或地址。默认 `observe` 追踪污染状态,不改变既有提示注入守卫的裁决;
+`enforce` 可将已污染来源的后续可疑结果升级拦截,`off` 关闭来源追踪。
+显式设置未知模式会导致配置校验失败,CLI 和 Rust Builder 会拒绝启动会话。
+Rust 宿主可通过门面导出的 `ProvenanceMode` 设置 `AgentConfig.provenance_mode`。
+来源标识不替代权限、审批或沙箱。
+
+`[dynamic_context].enabled = true` 会把记忆和待办移出稳定 system 前缀,
+作为版本化的尾部状态注入;仅在内容变化或压缩移除该状态后再次注入。
+恢复时从状态或工具记录重建待办。此选项默认关闭,需真实任务评测验证缓存
+收益及状态新鲜度后再考虑更改默认值。
+
+```toml
+[provenance]
+mode = "observe"
+
+[dynamic_context]
+enabled = false
+```
+
 ## 从旧配置迁移（v1 → v2）
 
 v1 的固定接入段 `[anthropic]` / `[openai]` / `[ollama]` **仍可读入** ——

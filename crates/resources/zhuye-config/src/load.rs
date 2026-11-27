@@ -76,15 +76,26 @@ pub fn load_from_file_with_migration(path: &Path) -> Result<ReflectConfig, Confi
 ///
 /// **会跑迁移** —— 旧固定段读入后自动转成模型组。
 pub fn load_default() -> ReflectConfig {
+    load_default_impl(false).unwrap_or_default()
+}
+
+/// 为会话启动读取默认配置,显式指定的未知来源治理模式视为错误。
+pub fn load_default_for_runtime() -> Result<ReflectConfig, ConfigError> {
+    load_default_impl(true)
+}
+
+fn load_default_impl(validate_provenance: bool) -> Result<ReflectConfig, ConfigError> {
     let Some(path) = default_config_path() else {
         tracing::debug!("HOME unset; using ReflectConfig::default()");
-        return ReflectConfig::default();
+        return Ok(ReflectConfig::default());
     };
     match load_from_file(&path) {
-        Ok(c) => c,
+        Ok(c) => Ok(c),
+        // 修复原因:把拼错的 enforce 当作默认 observe 会静默降级治理。
+        Err(e @ ConfigError::InvalidProvenanceMode(_)) if validate_provenance => Err(e),
         Err(e) => {
             tracing::debug!(path = %path.display(), error = %e, "config load failed; using default");
-            ReflectConfig::default()
+            Ok(ReflectConfig::default())
         }
     }
 }

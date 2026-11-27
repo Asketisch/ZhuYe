@@ -183,6 +183,8 @@ export type EventMsg =
   | ToolCallArgsDelta
   | ToolCallOutputDelta
   | ToolCallEnd
+  | ToolExecutionUncertain
+  | TaskBudgetSnapshot
   | ToolExecutionRequest
   | ApprovalRequest
   | AskUserQuestion
@@ -359,6 +361,29 @@ export interface ToolCallEnd {
   is_error: boolean;
   elapsed_ms: number;
   child_id?: string | null;
+}
+
+/** 恢复时工具执行结果未知;调用可能已产生副作用。 */
+export interface ToolExecutionUncertain {
+  type: 'tool_execution_uncertain';
+  session_id: string;
+  turn_id: string;
+  call_id: string;
+  tool_name: string;
+}
+
+/** 任务树预算的时点快照;同一 task_id 的快照不可相加。 */
+export interface TaskBudgetSnapshot {
+  type: 'task_budget_snapshot';
+  task_id: string;
+  turn_id: string;
+  estimated_tokens: number;
+  actual_tokens: number;
+  reserved_tokens: number;
+  unknown_estimated_tokens: number;
+  unknown_calls: number;
+  estimate_overrun_tokens: number;
+  dispatched_subagents: number;
 }
 
 /** v1.3 SDK:请求客户端执行其注册的远程工具。 */

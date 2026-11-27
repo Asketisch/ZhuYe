@@ -93,6 +93,8 @@ def test_并行子代理混合成功失败并汇总给父代理(sandbox, serve_s
                 {"type": "text", "text": "慢速结果"}
             ], ends["parallel-good"]
             assert ends["parallel-bad"]["is_error"] is True, ends
+            successful_source = ends["parallel-good"]["output"]["metadata"]["provenance"]
+            assert ends["parallel-bad"]["output"]["metadata"]["provenance"] == successful_source
             assert "INVALID_REQUEST" in str(ends["parallel-bad"]["output"]), ends["parallel-bad"]
             assert "子代理请求被拒绝" in str(ends["parallel-bad"]["output"]), ends["parallel-bad"]
             terminal = first_event(events, "turn_complete")
@@ -118,12 +120,24 @@ def test_并行子代理混合成功失败并汇总给父代理(sandbox, serve_s
             f for f in rollout_files(sandbox.home)
             if "parallel-good" in f.read_text()
         ).read_text().splitlines() if line]
+        result_index = next(index for index, record in enumerate(records)
+                            if record.get("type") == "message"
+                            and any(block["type"] == "tool_result" and block["call_id"] == "parallel-good"
+                                    for block in record.get("content", [])))
         # v1.3 增量落盘:同回合的多条 assistant 分片先按 turn_id 归并
         # (与消费端 coalesce_turn_messages 同语义),再断言整回合块序。
-        assistant = next(record for record in coalesce_turn_messages(records)
+        messages = coalesce_turn_messages(records)
+        assistant = next(record for record in messages
                          if record.get("role") == "assistant" and "parallel-good" in str(record.get("content")))
-        block_types = [block["type"] for block in assistant["content"]]
-        assert block_types == ["tool_use", "tool_use", "tool_result", "tool_result", "text"], assistant
+        blocks = [block for record in messages if record.get("role") == "assistant"
+                  and record.get("turn_id") == assistant["turn_id"] for block in record["content"]]
+        assert [block["type"] for block in blocks] == ["tool_use", "tool_use", "tool_result", "tool_result", "text"], blocks
+        source = ends["parallel-good"]["output"]["metadata"]["provenance"]
+        assert source["source"] == "subagent"
+        assert any(record.get("type") == "provenance_snapshot"
+                   and record["turn_id"] == assistant["turn_id"]
+                   and source["source_key"] in record["sources"]
+                   for record in records[:result_index])
     finally:
         release_slow.set()
         gateway.shutdown()

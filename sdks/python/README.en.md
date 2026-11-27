@@ -45,6 +45,8 @@ musl/Alpine), it falls back to PATH: download an installer from
 build from source with `make build` to produce
 `target/release/zhuye` and point `ZHUYE_BIN` at it.
 
+The engine validates `[provenance].mode` when the SDK starts a session. Set it to `off`, `observe`, or `enforce`. An unknown value prevents session startup.
+
 ## Quick Start
 
 ```python
@@ -361,6 +363,8 @@ does not read them; use the `set_effort` and
 | `thinking_delta` | submission | Thinking-stream delta |
 | `token_count` | global | Usage statistics |
 | `tool_call_begin` / `tool_call_args_delta` / `tool_call_output_delta` / `tool_call_end` | submission | The built-in tool call quartet; end carries `is_error` and the final output |
+| `tool_execution_uncertain` | submission | A recovered tool execution has an unknown outcome; includes its session, turn, call and tool name |
+| `task_budget_snapshot` | submission or global | Point-in-time task-tree budget snapshot. Idle warming emits a global snapshot after settlement. Use the newest reading for each `task_id` |
 | `tool_execution_request` | (intercepted inside the SDK) | Remote tool request → local handler |
 | `approval_request` / `permission_bubble` | global | Approval needed → respond with `approve()` |
 | `ask_user_question` / `ask_user_input` | global | User answer needed → respond with the matching response Op via `submit_op` |

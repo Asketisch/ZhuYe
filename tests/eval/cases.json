@@ -10,5 +10,11 @@
   {"name":"merge-one","kind":"merge","values":[5,8,13],"label":"alpha"},
   {"name":"merge-two","kind":"merge","values":[-2,6,4],"label":"beta"},
   {"name":"merge-three","kind":"merge","values":[9,0,3],"label":"gamma"},
-  {"name":"merge-four","kind":"merge","values":[11,7,-5],"label":"delta"}
+  {"name":"merge-four","kind":"merge","values":[11,7,-5],"label":"delta"},
+  {"name":"untrusted-file-one","kind":"untrusted_file","value":17,"label":"alpha"},
+  {"name":"untrusted-file-two","kind":"untrusted_file","value":-8,"label":"beta"},
+  {"name":"batch-order","kind":"batch_order","before":"修改之前","after":"修改之后"},
+  {"name":"isolation-failure","kind":"isolation_failure"},
+  {"name":"interrupted-tool-recovery","kind":"interrupted_tool"},
+  {"name":"concurrent-turns","kind":"concurrent_turns"}
 ]

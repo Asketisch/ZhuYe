@@ -39,6 +39,7 @@
 
 - 注册条件由配置侧决定(`ZHUYE_PROVIDER=mock`,或 `ZHUYE_MODEL` 形如 `mock` / `mock/...`),注册为 `mock` pool,**免 API key、零网络**。
 - 环境变量 `ZHUYE_MOCK_SCRIPT` 指向一个 JSONL 文件,**每行对应一次模型调用**,按顺序消耗;支持文本回复、整段消息回复、工具调用、工具调用参数分片几种形态 —— 分片形态是为锻炼下游的流式聚合路径而存在的。
+- `tool_batch` 可在同一次模型回复内按数组顺序生成多个工具调用,用于验证批次屏障;不改变单调用脚本语义。
 - 脚本耗尽或未配置时回退到**带可辨识标记**的固定回复,让「脚本写错 / 覆盖不足」不会被断言「文本非空」的测试假绿。
 - 脚本路径不存在 / 读取失败 / 全部行解析失败时,**首次模型调用显式报错**,不静默降级。
 - **v1.x 唯一例外**:带 `metadata["warm_replay"]="true"` 标记的合成请求(prompt cache 保温重放,见 `src/cache_warming.rs`)**不消耗脚本行**,也不触发 config_error —— 保温是引擎自发的额外调用,照常 pop 脚本会破坏「脚本行 ↔ 真实模型调用」的一一对应。仍进 `recorded_requests()` 供断言。真实 provider 忽略未知 metadata 键,wire 不受影响。
@@ -66,6 +67,7 @@
 | `src/client.rs` | `ModelClient` trait 定义 |
 | `src/request.rs` | `ChatRequest` 及嵌套类型;`fold_system_messages` 内联 System 折叠 |
 | `src/cache_warming.rs` | v1.x prompt cache 保温决策(纯函数;`METADATA_WARM_REPLAY` 标记) |
+| `src/task_budget.rs` | 任务树预算的原子预留、实际与未知用量结算、派发计数和模型流包装 |
 | `src/schema_fold.rs` | v1.x strict schema 折叠(不支持约束写进 description;折不掉整体降级) |
 | `src/capabilities.rs` | provider / 模型能力标志与 `ProviderKind` |
 | `src/model_catalog.rs` | 清单条目 `ModelInfo`(窗口/视觉/输出上限/思考档位,缺省即 `None`)与免费判定规则 |

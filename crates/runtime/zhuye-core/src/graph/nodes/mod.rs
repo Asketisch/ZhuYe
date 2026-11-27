@@ -26,11 +26,43 @@ pub use model_call::model_call;
 pub use nudge::{maybe_inject_progress_nudge, url_host};
 pub use pre_loop::pre_loop;
 pub(crate) use tool_exec::read_latest_plan_file;
+pub(crate) use tool_exec::render_todo_checklist;
 pub use tool_exec::tool_exec;
 
 use zhuye_protocol::{ContentBlock, MessageRole, RolloutRecord};
 
 use crate::submission_loop::NodeContext;
+
+/// 按持久化顺序提交待办,避免并发回合中的快照读到过期版本。
+pub(super) async fn persist_tool_results(
+    ctx: &NodeContext,
+    blocks: &[ContentBlock],
+    checklist: Option<String>,
+) {
+    if let Some(checklist) = checklist {
+        let _order = ctx.todo_persistence.lock().await;
+        persist_assistant_step(ctx, blocks).await;
+        *ctx.todos_slot.write() = Some(checklist);
+    } else {
+        persist_assistant_step(ctx, blocks).await;
+    }
+}
+
+pub(super) async fn persist_dynamic_checklist(
+    ctx: &NodeContext,
+    recorder: &dyn zhuye_protocol::RolloutRecorder,
+) {
+    // 修复原因:读取和落盘必须与 TodoWrite 提交互斥,否则并发的
+    // 新回执先落盘时,旧快照可能在恢复时覆盖它。
+    let _order = ctx.todo_persistence.lock().await;
+    let checklist = ctx.todos_slot.read().clone().unwrap_or_default();
+    let _ = recorder
+        .record(RolloutRecord::DynamicContextSnapshot {
+            turn_id: ctx.turn_id,
+            checklist,
+        })
+        .await;
+}
 
 /// 把本步已完成的 assistant 内容增量落盘。
 ///

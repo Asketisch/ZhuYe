@@ -36,10 +36,14 @@ pub mod m4_bootstrap;
 pub mod stream;
 
 // ── Core(保持原状)─────────────────────────────────────────────────────────
+pub use zhuye_core::resume::unsettled_tool_executions;
 pub use zhuye_core::{AgentConfig, AgentThread, TurnHandle};
 
 // ── Prompt cache 保温(v1.x)───────────────────────────────────────────────
 pub use zhuye_core::{CacheWarmingScheduler, WarmCandidate, WarmingStats};
+pub use zhuye_llm::task_budget::{
+    TaskBudget, TaskBudgetError, TaskBudgetLimits, TaskBudgetSnapshot,
+};
 pub use zhuye_llm::{
     CacheObservation, CacheWarmingDecision, CacheWarmingSettings, SkipReason, WarmingAction,
     WarmingPhase, effective_ttl_secs, evaluate, refresh_delay,
@@ -67,13 +71,15 @@ pub use zhuye_protocol::{
     ErrorEvent, Event, EventMsg, MessageRole, ModelUsage, NullRecorder, Op, PromptAction,
     PromptListEvent, PromptSelection, PromptSwitchedEvent, ProtocolError, ReviewDecision,
     RiskLevel, RolloutError, RolloutRecord, RolloutRecorder, SandboxPolicy, SessionConfiguredEvent,
-    SessionInfo, SessionStats, StreamErrorEvent, Submission, ThreadId, TokenCountEvent, TokenUsage,
-    ToolCallBeginEvent, ToolCallEndEvent, ToolOutput, TurnAbortedEvent, TurnCompleteEvent, TurnId,
+    SessionInfo, SessionStats, StreamErrorEvent, Submission, TaskBudgetSnapshotEvent, ThreadId,
+    TokenCountEvent, TokenUsage, ToolCallBeginEvent, ToolCallEndEvent, ToolExecutionPhase,
+    ToolExecutionUncertainEvent, ToolOutput, TurnAbortedEvent, TurnCompleteEvent, TurnId,
     TurnStartedEvent, TurnStatus, UserInputItem,
 };
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 pub use zhuye_protocol::PermissionMode;
+pub use zhuye_tools::sanitize::provenance::ProvenanceMode;
 pub use zhuye_tools::{
     Tool, ToolContext, ToolError, ToolOutput as ToolOutputType, ToolRegistry, ToolSpec,
 };

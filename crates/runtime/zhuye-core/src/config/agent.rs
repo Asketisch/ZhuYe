@@ -54,6 +54,23 @@ pub struct AgentConfig {
     /// 为 `None` 时 submission loop 回退到 no-op / 空实现,
     /// 保证既有测试继续可用。
     pub m4: Option<M4Deps>,
+    /// 要求有副作用工具在执行前写入受支持的工具执行记录。
+    pub strict_tool_journal: bool,
+    /// 同一会话的用户回合按到达顺序串行执行。
+    pub serial_turns: bool,
+    /// 根任务的预算参数;缺省时不启用任务树预算。
+    pub task_budget_limits: Option<zhuye_llm::task_budget::TaskBudgetLimits>,
+    /// 子代理继承的当前根任务账本。
+    pub inherited_task_budget: Option<Arc<zhuye_llm::task_budget::TaskBudget>>,
+    /// 来源污染状态由会话及其子代理共享。
+    pub provenance_tracker: Arc<zhuye_tools::sanitize::provenance::TaintTracker>,
+    /// 来源治理默认只观察。
+    pub provenance_mode: zhuye_tools::sanitize::provenance::ProvenanceMode,
+    /// 将动态记忆和待办从稳定提示词移到版本化尾部上下文。
+    pub dynamic_context: bool,
+    /// 恢复时尚未告知宿主的未知工具执行。
+    pub recovered_tool_executions:
+        Arc<parking_lot::Mutex<Vec<zhuye_protocol::ToolExecutionUncertainEvent>>>,
     /// M6:安装回合级 `ApprovalGate`,让 `Prompt` 权限工具走
     /// `EventMsg::ApprovalRequest`。headless `zhuye-exec` 的 JSONL
     /// 路径默认 `false`;TUI / lib facade 构造线程时打开。
@@ -343,6 +360,14 @@ impl AgentConfig {
             worktree: Arc::new(RwLock::new(None)),
             cancel,
             m4: None,
+            strict_tool_journal: false,
+            serial_turns: false,
+            task_budget_limits: None,
+            inherited_task_budget: None,
+            provenance_tracker: Arc::new(zhuye_tools::sanitize::provenance::TaintTracker::new()),
+            provenance_mode: zhuye_tools::sanitize::provenance::ProvenanceMode::Observe,
+            dynamic_context: false,
+            recovered_tool_executions: Arc::new(parking_lot::Mutex::new(Vec::new())),
             approvals: false,
             approval_context: ApprovalContext::default(),
             policy: Arc::new(RoutingPolicy::default()),

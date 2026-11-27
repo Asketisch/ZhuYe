@@ -46,6 +46,18 @@ pub enum MemoryOp {
     Write,
 }
 
+/// 工具执行记录的阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionPhase {
+    /// 工具实际执行前已写入开始记录。
+    Started,
+    /// 工具已返回;是否报错由记录的 `is_error` 指示。
+    Completed,
+    /// 等待超时,无法确认工具副作用的最终状态。
+    Unknown,
+}
+
 /// CLI `resume` 流与会话索引用到的轻量会话元数据。`message_count` 在每条
 /// 记录写入时延迟更新。
 ///
@@ -422,6 +434,52 @@ pub enum RolloutRecord {
         /// 了结时间(UTC)。
         at: DateTime<Utc>,
     },
+    /// 工具执行的审计记录。只记录身份和阶段,不保存参数或工具输出。
+    ToolExecution {
+        /// 会话标识。
+        session_id: ThreadId,
+        /// 触发工具的回合。
+        turn_id: TurnId,
+        /// 模型工具调用标识。
+        call_id: String,
+        /// 执行的真实工具名称。
+        tool_name: String,
+        /// 开始、完成或结果未知。
+        phase: ToolExecutionPhase,
+        /// 完成时的错误标志,其他阶段为空。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+        /// 写入时间。
+        at: DateTime<Utc>,
+    },
+    /// 回合构造历史时读取到的回放边界,不包含当前用户输入。
+    HistorySnapshot {
+        /// 使用该历史的回合。
+        turn_id: TurnId,
+        /// 本次回放读到的记录数;回放失败或无 recorder 时为空。
+        replay_record_count: Option<usize>,
+        /// 回放中最后一条对话消息的回合标识。
+        last_message_turn_id: Option<TurnId>,
+        /// 送入本回合之前的历史消息数。
+        visible_messages: usize,
+    },
+    /// 压缩或子代理结果交接的来源快照,仅包含摘要后的来源键。
+    ProvenanceSnapshot {
+        /// 快照所属的回合。
+        turn_id: TurnId,
+        /// 已观察到的来源键。
+        #[serde(default)]
+        sources: Vec<String>,
+        /// 已污染来源的稳定键。
+        tainted_sources: Vec<String>,
+    },
+    /// 动态待办的恢复快照。
+    DynamicContextSnapshot {
+        /// 状态所属回合。
+        turn_id: TurnId,
+        /// 当前待办清单;空字符串表示清空。
+        checklist: String,
+    },
 }
 
 impl RolloutRecord {
@@ -562,6 +620,13 @@ pub trait RolloutRecorder: Send + Sync + std::fmt::Debug {
     /// 追加一条记录到底层存储。实现应当遵循 best-effort:写入失败仅
     /// 记录日志并继续,避免磁盘满等错误中断正在进行的 turn。
     async fn record(&self, r: RolloutRecord) -> Result<(), RolloutError>;
+
+    /// 是否支持严格工具执行记录:成功返回前须将记录刷出进程缓冲区,
+    /// 且写入错误不得吞掉。此保证不包含断电持久性。
+    /// 旧实现缺省不支持,避免将空 recorder 误当作可靠后端。
+    fn supports_strict_tool_journal(&self) -> bool {
+        false
+    }
 
     /// 重放 `session_id` 的全部记录。格式错误的行应以 `tracing::warn!`
     /// 跳过,不应中断整体 replay。

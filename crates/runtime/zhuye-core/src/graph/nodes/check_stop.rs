@@ -140,8 +140,9 @@ async fn inject_subagent_results(
 ) {
     let budget = ctx.cfg.result_budget.as_deref();
     let mut protocol_blocks: Vec<zhuye_protocol::ContentBlock> = Vec::with_capacity(results.len());
+    let mut has_provenance = false;
     for r in results {
-        let body = if r.ok {
+        let mut body = if r.ok {
             r.text
         } else {
             format!(
@@ -149,7 +150,44 @@ async fn inject_subagent_results(
                 r.error.unwrap_or_else(|| "未知错误".to_string())
             )
         };
+        let provenance = if ctx.cfg.provenance_mode.tracks() {
+            let key = format!(
+                "subagent:{}",
+                zhuye_sanitize::prompt_guard::fingerprint(format!("call_{}", r.role).as_bytes())
+            );
+            ctx.cfg.provenance_tracker.observe(&key);
+            if let Some(guard) = ctx.cfg.prompt_guard.as_ref() {
+                let verdict = guard.scan(&body).verdict;
+                let was_tainted = verdict != zhuye_sanitize::prompt_guard::Verdict::Allow
+                    && !ctx.cfg.provenance_tracker.mark(&key);
+                if ctx.cfg.provenance_mode.escalates()
+                    && was_tainted
+                    && verdict != zhuye_sanitize::prompt_guard::Verdict::Allow
+                {
+                    body = "子代理结果被来源治理拦截。".into();
+                }
+            }
+            let label = format!(
+                "[来源数据: subagent; 标识: {key}; 已污染: {}]",
+                ctx.cfg.provenance_tracker.is_tainted(&key)
+            );
+            has_provenance = true;
+            Some(label)
+        } else {
+            None
+        };
+        if provenance.is_some() {
+            // 修复原因:子代理正文可以包含提醒闭合标签;将标记字符转义,
+            // 避免结果正文伪造引擎的数据边界。
+            body = body
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+        }
         let mut body_blocks = vec![zhuye_protocol::ContentBlock::Text { text: body }];
+        if let Some(label) = provenance {
+            body_blocks.insert(0, zhuye_protocol::ContentBlock::Text { text: label });
+        }
         super::tool_exec::limit_model_tool_output(
             &mut body_blocks,
             &ctx.cfg.current_workspace(),
@@ -188,6 +226,16 @@ async fn inject_subagent_results(
         .messages
         .push(ChatMessage::User(UserContent { blocks: llm_blocks }));
     if let Some(rec) = ctx.recorder.as_ref() {
+        // 子代理与父代理共享追踪器。交接时先记录所有已知来源,否则
+        // 子代理读取的文件等来源只存在子会话日志,父会话重启就会丢失。
+        if has_provenance {
+            crate::resume::persist_provenance_snapshot(
+                rec.as_ref(),
+                ctx.turn_id,
+                &ctx.cfg.provenance_tracker,
+            )
+            .await;
+        }
         let _ = rec
             .record(zhuye_protocol::RolloutRecord::message(
                 ctx.turn_id,
@@ -301,6 +349,7 @@ mod tests {
             telemetry: None,
             goal: Arc::new(parking_lot::RwLock::new(None)),
             todos_slot: Arc::new(parking_lot::RwLock::new(None)),
+            todo_persistence: Arc::new(tokio::sync::Mutex::new(())),
             quota_tracker: None,
             plan_approval_gate: None,
             plan_session_subs: None,
@@ -416,19 +465,29 @@ mod tests {
             "注入必须走 system-reminder 形态:{text}"
         );
 
-        // 落盘:注入的同一份文本以 user 记录写入,归属本回合。
-        let records = recorder.0.lock().clone();
-        let [record] = records.as_slice() else {
-            panic!("应落盘且只落盘一条 user 记录:{records:?}");
-        };
-        let zhuye_protocol::RolloutRecord::Message {
-            turn_id,
-            role,
-            content,
-        } = record
+        // 来源快照先落盘,再以同回合的 user 记录保存注入的同一份文本。
+        let records = recorder.0.lock();
+        let [
+            zhuye_protocol::RolloutRecord::ProvenanceSnapshot {
+                turn_id: source_turn_id,
+                sources,
+                tainted_sources,
+            },
+            zhuye_protocol::RolloutRecord::Message {
+                turn_id,
+                role,
+                content,
+            },
+        ] = records.as_slice()
         else {
-            panic!("落盘记录应是 Message:{record:?}");
+            panic!("应依次落盘来源快照和一条用户消息:{records:?}");
         };
+        let [source] = sources.as_slice() else {
+            panic!("应记录一个子代理来源:{sources:?}");
+        };
+        assert_eq!(*source_turn_id, ctx.turn_id);
+        assert!(source.starts_with("subagent:") && text.contains(source));
+        assert!(tainted_sources.is_empty());
         assert_eq!(*role, zhuye_protocol::MessageRole::User);
         assert_eq!(*turn_id, ctx.turn_id);
         assert_eq!(

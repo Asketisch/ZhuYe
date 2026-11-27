@@ -195,11 +195,14 @@ class ServeSession:
         sub_id: str,
         timeout: float | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        *,
+        on_session_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
         """收集某条 submission 的事件流,直到收到终态事件。
 
         `on_event` 在每个新事件到达时同步回调 —— 用于审批 / 远程工具
         这类"事件驱动回执"的交互(回执必须在 turn 结束前写回)。
+        `on_session_event` 额外观察其他在飞提交的事件,返回值仍只包含目标提交。
         """
         deadline = time.monotonic() + (timeout if timeout is not None else self.timeout)
         seen = 0
@@ -207,15 +210,15 @@ class ServeSession:
             with self._cond:
                 if self._stdout_error is not None:
                     raise AssertionError(self._stdout_error)
-                evs = list(self._by_sub.get(sub_id, ()))
-                if len(evs) > seen:
-                    new = evs[seen:]
-                    seen = len(evs)
+                events = self._events if on_session_event is not None else self._by_sub.get(sub_id, ())
+                if len(events) > seen:
+                    new = events[seen:]
+                    seen = len(events)
                 else:
                     self._check_stdout()
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        got = [e.get("msg", {}).get("type") for e in evs]
+                        got = [e.get("msg", {}).get("type") for e in self._by_sub.get(sub_id, ())]
                         raise AssertionError(
                             f"{timeout or self.timeout}s 内未收到终态事件:"
                             f"submission={sub_id} 已见={got}"
@@ -223,6 +226,10 @@ class ServeSession:
                     self._cond.wait(min(remaining, 0.2))
                     continue
             for ev in new:
+                if on_session_event is not None:
+                    on_session_event(ev)
+                    if ev.get("id", "") != sub_id:
+                        continue
                 if on_event is not None:
                     on_event(ev)
                 if ev.get("msg", {}).get("type") in TERMINAL_TYPES:
@@ -307,8 +314,11 @@ class ServeSession:
             self._closed = True
         try:
             self._proc.kill()
-        except Exception:
+        except ProcessLookupError:
             pass
+        with self._write_lock:
+            if self._proc.stdin is not None:
+                self._proc.stdin.close()
 
     def close(self, timeout: float = 10.0) -> int:
         """优雅关闭:发 shutdown → 等 `shutdown_complete` → 关 stdin → 等退出。

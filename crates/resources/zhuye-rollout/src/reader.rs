@@ -24,13 +24,19 @@ pub async fn replay_path(path: &Path) -> Result<Vec<RolloutRecord>, RolloutError
         return Ok(out);
     }
     let file = tokio::fs::File::open(path).await?;
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines();
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // 修复原因:强杀可能把多字节字符截断。逐行读取字节,单条
+        // 非法 UTF-8 只影响自身,不能让此前完整的记录一起丢失。
+        if reader.read_until(b'\n', &mut line).await? == 0 {
+            break;
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        match serde_json::from_str::<RolloutRecord>(&line) {
+        match serde_json::from_slice::<RolloutRecord>(&line) {
             Ok(r) => out.push(r),
             Err(e) => {
                 // serde_json 对未知 enum variant 的错误信息固定包含此字面量
@@ -55,8 +61,19 @@ pub async fn replay_path(path: &Path) -> Result<Vec<RolloutRecord>, RolloutError
 /// 按时间顺序读取会话的全部保留记录,包括任意日期目录和轮转副本。
 pub async fn replay(base: &Path, session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
     let mut combined = Vec::new();
-    for path in session_files(base, session_id)? {
+    let paths = session_files(base, session_id)?;
+    for path in &paths {
         combined.extend(replay_path(&path).await?);
+    }
+    // 工具执行账本不随对话文件轮转,否则长时间执行可能丢失开始记录。
+    // 最后追加使账本成为相同调用阶段的权威顺序;旧会话无此文件时为空。
+    if let Some(path) = paths.last()
+        && let Some(stem) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.split('.').next())
+    {
+        combined.extend(replay_path(&path.with_file_name(format!("{stem}.tool-journal"))).await?);
     }
     Ok(combined)
 }
@@ -153,6 +170,26 @@ mod tests {
 
         let back = replay_path(&path).await.unwrap();
         assert_eq!(back.len(), 2, "should skip 1 malformed + 1 empty");
+    }
+
+    #[tokio::test]
+    async fn 跳过强杀留下的半个多字节字符并保留完整记录() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.tool-journal");
+        let started = RolloutRecord::ToolExecution {
+            session_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+            call_id: "call-1".into(),
+            tool_name: "写入".into(),
+            phase: zhuye_protocol::ToolExecutionPhase::Started,
+            is_error: None,
+            at: chrono::Utc::now(),
+        };
+        let mut bytes = serde_json::to_vec(&started).unwrap();
+        bytes.extend_from_slice(b"\n{\"tool_name\":\"\xe5");
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(replay_path(&path).await.unwrap(), vec![started]);
     }
 
     #[tokio::test]

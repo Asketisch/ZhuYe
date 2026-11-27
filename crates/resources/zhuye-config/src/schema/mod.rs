@@ -76,6 +76,9 @@ pub struct ReflectConfig {
     pub compact: CompactSection,
     #[serde(default)]
     pub token_budget: Option<TokenBudgetSection>,
+    /// 每个根任务独立、与子代理共享的预算。
+    #[serde(default)]
+    pub task_budget: Option<TaskBudgetSection>,
     #[serde(default)]
     pub sandbox: SandboxSection,
     #[serde(default)]
@@ -100,6 +103,12 @@ pub struct ReflectConfig {
     pub sanitize: Option<SanitizeSection>,
     #[serde(default)]
     pub prompt_guard: Option<PromptGuardSection>,
+    /// 来源与污染状态策略,缺省为只观察。
+    #[serde(default)]
+    pub provenance: Option<ProvenanceSection>,
+    /// 可选的动态上下文尾部更新。
+    #[serde(default)]
+    pub dynamic_context: Option<DynamicContextSection>,
     #[serde(default)]
     pub ask_user_question: Option<AskUserQuestionSection>,
     #[serde(default)]
@@ -130,6 +139,12 @@ pub struct ReflectConfig {
     /// (启用,100KB 内联预算,超限落盘 artifacts)。
     #[serde(default)]
     pub tool_results: Option<ToolResultsSection>,
+    /// 工具执行记录策略;默认尽力写入。
+    #[serde(default)]
+    pub tool_journal: Option<ToolJournalSection>,
+    /// 回合调度策略;缺省时保留并发执行。
+    #[serde(default)]
+    pub turn_scheduling: Option<TurnSchedulingSection>,
     #[serde(default)]
     pub telemetry: Option<TelemetrySection>,
     #[serde(default)]
@@ -310,6 +325,7 @@ impl Default for ReflectConfig {
             model_group: Vec::new(),
             compact: CompactSection::default(),
             token_budget: None,
+            task_budget: None,
             sandbox: SandboxSection::default(),
             hooks: HooksSection::default(),
             mcp_servers: McpServersSection::default(),
@@ -322,11 +338,15 @@ impl Default for ReflectConfig {
             coordinator: None,
             sanitize: None,
             prompt_guard: None,
+            provenance: None,
+            dynamic_context: None,
             ask_user_question: None,
             model: None,
             goal: None,
             cache_warming: None,
             tool_results: None,
+            tool_journal: None,
+            turn_scheduling: None,
             telemetry: None,
             analytics: None,
             notifications: None,
@@ -664,6 +684,48 @@ pub struct ToolResultsSection {
     pub persist: Option<bool>,
 }
 
+/// 工具执行记录配置。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ToolJournalSection {
+    /// 开启后,有副作用工具必须先成功记录才能执行。
+    #[serde(default)]
+    pub strict: bool,
+}
+
+/// 同一会话的回合调度策略。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TurnSchedulingSection {
+    /// 启用后用户输入按顺序排队。
+    #[serde(default)]
+    pub serial: bool,
+}
+
+/// 任务树共享预算配置。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TaskBudgetSection {
+    /// 任务树 token 估算上限。
+    pub total_tokens: Option<u64>,
+    /// 从根任务开始计算的截止时间,单位为秒。
+    pub deadline_seconds: Option<u64>,
+    /// 根任务及其子代理可派发的子代理总数。
+    pub subagent_dispatches: Option<u64>,
+    /// 为最终答复保留的 token 额度。
+    #[serde(default)]
+    pub final_answer_tokens: u64,
+}
+
+impl TaskBudgetSection {
+    /// 转为引擎账本参数。
+    pub fn limits(&self) -> zhuye_llm::task_budget::TaskBudgetLimits {
+        zhuye_llm::task_budget::TaskBudgetLimits {
+            total_tokens: self.total_tokens,
+            duration: self.deadline_seconds.map(std::time::Duration::from_secs),
+            subagent_dispatches: self.subagent_dispatches,
+            final_answer_tokens: self.final_answer_tokens,
+        }
+    }
+}
+
 /// 归一化后的预算设置(引擎无关的镜像结构 —— zhuye-config 不依赖
 /// zhuye-tools,tools→hooks→config 的依赖环由本结构规避;exec bootstrap
 /// 负责转换成 `zhuye_tools::result_budget::ResultBudget`)。
@@ -787,6 +849,21 @@ pub struct SanitizeSection {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PromptGuardSection {
     pub enabled: Option<bool>,
+}
+
+/// 来源治理配置。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ProvenanceSection {
+    /// `observe`(默认)、`enforce` 或 `off`。
+    pub mode: Option<String>,
+}
+
+/// 动态上下文配置。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct DynamicContextSection {
+    /// 将记忆和待办作为版本化尾部上下文注入;默认关闭。
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
