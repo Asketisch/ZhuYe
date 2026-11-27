@@ -26,6 +26,7 @@
 | 双 SDK:Python / TypeScript | [sdks/](sdks/AGENTS.md) |
 | 测试分层与覆盖矩阵 | [tests/](tests/AGENTS.md) |
 | 插件与 WASM 宿主 | [plugins/README.md](plugins/README.md)(外链) |
+| 外部项目 submodule(third_party/;钉版 / 升级 / 构建规矩) | [scripts/](scripts/AGENTS.md) · [plugins/browser/NOTICE.md](plugins/browser/NOTICE.md) |
 | WIT 组件接口 | [wit/README.md](wit/README.md)(外链) |
 | 架构与系统说明 / 正式文档 | [docs/](docs/AGENTS.md) · [architecture.md](docs/architecture.md) · [features.md](docs/features.md) · [README 文档表](README.md)(外链) |
 

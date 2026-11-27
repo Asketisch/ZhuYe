@@ -1,15 +1,14 @@
-//! 浏览器发现 / 启动 / attach:可执行文件探测(平台常见路径 + env 覆盖)、
+//! 浏览器发现 / 启动:可执行文件探测(平台常见路径 + env 覆盖)、
 //! 隔离 profile 启动(`--remote-debugging-port=0` → 从 `DevToolsActivePort`
-//! 文件解析实际端口)、运行中实例 attach。
+//! 文件解析实际端口)。
 //!
 //! profile 目录 = `$ZHUYE_HOME/browser-profile`(经 `zhuye-config::paths`,
-//! 与桌面 browser_backend 同一发现契约:谁先启动谁持有,后到方 attach)。
+//! 与桌面 browser_backend 同一发现契约:谁先启动谁持有,后到方 attach;
+//! attach 到上游 agent-browser 的方式见 [`crate::shim`])。
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-
-use serde_json::{Value, json};
 
 use crate::error::BrowserError;
 
@@ -129,8 +128,8 @@ pub fn launch(
     let mut args: Vec<String> = vec![
         format!("--user-data-dir={}", data_dir.display()),
         "--remote-debugging-port=0".into(),
-        // 仅监听回环(BrowserSecurity loopback_only 的前置条件;Chrome
-        // 默认也只绑 127.0.0.1,显式声明防旧版本语义漂移)。
+        // 仅监听回环(本插件安全边界「仅回环」的强制前置;Chrome 默认也
+        // 只绑 127.0.0.1,显式声明防旧版本语义漂移)。
         "--remote-debugging-address=127.0.0.1".into(),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
@@ -163,6 +162,15 @@ pub struct BrowserProcess {
 }
 
 impl BrowserProcess {
+    /// attach 已运行实例(无子进程句柄;Drop 不回收 —— 浏览器生命周期
+    /// 归启动方,桌面端拉起的实例不随插件进程退出)。
+    pub fn attached() -> Self {
+        Self {
+            child: None,
+            data_dir: PathBuf::new(),
+        }
+    }
+
     /// 轮询等 `DevToolsActivePort` 文件出现并解析。
     fn wait_devtools_active_port(&mut self) -> Result<(), BrowserError> {
         let deadline = std::time::Instant::now() + DEVTOOLS_WAIT;
@@ -189,11 +197,7 @@ impl BrowserProcess {
 
     /// 解析 `DevToolsActivePort`:首行端口,次行 browser ws 路径。
     pub fn devtools_port(&self) -> Result<(u16, String), BrowserError> {
-        let file = self.data_dir.join("DevToolsActivePort");
-        let content = std::fs::read_to_string(&file)
-            .map_err(|e| BrowserError::other(format!("DevToolsActivePort 读取失败: {e}")))?;
-        parse_devtools_active_port(&content)
-            .ok_or_else(|| BrowserError::other("DevToolsActivePort 格式异常(应为端口+路径两行)"))
+        read_active_port(&self.data_dir)
     }
 }
 
@@ -219,26 +223,31 @@ pub fn parse_devtools_active_port(content: &str) -> Option<(u16, String)> {
     Some((port, path.to_string()))
 }
 
-/// 组装浏览器级 ws 端点。
+/// 读取 profile 目录下的 `DevToolsActivePort`(attach 已运行实例用;
+/// 与 `BrowserProcess::devtools_port` 同一解析)。
+pub fn read_active_port(data_dir: &Path) -> Result<(u16, String), BrowserError> {
+    let file = data_dir.join("DevToolsActivePort");
+    let content = std::fs::read_to_string(&file)
+        .map_err(|e| BrowserError::other(format!("DevToolsActivePort 读取失败: {e}")))?;
+    parse_devtools_active_port(&content)
+        .ok_or_else(|| BrowserError::other("DevToolsActivePort 格式异常(应为端口+路径两行)"))
+}
+
+/// 组装浏览器级 ws 端点(上游 `AGENT_BROWSER_CDP` 接受端口或 ws URL,
+/// 统一给全量 URL 免除歧义)。
 pub fn browser_ws_url(port: u16, path: &str) -> String {
     format!("ws://127.0.0.1:{port}{path}")
 }
 
-/// 现有实例的 page targets(供单 target 校验与 attach)。
+/// 判断 `DevToolsActivePort` 记录的实例是否仍存活(TCP 探测回环端口)。
 ///
-/// 用一次性短连接查 targets:浏览器级 ws 上发 `Target.getTargets`。
-pub async fn query_page_targets(ws_url: &str) -> Result<Vec<Value>, BrowserError> {
-    let mut conn = crate::cdp::CdpConnection::connect(ws_url).await?;
-    let result = conn.command("Target.getTargets", json!({})).await?;
-    let targets = result
-        .get("targetInfos")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    Ok(targets
-        .into_iter()
-        .filter(|t| t.get("type").and_then(Value::as_str) == Some("page"))
-        .collect())
+/// 修复原因:profile 目录可能残留上次未清理的 `DevToolsActivePort`(浏览器
+/// 被强杀/断电),只读文件会误 attach 到死端口;上游连接虽也会报错,但 shim
+/// 在启动时就甄别可立即转入「启动新实例」路径,少一次注定失败的代理会话。
+pub fn instance_alive(port: u16) -> bool {
+    use std::net::SocketAddr;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
 #[cfg(test)]
@@ -272,5 +281,27 @@ mod tests {
     fn profile_dir_is_under_data_dir() {
         let dir = profile_dir();
         assert!(dir.ends_with("browser-profile"), "实际: {dir:?}");
+    }
+
+    #[test]
+    fn instance_alive_probes_loopback_tcp() {
+        // 真实监听端口 → 判活(死端口分支依赖环境占用情况,不做确定性断言)。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(instance_alive(port));
+    }
+
+    #[test]
+    fn read_active_port_roundtrip_and_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        // 文件缺失 → 报错不 panic。
+        assert!(read_active_port(dir.path()).is_err());
+        std::fs::write(
+            dir.path().join("DevToolsActivePort"),
+            "9333\n/devtools/browser/x\n",
+        )
+        .unwrap();
+        let (port, path) = read_active_port(dir.path()).unwrap();
+        assert_eq!((port, path.as_str()), (9333, "/devtools/browser/x"));
     }
 }

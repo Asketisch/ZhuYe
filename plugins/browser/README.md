@@ -1,42 +1,87 @@
-# browser —— 受控浏览器插件(F39)
+# browser —— 受控浏览器插件(v0.2,agent-browser 后端)
 
-Agent 可控的浏览器能力:MCP server 经 **CDP(Chrome DevTools Protocol)** 驱动
-本机 Chrome/Edge/Chromium,仅 loopback + 隔离 profile,带 F39 元素寻址
-(`@eN` 引用 + 快照绑定,旧 ref 显式失效)。
+Agent 可控的浏览器能力:MCP server(`zhuye-browser-server` **shim**)确保
+本机浏览器实例后,把页面能力整体交给 **agent-browser**(源码以
+`third_party/agent-browser` submodule 钉住,Apache-2.0)—— shim 经
+`AGENT_BROWSER_CDP` attach 本机 Chrome/Edge/Chromium(仅回环 + 隔离
+profile),再以 stdio 行代理透传上游 MCP 工具面。
 
-## 工具
+## 架构
 
-| 工具 | 作用 |
-|---|---|
-| `browser_navigate` | 导航到 URL(等 load 完成) |
-| `browser_snapshot` | 可及性快照 → `@eN` 引用树形文本(首行带版本号) |
-| `browser_click` | 点击元素(引用 + 快照版本) |
-| `browser_type` | 填写输入框(聚焦 → 全选 → 覆盖) |
-| `browser_press_key` | 组合键(`ctrl+a` / `enter`) |
-| `browser_scroll` | 滚轮(正 dy = 下) |
-| `browser_screenshot` | 页面截图(JPEG) |
-| `browser_close` | 关闭受控标签页 |
+```
+宿主(zhuye-mcp 客户端,工具名 mcp__plugin:browser:*)
+  └─ stdio: bin/zhuye-browser-server(shim)
+       ├─ ① 确保浏览器:读 $ZHUYE_HOME/browser-profile/DevToolsActivePort
+       │    attach 已运行实例(与桌面 browser_backend 跨仓共享契约:
+       │    谁先启动谁持有);无实例则启动 headless 新实例(隔离 profile)
+       ├─ ② 定位上游:ZHUYE_AGENT_BROWSER → bin/agent-browser(随包捆绑)
+       │    → PATH(brew/npm 安装兜底)
+       └─ ③ spawn `agent-browser mcp` + AGENT_BROWSER_CDP=<ws 端点> +
+            AGENT_BROWSER_SESSION=zhuye-p<pid>-t<secs>(独立 session 隔离
+            daemon 生命周期),stdio 双向行代理
+```
+
+- **不下载浏览器**:上游对 cdp 端点连接失败只报错、不回退自启/下载
+  Chrome for Testing(已对照上游 v0.45.0 源码确认);被控端只用本机浏览器。
+- **独立 session**:上游 daemon 按 session 复用且身份不含 cdp 端点,shim
+  每次启动用全新 session(`zhuye-` 前缀,不碰用户自用会话),保证 attach
+  端点必然与本次拉起的浏览器一致。
+
+## 工具面(上游定义,共 30+ 个)
+
+常用:`agent_browser_open` / `agent_browser_snapshot`(可及性快照,
+元素带 `[ref=eN]` 引用)/ `agent_browser_click` / `agent_browser_fill` /
+`agent_browser_press` / `agent_browser_scroll` / `agent_browser_screenshot` /
+`agent_browser_close`。
+
+进阶(原手写 CDP 版没有的能力):多标签(`agent_browser_tab_*`)、
+等待语义(`agent_browser_wait_for_selector` 等)、网络与 cookie/storage、
+iframe、文件上传、PDF、JS 求值等 —— 以 `tools/list` 实时返回为准。
 
 ## 安装
 
 ```bash
-./scripts/build_browser_plugin.sh
+./scripts/build_browser_plugin.sh    # shim 必建;submodule 已初始化则捆绑上游
 zhuye plugin install plugins/browser --scope user
 zhuye plugin enable browser@inline
 ```
 
+上游二进制获取途径(任选其一,构建脚本自动探测):
+
+1. **随包捆绑**(推荐):`git submodule update --init --depth 1
+   third_party/agent-browser` 后运行构建脚本,`bin/agent-browser` 随插件分发;
+2. PATH 安装:`brew install agent-browser` 或 `npm i -g agent-browser`;
+3. `ZHUYE_AGENT_BROWSER=<路径>` 显式指定。
+
 ## 安全边界
 
-- **仅回环**:CDP 端点只接受 `127.0.0.1` / `localhost` / `::1`
-  (`BrowserSecurity.loopback_only` 强制校验)。
-- **单 target**:`Target.getTargets` 的 page 数 > 1 拒绝连接(防误操作多标签)。
-- **隔离 profile**:`$ZHUYE_HOME/browser-profile`,绝不触碰用户主 profile;
-  `--disable-extensions`,不带用户书签/同步。
-- **权限 floor**:MCP 工具天然 Prompt 级(`FloorEnforcingTool`),宿主审批。
-- `require_token` v1 不启用(原生 CDP 无鉴权机制;token 代理为后续项)。
+- **仅回环 + 隔离 profile**:被控端以 `$ZHUYE_HOME/browser-profile` 启动
+  (`--remote-debugging-address=127.0.0.1 --disable-extensions`),绝不触碰
+  用户主 profile;shim 只把回环 ws 端点交给上游。
+- **权限 floor**:MCP 工具天然 Prompt 级(`FloorEnforcingTool`),每次
+  调用走宿主审批。
+- **上游 opt-in 策略**:agent-browser 自带 `--allowed-domains`(域名白名单,
+  含子资源/WebSocket 拦截)、action policy(default-deny)、content
+  boundaries、`--max-output` 等 —— 默认不限制,如需收紧可在 shim 拉起的
+  上游 env(`AGENT_BROWSER_ALLOWED_DOMAINS` 等)注入,或在宿主审批层兜底。
+- **降级不 panic**:上游缺失 / 浏览器不可用时,shim 自答 MCP,工具调用
+  统一 `isError` + 可操作修复提示(三种获取路径全部列明)。
+- **无浏览器下载面**:上游以 attach 模式接入,任何情况下不会触发
+  Chrome for Testing 下载。
 
 ## 发现契约
 
 profile 目录下的 `DevToolsActivePort` 文件(首行端口、次行 browser ws 路径)
 是桌面 browser_backend 与本插件共享的发现契约:谁先启动浏览器谁持有,
 后到方 attach 同一实例。可用 `ZHUYE_BROWSER_EXECUTABLE` 覆盖可执行文件路径。
+
+## 升级上游
+
+```bash
+cd third_party/agent-browser
+git fetch --depth 1 origin tag v<新版本> && git checkout v<新版本>
+cd ../.. && git add third_party/agent-browser   # bump 指针
+./scripts/build_browser_plugin.sh               # 重建捆绑二进制
+```
+
+版本钉住策略与分发许可说明见 [NOTICE.md](NOTICE.md)。

@@ -24,7 +24,7 @@ zhuye plugin enable <清单名>@inline
 |---|---|---|
 | [`plugin-demo/`](plugin-demo/) | `demo` | 全能力示例:六类 capability(commands / 子代理 / 技能 / hook / MCP / WASM)各配一个最小可运行样例 |
 | [`computer-use/`](computer-use/) | `computer-use` | 屏幕 / 鼠标 / 键盘操作(xcap + enigo;需先构建二进制) |
-| [`browser/`](browser/) | `browser` | 受控浏览器(CDP 仅 loopback + 隔离 profile;F39 元素寻址;需先构建二进制) |
+| [`browser/`](browser/) | `browser` | 受控浏览器(shim attach 本机浏览器 + 代理 agent-browser MCP,submodule 钉版可选捆绑;需先构建二进制) |
 | [`git-tools/`](git-tools/) | `git-tools` | git 工作流:分支 / PR / diff 探测 + checkpoint 快照 + Stop 自动 checkpoint(需先构建二进制) |
 | [`shell/`](shell/) | `shell` | 常驻 shell 会话池:启动进程 / 增量读输出 / 写 stdin / kill(需先构建二进制) |
 | [`goal-queue/`](goal-queue/) | `goal-queue` | 目标模式(goal 工具)+ FIFO 队列模式(queue 工具;门控型,默认关) |

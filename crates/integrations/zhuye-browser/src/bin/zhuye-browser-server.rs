@@ -1,112 +1,147 @@
-//! `zhuye-browser-server` — 浏览器控制的 MCP stdio server
-//! (computer-use 同范式:手写 JSON-RPC 2.0 over stdio;line-delimited;
-//! stdout 只输出协议响应,日志一律 stderr)。
+//! `zhuye-browser-server` — 浏览器控制插件的 MCP stdio **shim**。
 //!
-//! 工具:`browser_navigate` / `browser_snapshot` / `browser_click` /
-//! `browser_type` / `browser_press_key` / `browser_scroll` /
-//! `browser_screenshot` / `browser_close`。构建时 `--features real` 启用
-//! CDP 真实后端;feature 关闭时全部返回 Unavailable 文案(优雅降级)。
+//! 职责(三步,任一步失败转入降级态):
+//! 1. 确保本机浏览器(attach 已运行实例 / 隔离 profile 启动 headless 新实例,
+//!    见 `zhuye_browser::shim::ensure_browser`);
+//! 2. 定位上游 agent-browser 二进制(env 覆盖 → 同目录捆绑 → PATH);
+//! 3. spawn `agent-browser mcp`(attach 端点走 `AGENT_BROWSER_CDP` env)
+//!    并做 **stdio 双向行代理** —— 上游日志一律 stderr,stdout 只走协议行。
 //!
-//! 快照绑定协议:`browser_click` / `browser_type` 必须携带取到引用时的
-//! `snapshotVersion` —— 页面变化后旧引用显式失效,防"点到另一个同名按钮"。
+//! 降级态:shim 自己应答 MCP(initialize / tools/list / tools/call /
+//! ping),所有工具调用返回 isError + 可操作修复提示 —— **不 panic**
+//! (与 computer-use 同范式:宿主在上游缺失 / 未装浏览器时拿到
+//! 结构化失败,而不是 server 拉不起来)。
+//!
+//! wire 形态:line-delimited JSON-RPC 2.0 over stdio(MCP stdio 惯例)。
 
 use std::io::{self, BufRead, Write};
-use std::sync::Arc;
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::thread;
 
-use base64::Engine as _;
 use serde_json::{Value, json};
-use zhuye_browser::BrowserBackend;
+use zhuye_browser::shim::{self, DegradeReason};
 
-const PROTOCOL_VERSION: &str = "2025-06-18";
+fn main() {
+    match boot() {
+        BootMode::Proxy(pipes) => run_proxy(pipes),
+        BootMode::Degraded(reason) => run_degraded(reason),
+    }
+}
 
-fn tools_json() -> Value {
-    json!({
-        "tools": [
-            {
-                "name": "browser_navigate",
-                "description": "让受控浏览器导航到 URL(等页面 load 完成返回;之后必须重新 snapshot)。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"url": {"type": "string"}},
-                    "required": ["url"]
-                }
-            },
-            {
-                "name": "browser_snapshot",
-                "description": "拍页面可及性快照,返回带 @eN 元素引用的树形文本;首行 [版本] 标记当前快照版本,后续 click/type 必须携带该版本。",
-                "inputSchema": {"type": "object", "properties": {}}
-            },
-            {
-                "name": "browser_click",
-                "description": "点击快照中的元素(@eN 引用 + 取到引用时的快照版本)。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "reference": {"type": "string", "description": "@eN 元素引用"},
-                        "snapshotVersion": {"type": "integer", "description": "取到该引用时的快照版本"}
-                    },
-                    "required": ["reference", "snapshotVersion"]
-                }
-            },
-            {
-                "name": "browser_type",
-                "description": "向快照中的输入框填写文本(聚焦 → 全选 → 覆盖输入)。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "reference": {"type": "string"},
-                        "text": {"type": "string"},
-                        "snapshotVersion": {"type": "integer"}
-                    },
-                    "required": ["reference", "text", "snapshotVersion"]
-                }
-            },
-            {
-                "name": "browser_press_key",
-                "description": "按组合键,如 \"enter\" / \"ctrl+a\" / \"tab\"。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"keys": {"type": "string", "description": "+ 分隔的组合键"}},
-                    "required": ["keys"]
-                }
-            },
-            {
-                "name": "browser_scroll",
-                "description": "滚轮滚动(正 dy = 下,正 dx = 右)。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "dx": {"type": "integer", "description": "水平滚动量(默认 0)"},
-                        "dy": {"type": "integer", "description": "垂直滚动量(默认 0)"}
-                    }
-                }
-            },
-            {
-                "name": "browser_screenshot",
-                "description": "截取当前页面,返回 JPEG 图片。",
-                "inputSchema": {"type": "object", "properties": {}}
-            },
-            {
-                "name": "browser_close",
-                "description": "关闭当前受控标签页(headless 下浏览器随之退出)。",
-                "inputSchema": {"type": "object", "properties": {}}
-            }
-        ]
+/// 启动结果:真代理态(含全部管道与浏览器句柄)或降级态。
+enum BootMode {
+    Proxy(ProxyPipes),
+    Degraded(DegradeReason),
+}
+
+/// 代理态持有的句柄:上游子进程 + 双向管道 + 浏览器进程。
+struct ProxyPipes {
+    child: Child,
+    child_stdin: ChildStdin,
+    child_stdout: ChildStdout,
+    /// 我们拉起的 headless 浏览器(attach 场景为空壳句柄)。放在结构体里
+    /// 一起活到 run_proxy 结束:修复原因 —— 若在 boot 里提前丢弃,Drop 会
+    /// 立即杀掉刚启动的浏览器,上游 daemon attach 到的是死端口;若全部
+    /// 忽略,headless 实例则变孤儿进程。生命周期必须覆盖整个代理会话。
+    _browser: zhuye_browser::chrome::BrowserProcess,
+}
+
+/// 启动三步:确保浏览器 → 定位上游 → spawn。任一步失败进降级态。
+fn boot() -> BootMode {
+    let degraded = |reason| BootMode::Degraded(reason);
+    let (cdp_url, browser) = match shim::ensure_browser() {
+        Ok(pair) => pair,
+        Err(e) => return degraded(DegradeReason::BrowserMissing(e.to_string())),
+    };
+    let upstream = match shim::locate_upstream_binary() {
+        Some(path) => path,
+        None => return degraded(DegradeReason::UpstreamMissing),
+    };
+    let mut child = match shim::upstream_command(&upstream, &cdp_url)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // 上游 stderr 透传到本进程 stderr:诊断信息进宿主日志,不污染协议。
+        .stderr(Stdio::inherit())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("[browser-server] 上游 {} 启动失败: {e}", upstream.display());
+            return degraded(DegradeReason::UpstreamMissing);
+        }
+    };
+    let child_stdin = child.stdin.take().expect("piped stdin 必然可取");
+    let child_stdout = child.stdout.take().expect("piped stdout 必然可取");
+    eprintln!(
+        "[browser-server] 上游 {} 已启动,attach {cdp_url}",
+        upstream.display()
+    );
+    BootMode::Proxy(ProxyPipes {
+        child,
+        child_stdin,
+        child_stdout,
+        _browser: browser,
     })
 }
 
-fn main() {
-    // 工具体是 async(CDP over ws)—— 自建 runtime,顺序 block_on。
-    // server 主循环保持与 computer-use 相同的同步 stdio 形态。
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("构建 tokio runtime");
-    let backend: Arc<dyn BrowserBackend> = zhuye_browser::browser_backend();
-    eprintln!(
-        "[browser-server] capability={:?}",
-        runtime.block_on(async { backend.capability() })
-    );
+/// 真代理态:
+/// - 下行线程:宿主 stdin → 上游 stdin(宿主请求下行;宿主断开即关上游
+///   stdin,上游 MCP 循环读 EOF 后自行退出);
+/// - 主线程:上游 stdout → 宿主 stdout(应答上行),上游退出(EOF)后
+///   兜底 kill + wait,保证不留僵尸进程。
+fn run_proxy(pipes: ProxyPipes) {
+    // 解构拿走各字段所有权:stdin 归下行线程,stdout/child 归主线程,
+    // `_browser` 留在本函数作用域,返回时 Drop(回收 headless 实例;
+    // attach 场景为空壳句柄,不影响桌面端拉起的浏览器)。
+    let ProxyPipes {
+        mut child,
+        child_stdin,
+        child_stdout,
+        _browser,
+    } = pipes;
+    // 下游线程持有上游 stdin:宿主 stdin 结束 → 管道随线程结束被 drop →
+    // 上游读 EOF → 优雅退出(这是它的常规收尾路径,不靠 kill)。
+    // 句柄不 join:主循环收尾后进程直接退出,线程随进程终止(见函数尾注)。
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut upstream_stdin = child_stdin;
+        for line in stdin.lock().lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if writeln!(upstream_stdin, "{line}").is_err() {
+                break;
+            }
+            upstream_stdin.flush().ok();
+        }
+    });
+    let mut stdout = io::stdout();
+    let reader = io::BufReader::new(child_stdout);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            // 上游 stdout 关闭 = 进程退出(常规收尾)。
+            Err(_) => break,
+        };
+        if writeln!(stdout, "{line}").is_err() {
+            // 宿主侧 stdout 断开:上游失去应答对象,直接收尾。
+            break;
+        }
+        stdout.flush().ok();
+    }
+    // 兜底回收:上游可能还活着(stdout 未关,如宿主 stdout 先断)。
+    let _ = child.kill();
+    let _ = child.wait();
+    // 修复原因:此处不可 join 下游线程 —— 它阻塞在宿主 stdin 上,宿主
+    // 仍在线等待应答时 stdin 不会 EOF;若上游提前退出(如二进制损坏),
+    // join 会永久死锁,宿主拿不到任何应答。直接返回让进程退出(Rust
+    // main 返回即终止全部线程),宿主的 stdin 管道随进程关闭。
+}
+
+/// 降级态主循环:静态应答,工具调用统一 isError + 修复提示。
+fn run_degraded(reason: DegradeReason) {
+    eprintln!("[browser-server] 降级态:{}", reason.message());
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line in stdin.lock().lines() {
@@ -128,358 +163,15 @@ fn main() {
             stdout.flush().ok();
             continue;
         };
+        // 无 id 的是 notification(initialized 等),不应答。
         let Some(id) = msg.get("id").cloned() else {
             continue;
         };
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
-        let result = handle_request(method, &params, backend.as_ref(), &runtime);
+        let result = shim::degraded_response(method, &params, &reason);
         let resp = json!({"jsonrpc": "2.0", "id": id, "result": result});
         writeln!(stdout, "{resp}").ok();
         stdout.flush().ok();
-    }
-}
-
-fn handle_request(
-    method: &str,
-    params: &Value,
-    backend: &dyn BrowserBackend,
-    runtime: &tokio::runtime::Runtime,
-) -> Value {
-    match method {
-        "initialize" => json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "serverInfo": {
-                "name": "zhuye-browser",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "capabilities": {"tools": {"listChanged": false}},
-        }),
-        "tools/list" => tools_json(),
-        "tools/call" => dispatch_tool(params, backend, runtime),
-        "ping" => json!({}),
-        other => json!({
-            "content": [{"type": "text", "text": format!("method not implemented: {other}")}],
-            "isError": true,
-        }),
-    }
-}
-
-fn dispatch_tool(
-    params: &Value,
-    backend: &dyn BrowserBackend,
-    runtime: &tokio::runtime::Runtime,
-) -> Value {
-    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    if !args.is_object() {
-        return json!({"content": [{"type": "text", "text": "arguments 必须是对象"}], "isError": true});
-    }
-    // 统一 BrowserError → String(错误文案给 LLM 看,含能力名与原因)。
-    let result: Result<String, String> = match name {
-        "browser_navigate" => str_arg(&args, "url").and_then(|url| {
-            runtime
-                .block_on(backend.navigate(&url))
-                .map_err(|e| e.to_string())?;
-            Ok(format!(
-                "navigated to {url};请重新 browser_snapshot 获取元素引用"
-            ))
-        }),
-        "browser_snapshot" => runtime
-            .block_on(backend.snapshot())
-            .map(|s| s.render())
-            .map_err(|e| e.to_string()),
-        "browser_click" => str_arg(&args, "reference").and_then(|reference| {
-            u64_arg(&args, "snapshotVersion").and_then(|version| {
-                runtime
-                    .block_on(backend.click(&reference, version))
-                    .map(|_| "clicked".to_string())
-                    .map_err(|e| e.to_string())
-            })
-        }),
-        "browser_type" => str_arg(&args, "reference").and_then(|reference| {
-            str_arg(&args, "text").and_then(|text| {
-                u64_arg(&args, "snapshotVersion").and_then(|version| {
-                    runtime
-                        .block_on(backend.fill(&reference, &text, version))
-                        .map(|_| "typed".to_string())
-                        .map_err(|e| e.to_string())
-                })
-            })
-        }),
-        "browser_press_key" => str_arg(&args, "keys").and_then(|keys| {
-            runtime
-                .block_on(backend.press_key(&keys))
-                .map(|_| "pressed".to_string())
-                .map_err(|e| e.to_string())
-        }),
-        "browser_scroll" => optional_i32(&args, "dx").and_then(|dx| {
-            optional_i32(&args, "dy").and_then(|dy| {
-                runtime
-                    .block_on(backend.scroll(dx, dy))
-                    .map(|_| "scrolled".to_string())
-                    .map_err(|e| e.to_string())
-            })
-        }),
-        "browser_screenshot" => match runtime.block_on(backend.screenshot()) {
-            Ok(jpeg) => {
-                return json!({
-                    "content": [{"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(jpeg), "mimeType": "image/jpeg"}],
-                    "isError": false,
-                });
-            }
-            Err(error) => Err(error.to_string()),
-        },
-        "browser_close" => runtime
-            .block_on(backend.close())
-            .map(|_| "closed".to_string())
-            .map_err(|e| e.to_string()),
-        other => Err(format!("unknown tool: {other}")),
-    };
-    match result {
-        Ok(text) => json!({
-            "content": [{"type": "text", "text": text}],
-            "isError": false,
-        }),
-        Err(err) => json!({
-            "content": [{"type": "text", "text": err}],
-            "isError": true,
-        }),
-    }
-}
-
-fn str_arg(args: &Value, key: &str) -> Result<String, String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(String::from)
-        .ok_or_else(|| format!("缺少 {key} 参数"))
-}
-
-fn u64_arg(args: &Value, key: &str) -> Result<u64, String> {
-    let value = args
-        .get(key)
-        .and_then(Value::as_i64)
-        .ok_or_else(|| format!("{key} 必须是整数"))?;
-    u64::try_from(value).map_err(|_| format!("{key} 不能为负"))
-}
-
-fn optional_i32(args: &Value, key: &str) -> Result<i32, String> {
-    if args.get(key).is_none() {
-        return Ok(0);
-    }
-    let value = args
-        .get(key)
-        .and_then(Value::as_i64)
-        .ok_or_else(|| format!("{key} 必须是整数"))?;
-    i32::try_from(value).map_err(|_| format!("{key} 超出支持范围"))
-}
-
-// BrowserError 用于 server 侧文案(编译期确认 Display 可用)。
-#[allow(dead_code)]
-fn _err_display(e: &zhuye_browser::BrowserError) -> String {
-    e.to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use zhuye_browser::{BrowserCapability, BrowserStatus};
-    use zhuye_computer_use::A11ySnapshot;
-
-    /// 记录调用的假后端(不依赖真浏览器)。
-    struct FakeBackend {
-        calls: std::sync::Mutex<Vec<String>>,
-    }
-    impl FakeBackend {
-        fn new() -> Self {
-            FakeBackend {
-                calls: std::sync::Mutex::new(Vec::new()),
-            }
-        }
-    }
-    #[async_trait::async_trait]
-    impl BrowserBackend for FakeBackend {
-        fn capability(&self) -> BrowserCapability {
-            BrowserCapability::Full
-        }
-        async fn status(&self) -> Result<BrowserStatus, zhuye_browser::BrowserError> {
-            Ok(BrowserStatus {
-                url: None,
-                title: None,
-                running: false,
-            })
-        }
-        async fn navigate(&self, url: &str) -> Result<(), zhuye_browser::BrowserError> {
-            self.calls.lock().unwrap().push(format!("navigate:{url}"));
-            Ok(())
-        }
-        async fn snapshot(&self) -> Result<A11ySnapshot, zhuye_browser::BrowserError> {
-            self.calls.lock().unwrap().push("snapshot".into());
-            Ok(A11ySnapshot::new(
-                7,
-                "测试页",
-                vec![zhuye_computer_use::A11yElement {
-                    reference: "@e1".into(),
-                    role: zhuye_computer_use::ElementRole::Button,
-                    name: "提交".into(),
-                    disabled: false,
-                    visible: true,
-                    value: None,
-                    depth: 1,
-                }],
-            ))
-        }
-        async fn click(
-            &self,
-            reference: &str,
-            version: u64,
-        ) -> Result<(), zhuye_browser::BrowserError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("click:{reference}@{version}"));
-            Ok(())
-        }
-        async fn fill(
-            &self,
-            reference: &str,
-            text: &str,
-            version: u64,
-        ) -> Result<(), zhuye_browser::BrowserError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("fill:{reference}:{text}@{version}"));
-            Ok(())
-        }
-        async fn press_key(&self, keys: &str) -> Result<(), zhuye_browser::BrowserError> {
-            self.calls.lock().unwrap().push(format!("press:{keys}"));
-            Ok(())
-        }
-        async fn scroll(&self, dx: i32, dy: i32) -> Result<(), zhuye_browser::BrowserError> {
-            self.calls.lock().unwrap().push(format!("scroll:{dx}:{dy}"));
-            Ok(())
-        }
-        async fn screenshot(&self) -> Result<Vec<u8>, zhuye_browser::BrowserError> {
-            self.calls.lock().unwrap().push("screenshot".into());
-            Ok(vec![0xFF, 0xD8]) // JPEG 魔数
-        }
-        async fn close(&self) -> Result<(), zhuye_browser::BrowserError> {
-            self.calls.lock().unwrap().push("close".into());
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn tools_list_has_all_eight_tools() {
-        let tools_doc = tools_json();
-        let tools = tools_doc["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 8);
-        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for expected in [
-            "browser_navigate",
-            "browser_snapshot",
-            "browser_click",
-            "browser_type",
-            "browser_press_key",
-            "browser_scroll",
-            "browser_screenshot",
-            "browser_close",
-        ] {
-            assert!(names.contains(&expected), "缺 {expected}");
-        }
-    }
-
-    #[test]
-    fn click_requires_reference_and_snapshot_version() {
-        let backend = FakeBackend::new();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        for args in [
-            json!({}),
-            json!({"reference": "@e1"}),
-            json!({"reference": "@e1", "snapshotVersion": -1}),
-            json!({"reference": "@e1", "snapshotVersion": "7"}),
-        ] {
-            let response = dispatch_tool(
-                &json!({"name": "browser_click", "arguments": args}),
-                &backend,
-                &runtime,
-            );
-            assert_eq!(response["isError"], true, "{response}");
-        }
-        assert!(backend.calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn valid_click_reaches_backend_with_ref_and_version() {
-        let backend = FakeBackend::new();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let response = dispatch_tool(
-            &json!({"name": "browser_click", "arguments": {"reference": "@e1", "snapshotVersion": 7}}),
-            &backend,
-            &runtime,
-        );
-        assert_eq!(response["isError"], false, "{response}");
-        assert_eq!(backend.calls.lock().unwrap()[0], "click:@e1@7");
-    }
-
-    #[test]
-    fn snapshot_renders_tree_text() {
-        let backend = FakeBackend::new();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let response = dispatch_tool(
-            &json!({"name": "browser_snapshot", "arguments": {}}),
-            &backend,
-            &runtime,
-        );
-        assert_eq!(response["isError"], false);
-        let text = response["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("[7]"), "快照版本应在首行: {text}");
-        assert!(text.contains("@e1"), "元素引用应渲染: {text}");
-    }
-
-    #[test]
-    fn screenshot_returns_mcp_image_with_jpeg_bytes() {
-        let backend = FakeBackend::new();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let response = dispatch_tool(
-            &json!({"name": "browser_screenshot", "arguments": {}}),
-            &backend,
-            &runtime,
-        );
-        assert_eq!(response["isError"], false);
-        assert_eq!(response["content"][0]["type"], "image");
-        assert_eq!(response["content"][0]["mimeType"], "image/jpeg");
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(response["content"][0]["data"].as_str().unwrap())
-                .unwrap(),
-            [0xFF, 0xD8]
-        );
-    }
-
-    #[test]
-    fn unknown_tool_is_error() {
-        let backend = FakeBackend::new();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let response = dispatch_tool(
-            &json!({"name": "browser_hack", "arguments": {}}),
-            &backend,
-            &runtime,
-        );
-        assert_eq!(response["isError"], true);
     }
 }

@@ -3,31 +3,18 @@ name = "zhuye-browser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "ZhuYe: 浏览器控制抽象层(CDP over loopback;plugins/browser 的能力本体)"
+description = "ZhuYe: 浏览器控制插件 shim(attach 本机浏览器 + 代理 agent-browser MCP;plugins/browser 的能力本体)"
 
+# 修复原因:自 v0.2 起 CDP 页面能力整体交给上游 agent-browser(源码以
+# third_party/agent-browser submodule 钉住),Rust 侧只保留「确保本机浏览器
+# (attach 或隔离 profile 启动)+ spawn 上游 MCP + stdio 代理」—— 之前
+# 手写 CDP 客户端(~1.3k 行,仅覆盖 10 个 CDP method、无真机 E2E)对抗真实
+# 网页的维护成本过高,且上游同为 Rust 直连 CDP、`@eN` 快照语义与原 F39 同构。
+# 因此本 crate 不再有任何网络栈依赖(ws/tokio/base64 全部移除),纯同步 std。
 [dependencies]
-base64 = "0.23"
-async-trait        = { workspace = true }
-serde              = { workspace = true }
-serde_json         = { workspace = true }
-thiserror          = { workspace = true }
-tracing            = { workspace = true }
-zhuye-config       = { workspace = true }
-# 复用 F39 地基:a11y 快照/元素寻址/动作后验/浏览器安全约束(公开 API)。
-zhuye-computer-use = { workspace = true }
-
-# 平台/网络重依赖做成 feature(默认关)—— workspace check / CI 不拉 ws 栈;
-# `real` feature(enable)才引入 CDP 客户端,构建插件二进制时开。
-# tokio 非 optional:server bin 的 runtime 与 #[tokio::test] 常开
-# (workspace 全员本就带 tokio full,无额外拉取成本)。
-tokio             = { workspace = true }
-tokio-tungstenite = { version = "0.30", optional = true }
-futures-util      = { version = "0.3", optional = true }
-
-[features]
-default = []
-# 真实后端(Chrome DevTools Protocol over loopback WebSocket)。
-real = ["dep:tokio-tungstenite", "dep:futures-util"]
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+zhuye-config = { workspace = true }
 
 [[bin]]
 name = "zhuye-browser-server"

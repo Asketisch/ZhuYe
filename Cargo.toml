@@ -1,8 +1,12 @@
 [workspace]
 resolver = "2"
 # WASM 样例是独立 cargo 项目(不进主构建面,免 wasm target 传染依赖)。
+# third_party/* 是外部项目 submodule(自带 Cargo.lock 与 profile 定义,
+# 由 scripts/build_browser_plugin.sh 独立构建)—— exclude 防止其 crate
+# 被主 workspace 捕获导致锁文件/依赖面被并轨。
 exclude = [
     "plugins/plugin-demo/wasm",
+    "third_party/agent-browser",
 ]
 members = [
     # ── protocol ── 底层契约(被所有层依赖)
@@ -138,11 +142,12 @@ zhuye-pipeline    = { path = "crates/orchestration/zhuye-pipeline" }
 zhuye-goal        = { path = "crates/orchestration/zhuye-goal" }
 
 # ── integrations ── 外部协议/平台集成
+# 注:zhuye-computer-use 不在此表 —— 它是被独立插件二进制消费的叶子 crate,
+# 无 workspace 内依赖方(v0.2 起 browser 也不再依赖它,层内依赖例外已清零)。
 zhuye-mcp         = { path = "crates/integrations/zhuye-mcp" }
 zhuye-lsp         = { path = "crates/integrations/zhuye-lsp" }
 zhuye-integration = { path = "crates/integrations/zhuye-integration" }
 zhuye-stream      = { path = "crates/integrations/zhuye-stream" }
-zhuye-computer-use = { path = "crates/integrations/zhuye-computer-use" }
 
 # ── runtime ── 运行时与入口
 zhuye-core = { path = "crates/runtime/zhuye-core" }

@@ -17,7 +17,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 | `zhuye-integration` | 安全扫描(cargo audit 包装)与 Webhook 通知 | 外部集成 |
 | `zhuye-stream` | 流式会话后端:cron 定时 / autopilot 自动驾驶 / FIFO 队列 / 工作区同步 | 流式后端 |
 | `zhuye-computer-use` | Computer Use:截屏与键鼠输入,含 a11y 寻址与动作后验 | Computer Use |
-| `zhuye-browser` | 浏览器控制:CDP 驱动本机浏览器,复用 a11y 寻址与快照绑定 | 浏览器控制 |
+| `zhuye-browser` | 浏览器控制 shim:确保本机浏览器 + 代理 agent-browser MCP(源码 submodule 钉版) | 浏览器控制 |
 | `zhuye-shell` | 常驻 shell 会话池:启动进程 / 增量读 / 写 stdin / kill | 常驻 shell |
 | `zhuye-git-tools` | git 工作流 MCP server 协议层:分支摘要 / checkpoint 快照 | git 工作流 |
 | `zhuye-kms` | 本地知识库 wiki(grep 检索 + dream 固化),`plugins/kms` 的能力本体 | [zhuye-kms/](zhuye-kms/AGENTS.md) |
@@ -70,11 +70,31 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ### 浏览器控制(`zhuye-browser`)
 
-- 工具面:`browser_navigate` / `browser_snapshot` / `browser_click` / `browser_type` / `browser_press_key` / `browser_scroll` / `browser_screenshot` / `browser_close`(`crates/integrations/zhuye-browser/src/bin/zhuye-browser-server.rs` 的 `tools_json()` 统一产出)。
-- 控制通道是 **CDP over loopback**(仅 127.0.0.1/localhost/::1 + 单 target 强制校验,复用 `zhuye-computer-use::BrowserSecurity`);被控端是本机 Chrome/Edge/Chromium,隔离 profile(`zhuye_config::paths` 的 `browser-profile`),`DevToolsActivePort` 文件是桌面 browser_backend 共享的发现契约。
-- ws/网络依赖走 `real` feature 且默认关闭;关闭时统一返回 `BrowserError::Unavailable`,**不 panic**(`crates/integrations/zhuye-browser/src/backend.rs`)。
-- 快照引用绑定不得回退:`@eN` 只在取到它的快照版本内有效(`check_binding`),导航/重拍快照即失效 —— 这是 F39 的防误点核心语义。
-- 权限下限为 `Prompt`(宿主审批),不得降级为静默放行。
+- 定位(v0.2 起):**shim**,不再自己说 CDP —— CDP 页面能力整体交给上游
+  agent-browser(源码以 `third_party/agent-browser` submodule 钉住 release
+  tag;升级 = 显式 bump 指针,不并入 workspace、不链接其代码,交互面只有
+  stdio MCP + env)。工具面由上游定义(`agent_browser_*`,30+ 个,以
+  `tools/list` 为准),shim 只在降级态给静态 8 工具表。
+- 三步职责不得拆散(`src/shim.rs` + `src/bin/zhuye-browser-server.rs`):
+  ① 确保本机浏览器(attach `$ZHUYE_HOME/browser-profile/DevToolsActivePort`
+  残留实例 → 死端口则启动新实例,隔离 profile + 仅回环);② 定位上游
+  (`ZHUYE_AGENT_BROWSER` → 同目录捆绑 → PATH);③ spawn `agent-browser mcp`
+  并 stdio 双向行代理。
+- **attach 端点与 session 必须走 env**(`AGENT_BROWSER_CDP` /
+  `AGENT_BROWSER_SESSION`),不得搬上 argv:上游 MCP server 把每个工具调用
+  委托给本二进制的子进程,只有 env 能贯穿;session 用 `zhuye-p<pid>-t<secs>`
+  独立命名 —— 上游 daemon 按 session 复用且身份不含 cdp 端点,复用默认
+  session 会拿到残留 daemon 记住的旧浏览器(表现为 connection refused)。
+- **不下载浏览器**:上游对 cdp 连接失败只报错、不回退自启/下载浏览器
+  (对照上游源码确认);本 crate 与脚本都不得引入浏览器下载路径。
+- 上游缺失 / 浏览器不可用时降级应答(静态 tools/list + isError 可操作
+  提示),**不 panic**;三种上游获取路径(捆绑 / PATH / env)必须全部
+  出现在提示里。
+- `DevToolsActivePort` 仍是桌面 browser_backend 共享的发现契约(跨仓);
+  attach 到桌面拉起的实例时 shim 持空壳句柄,Drop 不回收。
+- 权限下限为 `Prompt`(宿主审批),不得降级为静默放行。F39 快照绑定模型
+  此后仅服务 computer-use 的 OS 通道;browser 通道的元素引用语义(`ref=eN`
+  + 快照绑定)由上游实现并随 submodule 指针演进。
 
 ### 常驻 shell(`zhuye-shell`)
 
@@ -96,7 +116,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 
 ## 层内依赖约定
 
-- 本层 crate 原则上**互不依赖**:要组合能力由上层(runtime)接线,不要在层内互相 import。已知例外(复用安全基线,不引入业务耦合):`zhuye-browser` → `zhuye-computer-use`(复用 `BrowserSecurity` 回环校验)、`zhuye-git-tools` → `zhuye-git`(resources 层能力族)。
+- 本层 crate 原则上**互不依赖**:要组合能力由上层(runtime)接线,不要在层内互相 import。已知例外(复用安全基线,不引入业务耦合):`zhuye-git-tools` → `zhuye-git`(resources 层能力族)。(`zhuye-browser` → `zhuye-computer-use` 的旧例外已随 v0.2 shim 化移除 —— browser 不再做 AX 映射,`BrowserSecurity` 约束收进 shim 自身逻辑。)
 - 统一向下依赖:`zhuye-protocol`(协议类型)、`zhuye-config`(配置与运行目录)、`zhuye-tools`(工具注册表),以及按需的 `zhuye-fs` / `zhuye-git` / `zhuye-rollout`。
 - 依赖只允许从上往下流;本层不得依赖 `runtime` 层的任何 crate(含 `zhuye` 门面与 `zhuye-cli`)。
 - `orchestration` 与本层互不依赖,只共同依赖 `abilities` / `resources` / `protocol`。

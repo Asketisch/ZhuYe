@@ -31,6 +31,8 @@
 
 - 5 个 `build_*_plugin.sh` 与 WASM 样例的产物都拷进对应 `plugins/<name>/bin/`;改插件源码后必须**重跑构建脚本并 reinstall**,否则装出去的仍是旧副本(「安装是缓存复制」模型)。
 - WASM 样例是独立 cargo 项目(不进主 workspace 构建面),需先 `rustup target add wasm32-wasip2`。
+- `build_browser_plugin.sh` 额外捆绑上游 agent-browser(`third_party/agent-browser` submodule 已初始化时,纯 cargo 构建、产物与 LICENSE 一并拷入 `plugins/browser/bin/`);未初始化则跳过并提示兜底路径。上游是独立 crate(自带 Cargo.lock),不得加入主 workspace(`[workspace] exclude` 已钉住)。
+- **外部二进制拷贝必须原子替换**(临时名 + `mv`,见 `build_browser_plugin.sh` 的 `install_copy`):macOS 对 ad-hoc 签名二进制,运行期间被 `cp` 原地覆写会使旧 inode 签名判定失效,之后从该路径执行一律 SIGKILL(残留 daemon 未退出时重建插件曾踩此坑);`mv` 换目录项则互不影响。
 
 ### 冒烟与端到端
 
