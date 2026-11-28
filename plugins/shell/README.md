@@ -30,6 +30,8 @@ zhuye plugin enable shell@inline
 | `shell_kill` | 终止(SIGKILL)并移除;Unix 上同时终止同一进程组的子进程 |
 | `shell_list` | 列活跃会话 |
 
+stdout 和 stderr 各保留最多 1 MiB 未读输出。输出过快时丢弃较早的未读内容，下一次 `shell_read` 会报告各流丢弃的字节数。
+
 ## slash 命令
 
 `/shell <命令>` —— 见 `commands/shell.md`。

@@ -99,7 +99,7 @@ integrations 是六层分层中的**外部系统接入层**:把本机子进程�
 ### 常驻 shell(`zhuye-shell`)
 
 - 与内置 `bash` 工具的分工:bash 是一次性命令,本 crate 是可交互长驻会话(启动 → 增量读 → 写 stdin → kill)。
-- 三条正确性细节不得回退:逐行 `read_until` + `from_utf8_lossy`(非 UTF-8 不能让 reader 提前退出而堵死管道);锁不跨 await(等待退出用 `try_wait` 轮询);输出序号在拿锁后分配,保证 stdout / stderr / exit 序号与写入顺序一致。
+- 三条正确性细节不得回退:有界分块读取并容错解码(非 UTF-8 不能让 reader 提前退出而堵死管道,跨块 UTF-8 须保留);锁不跨 await(等待退出用 `try_wait` 轮询);输出序号在拿锁后分配,保证 stdout / stderr / exit 序号与写入顺序一致。每流最多缓存 1 MiB,丢弃未读旧内容时在下次读取中报告字节数。
 - PTY(resize / raw mode)明确不做,不要顺手加。
 
 ### git 工作流(`zhuye-git-tools`)

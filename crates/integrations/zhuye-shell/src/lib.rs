@@ -9,7 +9,7 @@
 //!
 //! ## 正确性细节(自桌面端原样保留,均有依据)
 //!
-//! - **逐行 `read_until` + `from_utf8_lossy`**:非 UTF-8 输出不能让
+//! - **有界分块读取 + `from_utf8_lossy`**:非 UTF-8 输出不能让
 //!   reader 提前退出并堵塞子进程的管道(否则进程写满 pipe 后卡死);
 //! - **锁不跨 await**:等待退出用 `try_wait` 轮询,输出锁只在读快照时
 //!   短暂持有 —— 否则进程关闭 stdout 后仍在运行时无法 kill;
@@ -27,6 +27,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::sync::Mutex as AsyncMutex;
 
+const MAX_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// 单会话输出缓冲(按流分段;`read` 工具取增量)。
 #[derive(Debug, Default)]
 pub struct OutputBuffer {
@@ -36,6 +38,23 @@ pub struct OutputBuffer {
     pub exit_code: Option<i32>,
     /// 单调递增序号(stdout + stderr 合计)。
     pub seq: u64,
+    /// 尚未报告的 stdout 丢弃字节数。
+    pub stdout_dropped: usize,
+    /// 尚未报告的 stderr 丢弃字节数。
+    pub stderr_dropped: usize,
+}
+
+fn append_bounded(target: &mut String, dropped: &mut usize, text: &str) {
+    target.push_str(text);
+    if target.len() > MAX_BUFFER_BYTES {
+        // 修复原因:长期无人读取或无换行的输出会无限占用内存;丢弃旧内容并报告。
+        let mut remove = target.len() - MAX_BUFFER_BYTES;
+        while !target.is_char_boundary(remove) {
+            remove += 1;
+        }
+        target.drain(..remove);
+        *dropped = dropped.saturating_add(remove);
+    }
 }
 
 /// Windows Job Object 句柄 —— ShellSession 整树终止的实现载体。
@@ -137,7 +156,7 @@ pub struct ShellSession {
     pub child: Arc<AsyncMutex<Option<Child>>>,
     /// 输出缓冲(pump 任务写,`read` 工具消费)。
     pub output: Arc<Mutex<OutputBuffer>>,
-    /// 从缓冲读取的游标(stdout / stderr 各自的字节偏移)。
+    /// 兼容保留的读取游标;读取后缓冲已清空,游标归零。
     pub cursor: Arc<Mutex<(usize, usize)>>,
     stdin: Arc<AsyncMutex<Option<tokio::process::ChildStdin>>>,
     kill_requested: AtomicBool,
@@ -148,7 +167,7 @@ pub struct ShellSession {
 }
 
 impl ShellSession {
-    /// 启动一个 shell 会话:spawn 子进程 + 两条 pump 任务(逐行容错解码,
+    /// 启动一个 shell 会话:spawn 子进程 + 两条 pump 任务(分块容错解码,
     /// 退出后写 exit code)。
     ///
     /// `argv` 直接透传(首个元素是程序,其余为参数)—— 调用方自行决定
@@ -229,7 +248,7 @@ impl ShellSession {
             job,
         };
 
-        // 两条 pump:逐行 read_until + 容错解码(细节见模块 doc)。
+        // 两条 pump:有界分块读取并容错解码(细节见模块 doc)。
         let out_buf = session.output.clone();
         pump_stream(stdout, out_buf, true);
         pump_stream(stderr, session.output.clone(), false);
@@ -250,7 +269,12 @@ impl ShellSession {
                         let mut buf = out_buf.lock();
                         buf.exit_code = Some(code);
                         buf.seq += 1;
-                        buf.stdout.push_str(&format!("\n[exit {code}]\n"));
+                        let OutputBuffer {
+                            stdout,
+                            stdout_dropped,
+                            ..
+                        } = &mut *buf;
+                        append_bounded(stdout, stdout_dropped, &format!("\n[exit {code}]\n"));
                         guard.take();
                         break;
                     }
@@ -283,24 +307,25 @@ impl ShellSession {
         *self.stdin.lock().await = None;
     }
 
-    /// 取增量输出(自上次读取游标起),并返回进程是否已退出。
+    /// 取走增量输出,并返回进程是否已退出。
     pub fn read_delta(&self) -> (OutputDelta, bool) {
-        let buf = self.output.lock();
+        let mut buf = self.output.lock();
         let mut cursor = self.cursor.lock();
-        let stdout_new = buf
-            .stdout
-            .get(cursor.0.min(buf.stdout.len())..)
-            .unwrap_or("");
-        let stderr_new = buf
-            .stderr
-            .get(cursor.1.min(buf.stderr.len())..)
-            .unwrap_or("");
-        cursor.0 = buf.stdout.len();
-        cursor.1 = buf.stderr.len();
+        let mut stdout = std::mem::take(&mut buf.stdout);
+        let mut stderr = std::mem::take(&mut buf.stderr);
+        let stdout_dropped = std::mem::take(&mut buf.stdout_dropped);
+        let stderr_dropped = std::mem::take(&mut buf.stderr_dropped);
+        if stdout_dropped > 0 {
+            stdout.insert_str(0, &format!("[stdout 已丢弃 {stdout_dropped} 字节]\n"));
+        }
+        if stderr_dropped > 0 {
+            stderr.insert_str(0, &format!("[stderr 已丢弃 {stderr_dropped} 字节]\n"));
+        }
+        *cursor = (0, 0);
         (
             OutputDelta {
-                stdout: stdout_new.to_string(),
-                stderr: stderr_new.to_string(),
+                stdout,
+                stderr,
                 exit_code: buf.exit_code,
                 seq: buf.seq,
             },
@@ -351,38 +376,49 @@ pub struct OutputDelta {
     pub seq: u64,
 }
 
-/// 单流 pump:逐行读 + 容错解码写入缓冲。
+/// 单流 pump:有界读取并容错解码写入缓冲。
 fn pump_stream<R>(reader: R, buffer: Arc<Mutex<OutputBuffer>>, is_stdout: bool)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(reader);
-        let mut bytes = Vec::new();
-        loop {
-            bytes.clear();
-            use tokio::io::AsyncBufReadExt;
-            match reader.read_until(b'\n', &mut bytes).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    if bytes.last() == Some(&b'\n') {
-                        bytes.pop();
-                        if bytes.last() == Some(&b'\r') {
-                            bytes.pop();
-                        }
-                    }
-                    let line = String::from_utf8_lossy(&bytes).into_owned();
-                    let mut buf = buffer.lock();
-                    if is_stdout {
-                        buf.stdout.push_str(&line);
-                        buf.stdout.push('\n');
-                    } else {
-                        buf.stderr.push_str(&line);
-                        buf.stderr.push('\n');
-                    }
-                    buf.seq += 1;
-                }
-                Err(_) => break,
+        use tokio::io::AsyncReadExt;
+        let mut reader = reader;
+        let mut chunk = [0u8; 8192];
+        let mut pending = Vec::new();
+        while let Ok(n) = reader.read(&mut chunk).await {
+            pending.extend_from_slice(&chunk[..n]);
+            // 保留跨块的不完整 UTF-8 序列,非法字节仍按替换字符输出。
+            let tail = if n == 0 {
+                0
+            } else {
+                (1..=pending.len().min(3)).rev().find(|&len| {
+                            matches!(std::str::from_utf8(&pending[pending.len() - len..]), Err(e) if e.valid_up_to() == 0 && e.error_len().is_none())
+                        }).unwrap_or(0)
+            };
+            let end = pending.len() - tail;
+            let line = String::from_utf8_lossy(&pending[..end]);
+            let mut buf = buffer.lock();
+            if is_stdout {
+                let OutputBuffer {
+                    stdout,
+                    stdout_dropped,
+                    ..
+                } = &mut *buf;
+                append_bounded(stdout, stdout_dropped, &line);
+            } else {
+                let OutputBuffer {
+                    stderr,
+                    stderr_dropped,
+                    ..
+                } = &mut *buf;
+                append_bounded(stderr, stderr_dropped, &line);
+            }
+            buf.seq += 1;
+            drop(buf);
+            pending.drain(..end);
+            if n == 0 {
+                break;
             }
         }
     });
@@ -439,6 +475,40 @@ impl ShellSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffer_is_bounded_and_counts_discarded_utf8() {
+        let mut output = String::new();
+        let mut dropped = 0;
+        append_bounded(&mut output, &mut dropped, &"中".repeat(MAX_BUFFER_BYTES));
+        assert!(output.len() <= MAX_BUFFER_BYTES);
+        assert_eq!(output.len() + dropped, MAX_BUFFER_BYTES * 3);
+    }
+
+    #[tokio::test]
+    async fn pump_preserves_split_unicode_and_bounds_unterminated_output() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(16384);
+        let buffer = Arc::new(Mutex::new(OutputBuffer::default()));
+        pump_stream(reader, buffer.clone(), true);
+        writer.write_all(&[0xe4]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        writer.write_all(&[0xb8, 0xad]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(buffer.lock().stdout, "中");
+        let large = vec![b'x'; MAX_BUFFER_BYTES + 8192];
+        writer.write_all(&large).await.unwrap();
+        writer.shutdown().await.unwrap();
+        for _ in 0..100 {
+            if buffer.lock().stdout_dropped > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let output = buffer.lock();
+        assert!(output.stdout.len() <= MAX_BUFFER_BYTES);
+        assert!(output.stdout_dropped > 0);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_captures_stdout_and_exit_code() {

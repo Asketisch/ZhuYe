@@ -34,6 +34,8 @@ temp directory).
 | `shell_kill` | terminate (SIGKILL) and remove; on Unix also terminates the child processes in the same process group |
 | `shell_list` | list active sessions |
 
+Each stream retains up to 1 MiB of unread output. If older unread output is discarded, the next `shell_read` reports the discarded byte count for that stream.
+
 ## slash command
 
 `/shell <command>` —— see `commands/shell.md`.
