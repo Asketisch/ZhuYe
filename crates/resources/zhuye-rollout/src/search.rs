@@ -13,7 +13,7 @@
 //!   (与 rollout 落盘脱敏同一套 10 类密钥 pattern),不会把密钥带进
 //!   搜索输出。
 
-use std::io::Read as _;
+use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 
 use zhuye_protocol::{MessageRole, ThreadId};
@@ -64,7 +64,7 @@ pub fn search_sessions(
     query: &str,
     opts: &SearchOptions,
 ) -> std::io::Result<Vec<SearchHit>> {
-    if query.trim().is_empty() {
+    if query.trim().is_empty() || opts.max_hits == 0 {
         return Ok(Vec::new());
     }
     let mut files = Vec::new();
@@ -80,7 +80,7 @@ pub fn search_sessions(
     let mut hits = Vec::new();
     for path in &files {
         let session_id = super::index::first_line_session_id(path);
-        for hit in scan_file(path, &needle, session_id, opts)? {
+        for hit in scan_file(path, &needle, session_id, opts, opts.max_hits - hits.len())? {
             hits.push(hit);
             if hits.len() >= opts.max_hits {
                 return Ok(hits);
@@ -96,20 +96,21 @@ fn scan_file(
     needle: &str,
     session_id: Option<ThreadId>,
     opts: &SearchOptions,
+    remaining: usize,
 ) -> std::io::Result<Vec<SearchHit>> {
-    let Ok(mut f) = std::fs::File::open(path) else {
+    let Ok(f) = std::fs::File::open(path) else {
         return Ok(Vec::new());
     };
-    let mut body = String::new();
-    if f.read_to_string(&mut body).is_err() {
-        return Ok(Vec::new());
-    }
     let mut hits = Vec::new();
-    for (i, line) in body.lines().enumerate() {
-        let Some(hit) = scan_line(line, needle, path, i + 1, session_id, opts) else {
+    for (i, line) in BufReader::new(f).lines().enumerate() {
+        let Ok(line) = line else { continue };
+        let Some(hit) = scan_line(&line, needle, path, i + 1, session_id, opts) else {
             continue;
         };
         hits.push(hit);
+        if hits.len() == remaining {
+            break;
+        }
     }
     Ok(hits)
 }
@@ -128,26 +129,34 @@ fn scan_line(
     let (role, text) = searchable_text(&record)?;
     let lower = text.to_lowercase();
     let pos = lower.find(needle)?;
-    // 摘要:命中位置前后各留 context_chars 字符;切点按字符边界(避免
-    // 多字节字符切半产生乱码)。
-    let from = {
-        let raw = pos.saturating_sub(opts.context_chars);
-        let mut b = raw;
-        while b > 0 && !text.is_char_boundary(b) {
-            b -= 1;
+    // 修复原因:小写转换可能扩展字节数,直接用转换后的偏移切原文会错位或 panic。
+    // 按字符累计转换长度,把命中范围映射回原文的完整字符边界。
+    let mut folded_offset = 0;
+    let mut start = None;
+    let mut end = text.len();
+    for (offset, ch) in text.char_indices() {
+        let next = folded_offset + ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+        if start.is_none() && next > pos {
+            start = Some(offset);
         }
-        b
-    };
-    let to = {
-        let raw = (pos + needle.len())
-            .saturating_add(opts.context_chars)
-            .min(text.len());
-        let mut e = raw;
-        while e < text.len() && !text.is_char_boundary(e) {
-            e += 1;
+        if next >= pos + needle.len() {
+            end = offset + ch.len_utf8();
+            break;
         }
-        e
-    };
+        folded_offset = next;
+    }
+    let start = start?;
+    let from = text[..start]
+        .char_indices()
+        .rev()
+        .nth(opts.context_chars.saturating_sub(1))
+        .map_or(if opts.context_chars == 0 { start } else { 0 }, |(i, _)| {
+            if opts.context_chars == 0 { start } else { i }
+        });
+    let to = text[end..]
+        .char_indices()
+        .nth(opts.context_chars)
+        .map_or(text.len(), |(i, _)| end + i);
     let mut snippet = String::new();
     if from > 0 {
         snippet.push('…');
@@ -321,6 +330,29 @@ mod tests {
         let hits = search_sessions(dir.path(), "零成本", &SearchOptions::default()).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].snippet.contains("零成本"));
+    }
+
+    #[test]
+    fn lowercase_expansion_maps_back_to_original_text() {
+        let dir = tempdir().unwrap();
+        let text = format!("{}TARGET后", "İ".repeat(100));
+        write_session(dir.path(), "unicode.jsonl", &[&text]);
+        let opts = SearchOptions {
+            context_chars: 1,
+            ..Default::default()
+        };
+        let hits = search_sessions(dir.path(), "target", &opts).unwrap();
+        assert_eq!(hits[0].snippet, "…İTARGET后");
+        let none = search_sessions(
+            dir.path(),
+            "target",
+            &SearchOptions {
+                max_hits: 0,
+                ..opts
+            },
+        )
+        .unwrap();
+        assert!(none.is_empty());
     }
 
     #[test]

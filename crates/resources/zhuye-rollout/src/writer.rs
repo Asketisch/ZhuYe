@@ -96,6 +96,16 @@ pub struct JsonlRolloutWriter {
     base_dir: PathBuf,
     session_id: ThreadId,
     inner: Mutex<Inner>,
+    replay_cache: Mutex<ReplayCache>,
+}
+
+#[derive(Default)]
+struct ReplayCache {
+    session_id: Option<ThreadId>,
+    records: Vec<RolloutRecord>,
+    paths: Vec<PathBuf>,
+    fingerprints: Vec<crate::reader::ReplayFingerprint>,
+    lengths: Vec<u64>,
 }
 
 impl std::fmt::Debug for JsonlRolloutWriter {
@@ -121,6 +131,7 @@ impl JsonlRolloutWriter {
                 session_meta: None,
                 prompt_selection: None,
             }),
+            replay_cache: Mutex::new(ReplayCache::default()),
         }
     }
 
@@ -288,7 +299,94 @@ impl RolloutRecorder for JsonlRolloutWriter {
     }
 
     async fn replay(&self, session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
-        crate::reader::replay(&self.base_dir, session_id).await
+        let paths = crate::reader::session_files(&self.base_dir, session_id)?;
+        let mut replay_paths = paths.clone();
+        if let Some(path) = paths.last()
+            && let Some(stem) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.split('.').next())
+        {
+            let journal = path.with_file_name(format!("{stem}.tool-journal"));
+            // 修复原因:账本可能在会话中途创建;只有实际存在时才纳入缓存路径,
+            // 文件出现后路径集合变化会触发全量回放。
+            if journal.exists() {
+                replay_paths.push(journal);
+            }
+        }
+        let lengths: Vec<_> = replay_paths
+            .iter()
+            .map(|path| std::fs::metadata(path).map_or(0, |m| m.len()))
+            .collect();
+        let cache_state = {
+            let cache = self.replay_cache.lock();
+            let reusable = cache.session_id == Some(session_id)
+                && cache.paths == replay_paths
+                && cache.lengths.len() == lengths.len()
+                && cache.fingerprints.len() == lengths.len()
+                && cache
+                    .lengths
+                    .iter()
+                    .zip(&lengths)
+                    .all(|(old, new)| new >= old);
+            if !reusable {
+                None
+            } else {
+                let fingerprints = replay_paths
+                    .iter()
+                    .zip(&cache.lengths)
+                    .map(|(path, len)| crate::reader::replay_fingerprint(path, *len).ok())
+                    .collect::<Option<Vec<_>>>();
+                if fingerprints.as_ref() == Some(&cache.fingerprints)
+                    && cache
+                        .lengths
+                        .iter()
+                        .zip(&lengths)
+                        .zip(&cache.fingerprints)
+                        .all(|((old, new), fingerprint)| old == new || fingerprint.line_aligned)
+                {
+                    Some((cache.records.clone(), cache.lengths.clone()))
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some((mut records, old_lengths)) = cache_state {
+            if lengths == old_lengths {
+                return Ok(records);
+            }
+            for (path, offset) in replay_paths.iter().zip(&old_lengths) {
+                records.extend(crate::reader::replay_path_from(path, *offset).await?);
+            }
+            let mut cache = self.replay_cache.lock();
+            if cache.session_id == Some(session_id) && cache.paths == replay_paths {
+                cache.records = records.clone();
+                cache.lengths = lengths.clone();
+                cache.fingerprints = replay_paths
+                    .iter()
+                    .zip(&lengths)
+                    .map(|(path, len)| crate::reader::replay_fingerprint(path, *len).ok())
+                    .collect::<Option<Vec<_>>>()
+                    .unwrap_or_default();
+            }
+            return Ok(records);
+        }
+        let records = crate::reader::replay_paths(&replay_paths).await?;
+        let fingerprints = replay_paths
+            .iter()
+            .zip(&lengths)
+            .map(|(path, len)| crate::reader::replay_fingerprint(path, *len).ok())
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+        let mut cache = self.replay_cache.lock();
+        *cache = ReplayCache {
+            session_id: Some(session_id),
+            records: records.clone(),
+            paths: replay_paths,
+            fingerprints,
+            lengths,
+        };
+        Ok(records)
     }
 
     async fn list_sessions(&self) -> Result<Vec<SessionInfo>, RolloutError> {
@@ -467,6 +565,81 @@ fn write_backup(path: &Path, content: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn append_message(writer: &JsonlRolloutWriter, sid: ThreadId, text: &str) {
+        writer
+            .record(RolloutRecord::message(
+                TurnId::new(),
+                MessageRole::User,
+                serde_json::json!(text),
+            ))
+            .await
+            .unwrap();
+        let _ = sid;
+    }
+
+    #[tokio::test]
+    async fn replay_cache_incremental_and_invalidates_external_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = ThreadId::new();
+        let writer = JsonlRolloutWriter::new(dir.path(), sid);
+        writer
+            .record(RolloutRecord::session_meta(sid, "mock/model"))
+            .await
+            .unwrap();
+        append_message(&writer, sid, "first").await;
+        assert_eq!(writer.replay(sid).await.unwrap().len(), 2);
+        append_message(&writer, sid, "second").await;
+        let records = writer.replay(sid).await.unwrap();
+        assert_eq!(records.len(), 3);
+        assert!(
+            records.iter().any(
+                |r| matches!(r, RolloutRecord::Message { content, .. } if content == "second")
+            )
+        );
+
+        let path = crate::reader::session_files(dir.path(), sid)
+            .unwrap()
+            .remove(0);
+        std::fs::write(&path, "").unwrap();
+        assert!(writer.replay(sid).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_cache_reparses_partial_line_after_append() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sid = ThreadId::new();
+        let writer = JsonlRolloutWriter::new(dir.path(), sid);
+        writer
+            .record(RolloutRecord::session_meta(sid, "mock/model"))
+            .await
+            .unwrap();
+        let path = crate::reader::session_files(dir.path(), sid)
+            .unwrap()
+            .remove(0);
+        let record = RolloutRecord::message(
+            TurnId::new(),
+            MessageRole::User,
+            serde_json::json!("recovered"),
+        );
+        let line = serde_json::to_string(&record).unwrap();
+        let split = line.len() / 2;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&line.as_bytes()[..split]).unwrap();
+        file.flush().unwrap();
+        assert_eq!(writer.replay(sid).await.unwrap().len(), 1);
+        file.write_all(&line.as_bytes()[split..]).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.flush().unwrap();
+        let records = writer.replay(sid).await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1], record);
+    }
 
     #[tokio::test]
     async fn 工具开始记录跨多次轮转仍可恢复() {

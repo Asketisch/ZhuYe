@@ -43,6 +43,8 @@
   - `zhuye-wasm` 依赖 `zhuye-tools` / `zhuye-hooks` → 同上约束。
 - macOS Seatbelt profile 以随机路径独占创建,避免强杀残留与重用的 PID 冲突;写入失败由临时文件句柄清理,成功后由执行方清理。
 - `[tool_journal].strict` 默认关闭;JSONL recorder 在成功返回前将工具阶段写入不轮转的独立账本并 flush,可用于严格开始记录,不承诺断电持久性;账本不随 rewind 删除。回放跳过损坏行,包括强杀截断的 UTF-8;主文件与账本续写时补齐缺失的尾行分隔符。
+- 会话搜索逐行扫描并在达到命中上限后停止;大小写转换后的匹配偏移须映射回原文字符边界,避免 Unicode 扩展导致摘要错位或崩溃。
+- JSONL recorder 的增量回放只在会话路径集合不变、文件长度不减、已缓存字节前缀哈希一致时复用记录;rewind、轮转或外部改写会回退到全量回放。
 - `[turn_scheduling].serial` 默认关闭,由会话创建入口读取;变更只影响新建会话。
 - `[task_budget]` 默认缺席,由入口转换为每个根回合的任务树预算参数。
 - `[provenance].mode` 默认 observe,显式值只接受 off / observe / enforce,会话启动遇到未知值时拒绝加载;`[dynamic_context].enabled` 默认 false,均由会话创建入口读取。
@@ -71,7 +73,7 @@
 | `zhuye-config/src/migration.rs` | v1→v2 迁移:旧固定段(`[anthropic]`/`[openai]`/`[ollama]`)→ 等价模型组,`[active].provider` → `[active].group`,`[subagent_providers]` → `[subagent_models]`;幂等 |
 | `zhuye-plugin/src/manager/mod.rs` | 插件安装 / 卸载与状态记账 |
 | `zhuye-rollout/src/lib.rs` | JSONL rollout 落盘与轮转 |
-| `zhuye-rollout/src/index/mod.rs` | 会话索引:`list_sessions` 只读每文件首行(按 session 去重);首行非 SessionMeta 时在前缀窗口与轮转副本中恢复。`message_count` 把同回合同角色的增量落盘分片计为一条消息 |
+| `zhuye-rollout/src/index/mod.rs` | 会话索引:`list_sessions` 读取每文件并单次解析聚合标题、用量和消息数,按 session 去重;首行非 SessionMeta 时在前缀窗口与轮转副本中恢复。`message_count` 把同回合同角色的增量落盘分片计为一条消息 |
 | `zhuye-rollout/src/index/stats.rs` | 会话统计聚合(总量 + 按模型拆分 + 缓存分段)。聚合 `TokenCount` 时用 `TokenUsage::repair_unfolded_cache_segments` 兼容旧口径记录(未折入缓存分段 → 补齐并重算 total;幂等),保证缓存命中率不 > 100% |
 | `zhuye-sandbox/src/os_sandbox.rs` | OS 沙箱(Seatbelt / Landlock):Seatbelt 限写并拒绝敏感读,关网时仍放行 localhost 与 Unix socket;Linux Landlock ABI v3 限写和截断但不限制敏感读,默认经 seccomp 禁止套接字连接,只要沙箱启用安装失败即拒绝执行(不受 strict 和网络开关影响)。状态报告须区分后端及不可用情况 |
 | `zhuye-sandbox/src/os_sandbox.rs`(敏感路径) | `path_protection_report()` 逐条给出受保护路径是否**真的**只读:可写根外 = 默认拒绝(`EnforcedByDefault`);可写根内 = macOS Seatbelt deny 规则(`Enforced`)/ Linux Landlock 无法撤销(`Unsupported` —— 规则按位合并,内核拒绝空掩码)。`strict_paths`(= `ZHUYE_SANDBOX_STRICT_PATHS=1`)时不可强制的显式要求会让 bash 失败关闭 |

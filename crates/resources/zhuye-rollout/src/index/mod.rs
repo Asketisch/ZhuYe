@@ -291,20 +291,28 @@ fn walk_with_discussion(
     Ok(())
 }
 
-/// 统计可并入本回合已有 assistant 记录的后续分片行数。
-///
-/// 口径与 `RolloutRecord::coalesce_turn_messages` 相同:数组内容的
-/// assistant 记录,在该回合当前归并段里已经出现过一条时不另计。用户消息
-/// 关闭当前归并段(其后的 assistant 分片另计),整段字符串的旧记录另计。
-/// 审计记录不打断计数。解析失败的行保持原口径。
-fn count_turn_continuations(body: &str) -> usize {
+/// 单次解析同时统计消息、标题和用量,避免长会话被重复反序列化。
+#[derive(Default)]
+struct SessionSummary {
+    non_blank_lines: usize,
+    continuation_lines: usize,
+    title: Option<String>,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cost_usd: Option<f64>,
+}
+
+fn summarize_session(body: &str) -> SessionSummary {
+    let mut summary = SessionSummary::default();
     let mut open_turns = std::collections::HashSet::new();
-    let mut continuations = 0usize;
+    let mut saw_user = false;
     for line in body.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
+        summary.non_blank_lines += 1;
         let Ok(record) = serde_json::from_str::<RolloutRecord>(trimmed) else {
             continue;
         };
@@ -312,9 +320,13 @@ fn count_turn_continuations(body: &str) -> usize {
             RolloutRecord::Message {
                 turn_id,
                 role: MessageRole::User,
-                ..
+                content,
             } => {
                 open_turns.remove(&turn_id);
+                if !saw_user {
+                    summary.title = zhuye_protocol::derive_title(&extract_message_text(&content));
+                    saw_user = true;
+                }
             }
             RolloutRecord::Message {
                 turn_id,
@@ -322,27 +334,43 @@ fn count_turn_continuations(body: &str) -> usize {
                 content,
             } if content.is_array() => {
                 if !open_turns.insert(turn_id) {
-                    continuations += 1;
+                    summary.continuation_lines += 1;
+                }
+            }
+            RolloutRecord::TokenCount {
+                usage, cost_usd, ..
+            } => {
+                summary.input_tokens = summary
+                    .input_tokens
+                    .saturating_add(usage.input_tokens as u64);
+                summary.output_tokens = summary
+                    .output_tokens
+                    .saturating_add(usage.output_tokens as u64);
+                summary.total_tokens = summary
+                    .total_tokens
+                    .saturating_add(usage.total_tokens as u64);
+                if let Some(cost) = cost_usd {
+                    *summary.cost_usd.get_or_insert(0.0) += cost;
                 }
             }
             _ => {}
         }
     }
-    continuations
+    summary
 }
 
 fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
     let body = std::fs::read_to_string(path).ok()?;
     let first = body.lines().next()?;
-    let non_blank_lines = body.lines().filter(|l| !l.trim().is_empty()).count();
-    // 同一次回合的 assistant 内容按步骤拆成多条记录。侧栏的消息数按
-    // 回合计,不按落盘分片计,否则一次工具调用会让计数虚高。
-    let continuation_lines = count_turn_continuations(&body);
-    // v1.x:扫描首条 User 消息文本,派生会话标题(零额外 I/O —— body 已在内存)。
-    let title = first_user_message_title(&body);
-    // v1.x:聚合 TokenCount 记录(token 累计 + cost 求和)。
-    // body 已在内存,O(n) 行扫描。空 session / 旧 jsonl → 全 0 / None。
-    let (input_tokens, output_tokens, total_tokens, cost_usd) = aggregate_token_counts(&body);
+    let SessionSummary {
+        non_blank_lines,
+        continuation_lines,
+        title,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cost_usd,
+    } = summarize_session(&body);
 
     // Happy path:首行本身就是 SessionMeta。`message_count` 把这一行 meta 减 1。
     if let Ok(record) = serde_json::from_str::<RolloutRecord>(first)
@@ -441,47 +469,6 @@ fn parse_first_session_meta(path: &Path) -> Option<SessionInfo> {
 
     tracing::warn!("rollout: {} has no SessionMeta first line", path.display());
     None
-}
-
-/// v1.x:扫描 JSONL body,聚合所有 `RolloutRecord::TokenCount` 记录的
-/// `usage` 与 `cost_usd`。
-///
-/// 返回 `(input_tokens, output_tokens, total_tokens, cost_usd)`:
-/// - token 三项均为 `u64`(`saturating_add` 累加,防溢出);
-/// - `cost_usd` 仅当至少一条记录带 `Some(c)` 时为 `Some(sum)`,否则 `None`
-///   —— 避免「model 不在 pricing 表的 0」被显示为 `$0.00`。
-///
-/// `f64` 求和精度足够:每轮 $0.001 量级,1000 次累加误差 ~$1e-13,
-/// UI `.2f` 显示无影响。`body` 已在内存,本函数无额外 I/O。
-fn aggregate_token_counts(body: &str) -> (u64, u64, u64, Option<f64>) {
-    let mut input_tokens: u64 = 0;
-    let mut output_tokens: u64 = 0;
-    let mut total_tokens: u64 = 0;
-    let mut cost_sum: f64 = 0.0;
-    let mut cost_present = false;
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(rec) = serde_json::from_str::<RolloutRecord>(trimmed) else {
-            continue;
-        };
-        if let RolloutRecord::TokenCount {
-            usage, cost_usd, ..
-        } = rec
-        {
-            input_tokens = input_tokens.saturating_add(usage.input_tokens as u64);
-            output_tokens = output_tokens.saturating_add(usage.output_tokens as u64);
-            total_tokens = total_tokens.saturating_add(usage.total_tokens as u64);
-            if let Some(c) = cost_usd {
-                cost_sum += c;
-                cost_present = true;
-            }
-        }
-    }
-    let cost_usd = cost_present.then_some(cost_sum);
-    (input_tokens, output_tokens, total_tokens, cost_usd)
 }
 
 /// v1.x:扫描 JSONL body,找第一条 `RolloutRecord::Message { role: User, .. }`

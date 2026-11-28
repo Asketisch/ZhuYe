@@ -3,9 +3,9 @@
 //! 同时被 [`crate::writer::JsonlRolloutWriter::replay`](转发到
 //! [`replay_path`])以及恢复 session 时的 `zhuye-exec::bootstrap_resume` 使用。
 
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
-
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 
 use zhuye_protocol::{RolloutError, RolloutRecord, ThreadId};
 
@@ -19,11 +19,20 @@ use zhuye_protocol::{RolloutError, RolloutRecord, ThreadId};
 /// 未知 variant 走 debug 是为了避免 v0.2 → v0.3 升级后日志刷屏;且**不打印
 /// line 内容**(可能含 prompt/工具结果),防敏感信息泄露到 stderr。
 pub async fn replay_path(path: &Path) -> Result<Vec<RolloutRecord>, RolloutError> {
+    replay_path_from(path, 0).await
+}
+
+/// 从指定字节偏移逐行读取记录,供增量回放复用同一套解析规则。
+pub(crate) async fn replay_path_from(
+    path: &Path,
+    offset: u64,
+) -> Result<Vec<RolloutRecord>, RolloutError> {
     let mut out = Vec::new();
     if !path.exists() {
         return Ok(out);
     }
-    let file = tokio::fs::File::open(path).await?;
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(SeekFrom::Start(offset)).await?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     loop {
@@ -60,22 +69,73 @@ pub async fn replay_path(path: &Path) -> Result<Vec<RolloutRecord>, RolloutError
 
 /// 按时间顺序读取会话的全部保留记录,包括任意日期目录和轮转副本。
 pub async fn replay(base: &Path, session_id: ThreadId) -> Result<Vec<RolloutRecord>, RolloutError> {
-    let mut combined = Vec::new();
     let paths = session_files(base, session_id)?;
-    for path in &paths {
-        combined.extend(replay_path(&path).await?);
-    }
     // 工具执行账本不随对话文件轮转,否则长时间执行可能丢失开始记录。
     // 最后追加使账本成为相同调用阶段的权威顺序;旧会话无此文件时为空。
+    let mut candidate_paths = paths.clone();
     if let Some(path) = paths.last()
         && let Some(stem) = path
             .file_stem()
             .and_then(|s| s.to_str())
             .and_then(|s| s.split('.').next())
     {
-        combined.extend(replay_path(&path.with_file_name(format!("{stem}.tool-journal"))).await?);
+        candidate_paths.push(path.with_file_name(format!("{stem}.tool-journal")));
+    }
+    replay_paths(&candidate_paths).await
+}
+
+/// 按给定顺序读取记录;调用方负责排序和对账账本位置。
+pub(crate) async fn replay_paths(paths: &[PathBuf]) -> Result<Vec<RolloutRecord>, RolloutError> {
+    let mut combined = Vec::new();
+    for path in paths {
+        combined.extend(replay_path(path).await?);
     }
     Ok(combined)
+}
+
+/// 文件状态快照:缓存前缀哈希和末尾字节对齐状态。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplayFingerprint {
+    pub(crate) prefix_hash: u64,
+    pub(crate) line_aligned: bool,
+}
+
+pub(crate) fn replay_fingerprint(
+    path: &Path,
+    prefix_len: u64,
+) -> std::io::Result<ReplayFingerprint> {
+    let mut file = std::fs::File::open(path)?;
+    let line_aligned = if prefix_len == 0 {
+        true
+    } else {
+        file.seek(SeekFrom::Start(prefix_len - 1))?;
+        let mut last = [0u8; 1];
+        file.read_exact(&mut last)?;
+        last[0] == b'\n'
+    };
+    file.seek(SeekFrom::Start(0))?;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    std::io::copy(
+        &mut (&mut file).take(prefix_len),
+        &mut HashWriter(&mut hash),
+    )?;
+    Ok(ReplayFingerprint {
+        prefix_hash: std::hash::Hasher::finish(&hash),
+        line_aligned,
+    })
+}
+
+struct HashWriter<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+
+impl std::io::Write for HashWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::hash::Hasher::write(self.0, buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// 同一日期内先读较旧的高编号副本,最后读活跃文件;跨日期按目录升序。
