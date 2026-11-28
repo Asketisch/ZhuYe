@@ -34,9 +34,11 @@ import os
 import queue
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional
@@ -60,6 +62,86 @@ DEFAULT_HANDSHAKE_TIMEOUT = 30.0
 
 
 ToolHandler = Callable[[dict[str, Any]], ToolOutput]
+
+
+class _GlobalEventQueue:
+    """以临时文件保序缓存未消费事件,避免常驻会话的内存无限增长。"""
+
+    def __init__(self) -> None:
+        self._file = tempfile.TemporaryFile(mode="w+b")
+        self._condition = threading.Condition()
+        self._read_offset = 0
+        self._write_offset = 0
+        self._eof = False
+        self._error: Optional[Exception] = None
+
+    def clear(self) -> None:
+        """关闭临时存储;调用后不再接受新事件。"""
+        with self._condition:
+            if self._eof:
+                return
+            self._eof = True
+            self._file.close()
+            self._condition.notify_all()
+
+    def put(self, event: Optional[dict[str, Any]]) -> None:
+        with self._condition:
+            if self._eof and self._file.closed:
+                raise OSError("全局事件缓冲已关闭")
+            if self._eof:
+                return
+            if event is None:
+                self._eof = True
+            else:
+                try:
+                    # 修复原因:宿主可能永不消费全局事件,内存队列会随会话持续增长。
+                    data = json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n"
+                    self._file.seek(self._write_offset)
+                    self._file.write(data)
+                    self._write_offset += len(data)
+                except Exception as exc:
+                    self._error = exc
+                    self._eof = True
+            self._condition.notify_all()
+
+    def get(self, timeout: Optional[float] = None) -> Optional[dict[str, Any]]:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._condition:
+            while self._read_offset == self._write_offset and not self._eof:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise queue.Empty
+                self._condition.wait(remaining)
+            if self._read_offset < self._write_offset:
+                self._file.seek(self._read_offset)
+                line = self._file.readline()
+                self._read_offset = self._file.tell()
+                event = json.loads(line)
+                if self._read_offset == self._write_offset:
+                    self._file.seek(0)
+                    self._file.truncate()
+                    self._read_offset = self._write_offset = 0
+                elif self._read_offset >= 1024 * 1024 and self._read_offset >= self._write_offset // 2:
+                    # 修复原因:生产者持续写入时队列可能永不排空,已读前缀会无限占用磁盘。
+                    replacement = None
+                    try:
+                        replacement = tempfile.TemporaryFile(mode="w+b")
+                        self._file.seek(self._read_offset)
+                        shutil.copyfileobj(self._file, replacement, length=65536)
+                        remaining = self._write_offset - self._read_offset
+                    except OSError as exc:
+                        if replacement is not None:
+                            replacement.close()
+                        warnings.warn(f"全局事件缓冲回收失败: {exc}", RuntimeWarning)
+                    else:
+                        self._file.close()
+                        self._file = replacement
+                        self._read_offset = 0
+                        self._write_offset = remaining
+                return event
+            if self._error is not None:
+                raise OSError("全局事件缓冲写入失败") from self._error
+            return None
 
 
 @dataclass
@@ -157,7 +239,7 @@ class ZhuyeAgent:
         # stderr 尾部 ring buffer(spawn 路径注入;from_popen 为 None)。
         self._stderr_tail = stderr_tail if stderr_tail is not None else collections.deque(maxlen=32)
         self._tools: dict[str, _RegisteredTool] = {}
-        self._global_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._global_queue = _GlobalEventQueue()
         # sub.id → 订阅该 submission 事件的回调
         self._sub_listeners: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._sub_lock = threading.Lock()
@@ -356,10 +438,7 @@ class ZhuyeAgent:
 
         与 submit 的事件迭代器独立;未知事件也原样返回。
         """
-        event = self._global_queue.get(timeout=timeout_secs)
-        if event is None:
-            self._global_queue.put(None)
-        return event
+        return self._global_queue.get(timeout=timeout_secs)
 
     def close(self) -> None:
         """发 Shutdown → 等 ShutdownComplete → 关子进程。幂等。"""
@@ -383,6 +462,7 @@ class ZhuyeAgent:
         except subprocess.TimeoutExpired:
             self._proc.kill()
             self._proc.wait()
+        self._global_queue.clear()
 
     # ── 内部 ──────────────────────────────────────────────────────────
 

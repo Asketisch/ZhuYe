@@ -24,6 +24,7 @@
 - `sdks/python/zhuye/agent.py` ↔ `sdks/typescript/src/agent.ts`:两边的公开 API、选项字段、事件语义逐项对齐。**改一边必须看另一边**,不要只改一处。
 - 类型层同样成对:`sdks/python/zhuye/protocol.py` ↔ `sdks/typescript/src/protocol.ts`。
 - 两侧零运行时第三方依赖(Python 仅标准库,TS 仅 Node 内置模块);新增依赖前先确认真有必要。
+- 全局事件未消费时写入私有临时文件,按顺序逐条读取,排空后回收文件内容;不能为控制内存而静默丢弃审批或未知事件,写入失败须由读取接口报告。
 - 启动时使用引擎校验 `[provenance].mode`;显式配置必须是 off、observe 或 enforce,非法值会让 serve 拒绝启动。
 
 ### wire 语义权威(`sdks/PROTOCOL.md`)

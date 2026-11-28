@@ -321,6 +321,8 @@ does not read them; use the `set_effort` and
 | `next_global_event(timeout_secs=None) -> dict | None` | Reads a global event; raises `queue.Empty` on timeout, returns `None` after EOF |
 | `close()` | Idempotent close: Shutdown → wait 2s → force-kill; afterwards all writes are silently dropped and iterators finish |
 
+Unread global events are stored in a private temporary file and returned in order. The file is reclaimed when the queue drains; storage failures are reported when reading.
+
 ### `ZhuyeAgentOptions`
 
 | Field | Default | Description |

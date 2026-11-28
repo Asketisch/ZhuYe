@@ -265,6 +265,8 @@ evs = list(agent.submit_op({
 | `next_global_event(timeout_secs=None) -> dict \| None` | 读全局事件;超时抛 `queue.Empty`,EOF 后返回 `None` |
 | `close()` | 幂等关闭:Shutdown → 等 2s → 强杀;之后所有写入静默丢弃,迭代器收尾 |
 
+未读取的全局事件暂存在私有临时文件中并按序返回；队列排空后回收内容，临时存储写入失败会在读取时报告。
+
 ### `ZhuyeAgentOptions`
 
 | 字段 | 默认 | 说明 |

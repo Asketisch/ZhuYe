@@ -270,6 +270,8 @@ for await (const e of await agent.submit({
 | `close(): Promise<void>` | 幂等关闭:Shutdown → 等 2s → 强杀;后续公开写入报错,迭代器收尾 |
 | `childProcess` (getter) | 暴露 serve 子进程句柄(测试/诊断用) |
 
+未读取的全局事件暂存在私有临时文件中并按序返回；队列排空后删除文件，临时存储写入失败会在读取时报告。
+
 ### `ZhuyeAgentOptions`
 
 | 字段 | 默认 | 说明 |

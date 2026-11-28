@@ -334,6 +334,8 @@ does not read them; use the `set_effort` and
 | `close(): Promise<void>` | Idempotent close: Shutdown → wait 2s → force-kill; subsequent public writes throw, iterators finish |
 | `childProcess` (getter) | Exposes the serve subprocess handle (for tests / diagnostics) |
 
+Unread global events are stored in a private temporary file and returned in order. The file is removed when the queue drains; storage failures are reported when reading.
+
 ### `ZhuyeAgentOptions`
 
 | Field | Default | Description |

@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 
 import { resolveBundledBinary } from './binary.js';
+import { EventSpool } from './event-spool.js';
 import {
   EVENT_ID_NONE,
   Event,
@@ -475,6 +476,7 @@ export class ZhuyeAgent {
   async nextGlobalEvent(opts: { timeoutMs?: number } = {}): Promise<Event | null> {
     const queued = this.globalQueue.shift();
     if (queued) return queued;
+    if (this.globalError) throw this.globalError;
     if (this.globalEof) return null;
     return new Promise<Event | null>((resolve, reject) => {
       let timer: NodeJS.Timeout | undefined;
@@ -527,6 +529,7 @@ export class ZhuyeAgent {
         // 2s 对齐 Python SDK(agent.close 的 wait(timeout=2.0))。
       }, 2000).unref?.();
     });
+    this.globalQueue.clear();
   }
 
   /** 暴露当前进程句柄(测试需要直接操作 stdin / kill 时用)。 */
@@ -622,7 +625,8 @@ export class ZhuyeAgent {
 
   private eventListeners = new Map<string, (ev: Event | null) => void>();
   /** 全局事件(`id=""`)缓冲:nextGlobalEvent() 的队列 + 挂起等待者。 */
-  private globalQueue: Event[] = [];
+  private globalQueue = new EventSpool();
+  private globalError: Error | undefined;
   private globalWaiters: Array<(ev: Event | null) => void> = [];
   private globalEof = false;
 
@@ -654,7 +658,12 @@ export class ZhuyeAgent {
       waiter(ev);
       return;
     }
-    this.globalQueue.push(ev);
+    if (this.globalError) return;
+    try {
+      this.globalQueue.push(ev);
+    } catch (error) {
+      this.globalError = new Error('全局事件缓冲写入失败', { cause: error });
+    }
   }
 
   private filterEventsById(submissionId: string): AsyncIterable<Event> {

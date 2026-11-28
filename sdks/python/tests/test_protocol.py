@@ -22,6 +22,47 @@ import pytest
 from zhuye import ZhuyeAgent, ZhuyeAgentOptions, ToolOutput, ContentBlock
 
 
+def test_global_event_spool_preserves_order_and_reclaims_disk() -> None:
+    from zhuye.agent import _GlobalEventQueue
+
+    events = _GlobalEventQueue()
+    expected = [{"id": "", "msg": {"type": "future_event", "index": i, "payload": "中" * 500}} for i in range(500)]
+    for event in expected:
+        events.put(event)
+    events.put(None)
+    assert [events.get(timeout=1) for _ in expected] == expected
+    assert events._write_offset == 0
+    assert events._file.seek(0, 2) == 0
+    assert events.get(timeout=1) is None
+    assert events.get(timeout=1) is None
+
+
+def test_global_event_spool_timeout_and_write_failure() -> None:
+    from zhuye.agent import _GlobalEventQueue
+
+    events = _GlobalEventQueue()
+    with pytest.raises(queue.Empty):
+        events.get(timeout=0)
+    events._file.close()
+    events.put({"id": "", "msg": {"type": "approval_request"}})
+    with pytest.raises(OSError, match="缓冲写入失败"):
+        events.get(timeout=1)
+
+
+def test_global_event_spool_reclaims_consumed_prefix_before_empty() -> None:
+    from zhuye.agent import _GlobalEventQueue
+
+    events = _GlobalEventQueue()
+    payload = "a" * 20000
+    expected = [{"id": "", "msg": {"type": "future", "i": i, "payload": payload}} for i in range(120)]
+    for event in expected:
+        events.put(event)
+    for event in expected[:90]:
+        assert events.get(timeout=1) == event
+    assert 0 < events._write_offset < len(expected) * len(payload) // 2
+    assert [events.get(timeout=1) for _ in expected[90:]] == expected[90:]
+
+
 def test_共享事件样本与未知字段完整透传() -> None:
     """公共样本从真实 SDK 读循环进入全局事件队列,字段和值保持不变。"""
     node = shutil.which("node")
