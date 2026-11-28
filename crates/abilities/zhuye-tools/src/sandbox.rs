@@ -17,6 +17,8 @@ use std::path::{Component, Path, PathBuf};
 
 use tracing::warn;
 
+use zhuye_protocol::ReviewDecision;
+
 use crate::tool::ToolError;
 
 mod safe_file;
@@ -221,32 +223,30 @@ fn writable_roots(workspace: &Path, extra_writable: &[PathBuf]) -> Vec<PathBuf> 
     roots
 }
 
-/// 写 / 改 / 删路径解析。
-///
-/// 最终路径(含尚不存在的新建文件)必须落在 [`writable_roots`] 之内,
-/// 否则 `PathEscape`;路径任意一层是 `.git` / `.agents` / `.aws` 分量,
-/// 或落在 `.zhuye` 的提权子项([`PROTECTED_ZHUYE_CHILDREN`])之下则拒绝
-/// (读不受影响)。文件不存在不报错,由调用方的打开 / 创建步骤自行处理。
-pub fn resolve_writable_path(
+/// 写路径分类结果(供写类工具走「越界 → 强制审批」的两段式流程)。
+pub(crate) enum WritablePathDecision {
+    /// 落在写根内:直接放行,携带解析后的绝对路径。
+    Allow(PathBuf),
+    /// 落在写根之外(非提权面):调用方经审批门强制询问后放行或拒绝。
+    AskApproval(PathBuf),
+}
+
+/// 写 / 改 / 删路径分类:写根内 → [`WritablePathDecision::Allow`];
+/// 写根之外(非提权面)→ [`WritablePathDecision::AskApproval`] —— 调用方
+/// (写类工具)应当经审批门强制询问(ZCode alwaysAsk 同款:「写到工作区
+/// 外」是一次高危人工确认,不设路径硬墙);提权面(`.git` / `.agents` /
+/// `.aws` 任意层分量,或 `.zhuye` 提权子项 [`PROTECTED_ZHUYE_CHILDREN`])
+/// → `Err`(硬拒,不提供审批通道 —— 改 hook / 配置是提权面,不是「多问
+/// 一句」能覆盖的风险)。
+pub(crate) fn classify_writable_path(
     workspace: &Path,
     extra_writable: &[PathBuf],
     path: &Path,
-) -> Result<PathBuf, ToolError> {
+) -> Result<WritablePathDecision, ToolError> {
     let canonical_workspace = workspace
         .canonicalize()
         .map_err(|e| ToolError::Io(e.to_string()))?;
     let final_path = resolve_components(&canonical_workspace, path);
-    let roots = writable_roots(&canonical_workspace, extra_writable);
-    if !roots.iter().any(|root| final_path.starts_with(root)) {
-        warn!(
-            path = %path.display(),
-            resolved = %final_path.display(),
-            "write: path escapes writable roots, rejecting"
-        );
-        return Err(ToolError::PathEscape {
-            path: path.to_path_buf(),
-        });
-    }
     if let Some(component) = find_protected_component(&final_path) {
         warn!(
             path = %final_path.display(),
@@ -259,7 +259,100 @@ pub fn resolve_writable_path(
             ),
         });
     }
-    Ok(final_path)
+    let roots = writable_roots(&canonical_workspace, extra_writable);
+    if roots.iter().any(|root| final_path.starts_with(root)) {
+        Ok(WritablePathDecision::Allow(final_path))
+    } else {
+        warn!(
+            path = %path.display(),
+            resolved = %final_path.display(),
+            "write: path escapes writable roots"
+        );
+        Ok(WritablePathDecision::AskApproval(final_path))
+    }
+}
+
+/// 写 / 改 / 删路径解析(不带审批通道的保守形态)。
+///
+/// 最终路径(含尚不存在的新建文件)必须落在 [`writable_roots`] 之内,
+/// 否则 `PathEscape`;路径任意一层是 `.git` / `.agents` / `.aws` 分量,
+/// 或落在 `.zhuye` 的提权子项([`PROTECTED_ZHUYE_CHILDREN`])之下则拒绝
+/// (读不受影响)。文件不存在不报错,由调用方的打开 / 创建步骤自行处理。
+///
+/// 写类工具(write / edit / delete_file / notebook_edit)请改用
+/// [`resolve_writable_path_with_approval`] —— 越界走强制审批而非硬拒。
+pub fn resolve_writable_path(
+    workspace: &Path,
+    extra_writable: &[PathBuf],
+    path: &Path,
+) -> Result<PathBuf, ToolError> {
+    match classify_writable_path(workspace, extra_writable, path)? {
+        WritablePathDecision::Allow(final_path) => Ok(final_path),
+        // 未接入审批流的调用方保持旧行为:越界一律 PathEscape 硬拒。
+        WritablePathDecision::AskApproval(_) => Err(ToolError::PathEscape {
+            path: path.to_path_buf(),
+        }),
+    }
+}
+
+/// 写类工具统一入口:分类 → 越界经审批门**强制询问** → 放行或结构化拒绝。
+///
+/// 对齐主流 harness 的「审批管危险操作、不设路径硬墙」:workspace 写根
+/// 之外的写入不再直接 `PathEscape`,而是弹一次人工确认(never-auto,
+/// 见 `ApprovalGate::ask_tool_forced`)。`ctx.approval` 为 `None`
+/// (headless / 单次调用测试)时保持旧行为:越界返回 `PathEscape` 硬拒,
+/// 不主动询问。
+pub(crate) async fn resolve_writable_path_with_approval(
+    ctx: &crate::tool::ToolContext,
+    tool_name: &str,
+    args: &serde_json::Value,
+    path: &Path,
+) -> Result<PathBuf, ToolError> {
+    match classify_writable_path(&ctx.workspace_path(), &ctx.os_sandbox_writable, path)? {
+        WritablePathDecision::Allow(resolved) => Ok(resolved),
+        WritablePathDecision::AskApproval(resolved) => {
+            let Some(gate) = ctx.approval.as_ref() else {
+                return Err(ToolError::PathEscape {
+                    path: path.to_path_buf(),
+                });
+            };
+            // 风险档取 Medium:单个文件写入本身可控;「必须人工确认」由
+            // 强制询问语义保证,不靠 High 档(High 会连带跳过「本会话
+            // 允许」记忆,让审批卡上的「始终允许本会话」失效)。
+            match gate
+                .ask_tool_forced(
+                    tool_name,
+                    args,
+                    zhuye_protocol::RiskLevel::Medium,
+                    &ctx.cancel,
+                )
+                .await
+            {
+                ReviewDecision::Approve => Ok(resolved),
+                ReviewDecision::ApproveForSession => {
+                    // 「本会话始终允许」:登记会话放行,后续同工具的越界写
+                    // 免重复询问(gate 的强制询问分支会查会话放行集)。
+                    gate.allow_for_session(tool_name);
+                    Ok(resolved)
+                }
+                // RejectForSession 在这里**不**登记会话级拒绝:强制询问只
+                // 针对「这一次越界写」,登记成工具级拒绝会连带封掉写根内的
+                // 正常写入( disproportionate)。
+                ReviewDecision::Deny { reason } | ReviewDecision::RejectForSession { reason } => {
+                    warn!(
+                        path = %resolved.display(),
+                        "write: 用户拒绝写入工作区外路径"
+                    );
+                    Err(ToolError::PermissionDenied {
+                        reason: format!(
+                            "用户拒绝写入工作区外路径 {}: {reason}",
+                            path.display()
+                        ),
+                    })
+                }
+            }
+        }
+    }
 }
 
 /// 找出路径中受写保护的元数据分量。

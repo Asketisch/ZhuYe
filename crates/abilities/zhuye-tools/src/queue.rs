@@ -862,6 +862,7 @@ impl ToolExecutionQueue {
                             risk,
                             &ctx.cancel,
                             policy_decision,
+                            false,
                         )
                         .await
                 };
@@ -1306,7 +1307,15 @@ impl ToolExecutionQueue {
                 let mut output = ToolOutput {
                     content: vec![ContentBlock::text(e.to_string())],
                     is_error: true,
-                    metadata: serde_json::json!({"kind": format!("{e:?}")}),
+                    metadata: serde_json::json!({
+                        // 结构化错误(类别 + 消息):消费方可按 `type` 区分
+                        // io / 路径越界 / 权限拒绝 / 审批拒绝等类别。直接
+                        // serde 序列化 ToolError 对纯字符串 newtype 变体
+                        // (Io / Execution)不可行(内部 tagged 限制),类别
+                        // 取 `ToolError::kind()`。`kind`(Debug 串)保留向后兼容。
+                        "error": { "type": e.kind(), "message": e.to_string() },
+                        "kind": format!("{e:?}"),
+                    }),
                     elapsed_ms,
                 };
                 // 失败文本也会送入模型;远程工具与子代理返回的错误要保留来源。

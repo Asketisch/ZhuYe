@@ -130,13 +130,16 @@ impl Tool for DeleteTool {
         }
 
         // ── 沙箱校验:写允许根 + 元数据保护 ──────────────────────────
-        // 此处失败为 `Io`(workspace 不可达)、`PathEscape`(转义)或
-        // `PermissionDenied`(.git 等元数据)。
-        let final_path = crate::sandbox::resolve_writable_path(
-            &ctx.workspace_path(),
-            &ctx.os_sandbox_writable,
+        // 此处失败为 `Io`(workspace 不可达)、`PathEscape`(无审批通道时
+        // 越界)或 `PermissionDenied`(.git 等元数据 / 用户拒绝越界写)。
+        // 越界写经审批门强制询问(与 write / edit 同款)。
+        let final_path = crate::sandbox::resolve_writable_path_with_approval(
+            &ctx,
+            "delete_file",
+            &args,
             raw_path,
-        )?;
+        )
+        .await?;
         span.record("path", final_path.to_string_lossy().as_ref());
 
         // ── 删除 ──────────────────────────────────────────────────────

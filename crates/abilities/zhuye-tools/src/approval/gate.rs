@@ -617,11 +617,30 @@ impl ApprovalGate {
         risk: RiskLevel,
         cancel: &CancellationToken,
     ) -> ReviewDecision {
-        self.ask_tool_with_policy(tool_name, args, risk, cancel, None)
+        self.ask_tool_with_policy(tool_name, args, risk, cancel, None, false)
             .await
     }
 
-    /// 队列已判定策略要求询问时,不能再被会话模式或分类器自动放行。
+    /// 强制询问(never-auto):无论回合策略(完全访问 / 自动批准)与会话
+    /// 模式如何,都落审批 modal —— 对齐主流 harness 的 alwaysAsk 语义:
+    /// 压过一切模式直通;权限规则(Allow/Deny)与会话拒绝档仍然生效,
+    /// 「本会话允许」记忆(用户在强制询问里选过「始终允许」)也生效。
+    /// 场景:写类工具目标落在 workspace 写根之外 —— 「写到工作区外」
+    /// 必须经过一次人工确认,不能被任何自动放行档静默通过。
+    pub async fn ask_tool_forced(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        risk: RiskLevel,
+        cancel: &CancellationToken,
+    ) -> ReviewDecision {
+        self.ask_tool_with_policy(tool_name, args, risk, cancel, None, true)
+            .await
+    }
+
+    /// 队列已判定策略要求询问时,不能再被会话模式或分类器自动放行;
+    /// `forced = true` 时连回合策略(FullAccess / AutoApprove)的直通也
+    /// 失效(见 [`Self::ask_tool_forced`])。
     pub(crate) async fn ask_tool_with_policy(
         &self,
         tool_name: &str,
@@ -629,6 +648,7 @@ impl ApprovalGate {
         risk: RiskLevel,
         cancel: &CancellationToken,
         policy_decision: Option<zhuye_permissions::RuleMatch>,
+        forced: bool,
     ) -> ReviewDecision {
         // 0. v1.5 R1:回合级 deny-all(`approval_policy = deny`)最优先。
         if self.deny_all.load(std::sync::atomic::Ordering::SeqCst) {
@@ -663,10 +683,29 @@ impl ApprovalGate {
                 };
             }
             zhuye_permissions::RuleMatch::Ask => true,
-            zhuye_permissions::RuleMatch::NoMatch => false,
+            // forced(never-auto)下连无规则的默认直通也失效:一律落 modal。
+            zhuye_permissions::RuleMatch::NoMatch => forced,
         };
 
-        if self.turn_policy == Some(zhuye_protocol::ApprovalPolicy::FullAccess) {
+        // 强制询问(never-auto,仅工具级 forced 路径)的附加语义:会话拒绝
+        // 档与「本会话允许」记忆仍然生效 —— 用户显式设置过的意图(拒绝档
+        // / 始终允许)不得被强制询问绕过;除此之外的一切自动放行(回合
+        // 策略 / 模式 / 分类器)全部失效。队列的 policy-Ask 路径(forced =
+        // false)保持既有口径不变。
+        if forced {
+            if let Some(mode_ref) = &self.session_permission_mode {
+                if *mode_ref.read() == PermissionMode::Deny {
+                    return ReviewDecision::Deny {
+                        reason: "session permission mode is deny".into(),
+                    };
+                }
+            }
+            if self.is_session_allowed(tool_name) {
+                return ReviewDecision::Approve;
+            }
+        }
+
+        if !forced && self.turn_policy == Some(zhuye_protocol::ApprovalPolicy::FullAccess) {
             return ReviewDecision::Approve;
         }
         if !force_modal {

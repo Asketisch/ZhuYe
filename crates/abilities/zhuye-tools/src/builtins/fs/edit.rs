@@ -70,13 +70,14 @@ impl Tool for EditTool {
             })?;
 
         let path = std::path::Path::new(path_str);
-        // 写路径:允许根 = workspace ∪ 附加可写目录 ∪ 临时目录;.git 等
-        // 元数据拒绝。
-        let abs = crate::sandbox::resolve_writable_path(
-            &ctx.workspace_path(),
-            &ctx.os_sandbox_writable,
+        // 写路径:写根内放行;越界经审批门强制询问;`.git` 等元数据拒绝。
+        let abs = crate::sandbox::resolve_writable_path_with_approval(
+            &ctx,
+            "edit",
+            &args,
             path,
-        )?;
+        )
+        .await?;
         // 固定父目录后读取与替换，防止检查后替换目录项或符号链接。
         let target = PinnedWrite::prepare(&abs)
             .map_err(|e| ToolError::Io(format!("prepare {path_str}: {e}")))?;

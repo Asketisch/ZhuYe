@@ -573,6 +573,29 @@ pub enum ToolError {
     },
 }
 
+impl ToolError {
+    /// 错误类别(snake_case,与 serde tagged 形态的 `type` 字段同名)。
+    ///
+    /// 消费方(前端 / 宿主)用它区分 io / 路径越界 / 权限拒绝等类别。
+    /// 注意:不能直接 `serde_json::to_value(self)` 取 tagged 形态 ——
+    /// `Execution(String)` / `Io(String)` 这类纯字符串 newtype 变体在
+    /// 内部 tagged 枚举下不可序列化(serde 限制),结构化消费面一律走
+    /// 本方法。
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ToolError::InvalidArgs { .. } => "invalid_args",
+            ToolError::Execution(_) => "execution",
+            ToolError::PermissionDenied { .. } => "permission_denied",
+            ToolError::Timeout { .. } => "timeout",
+            ToolError::Cancelled => "cancelled",
+            ToolError::PathEscape { .. } => "path_escape",
+            ToolError::Io(_) => "io",
+            ToolError::HookDenied { .. } => "hook_denied",
+            ToolError::SandboxUnavailable { .. } => "sandbox_unavailable",
+        }
+    }
+}
+
 impl From<std::io::Error> for ToolError {
     fn from(e: std::io::Error) -> Self {
         ToolError::Io(e.to_string())

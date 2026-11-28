@@ -269,7 +269,20 @@ mod platform {
                     let group = (original.st_gid != replacement.st_gid)
                         .then(|| fs::Gid::from_raw(original.st_gid));
                     if owner.is_some() || group.is_some() {
-                        fs::fchown(&file, owner, group)?;
+                        // 属组保留失败（原属组不在进程的附属组里，POSIX 对
+                        // 非特权进程改组一律 EPERM，如属组 wheel）降级为警告
+                        // —— 写文件不该因「保留不了旧属组」整体失败；属主
+                        // 保留失败仍按硬错误处理。
+                        if let Err(error) = fs::fchown(&file, owner, group) {
+                            if owner.is_none() && error == rustix::io::Errno::PERM {
+                                tracing::warn!(
+                                    error = %error,
+                                    "safe_write: skipping group retention (EPERM)"
+                                );
+                            } else {
+                                return Err(error.into());
+                            }
+                        }
                     }
                 }
                 #[cfg(target_os = "macos")]
@@ -765,6 +778,44 @@ mod tests {
             .unwrap();
         assert!(xattr.status.success());
         assert_eq!(String::from_utf8_lossy(&xattr.stdout).trim(), "sentinel");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn per_attribute_xattr_copy_preserves_user_attributes() {
+        use std::process::Command;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("src.txt");
+        let destination = root.path().join("dst.txt");
+        std::fs::write(&source, "original").unwrap();
+        std::fs::write(&destination, "replaced").unwrap();
+        for (name, value) in [("com.zhuye.one", "1"), ("com.zhuye.two", "2")] {
+            assert!(
+                Command::new("xattr")
+                    .args(["-w", name, value])
+                    .arg(&source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        // 与生产路径一致：源以只读打开，目标是 openat WRONLY 的替换句柄
+        // （fcopyfile 对 WRONLY 句柄写 xattr 已被既有用例验证可行）。
+        let source_file = std::fs::File::open(&source).unwrap();
+        let destination_file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&destination)
+            .unwrap();
+        super::metadata::copy_xattrs_individually(&source_file, &destination_file).unwrap();
+        for (name, value) in [("com.zhuye.one", "1"), ("com.zhuye.two", "2")] {
+            let xattr = Command::new("xattr")
+                .args(["-p", name])
+                .arg(&destination)
+                .output()
+                .unwrap();
+            assert!(xattr.status.success(), "xattr {name} missing");
+            assert_eq!(String::from_utf8_lossy(&xattr.stdout).trim(), value);
+        }
     }
 
     #[cfg(target_os = "macos")]

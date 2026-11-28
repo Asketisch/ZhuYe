@@ -106,15 +106,9 @@ fn parse_cell_type(s: &str) -> Result<CellType, ToolError> {
     }
 }
 
-fn load_notebook(
-    workspace: &Path,
-    writable: &[PathBuf],
-    path_str: &str,
-) -> Result<(Notebook, std::path::PathBuf), ToolError> {
-    // notebook 编辑是写路径:允许根内才可改,.git 等元数据拒绝。
-    let abs = crate::sandbox::resolve_writable_path(workspace, writable, Path::new(path_str))?;
+fn open_notebook(abs: &Path, path_str: &str) -> Result<(Notebook, std::path::PathBuf), ToolError> {
     let mut pinned =
-        open_readonly(&abs).map_err(|e| ToolError::Io(format!("open {path_str}: {e}")))?;
+        open_readonly(abs).map_err(|e| ToolError::Io(format!("open {path_str}: {e}")))?;
     let mut raw = String::new();
     use std::io::Read;
     pinned
@@ -124,7 +118,36 @@ fn load_notebook(
     let nb: Notebook = serde_json::from_str(&raw).map_err(|e| ToolError::InvalidArgs {
         message: format!("invalid notebook JSON: {e}"),
     })?;
-    Ok((nb, abs))
+    Ok((nb, abs.to_path_buf()))
+}
+
+fn load_notebook(
+    workspace: &Path,
+    writable: &[PathBuf],
+    path_str: &str,
+) -> Result<(Notebook, std::path::PathBuf), ToolError> {
+    // notebook 编辑是写路径:允许根内才可改,.git 等元数据拒绝。
+    let abs = crate::sandbox::resolve_writable_path(workspace, writable, Path::new(path_str))?;
+    open_notebook(&abs, path_str)
+}
+
+/// 写类 action(edit / insert / delete)的加载:越界路径经审批门强制
+/// 询问(与 write / edit 同款 —— 写工作区外是一次人工确认),读类
+/// action 保持旧口径(`resolve_writable_path` 硬拒)。
+async fn load_notebook_with_approval(
+    ctx: &crate::tool::ToolContext,
+    action: &str,
+    path_str: &str,
+) -> Result<(Notebook, std::path::PathBuf), ToolError> {
+    let abs = crate::sandbox::resolve_writable_path_with_approval(
+        ctx,
+        "notebook_edit",
+        // 审批卡展示用最小载荷(完整 args 已在此前反序列化时消费)。
+        &serde_json::json!({"action": action, "path": path_str}),
+        Path::new(path_str),
+    )
+    .await?;
+    open_notebook(&abs, path_str)
 }
 
 fn save_notebook(path: &Path, nb: &Notebook) -> Result<(), ToolError> {
@@ -237,7 +260,7 @@ impl Tool for NotebookEditTool {
                 cell_type,
             } => {
                 let (mut nb, abs) =
-                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
+                    load_notebook_with_approval(&ctx, "edit", &path).await?;
                 let cell = nb
                     .cells
                     .get_mut(index)
@@ -265,7 +288,7 @@ impl Tool for NotebookEditTool {
                 cell_type,
             } => {
                 let (mut nb, abs) =
-                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
+                    load_notebook_with_approval(&ctx, "insert", &path).await?;
                 if index > nb.cells.len() {
                     return Err(ToolError::InvalidArgs {
                         message: format!("insert index {index} out of range"),
@@ -289,7 +312,7 @@ impl Tool for NotebookEditTool {
             }
             NotebookAction::Delete { path, index } => {
                 let (mut nb, abs) =
-                    load_notebook(&ctx.workspace_path(), &ctx.os_sandbox_writable, &path)?;
+                    load_notebook_with_approval(&ctx, "delete", &path).await?;
                 if index >= nb.cells.len() {
                     return Err(ToolError::InvalidArgs {
                         message: format!("cell index {index} out of range"),

@@ -61,13 +61,16 @@ impl Tool for WriteTool {
             })?;
 
         let path = std::path::Path::new(path_str);
-        // 写路径解析:逐组件解析(允许新建),允许根 = workspace ∪ 附加
-        // 可写目录 ∪ 临时目录,`.git` 等元数据拒绝。
-        let final_path = crate::sandbox::resolve_writable_path(
-            &ctx.workspace_path(),
-            &ctx.os_sandbox_writable,
+        // 写路径解析:写根内放行;越界经审批门强制询问(ZCode alwaysAsk
+        // 同款 —— 写工作区外是一次人工确认,不设路径硬墙);`.git` 等元
+        // 数据拒绝。
+        let final_path = crate::sandbox::resolve_writable_path_with_approval(
+            &ctx,
+            "write",
+            &args,
             path,
-        )?;
+        )
+        .await?;
         // 固定父目录并拒绝路径替换或符号链接，再读旧内容及原子替换。
         let target = PinnedWrite::prepare(&final_path)
             .map_err(|e| ToolError::Io(format!("prepare {path_str}: {e}")))?;
@@ -420,6 +423,78 @@ mod tests {
             "绝对路径穿越必须被拒,得到: {err:?}"
         );
         assert!(!target.exists());
+        cleanup_probe(&probe);
+    }
+
+    /// 越界写 + 审批门:强制询问被批准 → 写入成功;被拒 → 结构化
+    /// `PermissionDenied` 且目标不落盘。headless(`approval = None`)的
+    /// 旧行为(`PathEscape`)由上方既有用例覆盖。
+    #[tokio::test]
+    async fn outside_root_write_asks_gate_then_proceeds_or_denies() {
+        use std::sync::Arc;
+        use zhuye_protocol::{EventMsg, ReviewDecision};
+
+        let ws = tmp_workspace();
+        let probe = outside_roots_dir("gate");
+
+        // 放行路径:后台应答者收到 ApprovalRequest 即批准。
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<zhuye_protocol::Event>(8);
+        let gate = Arc::new(crate::approval::ApprovalGate::new(tx, "write-gate-allow"));
+        let responder_gate = gate.clone();
+        let responder = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let EventMsg::ApprovalRequest(req) = event.msg {
+                    responder_gate.complete(&req.request_id, ReviewDecision::Approve);
+                    break;
+                }
+            }
+        });
+        let mut tctx = make_ctx(&ws);
+        tctx.approval = Some(gate);
+        let approved = probe.join("approved.txt");
+        WriteTool
+            .execute(
+                tctx,
+                serde_json::json!({"path": approved.to_string_lossy(), "content": "ok"}),
+            )
+            .await
+            .unwrap();
+        responder.await.unwrap();
+        assert_eq!(std::fs::read_to_string(&approved).unwrap(), "ok");
+
+        // 拒绝路径:deny → `PermissionDenied`,目标不落盘。
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<zhuye_protocol::Event>(8);
+        let gate = Arc::new(crate::approval::ApprovalGate::new(tx, "write-gate-deny"));
+        let responder_gate = gate.clone();
+        let responder = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let EventMsg::ApprovalRequest(req) = event.msg {
+                    responder_gate.complete(
+                        &req.request_id,
+                        ReviewDecision::Deny {
+                            reason: "not now".into(),
+                        },
+                    );
+                    break;
+                }
+            }
+        });
+        let mut tctx = make_ctx(&ws);
+        tctx.approval = Some(gate);
+        let denied = probe.join("denied.txt");
+        let err = WriteTool
+            .execute(
+                tctx,
+                serde_json::json!({"path": denied.to_string_lossy(), "content": "pwned"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::PermissionDenied { .. }),
+            "拒绝后应报 PermissionDenied,得到: {err:?}"
+        );
+        responder.await.unwrap();
+        assert!(!denied.exists(), "被拒的越界写不得落盘");
         cleanup_probe(&probe);
     }
 

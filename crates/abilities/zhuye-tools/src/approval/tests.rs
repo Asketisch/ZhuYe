@@ -75,6 +75,7 @@ async fn policy_ask_overrides_cached_session_allow() {
                 RiskLevel::Low,
                 &CancellationToken::new(),
                 Some(zhuye_permissions::RuleMatch::Ask),
+                false,
             )
             .await
     });
@@ -1566,6 +1567,7 @@ async fn turn_policy_is_independent_of_plan_mode() {
             RiskLevel::High,
             &cancel,
             Some(zhuye_permissions::RuleMatch::Ask),
+            false,
         )
         .await;
     assert_eq!(decision, ReviewDecision::Approve);
@@ -1576,6 +1578,7 @@ async fn turn_policy_is_independent_of_plan_mode() {
             RiskLevel::High,
             &cancel,
             Some(zhuye_permissions::RuleMatch::Deny),
+            false,
         )
         .await;
     assert!(matches!(decision, ReviewDecision::Deny { .. }));
