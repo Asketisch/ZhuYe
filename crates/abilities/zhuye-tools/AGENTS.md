@@ -57,7 +57,7 @@ Unix 前后台命令共用 `child_process::GroupedChild`：取消、超时或执
 | `src/registry.rs` | name → 工具的注册表(带 source 标记);复制或派发时用 `get_with_source` 同时读取工具和来源 |
 | `src/builtin_tools.rs` | 内置工具注册入口与计数常量 |
 | `src/queue.rs` | 工具执行队列(串行 / 并行分组) |
-| `src/sandbox.rs` | 路径沙箱(workspace-write 口径:读全盘 + 凭证拒绝;写限 `resolve_writable_path` 允许根 + `.git`/`.agents`/`.aws` 元数据只读;`.zhuye` 走提权子项 denylist(`PROTECTED_ZHUYE_CHILDREN`:config/sessions/cron 等),其余子树(spill/plan/worktrees/uploads)放行;`resolve_sandbox_path` 旧工作区墙保留给 LSP) |
+| `src/sandbox.rs` | 路径沙箱(workspace-write 口径:读全盘 + 凭证拒绝;写限 `resolve_writable_path` 允许根 + `.git`/`.agents`/`.aws` 元数据只读;`.zhuye` 走提权子项 denylist(`PROTECTED_ZHUYE_CHILDREN`:config/sessions/cron 等),其余子树(spill/plan/worktrees/uploads)放行;`resolve_sandbox_path` 旧工作区墙保留给 LSP)。写类工具(write/edit/delete_file/notebook_edit)经 `resolve_writable_path_with_approval` 接入:写根之外不再 `PathEscape` 硬拒,改走 `ApprovalGate::ask_tool_forced` 强制询问(never-auto:压过回合策略/模式/分类器直通,权限规则与会话拒绝档仍生效;headless 无审批通道维持 PathEscape) |
 | `src/approval/` | 审批门与决策路由(`gate.rs`);`ApprovalContext`：waiter 表族（审批 / 问答 / 询问 / MCP elicitation）+ 会话放行集 + 挂起交互注册表(`mod.rs`) |
 | `src/builtins/` | 各内置工具实现,按能力域分六簇(fs/web/human/plan/exec/meta);对外平铺路径契约见 [builtins/AGENTS.md](src/builtins/AGENTS.md) |
 | `src/guards/` | 守卫与预算:`arg_repair`(schema 修参) / `loop_guard`(循环失控) / `result_budget`(超长输出落盘) / `web_guard`(failover + SSRF) |
