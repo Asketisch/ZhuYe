@@ -1356,6 +1356,28 @@ def test_T30_exec文件工具组(serve_session, mock_script, sandbox) -> None:
     assert not (sandbox.cwd / "hello.txt").exists()
 
 
+def test_T30b_bm25跨文件保留高分(serve_session, mock_script, sandbox) -> None:
+    """限制结果数量时,跨文件评分仍返回最高分而非遍历中最早的命中。"""
+    import json
+
+    require_binary()
+    (sandbox.cwd / "weak.txt").write_text("alpha\n")
+    (sandbox.cwd / "strong.txt").write_text("alpha beta\n")
+    proc, results = _results_of(sandbox, mock_script, [
+        _tc("grep", {"pattern": "alpha beta", "rank": "bm25", "max_results": 1, "include": "*.txt"}),
+        '{"type":"text","text":"done"}',
+    ])
+    assert proc.returncode == 0, proc.stderr
+    result = _assert_ok(results, "grep")
+    output = json.loads(result["raw"])
+    assert "strong.txt:1: alpha beta" in result["text"]
+    assert "weak.txt" not in result["text"]
+    assert output["metadata"]["rank"] == "bm25"
+    assert output["metadata"]["total_matches"] == 2
+    assert output["metadata"]["shown"] == 1
+    assert output["metadata"]["truncated"] is True
+
+
 def test_T31_exec_read_before_edit_hook四态(serve_session, mock_script, sandbox) -> None:
     """新建放行 / 未读 Deny / 读后放行 / mtime 漂移 Deny。"""
     require_binary()

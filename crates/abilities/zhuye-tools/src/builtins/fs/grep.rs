@@ -7,6 +7,7 @@
 //! 替代默认的正则首次命中顺序。
 
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -14,10 +15,11 @@ use ignore::WalkBuilder;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::bm25::{rank_lines, tokenize};
+use crate::bm25::{CorpusStats, tokenize};
 use crate::tool::{Tool, ToolContext, ToolError, ToolOutput};
 
 const DEFAULT_MAX_RESULTS: usize = 100;
+const MAX_SEARCH_LINE_BYTES: u64 = 32 * 1024 * 1024;
 const IGNORE_DIRS: &[&str] = &["target", "node_modules", ".git"];
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
@@ -59,86 +61,144 @@ impl Tool for GrepTool {
     }
 
     async fn execute(&self, ctx: ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
-        let pattern = args
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArgs {
-                message: "missing 'pattern'".into(),
-            })?;
-        let include_glob = args
-            .get("include")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let max_results = args
-            .get("max_results")
-            .and_then(|v| v.as_u64())
-            .map_or(DEFAULT_MAX_RESULTS, |n| n as usize);
-        // 0.6:`path` 此前未做任何 workspace 包含校验,直接喂给
-        // `WalkBuilder::new(root)` —— `{"pattern": "x", "path": "/"}`
-        // 会遍历整个文件系统并把匹配行内容(含绝对路径)吐给模型。
-        // 现在与 read / write / edit 一样过沙箱;输出也改成相对路径。
-        let root: PathBuf = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => crate::sandbox::resolve_readable_dir(&ctx.workspace_path(), Path::new(p))?,
-            None => ctx.workspace_path(),
-        };
-        let use_bm25 = args
-            .get("rank")
-            .and_then(|v| v.as_str())
-            .is_some_and(|r| r.eq_ignore_ascii_case("bm25"));
+        // 修复原因:同步遍历占住运行时线程时超时和取消无法及时生效。
+        let cancel = ctx.cancel.child_token();
+        let _guard = cancel.clone().drop_guard();
+        tokio::task::spawn_blocking(move || execute_search(ctx, args, cancel))
+            .await
+            .map_err(|e| ToolError::Execution(format!("搜索任务失败: {e}")))?
+    }
+}
 
-        if use_bm25 {
-            return execute_bm25(
-                &root,
-                pattern,
-                include_glob.as_deref(),
-                max_results,
-                &ctx.workspace_path(),
-            );
-        }
-
-        let re = Regex::new(pattern).map_err(|e| ToolError::InvalidArgs {
-            message: format!("bad regex: {e}"),
+fn execute_search(
+    ctx: ToolContext,
+    args: Value,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<ToolOutput, ToolError> {
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs {
+            message: "missing 'pattern'".into(),
         })?;
+    let include_glob = args
+        .get("include")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let max_results = args
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .map_or(DEFAULT_MAX_RESULTS, |n| n as usize);
+    // 0.6:`path` 此前未做任何 workspace 包含校验,直接喂给
+    // `WalkBuilder::new(root)` —— `{"pattern": "x", "path": "/"}`
+    // 会遍历整个文件系统并把匹配行内容(含绝对路径)吐给模型。
+    // 现在与 read / write / edit 一样过沙箱;输出也改成相对路径。
+    let root: PathBuf = match args.get("path").and_then(|v| v.as_str()) {
+        Some(p) => crate::sandbox::resolve_readable_dir(&ctx.workspace_path(), Path::new(p))?,
+        None => ctx.workspace_path(),
+    };
+    let use_bm25 = args
+        .get("rank")
+        .and_then(|v| v.as_str())
+        .is_some_and(|r| r.eq_ignore_ascii_case("bm25"));
 
-        let mut out_lines: Vec<String> = Vec::new();
-        let mut total_matches: usize = 0;
-        let mut truncated = false;
-        let workspace = ctx.workspace_path();
-        let walker = build_walker(&root);
-        for entry in walker.flatten() {
-            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                continue;
-            }
-            if !path_matches_include(entry.path(), include_glob.as_deref()) {
-                continue;
-            }
-            let path = entry.path();
-            let Ok(text) = fs::read_to_string(path) else {
-                continue;
-            };
-            for (i, line) in text.lines().enumerate() {
-                if re.is_match(line) {
-                    total_matches += 1;
-                    if out_lines.len() < max_results {
-                        // 0.6:输出相对路径 —— 绝对路径每一行都带一遍完整
-                        // workspace 前缀,既烧 token 又不便读。
-                        let display = crate::sandbox::display_path_relative(path, &workspace);
-                        out_lines.push(format!("{display}:{}:{}", i + 1, line));
-                    } else {
-                        truncated = true;
-                    }
+    if use_bm25 {
+        return execute_bm25(
+            &root,
+            pattern,
+            include_glob.as_deref(),
+            max_results,
+            &ctx.workspace_path(),
+            &cancel,
+        );
+    }
+
+    let re = Regex::new(pattern).map_err(|e| ToolError::InvalidArgs {
+        message: format!("bad regex: {e}"),
+    })?;
+
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut total_matches: usize = 0;
+    let mut truncated = false;
+    let workspace = ctx.workspace_path();
+    let walker = build_walker(&root);
+    for entry in walker.flatten() {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        if !path_matches_include(entry.path(), include_glob.as_deref()) {
+            continue;
+        }
+        let path = entry.path();
+        scan_lines(path, &cancel, |line_no, line| {
+            if re.is_match(line) {
+                total_matches += 1;
+                if out_lines.len() < max_results {
+                    let display = crate::sandbox::display_path_relative(path, &workspace);
+                    out_lines.push(format!("{display}:{line_no}:{line}"));
+                } else {
+                    truncated = true;
                 }
             }
-        }
-
-        Ok(format_grep_output(
-            out_lines,
-            total_matches,
-            max_results,
-            truncated,
-            "regex",
-        ))
+        })?;
     }
+
+    Ok(format_grep_output(
+        out_lines,
+        total_matches,
+        max_results,
+        truncated,
+        "regex",
+    ))
+}
+
+/// 有界逐行扫描,超长单行显式失败而不截断匹配内容。
+fn scan_lines(
+    path: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+    mut visit: impl FnMut(usize, &str),
+) -> Result<(), ToolError> {
+    let Ok(file) = fs::File::open(path) else {
+        return Ok(());
+    };
+    let mut reader = BufReader::new(file);
+    let mut bytes = Vec::new();
+    let mut line_no = 0;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        bytes.clear();
+        // 修复原因:单行也可能大于内存预算;限制单行并避免整文件驻留。
+        let n = match reader
+            .by_ref()
+            .take(MAX_SEARCH_LINE_BYTES + 1)
+            .read_until(b'\n', &mut bytes)
+        {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
+            break;
+        }
+        if n as u64 > MAX_SEARCH_LINE_BYTES {
+            return Err(ToolError::Execution(format!(
+                "搜索行超过 {MAX_SEARCH_LINE_BYTES} 字节: {}",
+                path.display()
+            )));
+        }
+        line_no += 1;
+        let Ok(line) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let line = line.strip_suffix('\n').unwrap_or(line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        visit(line_no, line);
+    }
+    Ok(())
 }
 
 fn build_walker(root: &Path) -> ignore::Walk {
@@ -168,6 +228,7 @@ fn execute_bm25(
     include_glob: Option<&str>,
     max_results: usize,
     workspace: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<ToolOutput, ToolError> {
     let query_terms = tokenize(query);
     if query_terms.is_empty() {
@@ -186,6 +247,9 @@ fn execute_bm25(
     let walker = build_walker(root);
 
     for entry in walker.flatten() {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
@@ -193,37 +257,22 @@ fn execute_bm25(
             continue;
         }
         let path = entry.path();
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
-        };
-
-        let mut candidates: Vec<(usize, String)> = Vec::new();
-        for (i, line) in text.lines().enumerate() {
-            let line_tokens = tokenize(line);
-            if query_terms
-                .iter()
-                .any(|term| line_tokens.iter().any(|t| t == term))
-            {
-                candidates.push((i + 1, line.to_string()));
-            }
-        }
-        if candidates.is_empty() {
-            continue;
-        }
-
-        let ranked = rank_lines(&query_terms, &candidates, BM25_K1, BM25_B);
+        // 两遍扫描保持每文件语料评分,避免把全部候选行和分词结果留在内存。
+        let mut stats = CorpusStats::new(&query_terms);
+        scan_lines(path, cancel, |_, line| {
+            stats.observe(&tokenize(line));
+        })?;
         let display = crate::sandbox::display_path_relative(path, workspace);
-        for hit in ranked {
-            total_matches += 1;
-            if hits.len() < max_results {
-                hits.push((
-                    hit.score,
-                    format!("{:.3} {}:{}: {}", hit.score, display, hit.line_no, hit.line),
-                ));
-            } else {
-                truncated = true;
+        scan_lines(path, cancel, |line_no, line| {
+            let tokens = tokenize(line);
+            let score = stats.score(&tokens, BM25_K1, BM25_B);
+            if score > 0.0 {
+                total_matches += 1;
+                let formatted = format!("{score:.3} {display}:{line_no}: {line}");
+                retain_top_hit(&mut hits, (score, formatted), max_results);
+                truncated = total_matches > max_results;
             }
-        }
+        })?;
     }
 
     // 跨文件全局按 BM25 分数降序。`partial_cmp` 对 NaN 返回 None
@@ -242,6 +291,23 @@ fn execute_bm25(
         truncated,
         "bm25",
     ))
+}
+
+fn retain_top_hit(hits: &mut Vec<(f64, String)>, hit: (f64, String), limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    if hits.len() < limit {
+        hits.push(hit);
+    } else if let Some((index, lowest)) = hits
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
+        && hit.0 > lowest.0
+    {
+        // 修复原因:先截断再排序会丢失后续文件中的高分结果。
+        hits[index] = hit;
+    }
 }
 
 fn format_grep_output(
@@ -277,6 +343,52 @@ mod tests {
     use super::*;
     #[allow(unused_imports)] // pre-M5
     use std::fs;
+
+    #[test]
+    fn cancelled_search_stops_before_scanning() {
+        let ws = tmp_workspace();
+        std::fs::write(ws.join("a.txt"), "match").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            execute_search(
+                make_ctx(&ws),
+                serde_json::json!({"pattern": "match"}),
+                cancel
+            ),
+            Err(ToolError::Cancelled)
+        ));
+    }
+
+    #[tokio::test]
+    async fn regex_searches_file_larger_than_line_limit() {
+        use std::io::Write;
+        let ws = tmp_workspace();
+        let mut file = std::fs::File::create(ws.join("large.txt")).unwrap();
+        let block = "ordinary line\n".repeat(4096);
+        for _ in 0..600 {
+            file.write_all(block.as_bytes()).unwrap();
+        }
+        writeln!(file, "last-needle").unwrap();
+        drop(file);
+        let result = GrepTool
+            .execute(make_ctx(&ws), serde_json::json!({"pattern": "last-needle"}))
+            .await
+            .unwrap();
+        assert_eq!(result.metadata["total_matches"], 1);
+        assert!(
+            matches!(&result.content[0], zhuye_protocol::ContentBlock::Text { text } if text.contains("last-needle"))
+        );
+    }
+
+    #[test]
+    fn later_high_score_replaces_lowest_hit() {
+        let mut hits = Vec::new();
+        retain_top_hit(&mut hits, (1.0, "first".into()), 1);
+        retain_top_hit(&mut hits, (2.0, "later".into()), 1);
+        assert_eq!(hits, vec![(2.0, "later".into())]);
+        retain_top_hit(&mut hits, (3.0, "ignored".into()), 0);
+    }
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);

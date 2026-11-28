@@ -102,7 +102,7 @@ Common conventions:
 |---|---|---|
 | `bash` | 100 KiB per stream (another 100 KiB total cap) | full output written to a temp file; the path is returned for `read` to fetch |
 | `read` | 2000 lines (1000 head + 1000 tail) | an omission marker is inserted in the middle |
-| `grep` | `max_results` (default 100) | reports `truncated` + the omitted count |
+| `grep` | `max_results` (default 100); lines up to 32 MiB | reports `truncated` + the omitted count; rejects longer lines |
 | `glob` | 1000 entries | reports `truncated` |
 | `web_fetch` | body 5 MiB / markdown 50000 characters | reports `body_truncated` / a markdown truncation marker |
 | `web_search` | body 2 MiB / output 8 KB | accumulates entry by entry until the cap, then stops |

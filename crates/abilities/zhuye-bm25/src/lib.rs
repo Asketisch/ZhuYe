@@ -13,6 +13,67 @@ pub struct Bm25Hit {
     pub line: String,
 }
 
+/// 支持逐行统计及评分的 BM25 语料统计。
+pub struct CorpusStats {
+    terms: Vec<String>,
+    documents: usize,
+    total_length: usize,
+    frequencies: Vec<usize>,
+}
+
+impl CorpusStats {
+    /// 为查询词建立空语料。
+    pub fn new(terms: &[String]) -> Self {
+        Self {
+            terms: terms.to_vec(),
+            documents: 0,
+            total_length: 0,
+            frequencies: vec![0; terms.len()],
+        }
+    }
+
+    /// 对含查询词的候选行计入语料,返回是否命中。
+    pub fn observe(&mut self, tokens: &[String]) -> bool {
+        if !self
+            .terms
+            .iter()
+            .any(|term| tokens.iter().any(|token| token == term))
+        {
+            return false;
+        }
+        self.documents += 1;
+        self.total_length += tokens.len();
+        for (frequency, term) in self.frequencies.iter_mut().zip(&self.terms) {
+            if tokens.iter().any(|token| token == term) {
+                *frequency += 1;
+            }
+        }
+        true
+    }
+
+    /// 使用已固定的语料统计给候选行评分。
+    pub fn score(&self, tokens: &[String], k1: f64, b: f64) -> f64 {
+        if self.documents == 0 {
+            return 0.0;
+        }
+        let avg_dl = self.total_length as f32 / self.documents as f32;
+        self.terms
+            .iter()
+            .zip(&self.frequencies)
+            .map(|(term, df)| {
+                let tf = tokens.iter().filter(|token| *token == term).count() as f32;
+                if tf == 0.0 {
+                    return 0.0;
+                }
+                f64::from(
+                    bm25_idf_plus1(self.documents as u32, *df as u32)
+                        * bm25_tf(tf, tokens.len() as f32, avg_dl, k1 as f32, b as f32),
+                )
+            })
+            .sum()
+    }
+}
+
 /// 将查询与文本规范化为 BM25 词项(小写、按非字母数字切分)。
 ///
 /// v1.11 记忆升级:词法升级为「ASCII 词 + CJK bigram」双路 ——
@@ -109,12 +170,6 @@ pub fn rank_lines(
     let k1 = k1 as f32;
     let b = b as f32;
     let n_docs = candidates.len();
-    let avg_dl = candidates
-        .iter()
-        .map(|(_, line)| tokenize(line).len())
-        .sum::<usize>() as f32
-        / n_docs as f32;
-
     // 每个 query term 在多少篇「文档」(行) 里出现过。
     let mut df = vec![0usize; query_terms.len()];
     let mut doc_tokens: Vec<Vec<String>> = Vec::with_capacity(n_docs);
@@ -127,6 +182,7 @@ pub fn rank_lines(
         }
         doc_tokens.push(tokens);
     }
+    let avg_dl = doc_tokens.iter().map(Vec::len).sum::<usize>() as f32 / n_docs as f32;
 
     let mut scored: Vec<Bm25Hit> = candidates
         .iter()
@@ -162,6 +218,26 @@ pub fn rank_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_stats_match_rank_lines_scores() {
+        let terms = tokenize("alpha beta 数据库");
+        let candidates = vec![
+            (1, "alpha 数据库".to_string()),
+            (2, "alpha beta beta".to_string()),
+            (3, "beta".to_string()),
+        ];
+        let expected = rank_lines(&terms, &candidates, 1.2, 0.75);
+        let mut stats = CorpusStats::new(&terms);
+        for (_, text) in &candidates {
+            assert!(stats.observe(&tokenize(text)));
+        }
+        assert!(!stats.observe(&tokenize("其他内容")));
+        for hit in expected {
+            let score = stats.score(&tokenize(&hit.line), 1.2, 0.75);
+            assert!((score - hit.score).abs() < 1e-9);
+        }
+    }
 
     #[test]
     fn tokenize_splits_on_non_alnum() {

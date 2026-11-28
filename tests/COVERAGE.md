@@ -241,6 +241,7 @@ CI 功能门禁构建 KMS、Computer Use(无 real feature)、Shell 和 Git Tools
 - **T30** 文件系统组:write/read/edit/grep/glob/echo 单 exec 串行驱动
   (edit 回执为 unified diff 结构块,断言落 raw JSON;edit 落盘经二次 read
   与文件内容双重验证);delete_file 独立回合并断言文件消失。
+- **T30b** BM25 跨文件按最高分保留有限结果,断言命中文本及排序、总数和截断字段。
 - **T31** read_before_edit hook 四态:新建 write 放行 / 已存在未读 edit
   Deny(含 "never read" 理由)/ 读后 edit 放行且落盘 / 读后外部改动
   (mtime 漂移)edit Deny。

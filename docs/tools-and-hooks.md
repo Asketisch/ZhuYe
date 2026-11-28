@@ -92,7 +92,7 @@ Plugin / Mcp),floor 是 `Auto`:远程工具跑在客户端自己的进程里,本
 |---|---|---|
 | `bash` | 每流 100 KiB(合计再截 100 KiB) | 已捕获内容超限时落盘，源输出丢弃时分别报告 stdout / stderr 不完整 |
 | `read` | 2000 行(1000 头 + 1000 尾) | 中间插入省略标记 |
-| `grep` | `max_results`(默认 100) | 报告 `truncated` + 省略计数 |
+| `grep` | `max_results`(默认 100);单行不超过 32 MiB | 报告 `truncated` + 省略计数;超长单行报错 |
 | `glob` | 1000 条 | 报告 `truncated` |
 | `web_fetch` | body 5 MiB / markdown 50000 字符 | 报告 `body_truncated` / markdown 截断标记 |
 | `web_search` | body 2 MiB / 输出 8 KB | 逐条累积到上限即停 |

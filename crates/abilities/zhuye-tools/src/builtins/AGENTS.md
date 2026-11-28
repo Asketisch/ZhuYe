@@ -29,6 +29,8 @@
 - 新增 / 移除工具走 crate 篇「清单三处同步」：`builtin_tools.rs` 的计数常量与注册断言 + `docs/tools-and-hooks.md` §2 权威清单。
 - 门控工具（web_search / notebook_edit）的注册行在 `register_builtin_tools_with_gates` 内由 `BundledToolGates` 包裹，本目录不自行判门控。
 - 工具执行记录严格模式仅放过明确声明无副作用的工具;read / glob / grep 声明只读,并发安全不能替代只读声明。
+- grep / glob 在阻塞线程遍历文件,取消或执行 future 被丢弃时通知遍历退出,不得在异步运行时线程直接扫描整个目录。
+- grep 两种模式均逐行扫描,单行超过 32 MiB 时显式报错;BM25 用两遍扫描统计和评分,不能把整份大文件或全部候选行加载进内存。
 
 ## 禁止事项
 

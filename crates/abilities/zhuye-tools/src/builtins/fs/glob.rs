@@ -45,86 +45,102 @@ impl Tool for GlobTool {
     }
 
     async fn execute(&self, ctx: ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
-        let pattern = args
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArgs {
-                message: "missing 'pattern'".into(),
-            })?;
-        let root: PathBuf = match args.get("path").and_then(|v| v.as_str()) {
-            // 0.6:`path` 此前未做 workspace 包含校验,直接喂给
-            // `WalkBuilder::new(root)` —— 与 grep 同样的信息泄露面。
-            Some(p) => crate::sandbox::resolve_readable_dir(&ctx.workspace_path(), Path::new(p))?,
-            None => ctx.workspace_path(),
-        };
-
-        // 剥掉开头的 "*." 用作后缀匹配。
-        let suffix = pattern.trim_start_matches("*.");
-
-        let mut paths: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
-        let walker = WalkBuilder::new(&root)
-            .standard_filters(true)
-            .filter_entry(|e| {
-                let name = e.file_name().to_string_lossy();
-                !IGNORE_DIRS.iter().any(|d| name == *d)
-            })
-            .build();
-        for entry in walker.flatten() {
-            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                continue;
-            }
-            let p = entry.path();
-            let rel = p.strip_prefix(&root).unwrap_or(p);
-            let rel_str = rel.to_string_lossy();
-            // 注:原实现这里有个 `if pattern.contains('/')` 分支,两个臂
-            // 逐字相同(`rel_str.contains(pattern)`)—— 纯死代码。已删除,
-            // 匹配逻辑与是否含 `/` 无关。
-            let matches = rel_str.contains(pattern)
-                || (!suffix.is_empty() && p.extension().is_some_and(|e| e == suffix));
-            if matches {
-                let mtime = entry
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                paths.push((p.to_path_buf(), mtime));
-            }
-        }
-
-        // 按 mtime 倒序排列;**同 mtime 时按路径字典序兜底**。
-        // 原实现只有 `sort_by_key(Reverse(mtime))`:粗粒度 mtime 文件系统
-        // (HFS+ / FAT32 为 1s 分辨率)上大量文件 mtime 相同,而
-        // `sort_by_key` 是稳定排序 → 输出顺序等于 walker 的文件系统枚举
-        // 顺序,不确定且不可复现。加二级键后同 mtime 也有确定顺序。
-        paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let truncated = paths.len() > MAX_RESULTS;
-        paths.truncate(MAX_RESULTS);
-
-        // 0.6:输出相对路径 —— 绝对路径每一行都带一遍完整 workspace 前缀。
-        let workspace = ctx.workspace_path();
-        let mut body = paths
-            .iter()
-            .map(|(p, _)| {
-                // glob 惯例:输出统一正斜杠。Windows 上 display_path_relative
-                // 给出反斜杠形式,对 glob 语义与 LLM 消费方都不友好。
-                crate::sandbox::display_path_relative(p, &workspace).replace('\\', "/")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if truncated {
-            body.push_str(&format!("\n[... truncated to {MAX_RESULTS} ...]"));
-        }
-
-        Ok(ToolOutput {
-            content: vec![zhuye_protocol::ContentBlock::text(body)],
-            is_error: false,
-            metadata: serde_json::json!({
-                "matches": paths.len(),
-                "truncated": truncated,
-            }),
-            elapsed_ms: 0,
-        })
+        // 修复原因:同步遍历占住运行时线程时超时和取消无法及时生效。
+        let cancel = ctx.cancel.child_token();
+        let _guard = cancel.clone().drop_guard();
+        tokio::task::spawn_blocking(move || execute_search(ctx, args, cancel))
+            .await
+            .map_err(|e| ToolError::Execution(format!("搜索任务失败: {e}")))?
     }
+}
+
+fn execute_search(
+    ctx: ToolContext,
+    args: Value,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<ToolOutput, ToolError> {
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs {
+            message: "missing 'pattern'".into(),
+        })?;
+    let root: PathBuf = match args.get("path").and_then(|v| v.as_str()) {
+        // 0.6:`path` 此前未做 workspace 包含校验,直接喂给
+        // `WalkBuilder::new(root)` —— 与 grep 同样的信息泄露面。
+        Some(p) => crate::sandbox::resolve_readable_dir(&ctx.workspace_path(), Path::new(p))?,
+        None => ctx.workspace_path(),
+    };
+
+    // 剥掉开头的 "*." 用作后缀匹配。
+    let suffix = pattern.trim_start_matches("*.");
+
+    let mut paths: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+    let walker = WalkBuilder::new(&root)
+        .standard_filters(true)
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !IGNORE_DIRS.iter().any(|d| name == *d)
+        })
+        .build();
+    for entry in walker.flatten() {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let p = entry.path();
+        let rel = p.strip_prefix(&root).unwrap_or(p);
+        let rel_str = rel.to_string_lossy();
+        // 注:原实现这里有个 `if pattern.contains('/')` 分支,两个臂
+        // 逐字相同(`rel_str.contains(pattern)`)—— 纯死代码。已删除,
+        // 匹配逻辑与是否含 `/` 无关。
+        let matches = rel_str.contains(pattern)
+            || (!suffix.is_empty() && p.extension().is_some_and(|e| e == suffix));
+        if matches {
+            let mtime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            paths.push((p.to_path_buf(), mtime));
+        }
+    }
+
+    // 按 mtime 倒序排列;**同 mtime 时按路径字典序兜底**。
+    // 原实现只有 `sort_by_key(Reverse(mtime))`:粗粒度 mtime 文件系统
+    // (HFS+ / FAT32 为 1s 分辨率)上大量文件 mtime 相同,而
+    // `sort_by_key` 是稳定排序 → 输出顺序等于 walker 的文件系统枚举
+    // 顺序,不确定且不可复现。加二级键后同 mtime 也有确定顺序。
+    paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let truncated = paths.len() > MAX_RESULTS;
+    paths.truncate(MAX_RESULTS);
+
+    // 0.6:输出相对路径 —— 绝对路径每一行都带一遍完整 workspace 前缀。
+    let workspace = ctx.workspace_path();
+    let mut body = paths
+        .iter()
+        .map(|(p, _)| {
+            // glob 惯例:输出统一正斜杠。Windows 上 display_path_relative
+            // 给出反斜杠形式,对 glob 语义与 LLM 消费方都不友好。
+            crate::sandbox::display_path_relative(p, &workspace).replace('\\', "/")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if truncated {
+        body.push_str(&format!("\n[... truncated to {MAX_RESULTS} ...]"));
+    }
+
+    Ok(ToolOutput {
+        content: vec![zhuye_protocol::ContentBlock::text(body)],
+        is_error: false,
+        metadata: serde_json::json!({
+            "matches": paths.len(),
+            "truncated": truncated,
+        }),
+        elapsed_ms: 0,
+    })
 }
 
 #[cfg(test)]
@@ -133,6 +149,18 @@ mod tests {
     #[allow(unused_imports)] // pre-M5
     use std::fs;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn cancelled_search_stops_before_scanning() {
+        let ws = tmp_workspace();
+        std::fs::write(ws.join("a.txt"), "").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            execute_search(make_ctx(&ws), serde_json::json!({"pattern": "txt"}), cancel),
+            Err(ToolError::Cancelled)
+        ));
+    }
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 

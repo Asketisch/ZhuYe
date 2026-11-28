@@ -32,6 +32,9 @@ Unix 前后台 shell 共用 `zhuye-tools::child_process` 管理独立进程组�
 
 - 叶 crate 不依赖任何其他能力 crate:`zhuye-bm25`(仅 `rankfns`)、`zhuye-sanitize`(仅 `regex` / `serde` / `sha2` / `once_cell` 等基础依赖)。
 - `zhuye-bm25` 被 `zhuye-tools`、`zhuye-memory`、`zhuye-notes` 三方共用 —— **检索能力全层只此一份**。
+- grep 的 BM25 模式按每文件语料计算分数,跨文件保留最高分的有限结果,不能在排序前按遍历顺序截断。
+- grep / glob 的目录遍历在线程池执行,并检查取消令牌,避免阻塞异步运行时。
+- grep 两种模式逐行扫描,单行超过 32 MiB 时显式报错;BM25 两遍扫描统计和评分。
 - `zhuye-tools` → `zhuye-hooks` 是**单向依赖**;`zhuye-hooks` 不得反向依赖 `zhuye-tools` —— hook 事件不携带 `ToolContext`,因此能绕开成环。
 - `zhuye-prompt` 处在依赖链上游:`zhuye-tools` 依赖它,它自身依赖 `zhuye-llm` 与 `zhuye-config` 做 provider 相关的提示词装配。
 - 共享核心提示词注明运行时官方名称「烛夜」,与宿主自定义代理角色区分;文案位于 `prompts/default.md` 的 `system.product-identity`。
